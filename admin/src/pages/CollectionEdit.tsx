@@ -61,6 +61,20 @@ export default function CollectionEdit({
     setFields((fs) => fs.map((f, i) => (i === selectedIdx ? { ...f, ...patch } : f)));
   }
 
+  function updateSelOptions(patch: Record<string, unknown>) {
+    setFields((fs) =>
+      fs.map((f, i) =>
+        i === selectedIdx ? { ...f, options: { ...(f.options ?? {}), ...patch } } : f
+      )
+    );
+  }
+
+  function numOrUndef(v: string): number | undefined {
+    if (v === "") return undefined;
+    const n = Number(v);
+    return isNaN(n) ? undefined : n;
+  }
+
   function addField(type: FieldDef["type"]) {
     const newField: FieldDef = { name: "", type, required: false };
     setFields((fs) => [...fs, newField]);
@@ -275,19 +289,77 @@ export default function CollectionEdit({
                     <Toggle on={sel.required ?? false} onChange={(v) => updateSel({ required: v })} />
                   </div>
 
-                  {sel.type === "text" && (
+                  {(sel.type === "text" || sel.type === "email" || sel.type === "url") && (
                     <>
                       <div>
                         <label className="label">Min / Max length</label>
                         <div className="row">
-                          <input className="input mono" placeholder="0" />
-                          <input className="input mono" placeholder="255" />
+                          <input
+                            className="input mono"
+                            type="number"
+                            min={0}
+                            value={(sel.options?.["min"] as number | undefined) ?? ""}
+                            onChange={(e) => updateSelOptions({ min: numOrUndef(e.target.value) })}
+                            placeholder="0"
+                          />
+                          <input
+                            className="input mono"
+                            type="number"
+                            min={0}
+                            value={(sel.options?.["max"] as number | undefined) ?? ""}
+                            onChange={(e) => updateSelOptions({ max: numOrUndef(e.target.value) })}
+                            placeholder="—"
+                          />
                         </div>
                       </div>
+                      {sel.type === "text" && (
+                        <div>
+                          <label className="label">Regex pattern</label>
+                          <input
+                            className="input mono"
+                            value={(sel.options?.["pattern"] as string | undefined) ?? ""}
+                            onChange={(e) => updateSelOptions({ pattern: e.target.value || undefined })}
+                            placeholder="^[a-z0-9-]+$"
+                          />
+                        </div>
+                      )}
+                      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7 }}>
+                        <span style={{ fontSize: 12 }}>Unique</span>
+                        <Toggle
+                          on={!!sel.options?.["unique"]}
+                          onChange={(v) => updateSelOptions({ unique: v })}
+                        />
+                      </label>
+                    </>
+                  )}
+                  {sel.type === "number" && (
+                    <>
                       <div>
-                        <label className="label">Regex pattern</label>
-                        <input className="input mono" placeholder="^[a-z0-9-]+$" />
+                        <label className="label">Min / Max value</label>
+                        <div className="row">
+                          <input
+                            className="input mono"
+                            type="number"
+                            value={(sel.options?.["min"] as number | undefined) ?? ""}
+                            onChange={(e) => updateSelOptions({ min: numOrUndef(e.target.value) })}
+                            placeholder="—"
+                          />
+                          <input
+                            className="input mono"
+                            type="number"
+                            value={(sel.options?.["max"] as number | undefined) ?? ""}
+                            onChange={(e) => updateSelOptions({ max: numOrUndef(e.target.value) })}
+                            placeholder="—"
+                          />
+                        </div>
                       </div>
+                      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7 }}>
+                        <span style={{ fontSize: 12 }}>Unique</span>
+                        <Toggle
+                          on={!!sel.options?.["unique"]}
+                          onChange={(v) => updateSelOptions({ unique: v })}
+                        />
+                      </label>
                     </>
                   )}
                   {sel.type === "relation" && (
@@ -314,20 +386,71 @@ export default function CollectionEdit({
                     </div>
                   )}
                   {sel.type === "select" && (
-                    <div>
-                      <label className="label">Allowed values</label>
-                      <input className="input mono" placeholder="draft, review, live" />
-                    </div>
+                    <>
+                      <div>
+                        <label className="label">Allowed values (comma-separated)</label>
+                        <input
+                          className="input mono"
+                          value={
+                            Array.isArray(sel.options?.["values"])
+                              ? (sel.options?.["values"] as string[]).join(", ")
+                              : ""
+                          }
+                          onChange={(e) =>
+                            updateSelOptions({
+                              values: e.target.value
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                          placeholder="draft, review, live"
+                        />
+                        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                          At least one value is required for select fields.
+                        </div>
+                      </div>
+                      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7 }}>
+                        <span style={{ fontSize: 12 }}>Allow multiple values</span>
+                        <Toggle
+                          on={!!sel.options?.["multiple"]}
+                          onChange={(v) => updateSelOptions({ multiple: v })}
+                        />
+                      </label>
+                    </>
                   )}
                   {sel.type === "file" && (
                     <>
                       <div>
-                        <label className="label">Max size</label>
-                        <input className="input mono" placeholder="5MB" />
+                        <label className="label">Max size (bytes)</label>
+                        <input
+                          className="input mono"
+                          type="number"
+                          min={0}
+                          value={(sel.options?.["maxSize"] as number | undefined) ?? ""}
+                          onChange={(e) => updateSelOptions({ maxSize: numOrUndef(e.target.value) })}
+                          placeholder="5242880 = 5MB"
+                        />
                       </div>
                       <div>
-                        <label className="label">Allowed mime types</label>
-                        <input className="input mono" placeholder="image/*, application/pdf" />
+                        <label className="label">Allowed mime types (comma-separated)</label>
+                        <input
+                          className="input mono"
+                          value={
+                            Array.isArray(sel.options?.["mimeTypes"])
+                              ? (sel.options?.["mimeTypes"] as string[]).join(", ")
+                              : ""
+                          }
+                          onChange={(e) =>
+                            updateSelOptions({
+                              mimeTypes: e.target.value
+                                .split(",")
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                          placeholder="image/*, application/pdf"
+                        />
                       </div>
                     </>
                   )}
