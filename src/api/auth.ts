@@ -117,5 +117,27 @@ export function makeAuthPlugin(jwtSecret: string) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
       }
+    })
+    // Token refresh — works for both user and admin tokens
+    .post("/api/auth/refresh", async ({ request, set }) => {
+      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const sec = getSecret(jwtSecret);
+      try {
+        const { payload } = await jose.jwtVerify(token, sec);
+        const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+        if (aud !== "user" && aud !== "admin") { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        // Re-sign with same claims, fresh expiry
+        const { exp: _exp, iat: _iat, nbf: _nbf, ...claims } = payload;
+        const newToken = await new jose.SignJWT(claims as jose.JWTPayload)
+          .setProtectedHeader({ alg: "HS256" })
+          .setAudience(aud)
+          .setExpirationTime("7d")
+          .sign(sec);
+        return { data: { token: newToken } };
+      } catch {
+        set.status = 401;
+        return { error: "Token expired or invalid", code: 401 };
+      }
     });
 }
