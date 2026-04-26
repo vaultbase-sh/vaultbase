@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { parseFilter } from "./filter.ts";
 import { validateRecord } from "./validate.ts";
+import type { AuthContext } from "./rules.ts";
 import { getDb } from "../db/client.ts";
 import { records, type NewRecord } from "../db/schema.ts";
 import { getCollection, parseFields } from "./collections.ts";
@@ -12,6 +13,10 @@ export interface ListOptions {
   filter?: string;
   sort?: string;
   expand?: string;
+  /** Access rule expression — applied as additional WHERE clause */
+  accessRule?: string;
+  /** Auth context used to substitute @request.auth.X in accessRule and filter */
+  auth?: AuthContext | null;
 }
 
 export interface ListResult {
@@ -79,10 +84,13 @@ export async function listRecords(
       return descending ? desc(expr) : asc(expr);
     });
 
-  const filterClause = opts.filter ? parseFilter(opts.filter) : undefined;
-  const where = filterClause
-    ? and(eq(records.collection_id, col.id), filterClause)
-    : eq(records.collection_id, col.id);
+  const filterClause = opts.filter ? parseFilter(opts.filter, opts.auth ?? null) : undefined;
+  const ruleClause = opts.accessRule ? parseFilter(opts.accessRule, opts.auth ?? null) : undefined;
+
+  const conditions = [eq(records.collection_id, col.id)];
+  if (filterClause) conditions.push(filterClause);
+  if (ruleClause) conditions.push(ruleClause);
+  const where = conditions.length === 1 ? conditions[0]! : and(...conditions)!;
 
   const rows = await db
     .select()
