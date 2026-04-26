@@ -22,6 +22,23 @@ function makeCol(fields: FieldDef[]): Collection {
   };
 }
 
+describe("validateRecord — defensive against null/undefined", () => {
+  it("treats undefined data as empty object", async () => {
+    const col = makeCol([{ name: "title", type: "text", required: false }]);
+    await expect(validateRecord(col, undefined, "create")).resolves.toBeUndefined();
+  });
+
+  it("treats null data as empty object", async () => {
+    const col = makeCol([{ name: "title", type: "text", required: false }]);
+    await expect(validateRecord(col, null, "create")).resolves.toBeUndefined();
+  });
+
+  it("undefined data on create with required field still fails", async () => {
+    const col = makeCol([{ name: "title", type: "text", required: true }]);
+    await expect(validateRecord(col, undefined, "create")).rejects.toThrow(ValidationError);
+  });
+});
+
 describe("validateRecord — required fields", () => {
   it("rejects missing required field on create", async () => {
     const col = makeCol([{ name: "title", type: "text", required: true }]);
