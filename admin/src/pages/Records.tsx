@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { DataTable } from "primereact/datatable";
+import { Column } from "primereact/column";
+import type { DataTablePageEvent } from "primereact/datatable";
 import {
   api, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
@@ -327,74 +330,59 @@ export default function Records({
           </div>
         </div>
 
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : records.length === 0 ? (
-            <div className="empty">
-              {appliedFilter ? "No records match this filter." : "No records yet."}
-            </div>
-          ) : (
-            <>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>id</th>
-                    {displayCols.map((c) => <th key={c}>{c}</th>)}
-                    <th>created</th>
-                    <th>updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((r) => (
-                    <tr
-                      key={String(r.id)}
-                      className={openRec?.id === r.id ? "selected" : ""}
-                      onClick={() => openRecord(r)}
-                    >
-                      <td className="mono-cell muted">{String(r.id).slice(0, 12)}…</td>
-                      {displayCols.map((c) => (
-                        <td
-                          key={c}
-                          style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                        >
-                          {cellValue(r, c)}
-                        </td>
-                      ))}
-                      <td className="muted mono-cell" style={{ fontSize: 11.5 }}>
-                        {new Date((r.created as number) * 1000).toLocaleDateString()}
-                      </td>
-                      <td className="muted mono-cell" style={{ fontSize: 11.5 }}>
-                        {new Date((r.updated as number) * 1000).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="pagination">
-                <span>
-                  {(page - 1) * 30 + 1}–{Math.min(page * 30, total)} of {total.toLocaleString()}
+        <DataTable
+          value={records}
+          lazy
+          paginator
+          rows={30}
+          totalRecords={total}
+          first={(page - 1) * 30}
+          onPage={(e: DataTablePageEvent) => setPage(Math.floor(e.first / 30) + 1)}
+          loading={loading}
+          onRowClick={(e) => openRecord(e.data as RecordRow)}
+          selection={openRec}
+          dataKey="id"
+          emptyMessage={appliedFilter ? "No records match this filter." : "No records yet."}
+          style={{ fontSize: 13 }}
+        >
+          <Column
+            field="id"
+            header="id"
+            body={(r: RecordRow) => (
+              <span className="mono-cell muted">{String(r.id).slice(0, 12)}…</span>
+            )}
+          />
+          {displayCols.map((c) => (
+            <Column
+              key={c}
+              field={c}
+              header={c}
+              body={(r: RecordRow) => (
+                <span style={{ display: "block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {cellValue(r, c)}
                 </span>
-                <div className="pages">
-                  <button
-                    className="btn-icon"
-                    disabled={page === 1}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
-                    <Icon name="chevronLeft" size={12} />
-                  </button>
-                  <button
-                    className="btn-icon"
-                    disabled={records.length < 30}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    <Icon name="chevronRight" size={12} />
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+              )}
+            />
+          ))}
+          <Column
+            field="created"
+            header="created"
+            body={(r: RecordRow) => (
+              <span className="muted mono-cell" style={{ fontSize: 11.5 }}>
+                {new Date((r.created as number) * 1000).toLocaleDateString()}
+              </span>
+            )}
+          />
+          <Column
+            field="updated"
+            header="updated"
+            body={(r: RecordRow) => (
+              <span className="muted mono-cell" style={{ fontSize: 11.5 }}>
+                {new Date((r.updated as number) * 1000).toLocaleDateString()}
+              </span>
+            )}
+          />
+        </DataTable>
       </div>
 
       {/* Edit drawer */}
