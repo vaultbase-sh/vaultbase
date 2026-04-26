@@ -55,6 +55,19 @@ export const files = sqliteTable("vaultbase_files", {
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
+export const logs = sqliteTable("vaultbase_logs", {
+  id: text("id").primaryKey(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  status: integer("status").notNull(),
+  duration_ms: integer("duration_ms").notNull(),
+  ip: text("ip"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+
+export type Log = typeof logs.$inferSelect;
+export type NewLog = typeof logs.$inferInsert;
+
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
 export type Record = typeof records.$inferSelect;

@@ -64,4 +64,16 @@ export async function runMigrations() {
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS vaultbase_logs (
+      id TEXT PRIMARY KEY,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      ip TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
 }
