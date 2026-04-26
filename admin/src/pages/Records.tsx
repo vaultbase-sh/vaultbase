@@ -3,6 +3,7 @@ import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
 import { Dropdown } from "primereact/dropdown";
+import { MultiSelect } from "primereact/multiselect";
 import {
   api, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
@@ -220,13 +221,16 @@ function FieldInput({
     if (field.options?.multiple) {
       const selected = Array.isArray(value) ? (value as string[]) : [];
       return (
-        <Dropdown
-          value={null}
-          options={opts.filter((o) => !selected.includes(o)).map((o) => ({ label: o, value: o }))}
-          onChange={(e) => e.value && onChange([...selected, e.value as string])}
-          disabled={readOnly || selected.length === opts.length}
-          placeholder={selected.length === opts.length ? "All selected" : "Add value…"}
-          style={{ width: "100%", height: 34 }}
+        <MultiSelect
+          value={selected}
+          options={opts.map((o) => ({ label: o, value: o }))}
+          onChange={(e) => onChange(e.value)}
+          disabled={readOnly}
+          display="chip"
+          placeholder="Select values…"
+          filter
+          style={{ width: "100%", minHeight: 34 }}
+          panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
         />
       );
     }
