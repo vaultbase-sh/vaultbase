@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, like, lt, not } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
@@ -55,14 +55,16 @@ export interface ListLogsOptions {
   perPage: number;
   method: string;
   status: string;
+  includeAdmin: boolean;
 }
 
 export async function listLogs(opts: ListLogsOptions) {
   const db = getDb();
-  const { page, perPage, method, status } = opts;
+  const { page, perPage, method, status, includeAdmin } = opts;
   const offset = (page - 1) * perPage;
 
   const conditions = [];
+  if (!includeAdmin) conditions.push(not(like(logs.path, "/api/admin/%")));
   if (method !== "all") conditions.push(eq(logs.method, method));
   if (status === "2xx") conditions.push(and(gte(logs.status, 200), lt(logs.status, 300))!);
   if (status === "4xx") conditions.push(and(gte(logs.status, 400), lt(logs.status, 500))!);
@@ -130,6 +132,7 @@ export function makeLogsPlugin(jwtSecret: string) {
           perPage,
           method: query.method ?? "all",
           status: query.status ?? "all",
+          includeAdmin: query.includeAdmin === "true",
         });
       },
       {
@@ -138,6 +141,7 @@ export function makeLogsPlugin(jwtSecret: string) {
           perPage: t.Optional(t.String()),
           method: t.Optional(t.String()),
           status: t.Optional(t.String()),
+          includeAdmin: t.Optional(t.String()),
         }),
       }
     );
