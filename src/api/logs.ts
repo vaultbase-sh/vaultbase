@@ -13,12 +13,19 @@ function shouldSkip(path: string): boolean {
 const LOG_MAX = 10_000;
 const LOG_KEEP = 8_000;
 
+export interface AuthLogContext {
+  id: string;
+  type: "user" | "admin";
+  email?: string;
+}
+
 export async function insertLog(
   method: string,
   path: string,
   status: number,
   duration_ms: number,
-  ip: string | null
+  ip: string | null,
+  auth: AuthLogContext | null
 ): Promise<void> {
   const db = getDb();
   const row: NewLog = {
@@ -28,6 +35,9 @@ export async function insertLog(
     status,
     duration_ms,
     ip,
+    auth_id: auth?.id ?? null,
+    auth_type: auth?.type ?? null,
+    auth_email: auth?.email ?? null,
     created_at: Math.floor(Date.now() / 1000),
   };
   await db.insert(logs).values(row);
@@ -91,6 +101,24 @@ export async function listLogs(opts: ListLogsOptions) {
   };
 }
 
+async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLogContext | null> {
+  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  if (!token) return null;
+  try {
+    const { payload } = await jose.jwtVerify(token, secret);
+    const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+    if (aud !== "user" && aud !== "admin") return null;
+    const ctx: AuthLogContext = {
+      id: payload["id"] as string,
+      type: aud as "user" | "admin",
+    };
+    if (typeof payload["email"] === "string") ctx.email = payload["email"];
+    return ctx;
+  } catch {
+    return null;
+  }
+}
+
 export function makeLogsPlugin(jwtSecret: string) {
   const timings = new WeakMap<Request, number>();
   const secret = new TextEncoder().encode(jwtSecret);
@@ -99,16 +127,17 @@ export function makeLogsPlugin(jwtSecret: string) {
     .onRequest(({ request }) => {
       timings.set(request, Date.now());
     })
-    .onAfterHandle({ as: "global" }, ({ request, set }) => {
+    .onAfterHandle({ as: "global" }, async ({ request, set }) => {
       const path = new URL(request.url).pathname;
       if (shouldSkip(path)) return;
       const start = timings.get(request) ?? Date.now();
       timings.delete(request);
       const ms = Date.now() - start;
       const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-      void insertLog(request.method, path, Number(set.status ?? 200), ms, ip);
+      const auth = await extractAuth(request, secret);
+      void insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth);
     })
-    .onError({ as: "global" }, ({ request, error }) => {
+    .onError({ as: "global" }, async ({ request, error }) => {
       const path = new URL(request.url).pathname;
       if (shouldSkip(path)) return;
       const start = timings.get(request) ?? Date.now();
@@ -116,7 +145,8 @@ export function makeLogsPlugin(jwtSecret: string) {
       const ms = Date.now() - start;
       const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
-      void insertLog(request.method, path, status, ms, ip);
+      const auth = await extractAuth(request, secret);
+      void insertLog(request.method, path, status, ms, ip, auth);
     })
     .get(
       "/api/admin/logs",
