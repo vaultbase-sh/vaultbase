@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse, type Collection, type FieldDef } from "../api.ts";
 import { Modal, FieldTypeChip, Toggle } from "../components/UI.tsx";
@@ -34,6 +34,7 @@ export default function NewCollectionModal({
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [allCollections, setAllCollections] = useState<Collection[]>([]);
 
   useEffect(() => {
     if (open) {
@@ -42,8 +43,17 @@ export default function NewCollectionModal({
       setExpanded(null);
       setError("");
       setLoading(false);
+      // Fetch existing collections for relation autocomplete
+      api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
+        if (res.data) setAllCollections(res.data);
+      });
     }
   }, [open]);
+
+  const collectionNames = useMemo(
+    () => allCollections.map((c) => c.name),
+    [allCollections]
+  );
 
   function addField(t: FieldDef["type"]) {
     const newField: FieldDef = { name: "", type: t, required: false, options: {} };
@@ -216,6 +226,7 @@ export default function NewCollectionModal({
                     field={f}
                     onPatchOptions={(patch) => patchOptions(i, patch)}
                     onPatchField={(patch) => patchField(i, patch)}
+                    collectionNames={collectionNames}
                   />
                 )}
               </div>
@@ -240,10 +251,12 @@ function FieldOptionsPanel({
   field,
   onPatchOptions,
   onPatchField,
+  collectionNames,
 }: {
   field: FieldDef;
   onPatchOptions: (patch: Record<string, unknown>) => void;
   onPatchField: (patch: Partial<FieldDef>) => void;
+  collectionNames: string[];
 }) {
   const opts = (field.options ?? {}) as Record<string, unknown>;
 
@@ -366,14 +379,23 @@ function FieldOptionsPanel({
 
       {/* Relation */}
       {field.type === "relation" && (
-        <Field label="Target collection name">
-          <input
-            className="input mono"
-            style={{ height: 28, fontSize: 12 }}
-            value={field.collection ?? ""}
-            onChange={(e) => onPatchField({ collection: e.target.value })}
-            placeholder="users"
-          />
+        <Field label="Target collection">
+          {collectionNames.length === 0 ? (
+            <div className="muted" style={{ fontSize: 11 }}>
+              No other collections yet. Create the target collection first.
+            </div>
+          ) : (
+            <Dropdown
+              value={field.collection ?? null}
+              options={collectionNames}
+              onChange={(e) => onPatchField({ collection: e.value })}
+              placeholder="Select a collection…"
+              filter
+              showClear
+              style={{ width: "100%", height: 28, fontSize: 12 }}
+              panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+            />
+          )}
         </Field>
       )}
 
