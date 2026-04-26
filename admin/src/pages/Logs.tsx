@@ -1,61 +1,82 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type ListResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
 interface LogEntry {
-  id: number; ts: string; method: string; path: string; status: number; ms: number;
+  id: string;
+  method: string;
+  path: string;
+  status: number;
+  duration_ms: number;
+  ip: string | null;
+  created_at: number;
 }
 
-const MOCK_LOGS: LogEntry[] = [
-  { id: 1,  ts: "12s",  method: "GET",    path: "/api/collections",              status: 200, ms: 4   },
-  { id: 2,  ts: "18s",  method: "POST",   path: "/api/collections/posts",        status: 201, ms: 12  },
-  { id: 3,  ts: "31s",  method: "PATCH",  path: "/api/collections/posts/rec_1",  status: 200, ms: 9   },
-  { id: 4,  ts: "44s",  method: "GET",    path: "/api/collections",              status: 200, ms: 6   },
-  { id: 5,  ts: "51s",  method: "POST",   path: "/api/admin/auth/login",         status: 401, ms: 24  },
-  { id: 6,  ts: "1m",   method: "GET",    path: "/api/health",                   status: 200, ms: 1   },
-  { id: 7,  ts: "2m",   method: "DELETE", path: "/api/collections/posts/rec_2",  status: 204, ms: 7   },
-  { id: 8,  ts: "3m",   method: "GET",    path: "/api/posts?page=1&perPage=30",  status: 200, ms: 8   },
-  { id: 9,  ts: "4m",   method: "PATCH",  path: "/api/collections/users/u_1",   status: 403, ms: 3   },
-  { id: 10, ts: "5m",   method: "POST",   path: "/api/files/posts/rec_3/photo",  status: 201, ms: 142 },
-];
+function relativeTime(ts: number): string {
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
 
 export default function Logs() {
-  const [openLog, setOpenLog] = useState<LogEntry | null>(null);
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [tick, setTick] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [openLog, setOpenLog] = useState<LogEntry | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const load = useCallback(async (p: number) => {
+    const params = new URLSearchParams({
+      page: String(p),
+      perPage: "50",
+      method: methodFilter,
+      status: statusFilter,
+    });
+    const res = await api.get<ListResponse<LogEntry>>(`/api/admin/logs?${params}`);
+    if (res.data) {
+      setEntries(res.data);
+      setTotal(res.totalItems);
+    }
+    setLoading(false);
+  }, [methodFilter, statusFilter]);
 
   useEffect(() => {
+    setLoading(true);
+    load(page);
+  }, [page, methodFilter, statusFilter]);
+
+  useEffect(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
     if (!autoRefresh) return;
-    const id = setInterval(() => setTick((t) => t + 1), 2000);
-    return () => clearInterval(id);
-  }, [autoRefresh]);
+    intervalRef.current = setInterval(() => load(page), 2000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [autoRefresh, load, page]);
 
   const statusClass = (s: number) =>
     s < 300 ? "status-2xx" : s < 400 ? "status-3xx" : s < 500 ? "status-4xx" : "status-5xx";
-
-  const filtered = MOCK_LOGS.filter((l) => {
-    if (methodFilter !== "all" && l.method !== methodFilter) return false;
-    if (statusFilter === "2xx" && l.status >= 300) return false;
-    if (statusFilter === "4xx" && !(l.status >= 400 && l.status < 500)) return false;
-    if (statusFilter === "5xx" && l.status < 500) return false;
-    return true;
-  });
 
   return (
     <>
       <Topbar
         title="Logs"
-        subtitle={`${filtered.length} entries · ${autoRefresh ? "live" : "paused"}`}
+        subtitle={`${total.toLocaleString()} entries · ${autoRefresh ? "live" : "paused"}`}
         actions={
           <>
             <select
               className="input"
               style={{ height: 30, padding: "0 10px", width: "auto", fontSize: 12 }}
               value={methodFilter}
-              onChange={(e) => setMethodFilter(e.target.value)}
+              onChange={(e) => { setMethodFilter(e.target.value); setPage(1); }}
             >
               <option value="all">All methods</option>
               {["GET", "POST", "PATCH", "DELETE"].map((m) => (
@@ -66,7 +87,7 @@ export default function Logs() {
               className="input"
               style={{ height: 30, padding: "0 10px", width: "auto", fontSize: 12 }}
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
             >
               <option value="all">All status</option>
               <option value="2xx">2xx</option>
@@ -75,7 +96,7 @@ export default function Logs() {
             </select>
             <button
               className={`btn ${autoRefresh ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setAutoRefresh(!autoRefresh)}
+              onClick={() => setAutoRefresh((v) => !v)}
             >
               <Icon name={autoRefresh ? "pause" : "play"} size={11} />
               {autoRefresh ? "Live" : "Paused"}
@@ -84,56 +105,81 @@ export default function Logs() {
         }
       />
       <div className="app-body">
-        <div style={{ marginBottom: 12, padding: "10px 14px", background: "rgba(251,191,36,0.08)", border: "0.5px solid rgba(251,191,36,0.25)", borderRadius: 8, fontSize: 12, color: "var(--warning)" }}>
-          <Icon name="info" size={13} style={{ marginRight: 8, verticalAlign: "middle" }} />
-          Request logging not yet implemented. Showing sample data.
-        </div>
         <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th style={{ width: 90 }}>Time</th>
-                <th style={{ width: 80 }}>Method</th>
-                <th>Path</th>
-                <th style={{ width: 80 }}>Status</th>
-                <th className="right" style={{ width: 90 }}>Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((l) => (
-                <tr
-                  key={l.id}
-                  className={openLog?.id === l.id ? "selected" : ""}
-                  onClick={() => setOpenLog(l)}
-                >
-                  <td className="muted mono-cell">{l.ts} ago</td>
-                  <td>
-                    <span className={`badge method-${l.method.toLowerCase()}`}>{l.method}</span>
-                  </td>
-                  <td
-                    className="mono-cell"
-                    style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 0 }}
+          {loading ? (
+            <div className="empty">Loading…</div>
+          ) : entries.length === 0 ? (
+            <div className="empty">No requests logged yet. Make some API calls.</div>
+          ) : (
+            <>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 90 }}>Time</th>
+                    <th style={{ width: 80 }}>Method</th>
+                    <th>Path</th>
+                    <th style={{ width: 80 }}>Status</th>
+                    <th className="right" style={{ width: 90 }}>Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((l) => (
+                    <tr
+                      key={l.id}
+                      className={openLog?.id === l.id ? "selected" : ""}
+                      onClick={() => setOpenLog(l)}
+                    >
+                      <td className="muted mono-cell">{relativeTime(l.created_at)} ago</td>
+                      <td>
+                        <span className={`badge method-${l.method.toLowerCase()}`}>{l.method}</span>
+                      </td>
+                      <td
+                        className="mono-cell"
+                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 0 }}
+                      >
+                        {l.path}
+                      </td>
+                      <td className={`mono-cell ${statusClass(l.status)}`} style={{ fontWeight: 500 }}>
+                        {l.status}
+                      </td>
+                      <td className={`right mono-cell ${l.duration_ms > 100 ? "status-4xx" : "muted"}`}>
+                        {l.duration_ms}ms
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="pagination">
+                <span>
+                  {(page - 1) * 50 + 1}–{Math.min(page * 50, total)} of {total.toLocaleString()}
+                </span>
+                <div className="pages">
+                  <button
+                    className="btn-icon"
+                    disabled={page === 1}
+                    onClick={() => setPage((p) => p - 1)}
                   >
-                    {l.path}
-                  </td>
-                  <td className={`mono-cell ${statusClass(l.status)}`} style={{ fontWeight: 500 }}>
-                    {l.status}
-                  </td>
-                  <td className={`right mono-cell ${l.ms > 100 ? "status-4xx" : "muted"}`}>
-                    {l.ms}ms
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <Icon name="chevronLeft" size={12} />
+                  </button>
+                  <button
+                    className="btn-icon"
+                    disabled={entries.length < 50}
+                    onClick={() => setPage((p) => p + 1)}
+                  >
+                    <Icon name="chevronRight" size={12} />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       <Drawer
         open={!!openLog}
         onClose={() => setOpenLog(null)}
-        title={openLog ? `${openLog.method} request` : ""}
-        idLabel={openLog ? `${openLog.status} · ${openLog.ms}ms` : undefined}
+        title={openLog ? `${openLog.method} ${openLog.path}` : ""}
+        idLabel={openLog ? `${openLog.status} · ${openLog.duration_ms}ms` : undefined}
         footer={
           <button className="btn btn-ghost" onClick={() => setOpenLog(null)}>Close</button>
         }
@@ -153,8 +199,16 @@ export default function Logs() {
               </div>
               <div style={{ flex: 1 }}>
                 <label className="label">Duration</label>
-                <div className="mono" style={{ fontSize: 13 }}>{openLog.ms}ms</div>
+                <div className="mono" style={{ fontSize: 13 }}>{openLog.duration_ms}ms</div>
               </div>
+              <div style={{ flex: 1 }}>
+                <label className="label">IP</label>
+                <div className="mono muted" style={{ fontSize: 12 }}>{openLog.ip ?? "—"}</div>
+              </div>
+            </div>
+            <div>
+              <label className="label">Timestamp</label>
+              <div className="code-block">{new Date(openLog.created_at * 1000).toISOString()}</div>
             </div>
           </div>
         )}
