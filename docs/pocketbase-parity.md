@@ -70,7 +70,10 @@ Track what's implemented vs missing compared to PocketBase.
 ## API Rules
 
 - [x] Full expression language (=, !=, >, >=, <, <=, ~, &&, ||, parentheses, JSON fields, bool/null coercion)
-- [ ] `@request.auth.id` in rules (auth-contextual expressions)
+- [x] `@request.auth.id`, `@request.auth.email`, `@request.auth.type` in rules
+- [x] List rule applied as SQL filter (admins bypass)
+- [x] view/create/update/delete rules evaluated against record + auth
+- [x] Admins bypass all expression rules
 
 ---
 
@@ -185,4 +188,4 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] There should be a full setup process for when a user downloads and first run the application, it should be a wizard helper to get it setup and run.
 - [x] Enforce protected URLs, when an admin logs in, they can't go back to the sign-in page, also, when a user is logged out, they can't enter the dashboard.
 - [x] Logs page should have full search and filters
-- [ ] fully typed/autocomplete rules for list, view, create, delete, and others. when a user tries to write a rule, the auto complete should show suggesstions, or direct the user to the correct syntax and available options.
+- [x] fully typed/autocomplete rules for list, view, create, delete, and others. when a user tries to write a rule, the auto complete should show suggesstions, or direct the user to the correct syntax and available options.
