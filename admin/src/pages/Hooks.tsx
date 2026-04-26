@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
-import { api, type ApiResponse, type Collection } from "../api.ts";
+import { Dialog } from "primereact/dialog";
+import { api, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
-import { Modal, Toggle } from "../components/UI.tsx";
+import { Toggle } from "../components/UI.tsx";
 import { CodeEditor } from "../components/CodeEditor.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -231,6 +232,14 @@ function HookEditor({
     [collections]
   );
 
+  // Pull schema fields for the selected collection — drives ctx.record IntelliSense
+  const fieldsForCtx: FieldDef[] = useMemo(() => {
+    if (!collName) return [];
+    const col = collections.find((c) => c.name === collName);
+    if (!col) return [];
+    try { return parseFields(col.fields); } catch { return []; }
+  }, [collName, collections]);
+
   async function handleSave() {
     setSaving(true);
     setError("");
@@ -244,68 +253,109 @@ function HookEditor({
     onClose();
   }
 
+  const headerNode = (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+      <span style={{ fontSize: 14, fontWeight: 600 }}>
+        {isNew ? "New hook" : "Edit hook"}
+      </span>
+      {!isNew && hook && (
+        <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
+          {hook.id.slice(0, 12)}…
+        </span>
+      )}
+    </div>
+  );
+
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={isNew ? "New hook" : "Edit hook"}
-      width={680}
-      footer={
-        <>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
-        </>
-      }
+    <Dialog
+      visible={open}
+      onHide={onClose}
+      header={headerNode}
+      modal
+      draggable={false}
+      resizable={false}
+      maximizable
+      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
+      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
     >
-      <div className="col" style={{ gap: 14 }}>
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6 }}>
-            {error}
-          </div>
-        )}
-        <div className="row" style={{ gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Collection</label>
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
+        {/* Top config bar */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 18px",
+            borderBottom: "0.5px solid var(--border-default)",
+            background: "var(--bg-surface)",
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Collection</span>
             <Dropdown
               value={collName}
               options={collOptions}
               onChange={(e) => setCollName(e.value)}
               filter
-              style={{ width: "100%", height: 34 }}
+              style={{ width: 220, height: 32 }}
             />
           </div>
-          <div style={{ flex: 1 }}>
-            <label className="label">Event</label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Event</span>
             <Dropdown
               value={event}
               options={EVENTS.map((e) => ({ label: e, value: e }))}
               onChange={(e) => setEvent(e.value as HookEvent)}
-              style={{ width: "100%", height: 34 }}
+              style={{ width: 180, height: 32 }}
               panelStyle={{ fontFamily: "var(--font-mono)" }}
             />
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, alignSelf: "flex-end", paddingBottom: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
             <Toggle on={enabled} onChange={setEnabled} />
             <span>Enabled</span>
           </label>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
+          </button>
         </div>
-        <div>
-          <label className="label">Hook code · JavaScript (async, IntelliSense on <span className="mono">ctx</span>)</label>
-          <CodeEditor
-            value={code}
-            onChange={setCode}
-            language="javascript"
-            hookContext
-            height={360}
-          />
-          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            Type <span className="mono">ctx.</span> to autocomplete. Throw or call <span className="mono">ctx.helpers.abort(msg)</span> in <span className="mono">before*</span> to abort with 422.
-            <span className="mono"> after*</span> errors are logged but don't fail the request.
+
+        {error && (
+          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
+            {error}
+          </div>
+        )}
+
+        {/* Editor takes all remaining space */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <CodeEditor
+              value={code}
+              onChange={setCode}
+              language="javascript"
+              hookContext
+              hookCollectionName={collName || null}
+              hookFields={fieldsForCtx}
+              height="100%"
+            />
+          </div>
+          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <span>Type <span className="mono">ctx.</span> for autocomplete</span>
+            <span>·</span>
+            <span><span className="mono">ctx.helpers.abort(msg)</span> in <span className="mono">before*</span> → 422</span>
+            <span>·</span>
+            <span><span className="mono">after*</span> errors are logged, don't fail the request</span>
+            {collName && fieldsForCtx.length > 0 && (
+              <>
+                <span>·</span>
+                <span><span className="mono">ctx.record</span> typed as <span className="mono" style={{ color: "var(--accent-light)" }}>{collName}Record</span></span>
+              </>
+            )}
           </div>
         </div>
       </div>
-    </Modal>
+    </Dialog>
   );
 }
