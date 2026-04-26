@@ -77,4 +77,12 @@ export async function runMigrations() {
   for (const col of ["auth_id", "auth_type", "auth_email"]) {
     try { client.exec(`ALTER TABLE vaultbase_logs ADD COLUMN ${col} TEXT`); } catch { /* already exists */ }
   }
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
 }
