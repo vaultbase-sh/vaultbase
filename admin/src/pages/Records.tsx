@@ -207,17 +207,38 @@ function FieldInput({
   }
   if (field.type === "select") {
     const opts = (field.options?.values as string[] | undefined) ?? [];
-    if (opts.length > 0) {
+    if (opts.length === 0) {
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input className="input" value="" disabled placeholder="No values configured" />
+          <span style={{ fontSize: 11, color: "var(--warning)", whiteSpace: "nowrap" }}>
+            Set allowed values in schema
+          </span>
+        </div>
+      );
+    }
+    if (field.options?.multiple) {
+      const selected = Array.isArray(value) ? (value as string[]) : [];
       return (
         <Dropdown
-          value={String(value ?? "")}
-          options={["", ...opts].map((o) => ({ label: o || "— none —", value: o }))}
-          onChange={(e) => onChange(e.value)}
-          disabled={readOnly}
+          value={null}
+          options={opts.filter((o) => !selected.includes(o)).map((o) => ({ label: o, value: o }))}
+          onChange={(e) => e.value && onChange([...selected, e.value as string])}
+          disabled={readOnly || selected.length === opts.length}
+          placeholder={selected.length === opts.length ? "All selected" : "Add value…"}
           style={{ width: "100%", height: 34 }}
         />
       );
     }
+    return (
+      <Dropdown
+        value={String(value ?? "")}
+        options={[{ label: "— none —", value: "" }, ...opts.map((o) => ({ label: o, value: o }))]}
+        onChange={(e) => onChange(e.value)}
+        disabled={readOnly}
+        style={{ width: "100%", height: 34 }}
+      />
+    );
   }
   if (field.type === "number") {
     return (

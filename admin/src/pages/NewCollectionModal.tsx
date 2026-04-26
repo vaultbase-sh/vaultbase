@@ -85,6 +85,12 @@ export default function NewCollectionModal({
     const userFields = fields.filter((f) => !f.system);
     const unnamed = userFields.filter((f) => !f.name);
     if (unnamed.length > 0) { setError("All fields must have a name."); return; }
+    const badSelect = userFields.find(
+      (f) => f.type === "select" && (!Array.isArray(f.options?.values) || (f.options?.values as string[]).length === 0)
+    );
+    if (badSelect) { setError(`Select field '${badSelect.name}' must have at least one allowed value.`); return; }
+    const badRelation = userFields.find((f) => f.type === "relation" && !f.collection);
+    if (badRelation) { setError(`Relation field '${badRelation.name}' must have a target collection.`); return; }
     setError("");
     setLoading(true);
     const res = await api.post<ApiResponse<Collection>>("/api/collections", {

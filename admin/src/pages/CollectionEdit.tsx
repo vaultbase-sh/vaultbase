@@ -77,6 +77,12 @@ export default function CollectionEdit({
     const userFields = fields.filter((f) => !f.system);
     const unnamed = userFields.filter((f) => !f.name);
     if (unnamed.length > 0) { toast("All fields must have a name."); return; }
+    const badSelect = userFields.find(
+      (f) => f.type === "select" && (!Array.isArray(f.options?.values) || (f.options?.values as string[]).length === 0)
+    );
+    if (badSelect) { toast(`Select field '${badSelect.name}' must have at least one allowed value`); return; }
+    const badRelation = userFields.find((f) => f.type === "relation" && !f.collection);
+    if (badRelation) { toast(`Relation field '${badRelation.name}' must have a target collection`); return; }
     setSaving(true);
     await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, {
       fields: userFields,
