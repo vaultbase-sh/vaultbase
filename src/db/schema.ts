@@ -14,16 +14,6 @@ export const collections = sqliteTable("vaultbase_collections", {
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
-export const records = sqliteTable("vaultbase_records", {
-  id: text("id").primaryKey(),
-  collection_id: text("collection_id")
-    .notNull()
-    .references(() => collections.id, { onDelete: "cascade" }),
-  data: text("data").notNull().default("{}"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
-});
-
 export const users = sqliteTable("vaultbase_users", {
   id: text("id").primaryKey(),
   collection_id: text("collection_id")
@@ -70,8 +60,6 @@ export type NewLog = typeof logs.$inferInsert;
 
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
-export type Record = typeof records.$inferSelect;
-export type NewRecord = typeof records.$inferInsert;
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Admin = typeof admin.$inferSelect;

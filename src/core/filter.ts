@@ -1,79 +1,99 @@
-import { sql } from "drizzle-orm";
-import type { SQL } from "drizzle-orm";
-import { records } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 import type { Expr, Operand } from "./expression.ts";
 import { parseExpression } from "./expression.ts";
 
+/** Compiled SQL fragment + bound parameters. */
+export interface CompiledSql {
+  sql: string;
+  params: unknown[];
+}
+
 /**
- * Parse a filter expression and compile to a Drizzle SQL condition.
- *
- * @param expr filter string, e.g. "title = 'hello' && (status = 'active' || age >= 18)"
- * @param auth optional auth context for substituting @request.auth.X references
- *
- * Returns undefined if the expression is empty or malformed.
+ * Parse a filter expression and compile to a SQL fragment for the given table.
+ * @param expr  expression string
+ * @param tableName  unquoted table name (e.g. "vb_posts")
+ * @param auth  optional auth context for @request.auth.* substitution
+ * Returns null if the expression is empty or malformed.
  */
 export function parseFilter(
   expr: string,
+  tableName: string,
   auth?: AuthContext | null
-): SQL<unknown> | undefined {
+): CompiledSql | null {
   const ast = parseExpression(expr);
-  if (!ast) return undefined;
-  return compileToSql(ast, auth ?? null);
+  if (!ast) return null;
+  return compileToSql(ast, tableName, auth ?? null);
 }
 
-export function compileToSql(ast: Expr, auth: AuthContext | null): SQL<unknown> {
+export function compileToSql(
+  ast: Expr,
+  tableName: string,
+  auth: AuthContext | null
+): CompiledSql {
+  const params: unknown[] = [];
+  const sql = compileNode(ast, tableName, auth, params);
+  return { sql, params };
+}
+
+function compileNode(
+  ast: Expr,
+  tableName: string,
+  auth: AuthContext | null,
+  params: unknown[]
+): string {
   if (ast.kind === "and") {
-    return sql`(${compileToSql(ast.left, auth)} AND ${compileToSql(ast.right, auth)})`;
+    return `(${compileNode(ast.left, tableName, auth, params)} AND ${compileNode(ast.right, tableName, auth, params)})`;
   }
   if (ast.kind === "or") {
-    return sql`(${compileToSql(ast.left, auth)} OR ${compileToSql(ast.right, auth)})`;
+    return `(${compileNode(ast.left, tableName, auth, params)} OR ${compileNode(ast.right, tableName, auth, params)})`;
   }
-  // cmp
-  const left = compileOperand(ast.left, auth);
-  const right = compileOperand(ast.right, auth);
 
+  // Comparison
   // Handle null comparisons specially
   if (ast.right.kind === "literal" && ast.right.value === null) {
-    if (ast.op === "=")  return sql`${left} IS NULL`;
-    if (ast.op === "!=") return sql`${left} IS NOT NULL`;
+    const left = compileOperand(ast.left, tableName, auth, params);
+    if (ast.op === "=")  return `${left} IS NULL`;
+    if (ast.op === "!=") return `${left} IS NOT NULL`;
   }
   if (ast.left.kind === "literal" && ast.left.value === null) {
-    if (ast.op === "=")  return sql`${right} IS NULL`;
-    if (ast.op === "!=") return sql`${right} IS NOT NULL`;
+    const right = compileOperand(ast.right, tableName, auth, params);
+    if (ast.op === "=")  return `${right} IS NULL`;
+    if (ast.op === "!=") return `${right} IS NOT NULL`;
   }
 
-  switch (ast.op) {
-    case "=":  return sql`${left} = ${right}`;
-    case "!=": return sql`${left} != ${right}`;
-    case ">":  return sql`${left} > ${right}`;
-    case ">=": return sql`${left} >= ${right}`;
-    case "<":  return sql`${left} < ${right}`;
-    case "<=": return sql`${left} <= ${right}`;
-    case "~":  return sql`${left} LIKE ${rightLikePattern(ast.right, auth)}`;
+  const left = compileOperand(ast.left, tableName, auth, params);
+  if (ast.op === "~") {
+    // LIKE pattern: wrap right side with %...%
+    const v = operandValue(ast.right, auth);
+    params.push(`%${String(v ?? "")}%`);
+    return `${left} LIKE ?`;
   }
+  const right = compileOperand(ast.right, tableName, auth, params);
+  return `${left} ${ast.op} ${right}`;
 }
 
-function compileOperand(op: Operand, auth: AuthContext | null): SQL<unknown> {
+function compileOperand(
+  op: Operand,
+  tableName: string,
+  auth: AuthContext | null,
+  params: unknown[]
+): string {
   if (op.kind === "literal") {
-    const v = coerceLiteral(op.value);
-    return sql`${v}`;
+    params.push(coerceLiteral(op.value));
+    return "?";
   }
   if (op.kind === "auth") {
-    const v = auth ? authValue(auth, op.prop) : "";
-    return sql`${v}`;
+    params.push(auth ? authValue(auth, op.prop) : "");
+    return "?";
   }
-  // field
-  if (op.name === "id")      return sql`${records.id}`;
-  if (op.name === "created" || op.name === "created_at") return sql`${records.created_at}`;
-  if (op.name === "updated" || op.name === "updated_at") return sql`${records.updated_at}`;
-  return sql`JSON_EXTRACT(${records.data}, ${`$.${op.name}`})`;
+  // field → quoted column on the table
+  return `"${tableName}"."${op.name}"`;
 }
 
-function rightLikePattern(op: Operand, auth: AuthContext | null): string {
-  if (op.kind === "literal") return `%${String(op.value)}%`;
-  if (op.kind === "auth") return `%${authValue(auth!, op.prop)}%`;
-  return `%${op.name}%`;
+function operandValue(op: Operand, auth: AuthContext | null): unknown {
+  if (op.kind === "literal") return coerceLiteral(op.value);
+  if (op.kind === "auth") return auth ? authValue(auth, op.prop) : "";
+  return null;
 }
 
 function authValue(auth: AuthContext, prop: "id" | "email" | "type"): string {
@@ -82,9 +102,9 @@ function authValue(auth: AuthContext, prop: "id" | "email" | "type"): string {
   return auth.email ?? "";
 }
 
-function coerceLiteral(v: string | number | boolean | null): string | number {
-  if (v === true)  return 1;
+function coerceLiteral(v: string | number | boolean | null): string | number | null {
+  if (v === true) return 1;
   if (v === false) return 0;
-  if (v === null)  return ""; // nulls handled above as IS [NOT] NULL
+  if (v === null) return null;
   return v;
 }

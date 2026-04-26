@@ -20,15 +20,8 @@ export async function runMigrations() {
     )
   `);
 
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_records (
-      id TEXT PRIMARY KEY,
-      collection_id TEXT NOT NULL REFERENCES vaultbase_collections(id) ON DELETE CASCADE,
-      data TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
+  // Drop legacy single-table records (replaced by per-collection tables)
+  client.exec(`DROP TABLE IF EXISTS vaultbase_records`);
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_users (
