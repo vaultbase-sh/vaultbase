@@ -29,6 +29,22 @@ export interface ApiResponse<T> {
   code?: number;
 }
 
+export interface ListResponse<T> {
+  data: T[];
+  page: number;
+  perPage: number;
+  totalItems: number;
+  totalPages: number;
+}
+
+export interface FieldDef {
+  name: string;
+  type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate" | "date" | "json";
+  required?: boolean;
+  system?: boolean;
+  options?: Record<string, unknown>;
+}
+
 export interface Collection {
   id: string;
   name: string;
@@ -40,4 +56,24 @@ export interface Collection {
   delete_rule: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface RecordRow {
+  id: string;
+  collectionId: string;
+  collectionName: string;
+  created: number;
+  updated: number;
+  [key: string]: unknown;
+}
+
+export const COLL_COLORS = ["indigo", "teal", "amber", "rose"] as const;
+export type CollColor = typeof COLL_COLORS[number];
+
+export function collColor(index: number): CollColor {
+  return COLL_COLORS[index % 4]!;
+}
+
+export function parseFields(raw: string): FieldDef[] {
+  try { return JSON.parse(raw) as FieldDef[]; } catch { return []; }
 }

@@ -3,94 +3,75 @@ import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 
 export default function Login() {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState("admin@vaultbase.local");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setLoading(true);
     const res = await api.post<ApiResponse<{ token: string }>>("/api/admin/auth/login", {
       email,
       password,
     });
+    setLoading(false);
     if (res.data?.token) {
       localStorage.setItem("vaultbase_admin_token", res.data.token);
       navigate("/_/");
     } else {
-      setError(res.error ?? "Login failed");
+      setError(res.error ?? "Invalid credentials");
     }
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: "#f4f4f5",
-      }}
-    >
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          background: "#fff",
-          padding: 32,
-          borderRadius: 8,
-          width: 320,
-          boxShadow: "0 2px 8px #0002",
-        }}
-      >
-        <h1 style={{ margin: "0 0 24px", fontSize: 22 }}>Vaultbase Admin</h1>
-        {error && <div style={{ color: "#dc2626", marginBottom: 12 }}>{error}</div>}
-        <label style={{ display: "block", marginBottom: 8, fontSize: 14 }}>Email</label>
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          type="email"
-          required
-          style={{
-            width: "100%",
-            padding: "8px 10px",
-            marginBottom: 16,
-            border: "1px solid #d4d4d8",
-            borderRadius: 4,
-            boxSizing: "border-box",
-          }}
-        />
-        <label style={{ display: "block", marginBottom: 8, fontSize: 14 }}>Password</label>
-        <input
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          type="password"
-          required
-          style={{
-            width: "100%",
-            padding: "8px 10px",
-            marginBottom: 24,
-            border: "1px solid #d4d4d8",
-            borderRadius: 4,
-            boxSizing: "border-box",
-          }}
-        />
-        <button
-          type="submit"
-          style={{
-            width: "100%",
-            padding: "10px",
-            background: "#18181b",
-            color: "#fff",
-            border: "none",
-            borderRadius: 4,
-            cursor: "pointer",
-            fontSize: 15,
-          }}
-        >
-          Sign in
-        </button>
-      </form>
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <div className="sb-brand-mark" />
+          <div className="name">vaultbase</div>
+        </div>
+        <div>
+          <h1 className="auth-title">Welcome back</h1>
+          <p className="auth-subtitle">Sign in to manage your collections, records and rules.</p>
+        </div>
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {error && (
+            <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6, border: "0.5px solid rgba(248,113,113,0.3)" }}>
+              {error}
+            </div>
+          )}
+          <div>
+            <label className="label">Email</label>
+            <input
+              className="input"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="label">Password</label>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+            />
+          </div>
+          <button className="btn btn-primary" type="submit" disabled={loading}>
+            {loading ? <span className="spinner" /> : null}
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+        <div className="auth-foot">
+          First time? <a href="/_/setup" style={{ color: "var(--accent-light)" }}>Set up admin account →</a>
+        </div>
+      </div>
     </div>
   );
 }

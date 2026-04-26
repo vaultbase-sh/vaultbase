@@ -1,223 +1,194 @@
 import { useEffect, useState } from "react";
-import { api, type ApiResponse, type Collection } from "../api.ts";
+import { api, type ApiResponse, type Collection, collColor, parseFields } from "../api.ts";
+import { Topbar } from "../components/Shell.tsx";
+import type { Route } from "../components/Shell.tsx";
+import { StatCard } from "../components/UI.tsx";
+import Icon from "../components/Icon.tsx";
+import CollectionEdit from "./CollectionEdit.tsx";
+import NewCollectionModal from "./NewCollectionModal.tsx";
 
-interface FieldDef {
-  name: string;
-  type: string;
-  required?: boolean;
-}
+const SPARK = [0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9];
 
-function FieldEditor({
-  fields,
-  onChange,
+export default function Collections({
+  setRoute,
+  toast,
 }: {
-  fields: FieldDef[];
-  onChange: (f: FieldDef[]) => void;
+  setRoute: (r: Route) => void;
+  toast: (text: string, icon?: string) => void;
 }) {
-  function add() {
-    onChange([...fields, { name: "", type: "text", required: false }]);
-  }
-  function remove(i: number) {
-    onChange(fields.filter((_, idx) => idx !== i));
-  }
-  function update(i: number, key: keyof FieldDef, value: string | boolean) {
-    onChange(fields.map((f, idx) => (idx === i ? { ...f, [key]: value } : f)));
-  }
-  return (
-    <div>
-      {fields.map((f, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <input
-            placeholder="name"
-            value={f.name}
-            onChange={(e) => update(i, "name", e.target.value)}
-            style={{ flex: 1, padding: "6px 8px", border: "1px solid #d4d4d8", borderRadius: 4 }}
-          />
-          <select
-            value={f.type}
-            onChange={(e) => update(i, "type", e.target.value)}
-            style={{ padding: "6px 8px", border: "1px solid #d4d4d8", borderRadius: 4 }}
-          >
-            {["text", "number", "bool", "file", "relation", "select", "autodate"].map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
-          <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={f.required ?? false}
-              onChange={(e) => update(i, "required", e.target.checked)}
-            />{" "}
-            req
-          </label>
-          <button
-            type="button"
-            onClick={() => remove(i)}
-            style={{
-              padding: "4px 8px",
-              background: "#fee2e2",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-            }}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-      <button
-        type="button"
-        onClick={add}
-        style={{
-          padding: "6px 12px",
-          background: "#f4f4f5",
-          border: "1px solid #d4d4d8",
-          borderRadius: 4,
-          cursor: "pointer",
-        }}
-      >
-        + Add field
-      </button>
-    </div>
-  );
-}
-
-export default function Collections() {
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [showForm, setShowForm] = useState(false);
-  const [name, setName] = useState("");
-  const [fields, setFields] = useState<FieldDef[]>([]);
-  const [error, setError] = useState("");
+  const [tab, setTab] = useState<"all" | "auth" | "base">("all");
+  const [showNew, setShowNew] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
-    const r = await api.get<ApiResponse<Collection[]>>("/api/collections");
-    if (r.data) setCollections(r.data);
+    setLoading(true);
+    const res = await api.get<ApiResponse<Collection[]>>("/api/collections");
+    if (res.data) setCollections(res.data);
+    setLoading(false);
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    const r = await api.post<ApiResponse<Collection>>("/api/collections", { name, fields });
-    if (r.error) {
-      setError(r.error);
-      return;
-    }
-    setName("");
-    setFields([]);
-    setShowForm(false);
-    load();
-  }
-
-  async function handleDelete(id: string) {
-    if (!confirm("Delete this collection and all its records?")) return;
+  async function handleDelete(e: React.MouseEvent, id: string, name: string) {
+    e.stopPropagation();
+    if (!confirm(`Delete collection "${name}" and all its records?`)) return;
     await api.delete(`/api/collections/${id}`);
+    toast(`Collection "${name}" deleted`, "trash");
     load();
   }
+
+  // Detect collection type heuristic: if it has email + password_hash fields → auth
+  function collType(col: Collection) {
+    const fields = parseFields(col.fields);
+    return fields.some((f) => f.name === "email") ? "auth" : "base";
+  }
+
+  const typed = collections.map((c, i) => ({
+    ...c,
+    type: collType(c),
+    color: collColor(i),
+    fieldCount: parseFields(c.fields).length,
+  }));
+
+  const filtered = typed.filter((c) => tab === "all" || c.type === tab);
+  const authCount = typed.filter((c) => c.type === "auth").length;
+  const baseCount = typed.filter((c) => c.type === "base").length;
 
   return (
-    <div>
-      <div
-        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}
-      >
-        <h1 style={{ margin: 0 }}>Collections</h1>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          style={{
-            padding: "8px 16px",
-            background: "#18181b",
-            color: "#fff",
-            border: "none",
-            borderRadius: 4,
-            cursor: "pointer",
-          }}
-        >
-          New collection
-        </button>
-      </div>
-      {showForm && (
-        <form
-          onSubmit={handleCreate}
-          style={{ background: "#f4f4f5", padding: 20, borderRadius: 8, marginBottom: 24 }}
-        >
-          <h3 style={{ margin: "0 0 16px" }}>New collection</h3>
-          {error && <div style={{ color: "#dc2626", marginBottom: 12 }}>{error}</div>}
-          <input
-            placeholder="Collection name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            style={{
-              width: "100%",
-              padding: "8px 10px",
-              marginBottom: 16,
-              border: "1px solid #d4d4d8",
-              borderRadius: 4,
-              boxSizing: "border-box",
-            }}
-          />
-          <div style={{ marginBottom: 16 }}>
-            <FieldEditor fields={fields} onChange={setFields} />
-          </div>
-          <button
-            type="submit"
-            style={{
-              padding: "8px 16px",
-              background: "#18181b",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-            }}
+    <>
+      <Topbar
+        title="Collections"
+        subtitle={`${collections.length} collections`}
+        actions={
+          <>
+            <button className="btn btn-ghost">
+              <Icon name="upload" size={12} /> Import
+            </button>
+            <button className="btn btn-primary" onClick={() => setShowNew(true)}>
+              <Icon name="plus" size={12} /> New collection
+            </button>
+          </>
+        }
+      />
+      <div className="tabs">
+        {[
+          { id: "all" as const, label: "All", count: collections.length },
+          { id: "auth" as const, label: "Auth", count: authCount },
+          { id: "base" as const, label: "Base", count: baseCount },
+        ].map((t) => (
+          <div
+            key={t.id}
+            className={`tab${tab === t.id ? " active" : ""}`}
+            onClick={() => setTab(t.id)}
           >
-            Create
-          </button>
-        </form>
-      )}
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr style={{ borderBottom: "2px solid #e4e4e7" }}>
-            <th style={{ textAlign: "left", padding: "8px 0" }}>Name</th>
-            <th style={{ textAlign: "left", padding: "8px 0" }}>Fields</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {collections.map((col) => (
-            <tr key={col.id} style={{ borderBottom: "1px solid #f4f4f5" }}>
-              <td style={{ padding: "10px 0" }}>
-                <a
-                  href={`/_/collections/${col.id}/records`}
-                  style={{ color: "#18181b", fontWeight: 500 }}
-                >
-                  {col.name}
-                </a>
-              </td>
-              <td style={{ padding: "10px 0", color: "#71717a", fontSize: 13 }}>
-                {(JSON.parse(col.fields) as FieldDef[]).length} fields
-              </td>
-              <td style={{ padding: "10px 0", textAlign: "right" }}>
-                <button
-                  onClick={() => handleDelete(col.id)}
-                  style={{
-                    padding: "4px 10px",
-                    background: "#fee2e2",
-                    border: "none",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                    fontSize: 13,
-                  }}
-                >
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+            {t.label}{" "}
+            <span className="badge base mono">{t.count}</span>
+          </div>
+        ))}
+      </div>
+      <div className="app-body">
+        <div className="stat-row">
+          <StatCard
+            label="Collections"
+            value={collections.length}
+            delta="+0 today"
+            spark={SPARK}
+          />
+          <StatCard
+            label="Auth collections"
+            value={authCount}
+            spark={SPARK.map((v) => v * 0.6)}
+          />
+          <StatCard
+            label="Base collections"
+            value={baseCount}
+            spark={SPARK.map((v) => v * 0.8)}
+          />
+        </div>
+
+        <div className="table-wrap">
+          {loading ? (
+            <div className="empty">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="empty">
+              No collections yet.{" "}
+              <button
+                className="btn btn-ghost"
+                style={{ display: "inline-flex", height: 24, padding: "0 10px", fontSize: 12 }}
+                onClick={() => setShowNew(true)}
+              >
+                Create one
+              </button>
+            </div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ width: "40%" }}>Name</th>
+                  <th>Type</th>
+                  <th className="right">Fields</th>
+                  <th className="right" style={{ width: 92 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c.id} onClick={() => setRoute({ page: "records", coll: c.id })}>
+                    <td>
+                      <div className="cell-name">
+                        <div className={`coll-icon ${c.color}`}>
+                          {c.name[0]!.toUpperCase()}
+                        </div>
+                        <div className="cell-name-text">
+                          <span className="name">{c.name}</span>
+                          <span className="meta">
+                            {c.fieldCount} fields · id, created…
+                          </span>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`badge ${c.type}`}>{c.type}</span>
+                    </td>
+                    <td className="right mono-cell">{c.fieldCount}</td>
+                    <td className="right">
+                      <span className="row-actions">
+                        <button
+                          className="btn-icon"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRoute({ page: "collection-edit", coll: c.id });
+                          }}
+                          title="Edit schema"
+                        >
+                          <Icon name="pencil" size={12} />
+                        </button>
+                        <button
+                          className="btn-icon danger"
+                          onClick={(e) => handleDelete(e, c.id, c.name)}
+                          title="Delete"
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      <NewCollectionModal
+        open={showNew}
+        onClose={() => setShowNew(false)}
+        onCreate={(name) => {
+          setShowNew(false);
+          toast(`Collection "${name}" created`);
+          load();
+        }}
+      />
+    </>
   );
 }
