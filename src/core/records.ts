@@ -11,6 +11,7 @@ import { parseFilter } from "./filter.ts";
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { validateRecord } from "./validate.ts";
+import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
 
 export interface ListOptions {
   page?: number;
@@ -220,11 +221,16 @@ export async function getRecord(
 
 export async function createRecord(
   collectionName: string,
-  data: Record<string, unknown> | null | undefined
+  data: Record<string, unknown> | null | undefined,
+  auth: AuthContext | null = null
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   data = data ?? {};
+
+  // beforeCreate hook (can mutate data, throw to abort)
+  const helpers = makeHookHelpers();
+  await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth, helpers });
 
   await validateRecord(col, data, "create");
 
@@ -264,6 +270,7 @@ export async function createRecord(
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
   const result = rowToMeta(row, col, fields);
   broadcast(col.name, { type: "create", collection: col.name, record: result });
+  runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   return result;
 }
 
@@ -272,7 +279,8 @@ export async function createRecord(
 export async function updateRecord(
   collectionName: string,
   id: string,
-  data: Record<string, unknown> | null | undefined
+  data: Record<string, unknown> | null | undefined,
+  auth: AuthContext | null = null
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
@@ -280,6 +288,15 @@ export async function updateRecord(
 
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
+
+  // beforeUpdate hook
+  const helpers = makeHookHelpers();
+  await runBeforeHook(col, "beforeUpdate", {
+    record: data,
+    existing: existing as unknown as Record<string, unknown>,
+    auth,
+    helpers,
+  });
 
   await validateRecord(col, data, "update", id);
 
@@ -315,6 +332,11 @@ export async function updateRecord(
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
   const result = rowToMeta(row, col, fields);
   broadcast(col.name, { type: "update", collection: col.name, record: result });
+  runAfterHook(col, "afterUpdate", {
+    record: result as unknown as Record<string, unknown>,
+    existing: existing as unknown as Record<string, unknown>,
+    auth, helpers,
+  });
   return result;
 }
 
@@ -322,13 +344,31 @@ export async function updateRecord(
 
 export async function deleteRecord(
   collectionName: string,
-  id: string
+  id: string,
+  auth: AuthContext | null = null
 ): Promise<void> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
+
+  const existing = await getRecord(collectionName, id);
+  if (!existing) return;
+
+  const helpers = makeHookHelpers();
+  await runBeforeHook(col, "beforeDelete", {
+    record: {},
+    existing: existing as unknown as Record<string, unknown>,
+    auth, helpers,
+  });
+
   const tableRef = quoteIdent(userTableName(col.name));
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
   broadcast(col.name, { type: "delete", collection: col.name, id });
+
+  runAfterHook(col, "afterDelete", {
+    record: {},
+    existing: existing as unknown as Record<string, unknown>,
+    auth, helpers,
+  });
 }
 
 // ── Relation expand ─────────────────────────────────────────────────────────

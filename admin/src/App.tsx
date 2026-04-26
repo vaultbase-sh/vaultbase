@@ -13,6 +13,7 @@ import Logs from "./pages/Logs.tsx";
 import Settings from "./pages/Settings.tsx";
 import Superusers from "./pages/Superusers.tsx";
 import ApiPreview from "./pages/ApiPreview.tsx";
+import HooksPage from "./pages/Hooks.tsx";
 
 function tokenValid(): boolean {
   const token = localStorage.getItem("vaultbase_admin_token");
@@ -109,7 +110,7 @@ function AppShell() {
       page = <StubPage title="API tokens" hint="Scoped tokens for programmatic access. Coming in v2." />;
       break;
     case "hooks":
-      page = <StubPage title="Hooks" hint="Event-driven webhooks for record mutations. Coming in v2." />;
+      page = <HooksPage toast={toast} />;
       break;
     default:
       page = <Collections setRoute={setRoute} toast={toast} />;

@@ -45,6 +45,16 @@ export const files = sqliteTable("vaultbase_files", {
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
+export const hooks = sqliteTable("vaultbase_hooks", {
+  id: text("id").primaryKey(),
+  collection_name: text("collection_name").notNull().default(""),
+  event: text("event").notNull(),
+  code: text("code").notNull().default(""),
+  enabled: integer("enabled").notNull().default(1),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
 export const settings = sqliteTable("vaultbase_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
