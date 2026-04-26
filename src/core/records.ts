@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { records, type NewRecord } from "../db/schema.ts";
 import { getCollection, parseFields } from "./collections.ts";
+import { broadcast } from "../realtime/manager.ts";
 
 export interface ListOptions {
   page?: number;
@@ -120,7 +121,9 @@ export async function createRecord(
     updated_at: now,
   };
   await db.insert(records).values(row);
-  return toMeta({ id, collection_id: col.id, data: JSON.stringify(data), created_at: now, updated_at: now }, col.name);
+  const result = toMeta({ id, collection_id: col.id, data: JSON.stringify(data), created_at: now, updated_at: now }, col.name);
+  broadcast(col.name, { type: "create", collection: col.name, record: result });
+  return result;
 }
 
 export async function updateRecord(
@@ -149,7 +152,7 @@ export async function updateRecord(
     .set({ data: JSON.stringify(merged), updated_at: now })
     .where(and(eq(records.id, id), eq(records.collection_id, col.id)));
 
-  return toMeta(
+  const result = toMeta(
     {
       id,
       collection_id: col.id,
@@ -159,6 +162,8 @@ export async function updateRecord(
     },
     col.name
   );
+  broadcast(col.name, { type: "update", collection: col.name, record: result });
+  return result;
 }
 
 export async function deleteRecord(
@@ -171,4 +176,5 @@ export async function deleteRecord(
   await db
     .delete(records)
     .where(and(eq(records.id, id), eq(records.collection_id, col.id)));
+  broadcast(col.name, { type: "delete", collection: col.name, id });
 }
