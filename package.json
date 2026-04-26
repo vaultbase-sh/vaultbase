@@ -1,0 +1,27 @@
+{
+  "name": "vaultbase",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "dev:admin": "cd admin && bun dev",
+    "build:admin": "cd admin && bun run build",
+    "build": "bun run build:admin && bun build --compile --minify src/index.ts --outfile vaultbase",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "drizzle-orm": "^0.44.0",
+    "elysia": "^1.2.0",
+    "jose": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.8.0"
+  }
+}

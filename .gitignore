@@ -1,0 +1,10 @@
+node_modules/
+dist/
+vaultbase_data/
+vaultbase
+.worktrees/
+admin/dist/
+admin/node_modules/
+drizzle/
+.claude/
+docs/
