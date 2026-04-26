@@ -4,7 +4,6 @@ import { Topbar } from "../components/Shell.tsx";
 import type { Route } from "../components/Shell.tsx";
 import { StatCard } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
-import CollectionEdit from "./CollectionEdit.tsx";
 import NewCollectionModal from "./NewCollectionModal.tsx";
 
 const SPARK = [0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9];
@@ -98,7 +97,6 @@ export default function Collections({
           <StatCard
             label="Collections"
             value={collections.length}
-            delta="+0 today"
             spark={SPARK}
           />
           <StatCard

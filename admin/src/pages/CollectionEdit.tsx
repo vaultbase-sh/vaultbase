@@ -53,7 +53,7 @@ export default function CollectionEdit({
   }
 
   function addField(type: FieldDef["type"]) {
-    const newField: FieldDef = { name: `${type}_field`, type, required: false };
+    const newField: FieldDef = { name: "", type, required: false };
     setFields((fs) => [...fs, newField]);
     setSelectedIdx(fields.length);
   }
@@ -65,9 +65,12 @@ export default function CollectionEdit({
 
   async function handleSave() {
     if (!collection) return;
+    const userFields = fields.filter((f) => !f.system);
+    const unnamed = userFields.filter((f) => !f.name);
+    if (unnamed.length > 0) { toast("All fields must have a name."); return; }
     setSaving(true);
     await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, {
-      fields: fields.filter((f) => !f.system),
+      fields: userFields,
       list_rule: rules.list || null,
       view_rule: rules.view || null,
       create_rule: rules.create || null,
@@ -136,7 +139,20 @@ export default function CollectionEdit({
                     onClick={() => setSelectedIdx(i)}
                   >
                     <span className="grip"><Icon name="grip" size={12} /></span>
-                    <span className="name">{f.name}</span>
+                    {f.system ? (
+                      <span className="name">{f.name}</span>
+                    ) : (
+                      <input
+                        className="input mono"
+                        style={{ height: 26, fontSize: 12, minWidth: 130, maxWidth: 160 }}
+                        value={f.name}
+                        onChange={(e) => setFields((fs) => fs.map((x, xi) => xi === i
+                          ? { ...x, name: e.target.value.replace(/[^a-z0-9_]/g, "") }
+                          : x))}
+                        onClick={(e) => e.stopPropagation()}
+                        placeholder="field_name"
+                      />
+                    )}
                     <FieldTypeChip type={f.type} />
                     {f.required && <span className="req">required</span>}
                     {f.system && <span className="system">system</span>}
