@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import "./styles/globals.css";
+import { api, type ApiResponse } from "./api.ts";
 import { Sidebar, type Route as AppRoute } from "./components/Shell.tsx";
 import { ToastProvider, type ToastHandle } from "./components/UI.tsx";
 import Login from "./pages/Login.tsx";
@@ -11,9 +12,44 @@ import CollectionEdit from "./pages/CollectionEdit.tsx";
 import Logs from "./pages/Logs.tsx";
 import Settings from "./pages/Settings.tsx";
 
-function RequireAuth({ children }: { children: React.ReactNode }) {
+function tokenValid(): boolean {
   const token = localStorage.getItem("vaultbase_admin_token");
-  if (!token) return <Navigate to="/_/login" replace />;
+  if (!token) return false;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(atob(parts[1]!));
+    if (typeof payload.exp === "number" && payload.exp * 1000 < Date.now()) {
+      localStorage.removeItem("vaultbase_admin_token");
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  if (!tokenValid()) return <Navigate to="/_/login" replace />;
+  return <>{children}</>;
+}
+
+function RequireUnauth({ children }: { children: React.ReactNode }) {
+  if (tokenValid()) return <Navigate to="/_/" replace />;
+  return <>{children}</>;
+}
+
+function SetupGate({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<"loading" | "needs-setup" | "exists">("loading");
+  useEffect(() => {
+    if (tokenValid()) { setState("exists"); return; }
+    // POST setup with empty body — backend returns 400 if admin exists
+    api.post<ApiResponse<{ id: string }>>("/api/admin/setup", {})
+      .then((res) => setState(res.code === 400 ? "exists" : "needs-setup"))
+      .catch(() => setState("needs-setup"));
+  }, []);
+  if (state === "loading") return null;
+  if (state === "exists") return <Navigate to={tokenValid() ? "/_/" : "/_/login"} replace />;
   return <>{children}</>;
 }
 
@@ -89,8 +125,22 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/_/setup" element={<Setup />} />
-        <Route path="/_/login" element={<Login />} />
+        <Route
+          path="/_/setup"
+          element={
+            <SetupGate>
+              <Setup />
+            </SetupGate>
+          }
+        />
+        <Route
+          path="/_/login"
+          element={
+            <RequireUnauth>
+              <Login />
+            </RequireUnauth>
+          }
+        />
         <Route
           path="/_/*"
           element={
