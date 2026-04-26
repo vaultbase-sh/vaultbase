@@ -67,7 +67,7 @@ export interface RecordRow {
   [key: string]: unknown;
 }
 
-export const COLL_COLORS = ["indigo", "teal", "amber", "rose"] as const;
+export const COLL_COLORS = ["cyan", "teal", "amber", "rose"] as const;
 export type CollColor = typeof COLL_COLORS[number];
 
 export function collColor(index: number): CollColor {
