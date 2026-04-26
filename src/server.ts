@@ -6,6 +6,8 @@ import { makeRecordsPlugin } from "./api/records.ts";
 import { makeFilesPlugin } from "./api/files.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
+import { makeAdminsPlugin } from "./api/admins.ts";
+import { makeBackupPlugin } from "./api/backup.ts";
 import { subscribe, unsubscribe, disconnectAll } from "./realtime/manager.ts";
 
 interface ClientMessage {
@@ -17,6 +19,8 @@ export function createServer(config: Config) {
   return new Elysia()
     .use(makeLogsPlugin(config.jwtSecret))
     .use(makeAuthPlugin(config.jwtSecret))
+    .use(makeAdminsPlugin(config.jwtSecret))
+    .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
     .use(makeCollectionsPlugin(config.jwtSecret))
     .use(makeFilesPlugin(config.uploadDir))
     .use(makeAdminPlugin())
