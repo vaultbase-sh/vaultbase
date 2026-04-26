@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
+import { Chips } from "primereact/chips";
 import {
   api, type ApiResponse, type Collection, type FieldDef, collColor, parseFields,
 } from "../api.ts";
@@ -388,23 +389,13 @@ export default function CollectionEdit({
                   {sel.type === "select" && (
                     <>
                       <div>
-                        <label className="label">Allowed values (comma-separated)</label>
-                        <input
-                          className="input mono"
-                          value={
-                            Array.isArray(sel.options?.["values"])
-                              ? (sel.options?.["values"] as string[]).join(", ")
-                              : ""
-                          }
-                          onChange={(e) =>
-                            updateSelOptions({
-                              values: e.target.value
-                                .split(",")
-                                .map((s) => s.trim())
-                                .filter(Boolean),
-                            })
-                          }
-                          placeholder="draft, review, live"
+                        <label className="label">Allowed values</label>
+                        <Chips
+                          value={Array.isArray(sel.options?.["values"]) ? (sel.options?.["values"] as string[]) : []}
+                          onChange={(e) => updateSelOptions({ values: e.value ?? [] })}
+                          placeholder="Type a value and press Enter"
+                          separator=","
+                          style={{ width: "100%" }}
                         />
                         <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
                           At least one value is required for select fields.
@@ -433,23 +424,13 @@ export default function CollectionEdit({
                         />
                       </div>
                       <div>
-                        <label className="label">Allowed mime types (comma-separated)</label>
-                        <input
-                          className="input mono"
-                          value={
-                            Array.isArray(sel.options?.["mimeTypes"])
-                              ? (sel.options?.["mimeTypes"] as string[]).join(", ")
-                              : ""
-                          }
-                          onChange={(e) =>
-                            updateSelOptions({
-                              mimeTypes: e.target.value
-                                .split(",")
-                                .map((s) => s.trim())
-                                .filter(Boolean),
-                            })
-                          }
-                          placeholder="image/*, application/pdf"
+                        <label className="label">Allowed mime types</label>
+                        <Chips
+                          value={Array.isArray(sel.options?.["mimeTypes"]) ? (sel.options?.["mimeTypes"] as string[]) : []}
+                          onChange={(e) => updateSelOptions({ mimeTypes: e.value ?? [] })}
+                          placeholder="image/* — press Enter"
+                          separator=","
+                          style={{ width: "100%" }}
                         />
                       </div>
                     </>
