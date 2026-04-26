@@ -36,6 +36,7 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
   code?: number;
+  details?: Record<string, string>;
 }
 
 export interface ListResponse<T> {
@@ -48,7 +49,7 @@ export interface ListResponse<T> {
 
 export interface FieldDef {
   name: string;
-  type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate" | "date" | "json";
+  type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate" | "date" | "json" | "email" | "url";
   required?: boolean;
   system?: boolean;
   options?: Record<string, unknown>;

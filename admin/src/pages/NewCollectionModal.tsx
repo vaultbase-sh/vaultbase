@@ -4,7 +4,7 @@ import { api, type ApiResponse, type Collection, type FieldDef } from "../api.ts
 import { Modal, FieldTypeChip } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
-const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "date", "file", "relation", "select", "json"];
+const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json"];
 
 const SYSTEM_FIELDS: FieldDef[] = [
   { name: "id",      type: "text",     required: true, system: true },

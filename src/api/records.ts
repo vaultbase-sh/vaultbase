@@ -10,6 +10,12 @@ import {
   listRecords,
   updateRecord,
 } from "../core/records.ts";
+import { ValidationError } from "../core/validate.ts";
+
+function validationResponse(set: { status?: number | string }, err: ValidationError) {
+  set.status = 422;
+  return { error: "Validation failed", code: 422, details: err.details };
+}
 
 async function getAuthContext(
   request: Request,
@@ -81,8 +87,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
-        const record = await createRecord(params.collection, body as Record<string, unknown>);
-        return { data: record };
+        try {
+          const record = await createRecord(params.collection, body as Record<string, unknown>);
+          return { data: record };
+        } catch (e) {
+          if (e instanceof ValidationError) return validationResponse(set, e);
+          throw e;
+        }
       },
       { body: t.Any() }
     )
@@ -98,8 +109,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
-        const record = await updateRecord(params.collection, params.id, body as Record<string, unknown>);
-        return { data: record };
+        try {
+          const record = await updateRecord(params.collection, params.id, body as Record<string, unknown>);
+          return { data: record };
+        } catch (e) {
+          if (e instanceof ValidationError) return validationResponse(set, e);
+          throw e;
+        }
       },
       { body: t.Any() }
     )

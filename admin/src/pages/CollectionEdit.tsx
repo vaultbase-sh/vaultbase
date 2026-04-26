@@ -8,7 +8,7 @@ import { FieldTypeChip, Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
 const FIELD_TYPES: FieldDef["type"][] = [
-  "text", "number", "bool", "date", "file", "relation", "select", "json", "autodate",
+  "text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json", "autodate",
 ];
 
 interface Rules {
