@@ -1,4 +1,5 @@
 import Elysia from "elysia";
+import { gunzipSync } from "zlib";
 import { join } from "path";
 import { embedAdminFiles } from "./embed.ts" with { type: "macro" };
 
@@ -30,8 +31,15 @@ function mimeType(path: string): string {
   return MIME_TYPES[ext] ?? "application/octet-stream";
 }
 
-function decodeFile(b64: string): Uint8Array {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+const decodeCache = new Map<string, Uint8Array>();
+
+function decodeFile(key: string, b64: string): Uint8Array {
+  const cached = decodeCache.get(key);
+  if (cached) return cached;
+  const compressed = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const decoded = new Uint8Array(gunzipSync(compressed));
+  decodeCache.set(key, decoded);
+  return decoded;
 }
 
 export function makeAdminPlugin() {
@@ -48,7 +56,7 @@ export function makeAdminPlugin() {
       const b64 = EMBEDDED[key];
       if (!b64) { set.status = 404; return "Not found"; }
       set.headers["Content-Type"] = mimeType(key);
-      return new Response(decodeFile(b64));
+      return new Response(decodeFile(key, b64));
     }
 
     // 2) Dev mode: serve from filesystem
