@@ -132,11 +132,13 @@ export async function getRecord(
 
 export async function createRecord(
   collectionName: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown> | null | undefined
 ): Promise<RecordWithMeta> {
   const db = getDb();
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
+
+  data = data ?? {};
 
   // Validate against schema (throws ValidationError on failure)
   await validateRecord(col, data, "create");
@@ -164,7 +166,7 @@ export async function createRecord(
 export async function updateRecord(
   collectionName: string,
   id: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown> | null | undefined
 ): Promise<RecordWithMeta> {
   const db = getDb();
   const col = await getCollection(collectionName);
@@ -172,6 +174,8 @@ export async function updateRecord(
 
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
+
+  data = data ?? {};
 
   // Validate against schema (throws ValidationError on failure)
   await validateRecord(col, data, "update", id);

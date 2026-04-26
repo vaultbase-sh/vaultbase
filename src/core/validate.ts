@@ -24,10 +24,11 @@ const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
  */
 export async function validateRecord(
   collection: Collection,
-  data: Record<string, unknown>,
+  data: Record<string, unknown> | null | undefined,
   mode: "create" | "update",
   existingId?: string
 ): Promise<void> {
+  data = data ?? {};
   const schema = parseFields(collection.fields);
   const errors: Record<string, string> = {};
 
