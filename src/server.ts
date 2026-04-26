@@ -11,6 +11,7 @@ import { makeBackupPlugin } from "./api/backup.ts";
 import { makeRateLimitPlugin } from "./api/ratelimit.ts";
 import { makeIndexesPlugin } from "./api/indexes.ts";
 import { makeSettingsPlugin } from "./api/settings.ts";
+import { makeHooksPlugin } from "./api/hooks.ts";
 import { subscribe, unsubscribe, disconnectAll } from "./realtime/manager.ts";
 
 interface ClientMessage {
@@ -27,6 +28,7 @@ export function createServer(config: Config) {
     .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
     .use(makeIndexesPlugin(config.jwtSecret))
     .use(makeSettingsPlugin(config.jwtSecret))
+    .use(makeHooksPlugin(config.jwtSecret))
     .use(makeCollectionsPlugin(config.jwtSecret))
     .use(makeFilesPlugin(config.uploadDir))
     .use(makeAdminPlugin())

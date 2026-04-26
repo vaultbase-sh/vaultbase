@@ -156,7 +156,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [ ] Rate limiting — not implemented
 - [x] Rate limiting (per-IP token bucket, env-configurable: `VAULTBASE_RATE_LIMIT`, `VAULTBASE_RATE_WINDOW_MS`)
 - [ ] Custom routes / middleware hooks
-- [ ] Server-side JS hooks on record events (`onCreate`, `onUpdate`, `onDelete`)
+- [x] Server-side JS hooks on record events (before/after × Create/Update/Delete; per-collection or global; helpers: slug/abort/find/query/fetch/log; admin UI editor)
 - [ ] Cron-style scheduled jobs
 - [x] Multiple admin support
 - [ ] Email sending (SMTP)

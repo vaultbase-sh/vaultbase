@@ -85,4 +85,16 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_hooks (
+      id TEXT PRIMARY KEY,
+      collection_name TEXT NOT NULL DEFAULT '',
+      event TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
 }

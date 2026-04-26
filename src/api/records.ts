@@ -105,7 +105,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { error: "Forbidden", code: 403 };
         }
         try {
-          const record = await createRecord(params.collection, body as Record<string, unknown>);
+          const record = await createRecord(params.collection, body as Record<string, unknown>, auth);
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
@@ -127,7 +127,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { error: "Forbidden", code: 403 };
         }
         try {
-          const record = await updateRecord(params.collection, params.id, body as Record<string, unknown>);
+          const record = await updateRecord(params.collection, params.id, body as Record<string, unknown>, auth);
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
@@ -146,7 +146,12 @@ export function makeRecordsPlugin(jwtSecret: string) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
       }
-      await deleteRecord(params.collection, params.id);
+      try {
+        await deleteRecord(params.collection, params.id, auth);
+      } catch (e) {
+        if (e instanceof ValidationError) return validationResponse(set, e);
+        throw e;
+      }
       return { data: null };
     });
 }
