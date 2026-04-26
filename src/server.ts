@@ -14,11 +14,6 @@ interface ClientMessage {
 
 export function createServer(config: Config) {
   return new Elysia()
-    .use(makeAuthPlugin(config.jwtSecret))
-    .use(makeCollectionsPlugin(config.jwtSecret))
-    .use(makeRecordsPlugin(config.jwtSecret))
-    .use(makeFilesPlugin(config.uploadDir))
-    .use(makeAdminPlugin())
     .ws("/api/realtime", {
       open(ws) {
         ws.send(JSON.stringify({ type: "connected" }));
@@ -38,5 +33,10 @@ export function createServer(config: Config) {
         disconnectAll(ws);
       },
     })
+    .use(makeAuthPlugin(config.jwtSecret))
+    .use(makeCollectionsPlugin(config.jwtSecret))
+    .use(makeRecordsPlugin(config.jwtSecret))
+    .use(makeFilesPlugin(config.uploadDir))
+    .use(makeAdminPlugin())
     .get("/api/health", () => ({ data: { status: "ok" } }));
 }
