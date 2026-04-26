@@ -12,6 +12,7 @@ import CollectionEdit from "./pages/CollectionEdit.tsx";
 import Logs from "./pages/Logs.tsx";
 import Settings from "./pages/Settings.tsx";
 import Superusers from "./pages/Superusers.tsx";
+import ApiPreview from "./pages/ApiPreview.tsx";
 
 function tokenValid(): boolean {
   const token = localStorage.getItem("vaultbase_admin_token");
@@ -94,6 +95,9 @@ function AppShell() {
       break;
     case "logs":
       page = <Logs />;
+      break;
+    case "api-preview":
+      page = <ApiPreview />;
       break;
     case "settings":
       page = <Settings adminEmail={adminEmail} toast={toast} />;

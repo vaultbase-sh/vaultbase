@@ -61,6 +61,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.filter) opts.filter = query.filter;
         if (query.sort) opts.sort = query.sort;
         if (query.expand) opts.expand = query.expand;
+        if (query.fields) opts.fields = query.fields;
+        if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
         // Apply expression rule as access filter (admins bypass)
         if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
           opts.accessRule = col.list_rule;
@@ -74,6 +76,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
           filter: t.Optional(t.String()),
           sort: t.Optional(t.String()),
           expand: t.Optional(t.String()),
+          fields: t.Optional(t.String()),
+          skipTotal: t.Optional(t.String()),
         }),
       }
     )
