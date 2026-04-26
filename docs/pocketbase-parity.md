@@ -11,7 +11,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Admin account (single superadmin)
 - [x] JWT tokens (admin `aud:"admin"`, user `aud:"user"`)
 - [x] Token expiry (7 days)
-- [ ] Multiple admins
+- [x] Multiple admins (list / create / update / delete from Settings)
 - [ ] OAuth2 providers (Google, GitHub, Facebook, etc.)
 - [ ] Email verification flow
 - [ ] Password reset via email (SMTP)
@@ -138,7 +138,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Settings page
 - [x] PrimeReact DataTable, Dialog, Sidebar, Dropdown, InputSwitch, Toast
 - [ ] API preview panel (test endpoints from admin UI)
-- [ ] Backup & restore (download DB snapshot)
+- [x] Backup & restore (download / upload SQLite snapshot)
 - [ ] Import / export CSV
 - [ ] DB indexes management
 - [ ] Email template editor
@@ -154,12 +154,11 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Env var configuration
 - [x] JWT secret auto-generated + persisted
 - [ ] Rate limiting — not implemented
-- [ ] Backup & restore
 - [ ] Rate limiting (configurable per route)
 - [ ] Custom routes / middleware hooks
 - [ ] Server-side JS hooks on record events (`onCreate`, `onUpdate`, `onDelete`)
 - [ ] Cron-style scheduled jobs
-- [ ] Multiple admin support
+- [x] Multiple admin support
 - [ ] Email sending (SMTP)
 - [ ] Encrypted fields
 
