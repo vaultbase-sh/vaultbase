@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Dropdown } from "primereact/dropdown";
 import {
   api, type ApiResponse, type Collection, type FieldDef, collColor, parseFields,
 } from "../api.ts";
@@ -30,6 +31,13 @@ export default function CollectionEdit({
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [rules, setRules] = useState<Rules>({ list: "", view: "", create: "", update: "", delete: "" });
   const [saving, setSaving] = useState(false);
+  const [allCollections, setAllCollections] = useState<Collection[]>([]);
+
+  useEffect(() => {
+    api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
+      if (res.data) setAllCollections(res.data);
+    });
+  }, []);
 
   useEffect(() => {
     api.get<ApiResponse<Collection>>(`/api/collections/${collId}`).then((res) => {
@@ -278,7 +286,24 @@ export default function CollectionEdit({
                   {sel.type === "relation" && (
                     <div>
                       <label className="label">Target collection</label>
-                      <input className="input mono" placeholder="collection_name" />
+                      {allCollections.filter((c) => c.id !== collId).length === 0 ? (
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          No other collections to link to.
+                        </div>
+                      ) : (
+                        <Dropdown
+                          value={sel.collection ?? null}
+                          options={allCollections
+                            .filter((c) => c.id !== collId)
+                            .map((c) => c.name)}
+                          onChange={(e) => updateSel({ collection: e.value })}
+                          placeholder="Select a collection…"
+                          filter
+                          showClear
+                          style={{ width: "100%", height: 34 }}
+                          panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                        />
+                      )}
                     </div>
                   )}
                   {sel.type === "select" && (
