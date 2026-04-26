@@ -3,6 +3,7 @@ import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse, type Collection } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Modal, Toggle } from "../components/UI.tsx";
+import { CodeEditor } from "../components/CodeEditor.tsx";
 import Icon from "../components/Icon.tsx";
 
 interface Hook {
@@ -291,36 +292,17 @@ function HookEditor({
           </label>
         </div>
         <div>
-          <label className="label">Hook code (JavaScript, async)</label>
-          <textarea
-            className="input mono"
-            style={{
-              width: "100%",
-              minHeight: 320,
-              padding: 10,
-              fontSize: 12,
-              lineHeight: 1.55,
-              resize: "vertical",
-              fontFamily: "var(--font-mono)",
-            }}
+          <label className="label">Hook code · JavaScript (async, IntelliSense on <span className="mono">ctx</span>)</label>
+          <CodeEditor
             value={code}
-            onChange={(e) => setCode(e.target.value)}
-            spellCheck={false}
-            onKeyDown={(e) => {
-              if (e.key === "Tab") {
-                e.preventDefault();
-                const t = e.currentTarget;
-                const start = t.selectionStart;
-                const end = t.selectionEnd;
-                const next = code.slice(0, start) + "  " + code.slice(end);
-                setCode(next);
-                queueMicrotask(() => { t.selectionStart = t.selectionEnd = start + 2; });
-              }
-            }}
+            onChange={setCode}
+            language="javascript"
+            hookContext
+            height={360}
           />
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            Throw or call <span className="mono">ctx.helpers.abort(msg)</span> in <span className="mono">before*</span> to abort with 422.
-            <span className="mono">after*</span> errors are logged but don't fail the request.
+            Type <span className="mono">ctx.</span> to autocomplete. Throw or call <span className="mono">ctx.helpers.abort(msg)</span> in <span className="mono">before*</span> to abort with 422.
+            <span className="mono"> after*</span> errors are logged but don't fail the request.
           </div>
         </div>
       </div>
