@@ -1,0 +1,57 @@
+import React from "react";
+
+interface IconProps {
+  name: string;
+  size?: number;
+  stroke?: number;
+  style?: React.CSSProperties;
+  className?: string;
+}
+
+const Icon: React.FC<IconProps> = ({ name, size = 14, stroke = 1.5, style, className }) => {
+  const props = {
+    width: size, height: size, viewBox: "0 0 24 24",
+    fill: "none" as const, stroke: "currentColor",
+    strokeWidth: stroke, strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
+    style, className,
+  };
+  const paths: Record<string, React.ReactNode> = {
+    database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></>,
+    table: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></>,
+    users: <><circle cx="9" cy="8" r="3.5"/><path d="M2 21c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="7" r="2.5"/><path d="M22 19c0-2.5-2-4-4.5-4"/></>,
+    key: <><circle cx="8" cy="14" r="4"/><path d="M11 12l9-9 2 2-2 2 2 2-2 2-2-2-3 3"/></>,
+    webhook: <><path d="M16 16l-3.5-6"/><path d="M9 8l-3.5 6"/><circle cx="12.5" cy="6" r="2"/><circle cx="5.5" cy="18" r="2"/><circle cx="18.5" cy="18" r="2"/><path d="M7 18h9"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></>,
+    plus: <><path d="M12 5v14M5 12h14"/></>,
+    pencil: <><path d="M17 3l4 4-12 12H5v-4z"/></>,
+    trash: <><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></>,
+    search: <><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></>,
+    sort: <><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></>,
+    grip: <><circle cx="9" cy="6" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="18" r="1.2" fill="currentColor"/><circle cx="15" cy="6" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="18" r="1.2" fill="currentColor"/></>,
+    x: <><path d="M18 6L6 18M6 6l12 12"/></>,
+    chevronDown: <><path d="M6 9l6 6 6-6"/></>,
+    chevronRight: <><path d="M9 6l6 6-6 6"/></>,
+    chevronLeft: <><path d="M15 6l-6 6 6 6"/></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></>,
+    scroll: <><path d="M5 6a2 2 0 0 1 2-2h11l3 3v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M9 8h7M9 12h7M9 16h5"/></>,
+    refresh: <><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></>,
+    play: <><polygon points="6 4 20 12 6 20 6 4"/></>,
+    pause: <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>,
+    check: <><path d="M5 12l5 5L20 7"/></>,
+    info: <><circle cx="12" cy="12" r="9"/><path d="M12 8v0M12 11v6"/></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></>,
+    eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></>,
+    moreHorizontal: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>,
+    copy: <><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
+    filter: <><path d="M3 4h18l-7 9v6l-4 2v-8z"/></>,
+    arrowUp: <><path d="M12 19V5M5 12l7-7 7 7"/></>,
+    arrowDown: <><path d="M12 5v14M5 12l7 7 7-7"/></>,
+    layers: <><polygon points="12 2 2 7 12 12 22 7 12 2"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></>,
+    activity: <><path d="M22 12h-4l-3 9-6-18-3 9H2"/></>,
+    server: <><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><circle cx="7" cy="6.5" r="0.5" fill="currentColor"/><circle cx="7" cy="17.5" r="0.5" fill="currentColor"/></>,
+  };
+  return <svg {...props}>{paths[name] ?? null}</svg>;
+};
+
+export default Icon;
