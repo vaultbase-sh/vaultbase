@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
+import { Chips } from "primereact/chips";
 import { api, type ApiResponse, type Collection, type FieldDef } from "../api.ts";
 import { Modal, FieldTypeChip, Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
@@ -357,20 +358,13 @@ function FieldOptionsPanel({
       {/* Select */}
       {field.type === "select" && (
         <>
-          <Field label="Allowed values (comma-separated)">
-            <input
-              className="input mono"
-              style={{ height: 28, fontSize: 12 }}
-              value={Array.isArray(opts["values"]) ? (opts["values"] as string[]).join(", ") : ""}
-              onChange={(e) =>
-                onPatchOptions({
-                  values: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              placeholder="draft, review, live"
+          <Field label="Allowed values">
+            <Chips
+              value={Array.isArray(opts["values"]) ? (opts["values"] as string[]) : []}
+              onChange={(e) => onPatchOptions({ values: e.value ?? [] })}
+              placeholder="Type a value and press Enter"
+              separator=","
+              style={{ width: "100%" }}
             />
           </Field>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
@@ -419,20 +413,13 @@ function FieldOptionsPanel({
               placeholder="5242880 = 5MB"
             />
           </Field>
-          <Field label="Allowed MIME types (comma-separated)">
-            <input
-              className="input mono"
-              style={{ height: 28, fontSize: 12 }}
-              value={Array.isArray(opts["mimeTypes"]) ? (opts["mimeTypes"] as string[]).join(", ") : ""}
-              onChange={(e) =>
-                onPatchOptions({
-                  mimeTypes: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              placeholder="image/*, application/pdf"
+          <Field label="Allowed MIME types">
+            <Chips
+              value={Array.isArray(opts["mimeTypes"]) ? (opts["mimeTypes"] as string[]) : []}
+              onChange={(e) => onPatchOptions({ mimeTypes: e.value ?? [] })}
+              placeholder="image/* — press Enter"
+              separator=","
+              style={{ width: "100%" }}
             />
           </Field>
         </>

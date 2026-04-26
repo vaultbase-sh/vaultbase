@@ -1252,6 +1252,16 @@ a { color: inherit; text-decoration: none; }
 .p-dropdown-panel .p-dropdown-item:hover { background: rgba(255,255,255,0.06); }
 .p-dropdown-panel .p-dropdown-item.p-highlight { background: var(--accent-glow); color: var(--accent-light); }
 
+/* Chips (tag input) */
+.p-chips { width: 100%; }
+.p-chips .p-chips-multiple-container { background: rgba(255,255,255,0.05); border: 0.5px solid rgba(255,255,255,0.1); border-radius: 7px; padding: 4px 8px; min-height: 34px; gap: 4px; }
+.p-chips:not(.p-disabled) .p-chips-multiple-container:hover { border-color: rgba(255,255,255,0.2); }
+.p-chips:not(.p-disabled) .p-chips-multiple-container.p-focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); outline: none; }
+.p-chips .p-chips-token { background: var(--accent-glow); color: var(--accent-light); border-radius: 4px; padding: 2px 8px; font-size: 12px; font-family: var(--font-mono); }
+.p-chips .p-chips-token .p-chips-token-icon { color: var(--accent-light); }
+.p-chips .p-chips-input-token input { background: none; border: none; color: var(--text-primary); font-size: 12px; outline: none; font-family: var(--font-mono); }
+.p-chips .p-chips-input-token input::placeholder { color: var(--text-muted); }
+
 /* MultiSelect (multi-value select) */
 .p-multiselect { background: rgba(255,255,255,0.05); border: 0.5px solid rgba(255,255,255,0.1); border-radius: 7px; min-height: 34px; }
 .p-multiselect:not(.p-disabled):hover { border-color: rgba(255,255,255,0.2); }
