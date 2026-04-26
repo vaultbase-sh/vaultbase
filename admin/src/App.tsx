@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Login from "./pages/Login.tsx";
+import Setup from "./pages/Setup.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
 import Collections from "./pages/Collections.tsx";
 import Records from "./pages/Records.tsx";
@@ -42,6 +43,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/_/setup" element={<Setup />} />
         <Route path="/_/login" element={<Login />} />
         <Route
           path="/_/"
