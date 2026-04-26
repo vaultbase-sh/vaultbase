@@ -28,6 +28,7 @@ function NewRecordModal({
 }) {
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   const editableFields = fields.filter(
@@ -36,16 +37,18 @@ function NewRecordModal({
 
   function setValue(name: string, val: unknown) {
     setValues((prev) => ({ ...prev, [name]: val }));
+    setFieldErrors((prev) => { const { [name]: _, ...rest } = prev; return rest; });
   }
 
   async function handleCreate() {
-    setError("");
+    setError(""); setFieldErrors({});
     setSaving(true);
     const res = await api.post<ApiResponse<RecordRow>>(
       `/api/${collectionName}`,
       values
     );
     setSaving(false);
+    if (res.code === 422 && res.details) { setFieldErrors(res.details); setError(res.error ?? ""); return; }
     if (res.error) { setError(res.error); return; }
     setValues({});
     onCreated();
@@ -95,6 +98,11 @@ function NewRecordModal({
                 value={values[f.name]}
                 onChange={(v) => setValue(f.name, v)}
               />
+              {fieldErrors[f.name] && (
+                <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
+                  {fieldErrors[f.name]}
+                </div>
+              )}
             </div>
           ))
         )}
@@ -183,6 +191,7 @@ export default function Records({
   const [sort, setSort] = useState("-created");
   const [openRec, setOpenRec] = useState<RecordRow | null>(null);
   const [editData, setEditData] = useState<Record<string, unknown>>({});
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
@@ -216,16 +225,19 @@ export default function Records({
       if (!meta.has(k)) initial[k] = v;
     }
     setEditData(initial);
+    setEditErrors({});
   }
 
   async function handleSave() {
     if (!collection || !openRec) return;
+    setEditErrors({});
     setSaving(true);
     const res = await api.patch<ApiResponse<RecordRow>>(
       `/api/${collection.name}/${String(openRec.id)}`,
       editData
     );
     setSaving(false);
+    if (res.code === 422 && res.details) { setEditErrors(res.details); toast("Validation failed", "info"); return; }
     if (res.error) { toast(res.error, "info"); return; }
     toast("Record saved");
     setOpenRec(null);
@@ -441,8 +453,16 @@ export default function Records({
                 <FieldInput
                   field={f}
                   value={editData[f.name]}
-                  onChange={(v) => setEditData((prev) => ({ ...prev, [f.name]: v }))}
+                  onChange={(v) => {
+                    setEditData((prev) => ({ ...prev, [f.name]: v }));
+                    setEditErrors((prev) => { const { [f.name]: _, ...rest } = prev; return rest; });
+                  }}
                 />
+                {editErrors[f.name] && (
+                  <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
+                    {editErrors[f.name]}
+                  </div>
+                )}
               </div>
             ))}
           </div>

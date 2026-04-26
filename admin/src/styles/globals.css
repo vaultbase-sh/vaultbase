@@ -832,6 +832,10 @@ a { color: inherit; text-decoration: none; }
 .type-chip.select   .dot { background: #5eead4; }
 .type-chip.json     { background: rgba(248,113,113,0.12); color: #fca5a5; }
 .type-chip.json     .dot { background: #fca5a5; }
+.type-chip.email    { background: rgba(96,165,250,0.12);  color: #93c5fd; }
+.type-chip.email    .dot { background: #93c5fd; }
+.type-chip.url      { background: rgba(45,212,191,0.12);  color: #5eead4; }
+.type-chip.url      .dot { background: #5eead4; }
 
 /* Field list (editor) ----------------------------------------------------- */
 .field-list {

@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { parseFilter } from "./filter.ts";
+import { validateRecord } from "./validate.ts";
 import { getDb } from "../db/client.ts";
 import { records, type NewRecord } from "../db/schema.ts";
 import { getCollection, parseFields } from "./collections.ts";
@@ -137,6 +138,9 @@ export async function createRecord(
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
 
+  // Validate against schema (throws ValidationError on failure)
+  await validateRecord(col, data, "create");
+
   const fields = parseFields(col.fields);
   const now = Math.floor(Date.now() / 1000);
   for (const f of fields) {
@@ -168,6 +172,9 @@ export async function updateRecord(
 
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
+
+  // Validate against schema (throws ValidationError on failure)
+  await validateRecord(col, data, "update", id);
 
   const fields = parseFields(col.fields);
   const now = Math.floor(Date.now() / 1000);

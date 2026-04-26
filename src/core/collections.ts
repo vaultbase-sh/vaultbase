@@ -2,14 +2,33 @@ import { eq, or } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 
+export type FieldType =
+  | "text" | "number" | "bool" | "file" | "relation"
+  | "select" | "autodate" | "email" | "url" | "date" | "json";
+
+export interface FieldOptions {
+  // text/email/url: length + pattern + unique
+  min?: number;
+  max?: number;
+  pattern?: string;
+  unique?: boolean;
+  // select: allowed values
+  values?: string[];
+  multiple?: boolean;
+  // file: size + mime
+  maxSize?: number;        // bytes
+  mimeTypes?: string[];
+}
+
 export interface FieldDef {
   name: string;
-  type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate";
+  type: FieldType;
   required?: boolean;
-  collection?: string;
-  options?: string[];
-  onCreate?: boolean;
-  onUpdate?: boolean;
+  system?: boolean;
+  collection?: string;     // for relation
+  options?: FieldOptions;
+  onCreate?: boolean;      // autodate
+  onUpdate?: boolean;      // autodate
 }
 
 const cache = new Map<string, Collection>();
