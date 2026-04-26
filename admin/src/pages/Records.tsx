@@ -34,6 +34,7 @@ function NewRecordModal({
   const editableFields = fields.filter(
     (f) => !f.system && f.type !== "autodate"
   );
+  const relationCache = useRelationCache(editableFields, open);
 
   function setValue(name: string, val: unknown) {
     setValues((prev) => ({ ...prev, [name]: val }));
@@ -97,6 +98,7 @@ function NewRecordModal({
                 field={f}
                 value={values[f.name]}
                 onChange={(v) => setValue(f.name, v)}
+                relationCache={relationCache}
               />
               {fieldErrors[f.name] && (
                 <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
@@ -111,17 +113,55 @@ function NewRecordModal({
   );
 }
 
+// ── Relation cache helpers ───────────────────────────────────────────────────
+type RelationOption = { label: string; value: string };
+type RelationCache = Record<string, RelationOption[]>;
+
+function recordLabel(r: RecordRow): string {
+  // Prefer human-readable fields; fall back to id
+  for (const k of ["name", "title", "email", "label", "slug"]) {
+    if (typeof r[k] === "string" && r[k]) return `${r[k]} · ${String(r.id).slice(0, 8)}`;
+  }
+  return String(r.id);
+}
+
+function useRelationCache(fields: FieldDef[], enabled: boolean): RelationCache {
+  const [cache, setCache] = useState<RelationCache>({});
+
+  useEffect(() => {
+    if (!enabled) return;
+    const targets = new Set(
+      fields
+        .filter((f) => f.type === "relation" && f.collection)
+        .map((f) => f.collection!)
+    );
+    for (const target of targets) {
+      if (cache[target]) continue;
+      api.get<ListResponse<RecordRow>>(`/api/${target}?perPage=200`).then((res) => {
+        if (res.data) {
+          const opts = res.data.map((r) => ({ value: String(r.id), label: recordLabel(r) }));
+          setCache((prev) => ({ ...prev, [target]: opts }));
+        }
+      });
+    }
+  }, [enabled, fields]);
+
+  return cache;
+}
+
 // ── Shared field input renderer ──────────────────────────────────────────────
 function FieldInput({
   field,
   value,
   onChange,
   readOnly,
+  relationCache,
 }: {
   field: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
   readOnly?: boolean;
+  relationCache?: RelationCache;
 }) {
   if (field.type === "bool") {
     return <Toggle on={!!value} onChange={onChange} />;
@@ -134,6 +174,35 @@ function FieldInput({
           File upload available in v2
         </span>
       </div>
+    );
+  }
+  if (field.type === "relation") {
+    const target = field.collection;
+    const opts = target ? relationCache?.[target] : undefined;
+    if (target && opts) {
+      return (
+        <Dropdown
+          value={String(value ?? "")}
+          options={opts}
+          onChange={(e) => onChange(e.value)}
+          disabled={readOnly}
+          filter
+          showClear
+          placeholder={opts.length === 0 ? `No records in '${target}'` : "Select a record…"}
+          emptyMessage={`No records in '${target}'`}
+          style={{ width: "100%", height: 34 }}
+          panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+        />
+      );
+    }
+    return (
+      <input
+        className="input mono"
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        placeholder={target ? `Loading ${target}…` : "Set target collection in schema"}
+      />
     );
   }
   if (field.type === "select") {
@@ -163,7 +232,7 @@ function FieldInput({
   }
   return (
     <input
-      className={`input${["relation", "autodate"].includes(field.type) ? " mono" : ""}`}
+      className={`input${["autodate"].includes(field.type) ? " mono" : ""}`}
       value={String(value ?? "")}
       onChange={(e) => onChange(e.target.value)}
       readOnly={readOnly}
@@ -259,6 +328,7 @@ export default function Records({
 
   const allFields = collection ? parseFields(collection.fields) : [];
   const userFields = allFields.filter((f) => !f.system);
+  const editRelationCache = useRelationCache(userFields, !!openRec);
   const color = collColor(0);
   const displayCols = userFields.length > 0
     ? userFields.slice(0, 5).map((f) => f.name)
@@ -457,6 +527,7 @@ export default function Records({
                     setEditData((prev) => ({ ...prev, [f.name]: v }));
                     setEditErrors((prev) => { const { [f.name]: _, ...rest } = prev; return rest; });
                   }}
+                  relationCache={editRelationCache}
                 />
                 {editErrors[f.name] && (
                   <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
