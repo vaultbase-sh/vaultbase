@@ -1,36 +1,81 @@
 /* Vaultbase admin — design tokens */
 :root {
-  /* Backgrounds */
-  --bg-deep: #0f1117;
-  --bg-base: #13151e;
-  --bg-surface: #1a1d28;
-  --bg-raised: #1f2235;
+  /* ── Surface scale (neutral gray, color-mix driven) */
+  --surfaceColor:    #1f1f1f;
+  --surfaceAlt1Color: color-mix(in srgb, var(--surfaceColor), white  2%);
+  --surfaceAlt2Color: color-mix(in srgb, var(--surfaceColor), white  7%);
+  --surfaceAlt3Color: color-mix(in srgb, var(--surfaceColor), white 12%);
+  --surfaceAlt4Color: color-mix(in srgb, var(--surfaceColor), white 14%);
+  --surfaceAlt5Color: color-mix(in srgb, var(--surfaceColor), white 16%);
 
-  /* Borders */
-  --border-default: rgba(255, 255, 255, 0.07);
-  --border-hover: rgba(255, 255, 255, 0.12);
-  --border-focus: #6366f1;
+  /* ── Primary (deep/sidebar level) */
+  --primaryColor:    #161616;
+  --primaryAlt1Color: color-mix(in srgb, var(--primaryColor), white  1%);
+  --primaryAlt2Color: color-mix(in srgb, var(--primaryColor), white  1.5%);
 
-  /* Text */
-  --text-primary: #e8eaf0;
-  --text-secondary: rgba(255, 255, 255, 0.45);
-  --text-muted: rgba(255, 255, 255, 0.25);
+  /* ── Text */
+  --surfaceTxtColor:         #e6e6e6;
+  --surfaceTxtHintColor:     color-mix(in srgb, var(--surfaceTxtColor), transparent 45%);
+  --surfaceTxtDisabledColor: color-mix(in srgb, var(--surfaceTxtColor), transparent 65%);
 
-  /* Accents */
-  --accent: #6366f1;
-  --accent-light: #a5b4fc;
-  --accent-glow: rgba(99, 102, 241, 0.15);
-  --accent-ring: rgba(99, 102, 241, 0.2);
+  /* ── Semantic colors */
+  --infoColor:    #4273bd;
+  --successColor: #27865d;
+  --warningColor: #cf4e17;
+  --dangerColor:  #bb303e;
+  --surfaceInfoColor:    color-mix(in srgb, var(--infoColor),    var(--surfaceColor) 45%);
+  --surfaceSuccessColor: color-mix(in srgb, var(--successColor), var(--surfaceColor) 45%);
+  --surfaceWarningColor: color-mix(in srgb, var(--warningColor), var(--surfaceColor) 45%);
+  --surfaceDangerColor:  color-mix(in srgb, var(--dangerColor),  var(--surfaceColor) 45%);
 
-  /* Semantic */
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
-  --info: #60a5fa;
+  /* ── Inputs */
+  --inputColor:       var(--surfaceAlt2Color);
+  --inputFocusColor:  var(--surfaceAlt3Color);
+  --inputBorderColor: var(--surfaceAlt4Color);
 
-  /* Layout */
+  /* ── Misc */
+  --selectionColor:    #ffffff38;
+  --modalOverlayColor: #00000073;
+  --boxShadow:         0px 8px 5px -5px #0000004d;
+  --scrollbarColor:    var(--surfaceAlt5Color);
+
+  /* ── Prism syntax */
+  --prismFunctionColor:    #ab7abd;
+  --prismStringColor:      #87b47e;
+  --prismNumberColor:      #86b9bb;
+  --prismPropertyColor:    #90c2d1;
+  --prismKeywordColor:     #b3703d;
+  --prismCommentColor:     var(--surfaceTxtHintColor);
+  --prismPunctuationColor: var(--surfaceTxtColor);
+
+  /* ── Map to legacy names used throughout component CSS */
+  --bg-deep:    var(--primaryColor);
+  --bg-base:    var(--primaryAlt2Color);
+  --bg-surface: var(--surfaceColor);
+  --bg-raised:  var(--surfaceAlt2Color);
+
+  --border-default: var(--surfaceAlt4Color);
+  --border-hover:   var(--surfaceAlt5Color);
+  --border-focus:   #1fd2ff;
+
+  --text-primary:   var(--surfaceTxtColor);
+  --text-secondary: var(--surfaceTxtHintColor);
+  --text-muted:     var(--surfaceTxtDisabledColor);
+
+  --success: var(--successColor);
+  --warning: var(--warningColor);
+  --danger:  var(--dangerColor);
+  --info:    var(--infoColor);
+
+  /* ── Accent: #1fd2ff cyan */
+  --accent:       #1fd2ff;
+  --accent-light: color-mix(in srgb, #1fd2ff, white 30%);
+  --accent-glow:  color-mix(in srgb, #1fd2ff, transparent 85%);
+  --accent-ring:  color-mix(in srgb, #1fd2ff, transparent 80%);
+
+  /* ── Layout */
   --sidebar-w: 220px;
-  --topbar-h: 54px;
+  --topbar-h:  54px;
 
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
@@ -214,7 +259,7 @@ a { color: inherit; text-decoration: none; }
 .sb-admin-avatar {
   width: 24px; height: 24px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), purple 40%));
   display: grid; place-items: center;
   font-size: 11px;
   font-weight: 600;
@@ -517,7 +562,7 @@ a { color: inherit; text-decoration: none; }
   color: white;
   flex-shrink: 0;
 }
-.coll-icon.indigo { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+.coll-icon.indigo { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), blue 30%)); }
 .coll-icon.teal   { background: linear-gradient(135deg, #14b8a6, #0d9488); }
 .coll-icon.amber  { background: linear-gradient(135deg, #f59e0b, #d97706); }
 .coll-icon.rose   { background: linear-gradient(135deg, #f43f5e, #e11d48); }
@@ -565,7 +610,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: 10px;
   line-height: 1.5;
 }
-.badge.auth    { background: rgba(99,102,241,0.2); color: var(--accent-light); }
+.badge.auth    { background: var(--accent-glow); color: var(--accent-light); }
 .badge.base    { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.5); }
 .badge.success { background: rgba(52,211,153,0.15); color: var(--success); }
 .badge.danger  { background: rgba(248,113,113,0.15); color: var(--danger); }
@@ -769,8 +814,8 @@ a { color: inherit; text-decoration: none; }
   line-height: 1.5;
 }
 .type-chip .dot { width: 5px; height: 5px; border-radius: 50%; }
-.type-chip.text     { background: rgba(99,102,241,0.12);  color: #a5b4fc; }
-.type-chip.text     .dot { background: #a5b4fc; }
+.type-chip.text     { background: var(--accent-glow);  color: var(--accent-light); }
+.type-chip.text     .dot { background: var(--accent-light); }
 .type-chip.number   { background: rgba(96,165,250,0.12);  color: #93c5fd; }
 .type-chip.number   .dot { background: #93c5fd; }
 .type-chip.bool     { background: rgba(52,211,153,0.12);  color: #6ee7b7; }
@@ -1128,16 +1173,16 @@ a { color: inherit; text-decoration: none; }
 
 /* ── PrimeReact theme var overrides ───────────────────────────────────────── */
 :root {
-  --primary-color: #6366f1;
-  --primary-color-text: #ffffff;
-  --surface-ground: #0f1117;
-  --surface-section: #13151e;
-  --surface-card: #1a1d28;
-  --surface-overlay: #1f2235;
-  --surface-border: rgba(255, 255, 255, 0.07);
-  --surface-hover: rgba(255, 255, 255, 0.05);
-  --text-color: #e8eaf0;
-  --text-color-secondary: rgba(255, 255, 255, 0.45);
+  --primary-color: #1fd2ff;
+  --primary-color-text: #000000;
+  --surface-ground: var(--primaryColor);
+  --surface-section: var(--primaryAlt2Color);
+  --surface-card: var(--surfaceColor);
+  --surface-overlay: var(--surfaceAlt2Color);
+  --surface-border: var(--surfaceAlt4Color);
+  --surface-hover: var(--surfaceAlt1Color);
+  --text-color: var(--surfaceTxtColor);
+  --text-color-secondary: var(--surfaceTxtHintColor);
   --border-radius: 7px;
   --font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -1166,7 +1211,7 @@ a { color: inherit; text-decoration: none; }
 .p-inputswitch.p-inputswitch-checked .p-inputswitch-slider { background: var(--accent); }
 .p-inputswitch.p-inputswitch-checked .p-inputswitch-slider::before { transform: translateX(13px); }
 .p-inputswitch:not(.p-disabled):hover .p-inputswitch-slider { background: rgba(255,255,255,0.15); }
-.p-inputswitch.p-inputswitch-checked:not(.p-disabled):hover .p-inputswitch-slider { background: #5558e3; }
+.p-inputswitch.p-inputswitch-checked:not(.p-disabled):hover .p-inputswitch-slider { background: color-mix(in srgb, var(--accent), black 15%); }
 
 /* Toast */
 .p-toast { z-index: 100; }
@@ -1184,10 +1229,10 @@ a { color: inherit; text-decoration: none; }
 .p-datatable .p-datatable-tbody > tr > td { border-bottom: 0.5px solid rgba(255,255,255,0.04); border-top: none; border-left: none; border-right: none; padding: 0 16px; height: 44px; font-size: 13px; vertical-align: middle; }
 .p-datatable .p-datatable-tbody > tr:last-child > td { border-bottom: none; }
 .p-datatable .p-datatable-tbody > tr:hover { background: rgba(255,255,255,0.025); }
-.p-datatable .p-datatable-tbody > tr.p-highlight { background: rgba(99,102,241,0.08); }
+.p-datatable .p-datatable-tbody > tr.p-highlight { background: var(--accent-glow); }
 .p-datatable .p-sortable-column .p-sortable-column-icon { color: var(--text-muted); }
 .p-datatable .p-sortable-column:hover { background: rgba(255,255,255,0.03); color: var(--text-primary); }
-.p-datatable .p-sortable-column.p-highlight { color: var(--accent-light); background: rgba(99,102,241,0.06); }
+.p-datatable .p-sortable-column.p-highlight { color: var(--accent-light); background: color-mix(in srgb, var(--accent), transparent 94%); }
 .p-datatable .p-sortable-column.p-highlight .p-sortable-column-icon { color: var(--accent-light); }
 .p-datatable .p-column-filter-menu-button { color: var(--text-muted); }
 .p-datatable-wrapper { border-radius: 10px; overflow: hidden; border: 0.5px solid var(--border-default); background: var(--bg-surface); }
