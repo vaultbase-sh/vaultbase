@@ -39,6 +39,7 @@ export function makeHooksPlugin(jwtSecret: string) {
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(hooks).values({
           id,
+          name: body.name ?? "",
           collection_name: body.collection_name ?? "",
           event: body.event,
           code: body.code ?? "",
@@ -52,6 +53,7 @@ export function makeHooksPlugin(jwtSecret: string) {
       },
       {
         body: t.Object({
+          name: t.Optional(t.String()),
           collection_name: t.Optional(t.String()),
           event: t.String(),
           code: t.Optional(t.String()),
@@ -66,9 +68,10 @@ export function makeHooksPlugin(jwtSecret: string) {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
         }
-        const update: { collection_name?: string; event?: string; code?: string; enabled?: number; updated_at: number } = {
+        const update: { name?: string; collection_name?: string; event?: string; code?: string; enabled?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
+        if (body.name !== undefined) update.name = body.name;
         if (body.collection_name !== undefined) update.collection_name = body.collection_name;
         if (body.event !== undefined) {
           if (!HOOK_EVENTS.includes(body.event as typeof HOOK_EVENTS[number])) {
@@ -86,6 +89,7 @@ export function makeHooksPlugin(jwtSecret: string) {
       },
       {
         body: t.Object({
+          name: t.Optional(t.String()),
           collection_name: t.Optional(t.String()),
           event: t.Optional(t.String()),
           code: t.Optional(t.String()),

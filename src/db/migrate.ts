@@ -89,6 +89,7 @@ export async function runMigrations() {
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_hooks (
       id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
       collection_name TEXT NOT NULL DEFAULT '',
       event TEXT NOT NULL,
       code TEXT NOT NULL DEFAULT '',
@@ -97,4 +98,6 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+  // Idempotent ADD COLUMN for existing DBs
+  try { client.exec(`ALTER TABLE vaultbase_hooks ADD COLUMN name TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
 }

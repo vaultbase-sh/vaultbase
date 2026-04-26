@@ -9,6 +9,7 @@ import Icon from "../components/Icon.tsx";
 
 interface Hook {
   id: string;
+  name: string;
   collection_name: string;
   event: HookEvent;
   code: string;
@@ -109,6 +110,7 @@ export default function Hooks({
             <table className="table">
               <thead>
                 <tr>
+                  <th>Name</th>
                   <th>Collection</th>
                   <th>Event</th>
                   <th>Code preview</th>
@@ -119,6 +121,13 @@ export default function Hooks({
               <tbody>
                 {hooks.map((h) => (
                   <tr key={h.id}>
+                    <td onClick={() => setEditing(h)} style={{ cursor: "pointer" }}>
+                      {h.name ? (
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>{h.name}</span>
+                      ) : (
+                        <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
+                      )}
+                    </td>
                     <td className="mono-cell">
                       {h.collection_name === "" ? (
                         <span className="badge auth">global</span>
@@ -135,7 +144,7 @@ export default function Hooks({
                       className="mono-cell muted"
                       style={{
                         fontSize: 11,
-                        maxWidth: 360,
+                        maxWidth: 320,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
@@ -200,6 +209,7 @@ function HookEditor({
   onSaved: () => void;
 }) {
   const isNew = !hook;
+  const [name, setName] = useState<string>("");
   const [collName, setCollName] = useState<string>("");
   const [event, setEvent] = useState<HookEvent>("beforeCreate");
   const [code, setCode] = useState<string>(HOOK_TEMPLATE);
@@ -210,11 +220,13 @@ function HookEditor({
   useEffect(() => {
     if (!open) return;
     if (hook) {
+      setName(hook.name ?? "");
       setCollName(hook.collection_name);
       setEvent(hook.event);
       setCode(hook.code);
       setEnabled(!!hook.enabled);
     } else {
+      setName("");
       setCollName("");
       setEvent("beforeCreate");
       setCode(HOOK_TEMPLATE);
@@ -243,7 +255,7 @@ function HookEditor({
   async function handleSave() {
     setSaving(true);
     setError("");
-    const body = { collection_name: collName, event, code, enabled };
+    const body = { name: name.trim(), collection_name: collName, event, code, enabled };
     const res = isNew
       ? await api.post<ApiResponse<Hook>>("/api/admin/hooks", body)
       : await api.patch<ApiResponse<Hook>>(`/api/admin/hooks/${hook!.id}`, body);
@@ -256,7 +268,7 @@ function HookEditor({
   const headerNode = (
     <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
       <span style={{ fontSize: 14, fontWeight: 600 }}>
-        {isNew ? "New hook" : "Edit hook"}
+        {isNew ? "New hook" : (name || "Edit hook")}
       </span>
       {!isNew && hook && (
         <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
@@ -291,6 +303,16 @@ function HookEditor({
             flexWrap: "wrap",
           }}
         >
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Name</span>
+            <input
+              className="input"
+              style={{ height: 32, width: 240, fontSize: 13 }}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. auto-slug-posts"
+            />
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Collection</span>
             <Dropdown
