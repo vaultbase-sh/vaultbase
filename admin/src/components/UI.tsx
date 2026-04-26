@@ -1,7 +1,11 @@
-import React from "react";
+import React, { useRef, useImperativeHandle, forwardRef } from "react";
+import { Dialog } from "primereact/dialog";
+import { Sidebar } from "primereact/sidebar";
+import { InputSwitch } from "primereact/inputswitch";
+import { Toast as PrimeToast } from "primereact/toast";
 import Icon from "./Icon.tsx";
 
-// FieldTypeChip
+// ── FieldTypeChip ────────────────────────────────────────────────────────────
 export const FieldTypeChip: React.FC<{ type: string }> = ({ type }) => (
   <span className={`type-chip ${type}`}>
     <span className="dot" />
@@ -9,17 +13,12 @@ export const FieldTypeChip: React.FC<{ type: string }> = ({ type }) => (
   </span>
 );
 
-// Toggle
+// ── Toggle (PrimeReact InputSwitch) ──────────────────────────────────────────
 export const Toggle: React.FC<{ on: boolean; onChange: (v: boolean) => void }> = ({ on, onChange }) => (
-  <div
-    className={`toggle${on ? " on" : ""}`}
-    onClick={() => onChange(!on)}
-    role="switch"
-    aria-checked={on}
-  />
+  <InputSwitch checked={on} onChange={(e) => onChange(e.value)} />
 );
 
-// StatCard
+// ── StatCard ─────────────────────────────────────────────────────────────────
 export const StatCard: React.FC<{
   label: string;
   value: string | number;
@@ -43,7 +42,7 @@ export const StatCard: React.FC<{
   </div>
 );
 
-// Modal
+// ── Modal (PrimeReact Dialog) ─────────────────────────────────────────────────
 export const Modal: React.FC<{
   open: boolean;
   onClose: () => void;
@@ -51,29 +50,22 @@ export const Modal: React.FC<{
   footer?: React.ReactNode;
   children: React.ReactNode;
   width?: number;
-}> = ({ open, onClose, title, footer, children, width }) => {
-  if (!open) return null;
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal"
-        style={width ? { width } : undefined}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-header">
-          <h2>{title}</h2>
-          <button className="btn-icon close" onClick={onClose}>
-            <Icon name="x" size={14} />
-          </button>
-        </div>
-        <div className="modal-body">{children}</div>
-        {footer && <div className="modal-footer">{footer}</div>}
-      </div>
-    </div>
-  );
-};
+}> = ({ open, onClose, title, footer, children, width }) => (
+  <Dialog
+    visible={open}
+    onHide={onClose}
+    header={title}
+    footer={footer}
+    style={{ width: width ? `${width}px` : "520px" }}
+    modal
+    draggable={false}
+    resizable={false}
+  >
+    {children}
+  </Dialog>
+);
 
-// Drawer
+// ── Drawer (PrimeReact Sidebar) ───────────────────────────────────────────────
 export const Drawer: React.FC<{
   open: boolean;
   onClose: () => void;
@@ -81,37 +73,79 @@ export const Drawer: React.FC<{
   idLabel?: string;
   footer?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ open, onClose, title, idLabel, footer, children }) => {
-  if (!open) return null;
-  return (
-    <>
-      <div className="drawer-overlay" onClick={onClose} />
-      <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-header">
-          <h2>{title}</h2>
-          {idLabel && <span className="id mono">{idLabel}</span>}
-          <button className="btn-icon close" onClick={onClose}>
-            <Icon name="x" size={14} />
-          </button>
+}> = ({ open, onClose, title, idLabel, footer, children }) => (
+  <Sidebar
+    visible={open}
+    onHide={onClose}
+    position="right"
+    style={{ width: "480px" }}
+    header={
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontWeight: 600, fontSize: 14 }}>{title}</span>
+        {idLabel && (
+          <span
+            className="mono"
+            style={{
+              fontSize: 11,
+              color: "var(--text-muted)",
+              background: "rgba(255,255,255,0.05)",
+              padding: "2px 6px",
+              borderRadius: 4,
+            }}
+          >
+            {idLabel}
+          </span>
+        )}
+      </div>
+    }
+  >
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
+      <div style={{ flex: 1, overflow: "auto" }}>{children}</div>
+      {footer && (
+        <div
+          style={{
+            padding: "12px 0 0",
+            borderTop: "0.5px solid var(--border-default)",
+            display: "flex",
+            gap: 8,
+            justifyContent: "flex-end",
+            marginTop: 16,
+          }}
+        >
+          {footer}
         </div>
-        <div className="drawer-body">{children}</div>
-        {footer && <div className="drawer-footer">{footer}</div>}
-      </div>
-    </>
-  );
-};
-
-// Toast
-interface Toast { id: string; text: string; icon?: string; color?: string }
-export const ToastHost: React.FC<{ toasts: Toast[] }> = ({ toasts }) => (
-  <div className="toast-host">
-    {toasts.map((t) => (
-      <div className="toast" key={t.id}>
-        <Icon name={t.icon ?? "check"} size={14} style={{ color: t.color ?? "var(--success)" }} />
-        <span>{t.text}</span>
-      </div>
-    ))}
-  </div>
+      )}
+    </div>
+  </Sidebar>
 );
 
-export type { Toast };
+// ── Toast ─────────────────────────────────────────────────────────────────────
+export interface ToastHandle {
+  show: (text: string, severity?: "success" | "info" | "warn" | "error") => void;
+}
+
+export const ToastProvider = forwardRef<ToastHandle>((_, ref) => {
+  const toastRef = useRef<PrimeToast>(null);
+
+  useImperativeHandle(ref, () => ({
+    show(text: string, severity: "success" | "info" | "warn" | "error" = "success") {
+      toastRef.current?.show({
+        severity,
+        detail: text,
+        life: 3000,
+      });
+    },
+  }));
+
+  return <PrimeToast ref={toastRef} position="bottom-right" />;
+});
+
+ToastProvider.displayName = "ToastProvider";
+
+// Legacy interface kept for pages that pass icon strings
+export interface Toast { id: string; text: string; icon?: string; color?: string }
+
+// Stub kept for backward compat — ToastProvider replaced ToastHost
+export const ToastHost: React.FC<{ toasts: Toast[] }> = () => null;
+
+export type { Toast as ToastEntry };

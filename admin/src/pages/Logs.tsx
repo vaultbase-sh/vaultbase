@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DataTable } from "primereact/datatable";
+import { Column } from "primereact/column";
+import type { DataTablePageEvent } from "primereact/datatable";
 import { api, type ListResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Drawer } from "../components/UI.tsx";
@@ -116,74 +119,54 @@ export default function Logs() {
         }
       />
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : entries.length === 0 ? (
-            <div className="empty">No requests logged yet. Make some API calls.</div>
-          ) : (
-            <>
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th style={{ width: 90 }}>Time</th>
-                    <th style={{ width: 80 }}>Method</th>
-                    <th>Path</th>
-                    <th style={{ width: 80 }}>Status</th>
-                    <th className="right" style={{ width: 90 }}>Duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {entries.map((l) => (
-                    <tr
-                      key={l.id}
-                      className={openLog?.id === l.id ? "selected" : ""}
-                      onClick={() => setOpenLog(l)}
-                    >
-                      <td className="muted mono-cell">{relativeTime(l.created_at)} ago</td>
-                      <td>
-                        <span className={`badge method-${l.method.toLowerCase()}`}>{l.method}</span>
-                      </td>
-                      <td
-                        className="mono-cell"
-                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 0 }}
-                      >
-                        {l.path}
-                      </td>
-                      <td className={`mono-cell ${statusClass(l.status)}`} style={{ fontWeight: 500 }}>
-                        {l.status}
-                      </td>
-                      <td className={`right mono-cell ${l.duration_ms > 100 ? "status-4xx" : "muted"}`}>
-                        {l.duration_ms}ms
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="pagination">
-                <span>
-                  {(page - 1) * 50 + 1}–{Math.min(page * 50, total)} of {total.toLocaleString()}
-                </span>
-                <div className="pages">
-                  <button
-                    className="btn-icon"
-                    disabled={page === 1}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
-                    <Icon name="chevronLeft" size={12} />
-                  </button>
-                  <button
-                    className="btn-icon"
-                    disabled={entries.length < 50}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    <Icon name="chevronRight" size={12} />
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <DataTable
+          value={entries}
+          lazy
+          paginator
+          rows={50}
+          totalRecords={total}
+          first={(page - 1) * 50}
+          onPage={(e: DataTablePageEvent) => setPage(Math.floor(e.first / 50) + 1)}
+          loading={loading}
+          onRowClick={(e) => setOpenLog(e.data as LogEntry)}
+          selection={openLog}
+          dataKey="id"
+          emptyMessage="No requests logged yet. Make some API calls."
+          style={{ fontSize: 13 }}
+        >
+          <Column
+            header="Time"
+            style={{ width: 90 }}
+            body={(l: LogEntry) => <span className="muted mono-cell">{relativeTime(l.created_at)} ago</span>}
+          />
+          <Column
+            header="Method"
+            style={{ width: 80 }}
+            body={(l: LogEntry) => <span className={`badge method-${l.method.toLowerCase()}`}>{l.method}</span>}
+          />
+          <Column
+            header="Path"
+            body={(l: LogEntry) => (
+              <span className="mono-cell" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 400 }}>
+                {l.path}
+              </span>
+            )}
+          />
+          <Column
+            header="Status"
+            style={{ width: 80 }}
+            body={(l: LogEntry) => <span className={`mono-cell ${statusClass(l.status)}`} style={{ fontWeight: 500 }}>{l.status}</span>}
+          />
+          <Column
+            header="Duration"
+            style={{ width: 90, textAlign: "right" }}
+            body={(l: LogEntry) => (
+              <span className={`right mono-cell ${l.duration_ms > 100 ? "status-4xx" : "muted"}`}>
+                {l.duration_ms}ms
+              </span>
+            )}
+          />
+        </DataTable>
       </div>
 
       <Drawer

@@ -1,8 +1,8 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import "./styles/globals.css";
 import { Sidebar, type Route as AppRoute } from "./components/Shell.tsx";
-import { ToastHost, type Toast } from "./components/UI.tsx";
+import { ToastProvider, type ToastHandle } from "./components/UI.tsx";
 import Login from "./pages/Login.tsx";
 import Setup from "./pages/Setup.tsx";
 import Collections from "./pages/Collections.tsx";
@@ -27,23 +27,21 @@ function StubPage({ title, hint }: { title: string; hint: string }) {
 }
 
 function AppShell() {
-  const navigate = useNavigate();
+  const toastRef = useRef<ToastHandle>(null);
   const [route, setRoute] = useState<AppRoute>({ page: "collections" });
-  const [toasts, setToasts] = useState<Toast[]>([]);
 
   const adminEmail = (() => {
     const token = localStorage.getItem("vaultbase_admin_token");
     if (!token) return "";
     try {
       const payload = JSON.parse(atob(token.split(".")[1]!));
-      return payload.email as string ?? "";
+      return (payload.email as string) ?? "";
     } catch { return ""; }
   })();
 
-  const toast = useCallback((text: string, icon?: string) => {
-    const id = Math.random().toString(36).slice(2);
-    setToasts((t) => [...t, { id, text, icon }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3000);
+  const toast = useCallback((text: string, _icon?: string) => {
+    const severity = _icon === "trash" ? "warn" : "success";
+    toastRef.current?.show(text, severity);
   }, []);
 
   let page: React.ReactNode;
@@ -82,7 +80,7 @@ function AppShell() {
         <Sidebar route={route} setRoute={setRoute} adminEmail={adminEmail} />
         <main className="app-main">{page}</main>
       </div>
-      <ToastHost toasts={toasts} />
+      <ToastProvider ref={toastRef} />
     </>
   );
 }
