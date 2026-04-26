@@ -29,6 +29,7 @@ export default function Logs() {
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [showAdmin, setShowAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [openLog, setOpenLog] = useState<LogEntry | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -39,6 +40,7 @@ export default function Logs() {
       perPage: "50",
       method: methodFilter,
       status: statusFilter,
+      includeAdmin: String(showAdmin),
     });
     const res = await api.get<ListResponse<LogEntry>>(`/api/admin/logs?${params}`);
     if (res.data) {
@@ -46,12 +48,12 @@ export default function Logs() {
       setTotal(res.totalItems);
     }
     setLoading(false);
-  }, [methodFilter, statusFilter]);
+  }, [methodFilter, statusFilter, showAdmin]);
 
   useEffect(() => {
     setLoading(true);
     load(page);
-  }, [page, methodFilter, statusFilter]);
+  }, [page, methodFilter, statusFilter, showAdmin]);
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -94,6 +96,15 @@ export default function Logs() {
               <option value="4xx">4xx</option>
               <option value="5xx">5xx</option>
             </select>
+            <button
+              className={`btn ${showAdmin ? "btn-ghost" : "btn-ghost"}`}
+              onClick={() => { setShowAdmin((v) => !v); setPage(1); }}
+              title={showAdmin ? "Hide admin requests" : "Show admin requests"}
+              style={showAdmin ? { borderColor: "var(--accent)", color: "var(--accent-light)" } : undefined}
+            >
+              <Icon name="key" size={12} />
+              Admin {showAdmin ? "on" : "off"}
+            </button>
             <button
               className={`btn ${autoRefresh ? "btn-primary" : "btn-ghost"}`}
               onClick={() => setAutoRefresh((v) => !v)}

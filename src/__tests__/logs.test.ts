@@ -37,16 +37,25 @@ describe("listLogs", () => {
     for (let i = 0; i < 5; i++) {
       await insertLog("GET", "/api/test", 200, i, null);
     }
-    const result = await listLogs({ page: 1, perPage: 3, method: "all", status: "all" });
+    const result = await listLogs({ page: 1, perPage: 3, method: "all", status: "all", includeAdmin: false });
     expect(result.data).toHaveLength(3);
     expect(result.totalItems).toBe(5);
     expect(result.totalPages).toBe(2);
   });
 
+  it("hides admin paths by default", async () => {
+    await insertLog("POST", "/api/admin/auth/login", 200, 5, null);
+    await insertLog("GET", "/api/collections", 200, 2, null);
+    const hidden = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: false });
+    expect(hidden.totalItems).toBe(1);
+    const visible = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: true });
+    expect(visible.totalItems).toBe(2);
+  });
+
   it("filters by method", async () => {
     await insertLog("GET", "/api/a", 200, 1, null);
     await insertLog("POST", "/api/b", 201, 2, null);
-    const result = await listLogs({ page: 1, perPage: 10, method: "GET", status: "all" });
+    const result = await listLogs({ page: 1, perPage: 10, method: "GET", status: "all", includeAdmin: false });
     expect(result.data).toHaveLength(1);
     expect(result.data[0]!.method).toBe("GET");
   });
@@ -55,7 +64,7 @@ describe("listLogs", () => {
     await insertLog("GET", "/api/a", 200, 1, null);
     await insertLog("GET", "/api/b", 404, 2, null);
     await insertLog("POST", "/api/c", 422, 3, null);
-    const result = await listLogs({ page: 1, perPage: 10, method: "all", status: "4xx" });
+    const result = await listLogs({ page: 1, perPage: 10, method: "all", status: "4xx", includeAdmin: false });
     expect(result.data).toHaveLength(2);
     expect(result.data.every((r) => r.status >= 400 && r.status < 500)).toBe(true);
   });
@@ -71,4 +80,5 @@ describe("trimLogs", () => {
     const rows = await db.select().from(logs);
     expect(rows.length).toBeLessThanOrEqual(8);
   });
+
 });
