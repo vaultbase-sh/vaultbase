@@ -24,7 +24,6 @@ export const Sidebar: React.FC<{
     {
       label: "Auth",
       items: [
-        { id: "users" as Page, label: "Users", icon: "users" },
         { id: "tokens" as Page, label: "API tokens", icon: "key" },
         { id: "hooks" as Page, label: "Hooks", icon: "webhook" },
       ],
@@ -32,6 +31,7 @@ export const Sidebar: React.FC<{
     {
       label: "System",
       items: [
+        { id: "users" as Page, label: "Superusers", icon: "users" },
         { id: "settings" as Page, label: "Settings", icon: "settings" },
       ],
     },

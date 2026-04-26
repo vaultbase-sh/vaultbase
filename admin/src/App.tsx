@@ -11,6 +11,7 @@ import Records from "./pages/Records.tsx";
 import CollectionEdit from "./pages/CollectionEdit.tsx";
 import Logs from "./pages/Logs.tsx";
 import Settings from "./pages/Settings.tsx";
+import Superusers from "./pages/Superusers.tsx";
 
 function tokenValid(): boolean {
   const token = localStorage.getItem("vaultbase_admin_token");
@@ -98,7 +99,7 @@ function AppShell() {
       page = <Settings adminEmail={adminEmail} toast={toast} />;
       break;
     case "users":
-      page = <StubPage title="Users" hint="Manage auth collection users from Data → Collections." />;
+      page = <Superusers adminEmail={adminEmail} toast={toast} />;
       break;
     case "tokens":
       page = <StubPage title="API tokens" hint="Scoped tokens for programmatic access. Coming in v2." />;
