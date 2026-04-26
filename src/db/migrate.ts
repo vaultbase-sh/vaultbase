@@ -1,11 +1,11 @@
-import { createClient } from "@libsql/client";
+import type { Database } from "bun:sqlite";
 import { getDb } from "./client.ts";
 
 export async function runMigrations() {
   const db = getDb();
-  const client = (db as unknown as { $client: ReturnType<typeof createClient> }).$client;
+  const client = (db as unknown as { $client: Database }).$client;
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_collections (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -20,7 +20,7 @@ export async function runMigrations() {
     )
   `);
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_records (
       id TEXT PRIMARY KEY,
       collection_id TEXT NOT NULL REFERENCES vaultbase_collections(id) ON DELETE CASCADE,
@@ -30,7 +30,7 @@ export async function runMigrations() {
     )
   `);
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_users (
       id TEXT PRIMARY KEY,
       collection_id TEXT NOT NULL REFERENCES vaultbase_collections(id) ON DELETE CASCADE,
@@ -42,7 +42,7 @@ export async function runMigrations() {
     )
   `);
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_admin (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL,
@@ -51,7 +51,7 @@ export async function runMigrations() {
     )
   `);
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_files (
       id TEXT PRIMARY KEY,
       collection_id TEXT NOT NULL,
@@ -65,7 +65,7 @@ export async function runMigrations() {
     )
   `);
 
-  await client.execute(`
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_logs (
       id TEXT PRIMARY KEY,
       method TEXT NOT NULL,
