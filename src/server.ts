@@ -5,6 +5,7 @@ import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
 import { makeFilesPlugin } from "./api/files.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
+import { makeLogsPlugin } from "./api/logs.ts";
 import { subscribe, unsubscribe, disconnectAll } from "./realtime/manager.ts";
 
 interface ClientMessage {
@@ -14,7 +15,14 @@ interface ClientMessage {
 
 export function createServer(config: Config) {
   return new Elysia()
-    .ws("/api/realtime", {
+    .use(makeLogsPlugin(config.jwtSecret))
+    .use(makeAuthPlugin(config.jwtSecret))
+    .use(makeCollectionsPlugin(config.jwtSecret))
+    .use(makeFilesPlugin(config.uploadDir))
+    .use(makeAdminPlugin())
+    .get("/api/health", () => ({ data: { status: "ok" } }))
+    .use(makeRecordsPlugin(config.jwtSecret))
+    .ws("/realtime", {
       open(ws) {
         ws.send(JSON.stringify({ type: "connected" }));
       },
@@ -32,11 +40,5 @@ export function createServer(config: Config) {
       close(ws) {
         disconnectAll(ws);
       },
-    })
-    .use(makeAuthPlugin(config.jwtSecret))
-    .use(makeCollectionsPlugin(config.jwtSecret))
-    .use(makeRecordsPlugin(config.jwtSecret))
-    .use(makeFilesPlugin(config.uploadDir))
-    .use(makeAdminPlugin())
-    .get("/api/health", () => ({ data: { status: "ok" } }));
+    });
 }
