@@ -176,6 +176,6 @@ Track what's implemented vs missing compared to PocketBase.
 
 ## My Notes
 
-- [ ] There should be a full setup process for when a user downloads and first run the application, it should be a wizard helper to get it setup and run.
+- [x] There should be a full setup process for when a user downloads and first run the application, it should be a wizard helper to get it setup and run.
 - [x] Enforce protected URLs, when an admin logs in, they can't go back to the sign-in page, also, when a user is logged out, they can't enter the dashboard.
 - [x] Logs page should have full search and filters
