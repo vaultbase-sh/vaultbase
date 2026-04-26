@@ -52,7 +52,10 @@ export interface FieldDef {
   type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate" | "date" | "json" | "email" | "url";
   required?: boolean;
   system?: boolean;
+  collection?: string;
   options?: Record<string, unknown>;
+  onCreate?: boolean;
+  onUpdate?: boolean;
 }
 
 export interface Collection {
