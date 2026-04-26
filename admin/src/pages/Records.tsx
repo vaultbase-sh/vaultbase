@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
+import { Dropdown } from "primereact/dropdown";
 import {
   api, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
@@ -131,15 +132,13 @@ function FieldInput({
     const opts = (field.options?.values as string[] | undefined) ?? [];
     if (opts.length > 0) {
       return (
-        <select
-          className="input"
+        <Dropdown
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
+          options={["", ...opts].map((o) => ({ label: o || "— none —", value: o }))}
+          onChange={(e) => onChange(e.value)}
           disabled={readOnly}
-        >
-          <option value="">— none —</option>
-          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
+          style={{ width: "100%", height: 34 }}
+        />
       );
     }
   }

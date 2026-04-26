@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse, type Collection, type FieldDef } from "../api.ts";
 import { Modal, FieldTypeChip } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
@@ -154,15 +155,13 @@ export default function NewCollectionModal({
                 {f.system ? (
                   <FieldTypeChip type={f.type} />
                 ) : (
-                  <select
-                    className="input mono"
-                    style={{ height: 26, fontSize: 11, padding: "0 6px", width: "auto" }}
+                  <Dropdown
                     value={f.type}
-                    onChange={(e) => updateFieldType(i, e.target.value as FieldDef["type"])}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                    options={FIELD_TYPES}
+                    onChange={(e) => { e.originalEvent?.stopPropagation(); updateFieldType(i, e.value as FieldDef["type"]); }}
+                    style={{ height: 26, minWidth: 100, fontSize: 11 }}
+                    panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 11 }}
+                  />
                 )}
 
                 {f.system ? (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
+import { Dropdown } from "primereact/dropdown";
 import { api, type ListResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Drawer } from "../components/UI.tsx";
@@ -77,28 +78,29 @@ export default function Logs() {
         subtitle={`${total.toLocaleString()} entries · ${autoRefresh ? "live" : "paused"}`}
         actions={
           <>
-            <select
-              className="input"
-              style={{ height: 30, padding: "0 10px", width: "auto", fontSize: 12 }}
+            <Dropdown
               value={methodFilter}
-              onChange={(e) => { setMethodFilter(e.target.value); setPage(1); }}
-            >
-              <option value="all">All methods</option>
-              {["GET", "POST", "PATCH", "DELETE"].map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            <select
-              className="input"
-              style={{ height: 30, padding: "0 10px", width: "auto", fontSize: 12 }}
+              options={[
+                { label: "All methods", value: "all" },
+                { label: "GET",    value: "GET" },
+                { label: "POST",   value: "POST" },
+                { label: "PATCH",  value: "PATCH" },
+                { label: "DELETE", value: "DELETE" },
+              ]}
+              onChange={(e) => { setMethodFilter(e.value); setPage(1); }}
+              style={{ height: 30, minWidth: 130, fontSize: 12 }}
+            />
+            <Dropdown
               value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-            >
-              <option value="all">All status</option>
-              <option value="2xx">2xx</option>
-              <option value="4xx">4xx</option>
-              <option value="5xx">5xx</option>
-            </select>
+              options={[
+                { label: "All status", value: "all" },
+                { label: "2xx", value: "2xx" },
+                { label: "4xx", value: "4xx" },
+                { label: "5xx", value: "5xx" },
+              ]}
+              onChange={(e) => { setStatusFilter(e.value); setPage(1); }}
+              style={{ height: 30, minWidth: 120, fontSize: 12 }}
+            />
             <button
               className={`btn ${showAdmin ? "btn-ghost" : "btn-ghost"}`}
               onClick={() => { setShowAdmin((v) => !v); setPage(1); }}
