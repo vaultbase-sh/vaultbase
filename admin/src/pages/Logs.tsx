@@ -15,6 +15,9 @@ interface LogEntry {
   status: number;
   duration_ms: number;
   ip: string | null;
+  auth_id: string | null;
+  auth_type: "user" | "admin" | null;
+  auth_email: string | null;
   created_at: number;
 }
 
@@ -242,6 +245,24 @@ export default function Logs() {
                 <label className="label">IP</label>
                 <div className="mono muted" style={{ fontSize: 12 }}>{openLog.ip ?? "—"}</div>
               </div>
+            </div>
+            <div>
+              <label className="label">Authenticated as</label>
+              {openLog.auth_id ? (
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span className={`badge ${openLog.auth_type === "admin" ? "auth" : "base"}`}>
+                    {openLog.auth_type}
+                  </span>
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {openLog.auth_email ?? openLog.auth_id.slice(0, 12) + "…"}
+                  </span>
+                  <span className="muted mono" style={{ fontSize: 11 }}>
+                    {openLog.auth_id.slice(0, 12)}…
+                  </span>
+                </div>
+              ) : (
+                <div className="muted" style={{ fontSize: 12 }}>Anonymous</div>
+              )}
             </div>
             <div>
               <label className="label">Timestamp</label>

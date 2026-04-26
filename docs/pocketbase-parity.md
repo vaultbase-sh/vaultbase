@@ -123,7 +123,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Admin toggle in Logs UI
 - [x] Live auto-refresh in UI
 - [ ] Rule evaluation detail per log entry
-- [ ] Auth context per log entry (who made the request)
+- [x] Auth context per log entry (who made the request — id, type, email)
 
 ---
 
@@ -140,7 +140,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] API preview panel (test endpoints from admin UI — presets per collection, body editor, copy response)
 - [x] Backup & restore (download / upload SQLite snapshot)
 - [ ] Import / export CSV
-- [ ] DB indexes management
+- [x] DB indexes management (per-collection, single-field, optionally unique — list/create/drop from Schema editor)
 - [ ] Email template editor
 - [ ] SMTP config + test button
 - [ ] Migration file generation
@@ -154,7 +154,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Env var configuration
 - [x] JWT secret auto-generated + persisted
 - [ ] Rate limiting — not implemented
-- [ ] Rate limiting (configurable per route)
+- [x] Rate limiting (per-IP token bucket, env-configurable: `VAULTBASE_RATE_LIMIT`, `VAULTBASE_RATE_WINDOW_MS`)
 - [ ] Custom routes / middleware hooks
 - [ ] Server-side JS hooks on record events (`onCreate`, `onUpdate`, `onDelete`)
 - [ ] Cron-style scheduled jobs

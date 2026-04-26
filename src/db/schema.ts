@@ -52,6 +52,9 @@ export const logs = sqliteTable("vaultbase_logs", {
   status: integer("status").notNull(),
   duration_ms: integer("duration_ms").notNull(),
   ip: text("ip"),
+  auth_id: text("auth_id"),
+  auth_type: text("auth_type"),
+  auth_email: text("auth_email"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 

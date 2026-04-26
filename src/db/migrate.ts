@@ -66,7 +66,15 @@ export async function runMigrations() {
       status INTEGER NOT NULL,
       duration_ms INTEGER NOT NULL,
       ip TEXT,
+      auth_id TEXT,
+      auth_type TEXT,
+      auth_email TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+
+  // Idempotent ADD COLUMN for existing DBs
+  for (const col of ["auth_id", "auth_type", "auth_email"]) {
+    try { client.exec(`ALTER TABLE vaultbase_logs ADD COLUMN ${col} TEXT`); } catch { /* already exists */ }
+  }
 }

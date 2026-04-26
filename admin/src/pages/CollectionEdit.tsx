@@ -233,6 +233,8 @@ export default function CollectionEdit({
                 ))}
               </div>
             </div>
+
+            <IndexesSection collectionName={collection.name} fields={fields} toast={toast} />
           </div>
 
           {/* Right: field options */}
@@ -444,5 +446,125 @@ export default function CollectionEdit({
         </div>
       </div>
     </>
+  );
+}
+
+// ── Indexes section ────────────────────────────────────────────────────────
+interface IndexInfo { name: string; field: string; unique: boolean }
+
+function IndexesSection({
+  collectionName,
+  fields,
+  toast,
+}: {
+  collectionName: string;
+  fields: FieldDef[];
+  toast: (text: string, icon?: string) => void;
+}) {
+  const [indexes, setIndexes] = useState<IndexInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [newField, setNewField] = useState<string | null>(null);
+  const [newUnique, setNewUnique] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const res = await api.get<ApiResponse<IndexInfo[]>>(`/api/admin/collections/${collectionName}/indexes`);
+    if (res.data) setIndexes(res.data);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, [collectionName]);
+
+  async function handleAdd() {
+    if (!newField) return;
+    const res = await api.post<ApiResponse<IndexInfo>>(
+      `/api/admin/collections/${collectionName}/indexes`,
+      { field: newField, unique: newUnique }
+    );
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Index created");
+    setAdding(false); setNewField(null); setNewUnique(false);
+    load();
+  }
+
+  async function handleDelete(idx: IndexInfo) {
+    if (!confirm(`Drop index '${idx.name}'?`)) return;
+    const res = await api.delete<ApiResponse<null>>(
+      `/api/admin/collections/${collectionName}/indexes/${idx.name}`
+    );
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Index dropped", "trash");
+    load();
+  }
+
+  const indexable = fields.filter((f) => !f.system && f.type !== "autodate" && f.type !== "json" && f.type !== "file");
+
+  return (
+    <div className="editor-card">
+      <div className="editor-card-head">
+        <h3>Indexes</h3>
+        <span className="meta">{indexes.length} index{indexes.length === 1 ? "" : "es"}</span>
+        <button
+          className="btn btn-ghost"
+          style={{ marginLeft: "auto" }}
+          onClick={() => setAdding(!adding)}
+        >
+          <Icon name={adding ? "x" : "plus"} size={12} />
+          {adding ? "Cancel" : "Add index"}
+        </button>
+      </div>
+
+      {adding && (
+        <div style={{ padding: 12, borderBottom: "0.5px solid var(--border-default)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Dropdown
+            value={newField}
+            options={indexable.map((f) => ({ label: f.name, value: f.name }))}
+            onChange={(e) => setNewField(e.value)}
+            placeholder="Field"
+            style={{ height: 32, minWidth: 160 }}
+          />
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
+            <Toggle on={newUnique} onChange={setNewUnique} />
+            <span>Unique</span>
+          </label>
+          <button className="btn btn-primary" disabled={!newField} onClick={handleAdd}>
+            <Icon name="check" size={12} /> Create
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="empty">Loading…</div>
+      ) : indexes.length === 0 ? (
+        <div className="empty">
+          No indexes. Add one to speed up filter/sort queries on a field.
+        </div>
+      ) : (
+        <div>
+          {indexes.map((idx) => (
+            <div
+              key={idx.name}
+              className="field-row-edit"
+              style={{ padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}
+            >
+              <Icon name="layers" size={12} style={{ color: "var(--text-muted)" }} />
+              <span className="mono" style={{ fontSize: 12 }}>{idx.name}</span>
+              <span className="muted mono" style={{ fontSize: 11 }}>on {idx.field}</span>
+              {idx.unique && (
+                <span className="badge auth" style={{ fontSize: 10 }}>UNIQUE</span>
+              )}
+              <button
+                className="btn-icon danger"
+                style={{ marginLeft: "auto" }}
+                onClick={() => handleDelete(idx)}
+                title="Drop index"
+              >
+                <Icon name="trash" size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
