@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
+import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
 export default function Settings({
@@ -13,6 +15,7 @@ export default function Settings({
       <Topbar title="Settings" subtitle="Application configuration" />
       <div className="app-body" style={{ maxWidth: 880 }}>
         <ApplicationSection />
+        <RateLimitSection toast={toast} />
         <BackupSection toast={toast} />
         <DangerZone />
       </div>
@@ -49,6 +52,102 @@ function ApplicationSection() {
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           Runtime config is set via environment variables
         </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Rate limit ──────────────────────────────────────────────────────────────
+function RateLimitSection({ toast }: { toast: (text: string, icon?: string) => void }) {
+  const [enabled, setEnabled] = useState(true);
+  const [maxReq, setMaxReq] = useState("120");
+  const [windowSec, setWindowSec] = useState("60");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        if (res.data["rate_limit.enabled"] !== undefined) {
+          setEnabled(res.data["rate_limit.enabled"] === "1" || res.data["rate_limit.enabled"] === "true");
+        }
+        if (res.data["rate_limit.max"]) setMaxReq(res.data["rate_limit.max"]);
+        if (res.data["rate_limit.window_ms"]) {
+          const ms = parseInt(res.data["rate_limit.window_ms"]);
+          if (!isNaN(ms)) setWindowSec(String(Math.round(ms / 1000)));
+        }
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  async function handleSave() {
+    const max = parseInt(maxReq);
+    const winSec = parseInt(windowSec);
+    if (isNaN(max) || max < 1) { toast("Max requests must be a positive integer", "info"); return; }
+    if (isNaN(winSec) || winSec < 1) { toast("Window must be a positive integer (seconds)", "info"); return; }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "rate_limit.enabled": enabled ? "1" : "0",
+      "rate_limit.max": String(max),
+      "rate_limit.window_ms": String(winSec * 1000),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Rate limit settings saved");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Rate limiting</h3>
+        <span className="meta">per-IP token bucket</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Enabled</label>
+          <div className="help">When off, all requests bypass the limiter.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            {enabled ? "Limiting active" : "Bypass — no rate limit"}
+          </span>
+        </div>
+
+        <div className="label-block">
+          <label className="label">Max requests per window</label>
+          <div className="help">How many requests a single IP can make per window.</div>
+        </div>
+        <input
+          className="input mono"
+          type="number"
+          min={1}
+          value={maxReq}
+          onChange={(e) => setMaxReq(e.target.value)}
+          disabled={!enabled || loading}
+        />
+
+        <div className="label-block">
+          <label className="label">Window (seconds)</label>
+          <div className="help">Bucket refills proportionally across this window.</div>
+        </div>
+        <input
+          className="input mono"
+          type="number"
+          min={1}
+          value={windowSec}
+          onChange={(e) => setWindowSec(e.target.value)}
+          disabled={!enabled || loading}
+        />
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          Skipped: <code style={{ fontFamily: "var(--font-mono)" }}>/_/, /realtime, /api/health, /api/admin/logs</code>
+        </span>
+        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
       </div>
     </div>
   );
