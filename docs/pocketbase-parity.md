@@ -18,7 +18,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [ ] OTP / magic link auth
 - [ ] MFA / TOTP (2FA)
 - [ ] Anonymous auth
-- [ ] Token refresh endpoint (`POST /api/auth/refresh`)
+- [x] Token refresh endpoint (`POST /api/auth/refresh`)
 - [ ] Admin impersonation of users
 
 ---
@@ -63,8 +63,8 @@ Track what's implemented vs missing compared to PocketBase.
 
 ## API Rules
 
-- [-] 4 hardcoded patterns (`null`, `""`, `@request.auth.id != ""`, `@request.auth.id = id`)
-- [ ] Full expression language (`@request.auth.id`, nested `@collection.x.y`, AND/OR, comparisons, `length()`, etc.)
+- [x] Full expression language (=, !=, >, >=, <, <=, ~, &&, ||, parentheses, JSON fields, bool/null coercion)
+- [ ] `@request.auth.id` in rules (auth-contextual expressions)
 
 ---
 
@@ -72,11 +72,10 @@ Track what's implemented vs missing compared to PocketBase.
 
 - [x] List with pagination (`?page=&perPage=`)
 - [x] Create, read, update, delete
-- [x] Basic filter (`?filter=`)
-- [-] Sort — query param accepted but not wired in RecordService
-- [ ] Full filter expression parser (not just equality)
-- [ ] Multi-field sort (`?sort=-created,title`)
-- [ ] Relation expand (`?expand=author`)
+- [x] Filter expression parser (=, !=, >, >=, <, <=, ~, &&, ||, parens)
+- [x] Sort — single and multi-field (`?sort=-created,title`)
+- [x] Relation expand (`?expand=author`)
+- [ ] Nested expand (`?expand=author.profile`)
 - [ ] Nested expand (`?expand=author.profile`)
 - [ ] Field projection (`?fields=id,title`)
 - [ ] Skip total count (`?skipTotal=1`)
