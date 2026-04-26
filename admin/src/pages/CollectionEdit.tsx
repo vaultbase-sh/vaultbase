@@ -6,6 +6,7 @@ import {
 import { Topbar } from "../components/Shell.tsx";
 import type { Route } from "../components/Shell.tsx";
 import { FieldTypeChip, Toggle } from "../components/UI.tsx";
+import { RuleEditor } from "../components/RuleEditor.tsx";
 import Icon from "../components/Icon.tsx";
 
 const FIELD_TYPES: FieldDef["type"][] = [
@@ -201,10 +202,10 @@ export default function CollectionEdit({
                 {(["list", "view", "create", "update", "delete"] as const).map((r) => (
                   <div className="rule-row" key={r}>
                     <span className="rule-name">{r} rule</span>
-                    <input
-                      className="input mono rule-input"
+                    <RuleEditor
                       value={rules[r]}
-                      onChange={(e) => setRules((prev) => ({ ...prev, [r]: e.target.value }))}
+                      onChange={(v) => setRules((prev) => ({ ...prev, [r]: v }))}
+                      schemaFields={fields}
                       placeholder={r === "list" ? '@request.auth.id != ""' : ""}
                     />
                   </div>
