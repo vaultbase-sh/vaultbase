@@ -32,7 +32,7 @@ export async function loadConfig(): Promise<Config> {
     process.env["VAULTBASE_JWT_SECRET"] ?? (await loadJwtSecret(dataDir));
 
   return {
-    port: parseInt(process.env["VAULTBASE_PORT"] ?? "8090"),
+    port: parseInt(process.env["VAULTBASE_PORT"] ?? "8091"),
     dataDir,
     dbPath: join(dataDir, "data.db"),
     uploadDir,
