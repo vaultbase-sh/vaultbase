@@ -1,0 +1,43 @@
+const BASE = "";
+
+function getToken() {
+  return localStorage.getItem("vaultbase_admin_token") ?? "";
+}
+
+async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getToken()}`,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  get: <T>(path: string) => req<T>("GET", path),
+  post: <T>(path: string, body: unknown) => req<T>("POST", path, body),
+  patch: <T>(path: string, body: unknown) => req<T>("PATCH", path, body),
+  delete: <T>(path: string) => req<T>("DELETE", path),
+};
+
+export interface ApiResponse<T> {
+  data?: T;
+  error?: string;
+  code?: number;
+}
+
+export interface Collection {
+  id: string;
+  name: string;
+  fields: string;
+  list_rule: string | null;
+  view_rule: string | null;
+  create_rule: string | null;
+  update_rule: string | null;
+  delete_rule: string | null;
+  created_at: number;
+  updated_at: number;
+}
