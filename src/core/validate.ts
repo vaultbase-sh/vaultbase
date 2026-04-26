@@ -1,8 +1,8 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
-import { records, type Collection } from "../db/schema.ts";
+import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
-import { parseFields } from "./collections.ts";
+import { parseFields, userTableName } from "./collections.ts";
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -61,7 +61,7 @@ export async function validateRecord(
 
     // Unique check (DB query)
     if (field.options?.unique) {
-      const isUnique = await checkUnique(collection.id, field.name, value, existingId);
+      const isUnique = await checkUnique(collection, field.name, value, existingId);
       if (!isUnique) errors[field.name] = `${field.name} must be unique`;
     }
   }
@@ -151,16 +151,18 @@ function validateValue(field: FieldDef, value: unknown): string | null {
 }
 
 async function checkUnique(
-  collectionId: string,
+  collection: Collection,
   fieldName: string,
   value: unknown,
   existingId?: string
 ): Promise<boolean> {
-  const db = getDb();
-  const expr = sql`JSON_EXTRACT(${records.data}, ${`$.${fieldName}`}) = ${value as string | number}`;
-  const conditions = existingId
-    ? and(eq(records.collection_id, collectionId), expr, ne(records.id, existingId))
-    : and(eq(records.collection_id, collectionId), expr);
-  const rows = await db.select({ id: records.id }).from(records).where(conditions).limit(1);
-  return rows.length === 0;
+  const client = (getDb() as unknown as { $client: Database }).$client;
+  const tableRef = `"${userTableName(collection.name)}"`;
+  const where = existingId
+    ? `WHERE "${fieldName}" = ? AND "id" != ?`
+    : `WHERE "${fieldName}" = ?`;
+  type Binding = string | number | bigint | boolean | null | Uint8Array;
+  const params: Binding[] = existingId ? [value as Binding, existingId] : [value as Binding];
+  const row = client.prepare(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`).get(...params);
+  return row === null || row === undefined;
 }
