@@ -15,7 +15,6 @@
     "db:reset": "bun src/scripts/reset.ts"
   },
   "dependencies": {
-    "@libsql/client": "^0.14.0",
     "drizzle-orm": "^0.44.0",
     "elysia": "^1.2.0",
     "jose": "^5.9.0"

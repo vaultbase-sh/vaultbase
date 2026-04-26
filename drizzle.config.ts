@@ -3,8 +3,8 @@ import type { Config } from "drizzle-kit";
 export default {
   schema: "./src/db/schema.ts",
   out: "./drizzle",
-  dialect: "turso",
+  dialect: "sqlite",
   dbCredentials: {
-    url: "file:./vaultbase_data/data.db",
+    url: "./vaultbase_data/data.db",
   },
 } satisfies Config;
