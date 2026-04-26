@@ -562,7 +562,7 @@ a { color: inherit; text-decoration: none; }
   color: white;
   flex-shrink: 0;
 }
-.coll-icon.indigo { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), blue 30%)); }
+.coll-icon.cyan { background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), blue 30%)); }
 .coll-icon.teal   { background: linear-gradient(135deg, #14b8a6, #0d9488); }
 .coll-icon.amber  { background: linear-gradient(135deg, #f59e0b, #d97706); }
 .coll-icon.rose   { background: linear-gradient(135deg, #f43f5e, #e11d48); }
