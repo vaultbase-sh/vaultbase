@@ -1,0 +1,119 @@
+import Elysia, { t } from "elysia";
+import * as jose from "jose";
+import type { AuthContext } from "../core/rules.ts";
+import { evaluateRule } from "../core/rules.ts";
+import { getCollection } from "../core/collections.ts";
+import {
+  createRecord,
+  deleteRecord,
+  getRecord,
+  listRecords,
+  updateRecord,
+} from "../core/records.ts";
+
+async function getAuthContext(
+  request: Request,
+  jwtSecret: string
+): Promise<AuthContext | null> {
+  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  if (!token) return null;
+  const secret = new TextEncoder().encode(jwtSecret);
+  try {
+    const { payload } = await jose.jwtVerify(token, secret);
+    const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+    if (aud !== "user" && aud !== "admin") return null;
+    return { id: payload["id"] as string, type: aud as "user" | "admin" };
+  } catch {
+    return null;
+  }
+}
+
+export function makeRecordsPlugin(jwtSecret: string) {
+  return new Elysia({ name: "records" })
+    .get(
+      "/api/:collection",
+      async ({ params, query, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        const auth = await getAuthContext(request, jwtSecret);
+        if (!evaluateRule(col.list_rule, auth, null)) {
+          set.status = 403;
+          return { error: "Forbidden", code: 403 };
+        }
+        const opts: import("../core/records.ts").ListOptions = {
+          page: query.page ? parseInt(query.page) : 1,
+          perPage: query.perPage ? parseInt(query.perPage) : 30,
+        };
+        if (query.filter) opts.filter = query.filter;
+        if (query.sort) opts.sort = query.sort;
+        if (query.expand) opts.expand = query.expand;
+        return listRecords(params.collection, opts);
+      },
+      {
+        query: t.Object({
+          page: t.Optional(t.String()),
+          perPage: t.Optional(t.String()),
+          filter: t.Optional(t.String()),
+          sort: t.Optional(t.String()),
+          expand: t.Optional(t.String()),
+        }),
+      }
+    )
+    .get("/api/:collection/:id", async ({ params, request, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      const auth = await getAuthContext(request, jwtSecret);
+      const record = await getRecord(params.collection, params.id);
+      if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
+      if (!evaluateRule(col.view_rule, auth, record.id)) {
+        set.status = 403;
+        return { error: "Forbidden", code: 403 };
+      }
+      return { data: record };
+    })
+    .post(
+      "/api/:collection",
+      async ({ params, body, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        const auth = await getAuthContext(request, jwtSecret);
+        if (!evaluateRule(col.create_rule, auth, null)) {
+          set.status = 403;
+          return { error: "Forbidden", code: 403 };
+        }
+        const record = await createRecord(params.collection, body as Record<string, unknown>);
+        return { data: record };
+      },
+      { body: t.Any() }
+    )
+    .patch(
+      "/api/:collection/:id",
+      async ({ params, body, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        const auth = await getAuthContext(request, jwtSecret);
+        const existing = await getRecord(params.collection, params.id);
+        if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
+        if (!evaluateRule(col.update_rule, auth, existing.id)) {
+          set.status = 403;
+          return { error: "Forbidden", code: 403 };
+        }
+        const record = await updateRecord(params.collection, params.id, body as Record<string, unknown>);
+        return { data: record };
+      },
+      { body: t.Any() }
+    )
+    .delete("/api/:collection/:id", async ({ params, request, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      const auth = await getAuthContext(request, jwtSecret);
+      const existing = await getRecord(params.collection, params.id);
+      if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
+      if (!evaluateRule(col.delete_rule, auth, existing.id)) {
+        set.status = 403;
+        return { error: "Forbidden", code: 403 };
+      }
+      await deleteRecord(params.collection, params.id);
+      return { data: null };
+    });
+}
