@@ -47,6 +47,7 @@ export const files = sqliteTable("vaultbase_files", {
 
 export const hooks = sqliteTable("vaultbase_hooks", {
   id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
   collection_name: text("collection_name").notNull().default(""),
   event: text("event").notNull(),
   code: text("code").notNull().default(""),
