@@ -1,4 +1,5 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { parseFilter } from "./filter.ts";
 import { getDb } from "../db/client.ts";
 import { records, type NewRecord } from "../db/schema.ts";
 import { getCollection, parseFields } from "./collections.ts";
@@ -56,28 +57,58 @@ export async function listRecords(
   const perPage = opts.perPage ?? 30;
   const offset = (page - 1) * perPage;
 
+  // Build ORDER BY from ?sort=-field1,field2 (prefix - = desc)
+  const orderBy = (opts.sort ?? "-created_at")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const descending = s.startsWith("-");
+      const field = descending ? s.slice(1) : s;
+      // Map user-facing field names to DB columns
+      const col = field === "created" ? "created_at"
+                : field === "updated" ? "updated_at"
+                : field === "id"      ? "id"
+                : null; // user data fields live in JSON blob — sort by JSON_EXTRACT
+      if (col === "created_at") return descending ? desc(records.created_at) : asc(records.created_at);
+      if (col === "updated_at") return descending ? desc(records.updated_at) : asc(records.updated_at);
+      if (col === "id")         return descending ? desc(records.id) : asc(records.id);
+      // JSON field: ORDER BY JSON_EXTRACT(data, '$.field')
+      const expr = sql`JSON_EXTRACT(${records.data}, ${`$.${field}`})`;
+      return descending ? desc(expr) : asc(expr);
+    });
+
+  const filterClause = opts.filter ? parseFilter(opts.filter) : undefined;
+  const where = filterClause
+    ? and(eq(records.collection_id, col.id), filterClause)
+    : eq(records.collection_id, col.id);
+
   const rows = await db
     .select()
     .from(records)
-    .where(eq(records.collection_id, col.id))
+    .where(where)
+    .orderBy(...orderBy)
     .limit(perPage)
     .offset(offset);
 
   const countResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(records)
-    .where(eq(records.collection_id, col.id));
+    .where(where);
 
   const totalItems = countResult[0]?.count ?? 0;
   const totalPages = Math.ceil(totalItems / perPage);
 
-  return {
-    data: rows.map((r) => toMeta(r, col.name)),
-    page,
-    perPage,
-    totalItems,
-    totalPages,
-  };
+  const items = rows.map((r) => toMeta(r, col.name));
+
+  // Expand relation fields
+  if (opts.expand) {
+    const expandFields = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
+    const schema = parseFields(col.fields);
+    await expandRelations(items, expandFields, schema);
+  }
+
+  return { data: items, page, perPage, totalItems, totalPages };
 }
 
 export async function getRecord(
@@ -177,4 +208,49 @@ export async function deleteRecord(
     .delete(records)
     .where(and(eq(records.id, id), eq(records.collection_id, col.id)));
   broadcast(col.name, { type: "delete", collection: col.name, id });
+}
+
+// ── Relation expand ──────────────────────────────────────────────────────────
+
+async function expandRelations(
+  items: RecordWithMeta[],
+  expandFields: string[],
+  schema: ReturnType<typeof parseFields>
+): Promise<void> {
+  const db = getDb();
+
+  for (const fieldName of expandFields) {
+    const fieldDef = schema.find((f) => f.name === fieldName && f.type === "relation");
+    if (!fieldDef) continue;
+
+    const targetCollName = fieldDef.collection;
+    if (!targetCollName) continue;
+
+    const targetCol = await getCollection(targetCollName);
+    if (!targetCol) continue;
+
+    // Collect all referenced IDs across items
+    const ids = [...new Set(
+      items
+        .map((item) => item[fieldName])
+        .filter((v): v is string => typeof v === "string" && v.length > 0)
+    )];
+    if (ids.length === 0) continue;
+
+    const related = await db
+      .select()
+      .from(records)
+      .where(and(eq(records.collection_id, targetCol.id), inArray(records.id, ids)));
+
+    const byId = new Map(related.map((r) => [r.id, toMeta(r, targetCol.name)]));
+
+    // Attach expanded record to each item
+    for (const item of items) {
+      const refId = item[fieldName];
+      if (typeof refId === "string" && byId.has(refId)) {
+        if (!item.expand) (item as RecordWithMeta & { expand: Record<string, unknown> }).expand = {};
+        (item as RecordWithMeta & { expand: Record<string, unknown> }).expand[fieldName] = byId.get(refId);
+      }
+    }
+  }
 }

@@ -180,6 +180,7 @@ export default function Records({
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState("");
   const [appliedFilter, setAppliedFilter] = useState("");
+  const [sort, setSort] = useState("-created");
   const [openRec, setOpenRec] = useState<RecordRow | null>(null);
   const [editData, setEditData] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -194,7 +195,7 @@ export default function Records({
   async function loadRecords(p = 1, f = appliedFilter) {
     if (!collection) return;
     setLoading(true);
-    const params = new URLSearchParams({ page: String(p), perPage: "30" });
+    const params = new URLSearchParams({ page: String(p), perPage: "30", sort });
     if (f) params.set("filter", f);
     const res = await api.get<ListResponse<RecordRow>>(
       `/api/${collection.name}?${params}`
@@ -204,7 +205,7 @@ export default function Records({
   }
 
   useEffect(() => { loadCollection(); }, [collId]);
-  useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter]);
+  useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort]);
 
   function openRecord(r: RecordRow) {
     setOpenRec(r);
@@ -317,15 +318,19 @@ export default function Records({
             )}
           </div>
           <div className="right">
-            <button
-              className="btn btn-ghost"
-              disabled
-              title="Sort available in v2"
-              style={{ opacity: 0.4, cursor: "not-allowed" }}
-            >
-              <Icon name="sort" size={12} /> Sort
-              <span style={{ fontSize: 10, marginLeft: 4, color: "var(--text-muted)" }}>v2</span>
-            </button>
+            <Dropdown
+              value={sort}
+              options={[
+                { label: "Created ↓", value: "-created" },
+                { label: "Created ↑", value: "created" },
+                { label: "Updated ↓", value: "-updated" },
+                { label: "Updated ↑", value: "updated" },
+                { label: "ID ↓", value: "-id" },
+                { label: "ID ↑", value: "id" },
+              ]}
+              onChange={(e) => { setSort(e.value); setPage(1); }}
+              style={{ height: 30, minWidth: 130, fontSize: 12 }}
+            />
           </div>
         </div>
 
