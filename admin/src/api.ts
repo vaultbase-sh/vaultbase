@@ -1,5 +1,7 @@
 const BASE = "";
 
+const PUBLIC_PATHS = ["/api/admin/setup", "/api/admin/auth/login", "/api/auth/refresh"];
+
 function getToken() {
   return localStorage.getItem("vaultbase_admin_token") ?? "";
 }
@@ -13,6 +15,13 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  // Auto-redirect to login on 401 (except for explicitly public endpoints)
+  if (res.status === 401 && !PUBLIC_PATHS.some((p) => path.startsWith(p))) {
+    localStorage.removeItem("vaultbase_admin_token");
+    if (!window.location.pathname.startsWith("/_/login") && !window.location.pathname.startsWith("/_/setup")) {
+      window.location.href = "/_/login";
+    }
+  }
   return res.json() as Promise<T>;
 }
 

@@ -56,11 +56,13 @@ export interface ListLogsOptions {
   method: string;
   status: string;
   includeAdmin: boolean;
+  search?: string;
+  minDuration?: number;
 }
 
 export async function listLogs(opts: ListLogsOptions) {
   const db = getDb();
-  const { page, perPage, method, status, includeAdmin } = opts;
+  const { page, perPage, method, status, includeAdmin, search, minDuration } = opts;
   const offset = (page - 1) * perPage;
 
   const conditions = [];
@@ -69,6 +71,8 @@ export async function listLogs(opts: ListLogsOptions) {
   if (status === "2xx") conditions.push(and(gte(logs.status, 200), lt(logs.status, 300))!);
   if (status === "4xx") conditions.push(and(gte(logs.status, 400), lt(logs.status, 500))!);
   if (status === "5xx") conditions.push(gte(logs.status, 500));
+  if (search) conditions.push(like(logs.path, `%${search}%`));
+  if (typeof minDuration === "number" && minDuration > 0) conditions.push(gte(logs.duration_ms, minDuration));
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -127,13 +131,17 @@ export function makeLogsPlugin(jwtSecret: string) {
         }
         const page = Math.max(1, parseInt(query.page ?? "1") || 1);
         const perPage = Math.min(200, Math.max(1, parseInt(query.perPage ?? "50") || 50));
-        return listLogs({
+        const minDuration = query.minDuration ? parseInt(query.minDuration) || 0 : 0;
+        const opts: ListLogsOptions = {
           page,
           perPage,
           method: query.method ?? "all",
           status: query.status ?? "all",
           includeAdmin: query.includeAdmin === "true",
-        });
+          minDuration,
+        };
+        if (query.search) opts.search = query.search;
+        return listLogs(opts);
       },
       {
         query: t.Object({
@@ -142,6 +150,8 @@ export function makeLogsPlugin(jwtSecret: string) {
           method: t.Optional(t.String()),
           status: t.Optional(t.String()),
           includeAdmin: t.Optional(t.String()),
+          search: t.Optional(t.String()),
+          minDuration: t.Optional(t.String()),
         }),
       }
     );

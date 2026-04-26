@@ -34,6 +34,9 @@ export default function Logs() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [minDuration, setMinDuration] = useState("0");
   const [loading, setLoading] = useState(true);
   const [openLog, setOpenLog] = useState<LogEntry | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -46,18 +49,20 @@ export default function Logs() {
       status: statusFilter,
       includeAdmin: String(showAdmin),
     });
+    if (appliedSearch) params.set("search", appliedSearch);
+    if (minDuration && parseInt(minDuration) > 0) params.set("minDuration", minDuration);
     const res = await api.get<ListResponse<LogEntry>>(`/api/admin/logs?${params}`);
     if (res.data) {
       setEntries(res.data);
       setTotal(res.totalItems);
     }
     setLoading(false);
-  }, [methodFilter, statusFilter, showAdmin]);
+  }, [methodFilter, statusFilter, showAdmin, appliedSearch, minDuration]);
 
   useEffect(() => {
     setLoading(true);
     load(page);
-  }, [page, methodFilter, statusFilter, showAdmin]);
+  }, [page, methodFilter, statusFilter, showAdmin, appliedSearch, minDuration]);
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -121,6 +126,42 @@ export default function Logs() {
         }
       />
       <div className="app-body">
+        <div className="filter-bar">
+          <div
+            className="input-group"
+            style={{ flex: 1, maxWidth: 480 }}
+            onKeyDown={(e) => e.key === "Enter" && (setAppliedSearch(search), setPage(1))}
+          >
+            <Icon name="search" size={13} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="search path — press Enter (e.g. /api/posts)"
+            />
+            {appliedSearch && (
+              <button
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 0 }}
+                onClick={() => { setSearch(""); setAppliedSearch(""); setPage(1); }}
+                title="Clear search"
+              >
+                <Icon name="x" size={12} />
+              </button>
+            )}
+          </div>
+          <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>min duration:</span>
+            <input
+              className="input mono"
+              style={{ width: 80, height: 30, fontSize: 12, padding: "0 8px" }}
+              type="number"
+              min={0}
+              value={minDuration}
+              onChange={(e) => { setMinDuration(e.target.value); setPage(1); }}
+              placeholder="0"
+            />
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>ms</span>
+          </div>
+        </div>
         <DataTable
           value={entries}
           lazy

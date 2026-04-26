@@ -76,7 +76,6 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Sort — single and multi-field (`?sort=-created,title`)
 - [x] Relation expand (`?expand=author`)
 - [ ] Nested expand (`?expand=author.profile`)
-- [ ] Nested expand (`?expand=author.profile`)
 - [ ] Field projection (`?fields=id,title`)
 - [ ] Skip total count (`?skipTotal=1`)
 - [ ] Batch API (create/update/delete multiple in one request)
@@ -145,7 +144,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] SQLite via libSQL
 - [x] Env var configuration
 - [x] JWT secret auto-generated + persisted
-- [x] Rate limiting — not implemented
+- [ ] Rate limiting — not implemented
 - [ ] Backup & restore
 - [ ] Rate limiting (configurable per route)
 - [ ] Custom routes / middleware hooks
@@ -174,3 +173,9 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Bun runtime
 - [x] Drizzle ORM (schema-driven, type-safe queries)
 - [x] PrimeReact admin UI
+
+## My Notes
+
+- [ ] There should be a full setup process for when a user downloads and first run the application, it should be a wizard helper to get it setup and run.
+- [ ] Enforce protected URLs, when an admin logs in, they can't go back to the sign-in page, also, when a user is logged out, they can't enter the dashboard.
+- [ ] Logs page should have full search and filters
