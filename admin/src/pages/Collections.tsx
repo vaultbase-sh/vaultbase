@@ -62,8 +62,14 @@ export default function Collections({
         subtitle={`${collections.length} collections`}
         actions={
           <>
-            <button className="btn btn-ghost">
+            <button
+              className="btn btn-ghost"
+              disabled
+              title="Import available in v2"
+              style={{ opacity: 0.4, cursor: "not-allowed" }}
+            >
               <Icon name="upload" size={12} /> Import
+              <span style={{ fontSize: 10, marginLeft: 4, color: "var(--text-muted)" }}>v2</span>
             </button>
             <button className="btn btn-primary" onClick={() => setShowNew(true)}>
               <Icon name="plus" size={12} /> New collection

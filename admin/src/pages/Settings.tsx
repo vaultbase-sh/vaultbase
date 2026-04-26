@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { api, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -10,25 +9,14 @@ export default function Settings({
   adminEmail: string;
   toast: (text: string, icon?: string) => void;
 }) {
-  const [email, setEmail] = useState(adminEmail);
-  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
   const [resetConfirm, setResetConfirm] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  async function handleSaveAccount(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    await new Promise((r) => setTimeout(r, 400));
-    setSaving(false);
-    toast("Admin account saved");
-  }
 
   return (
     <>
       <Topbar title="Settings" subtitle="Application & admin configuration" />
       <div className="app-body" style={{ maxWidth: 880 }}>
 
-        {/* Admin account */}
+        {/* Admin account — read-only in v1, update endpoint coming in v2 */}
         <div className="settings-section">
           <div className="settings-section-head">
             <h3>Admin account</h3>
@@ -37,53 +25,50 @@ export default function Settings({
           <div className="settings-section-body">
             <div className="label-block">
               <label className="label">Email</label>
-              <div className="help">Used to sign in to this admin panel.</div>
+              <div className="help">Currently signed in as this address.</div>
             </div>
-            <input
-              className="input"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+            <input className="input" value={adminEmail} readOnly />
+
             <div className="label-block span2">
               <div className="divider" style={{ margin: 0 }} />
             </div>
+
             <div className="label-block">
               <label className="label">Change password</label>
-              <div className="help">Min 8 characters.</div>
+              <div className="help">
+                Admin credential update available in v2.{" "}
+                Use{" "}
+                <code
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    background: "rgba(255,255,255,0.05)",
+                    padding: "1px 5px",
+                    borderRadius: 3,
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  VAULTBASE_JWT_SECRET
+                </code>{" "}
+                env var to rotate the signing key now.
+              </div>
             </div>
             <div className="col">
-              <input
-                className="input"
-                type="password"
-                placeholder="Current password"
-                value={pwForm.current}
-                onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })}
-              />
-              <input
-                className="input"
-                type="password"
-                placeholder="New password"
-                value={pwForm.next}
-                onChange={(e) => setPwForm({ ...pwForm, next: e.target.value })}
-              />
-              <input
-                className="input"
-                type="password"
-                placeholder="Confirm new password"
-                value={pwForm.confirm}
-                onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })}
-              />
+              <input className="input" type="password" placeholder="Current password" disabled />
+              <input className="input" type="password" placeholder="New password" disabled />
+              <input className="input" type="password" placeholder="Confirm new password" disabled />
             </div>
           </div>
           <div className="settings-section-foot">
-            <button className="btn btn-primary" disabled={saving} onClick={handleSaveAccount}>
-              {saving ? "Saving…" : "Save changes"}
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Admin profile update available in v2
+            </span>
+            <button className="btn btn-primary" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
+              Save changes
             </button>
           </div>
         </div>
 
-        {/* Application */}
+        {/* Application config — runtime values are env-driven, not editable via UI in v1 */}
         <div className="settings-section">
           <div className="settings-section-head">
             <h3>Application</h3>
@@ -91,35 +76,35 @@ export default function Settings({
           </div>
           <div className="settings-section-body">
             <div className="label-block">
-              <label className="label">App name</label>
-              <div className="help">Shown in the admin header.</div>
+              <label className="label">Port</label>
+              <div className="help">Set via <code style={{ fontFamily: "var(--font-mono)", background: "rgba(255,255,255,0.05)", padding: "1px 5px", borderRadius: 3, color: "var(--text-secondary)" }}>VAULTBASE_PORT</code></div>
             </div>
-            <input className="input" defaultValue="vaultbase" />
-
-            <div className="label-block">
-              <label className="label">Base URL</label>
-              <div className="help">Public URL of your instance.</div>
-            </div>
-            <input className="input mono" defaultValue="http://localhost:8091" />
+            <input className="input mono" defaultValue="8091" disabled />
 
             <div className="label-block">
               <label className="label">Data directory</label>
-              <div className="help">Configured via <span className="mono">VAULTBASE_DATA_DIR</span>.</div>
+              <div className="help">Set via <code style={{ fontFamily: "var(--font-mono)", background: "rgba(255,255,255,0.05)", padding: "1px 5px", borderRadius: 3, color: "var(--text-secondary)" }}>VAULTBASE_DATA_DIR</code></div>
             </div>
             <input className="input mono" defaultValue="./vaultbase_data" disabled />
+
+            <div className="label-block">
+              <label className="label">JWT secret</label>
+              <div className="help">Auto-generated on first run. Stored in <code style={{ fontFamily: "var(--font-mono)", background: "rgba(255,255,255,0.05)", padding: "1px 5px", borderRadius: 3, color: "var(--text-secondary)" }}>data_dir/.secret</code></div>
+            </div>
+            <input className="input mono" value="••••••••••••••••••••••••••••••••" disabled />
           </div>
           <div className="settings-section-foot">
-            <button className="btn btn-primary" onClick={() => toast("Application settings saved")}>
-              Save changes
-            </button>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Runtime config is set via environment variables
+            </span>
           </div>
         </div>
 
-        {/* SMTP */}
+        {/* SMTP — v2 */}
         <div className="settings-section disabled">
           <div className="settings-section-head">
             <h3>SMTP</h3>
-            <span className="badge auth">Coming in v2</span>
+            <span className="badge auth" style={{ marginLeft: 8 }}>Available in v2</span>
             <span className="meta" style={{ marginLeft: "auto" }}>used for password reset emails</span>
           </div>
           <div className="settings-section-body">
@@ -156,12 +141,20 @@ export default function Settings({
                 <Icon name="logout" size={12} /> Sign out
               </button>
             </div>
-            <div className="label-block span2"><div className="divider" style={{ margin: 0 }} /></div>
+
+            <div className="label-block span2">
+              <div className="divider" style={{ margin: 0 }} />
+            </div>
+
             <div className="label-block">
               <label className="label" style={{ color: "var(--danger)" }}>Reset all data</label>
               <div className="help">
                 Deletes all collections and records. Type{" "}
                 <span className="mono" style={{ color: "var(--danger)" }}>delete</span> to confirm.
+                <br />
+                <span style={{ color: "var(--text-muted)", fontSize: 10 }}>
+                  Bulk reset endpoint available in v2. For now, delete collections individually.
+                </span>
               </div>
             </div>
             <div className="row">
@@ -171,13 +164,16 @@ export default function Settings({
                 value={resetConfirm}
                 onChange={(e) => setResetConfirm(e.target.value)}
                 style={{ maxWidth: 200 }}
+                disabled
               />
-              <button className="btn btn-danger" disabled={resetConfirm !== "delete"}>
+              <button className="btn btn-danger" disabled style={{ opacity: 0.4, cursor: "not-allowed" }}>
                 <Icon name="trash" size={12} /> Reset all data
+                <span style={{ fontSize: 10, marginLeft: 4 }}>v2</span>
               </button>
             </div>
           </div>
         </div>
+
       </div>
     </>
   );
