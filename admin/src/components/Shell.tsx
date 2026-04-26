@@ -3,7 +3,7 @@ import Icon from "./Icon.tsx";
 
 export type Page =
   | "collections" | "records" | "collection-edit"
-  | "logs" | "users" | "tokens" | "hooks" | "settings";
+  | "logs" | "users" | "tokens" | "hooks" | "settings" | "api-preview";
 
 export interface Route { page: Page; coll?: string }
 
@@ -19,6 +19,7 @@ export const Sidebar: React.FC<{
       items: [
         { id: "collections" as Page, label: "Collections", icon: "database" },
         { id: "logs" as Page, label: "Logs", icon: "scroll" },
+        { id: "api-preview" as Page, label: "API preview", icon: "play" },
       ],
     },
     {

@@ -13,6 +13,10 @@ export interface ListOptions {
   filter?: string;
   sort?: string;
   expand?: string;
+  /** Comma-separated field projection — only these keys returned */
+  fields?: string;
+  /** Skip the COUNT query for faster lists; totalItems/totalPages return -1 */
+  skipTotal?: boolean;
   /** Access rule expression — applied as additional WHERE clause */
   accessRule?: string;
   /** Auth context used to substitute @request.auth.X in accessRule and filter */
@@ -100,15 +104,18 @@ export async function listRecords(
     .limit(perPage)
     .offset(offset);
 
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(records)
-    .where(where);
+  let totalItems = -1;
+  let totalPages = -1;
+  if (!opts.skipTotal) {
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(records)
+      .where(where);
+    totalItems = countResult[0]?.count ?? 0;
+    totalPages = Math.ceil(totalItems / perPage);
+  }
 
-  const totalItems = countResult[0]?.count ?? 0;
-  const totalPages = Math.ceil(totalItems / perPage);
-
-  const items = rows.map((r) => toMeta(r, col.name));
+  let items = rows.map((r) => toMeta(r, col.name));
 
   // Expand relation fields
   if (opts.expand) {
@@ -117,7 +124,23 @@ export async function listRecords(
     await expandRelations(items, expandFields, schema);
   }
 
+  // Field projection
+  if (opts.fields) {
+    const keep = opts.fields.split(",").map((s) => s.trim()).filter(Boolean);
+    items = items.map((it) => projectFields(it, keep));
+  }
+
   return { data: items, page, perPage, totalItems, totalPages };
+}
+
+function projectFields(item: RecordWithMeta, keep: string[]): RecordWithMeta {
+  const out: Record<string, unknown> = {};
+  for (const k of keep) {
+    if (k in item) out[k] = item[k as keyof RecordWithMeta];
+  }
+  // Always preserve id so clients can still identify records
+  if (!("id" in out) && "id" in item) out["id"] = item.id;
+  return out as RecordWithMeta;
 }
 
 export async function getRecord(

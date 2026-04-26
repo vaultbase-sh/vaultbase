@@ -60,8 +60,8 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] URL format validation
 - [x] Select value whitelist (single + multiple)
 - [x] 422 response with per-field error details
-- [ ] Max file size enforced server-side
-- [ ] MIME type whitelist enforced server-side
+- [x] Max file size enforced server-side
+- [x] MIME type whitelist enforced server-side (supports `image/*` patterns)
 - [ ] Relation target existence check
 - [ ] Relation cascade behavior (cascade / set null / restrict)
 
@@ -85,8 +85,8 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Sort — single and multi-field (`?sort=-created,title`)
 - [x] Relation expand (`?expand=author`)
 - [ ] Nested expand (`?expand=author.profile`)
-- [ ] Field projection (`?fields=id,title`)
-- [ ] Skip total count (`?skipTotal=1`)
+- [x] Field projection (`?fields=id,title`)
+- [x] Skip total count (`?skipTotal=1`)
 - [ ] Batch API (create/update/delete multiple in one request)
 
 ---
@@ -137,7 +137,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Logs page (live, filterable)
 - [x] Settings page
 - [x] PrimeReact DataTable, Dialog, Sidebar, Dropdown, InputSwitch, Toast
-- [ ] API preview panel (test endpoints from admin UI)
+- [x] API preview panel (test endpoints from admin UI — presets per collection, body editor, copy response)
 - [x] Backup & restore (download / upload SQLite snapshot)
 - [ ] Import / export CSV
 - [ ] DB indexes management
