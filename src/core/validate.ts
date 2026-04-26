@@ -113,7 +113,9 @@ function validateValue(field: FieldDef, value: unknown): string | null {
 
     case "select": {
       const allowed = field.options?.values ?? [];
-      if (allowed.length === 0) return null;
+      if (allowed.length === 0) {
+        return `${field.name}: select field has no allowed values configured`;
+      }
       if (field.options?.multiple) {
         if (!Array.isArray(value)) return `${field.name} must be an array`;
         const bad = value.find((v) => !allowed.includes(String(v)));

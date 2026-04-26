@@ -135,6 +135,11 @@ describe("validateRecord — select", () => {
     await expect(validateRecord(col, { tags: ["a", "x"] }, "create")).rejects.toThrow(ValidationError);
     await expect(validateRecord(col, { tags: ["a", "b"] }, "create")).resolves.toBeUndefined();
   });
+
+  it("rejects any value when select has no allowed values configured", async () => {
+    const col = makeCol([{ name: "status", type: "select" }]);
+    await expect(validateRecord(col, { status: "anything" }, "create")).rejects.toThrow(ValidationError);
+  });
 });
 
 describe("validateRecord — collects multiple errors", () => {
