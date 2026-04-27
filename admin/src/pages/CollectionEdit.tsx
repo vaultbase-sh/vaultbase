@@ -1,33 +1,48 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
 import {
   api, type ApiResponse, type Collection, type FieldDef, collColor, parseFields,
 } from "../api.ts";
+import { useNavigate, useParams } from "react-router-dom";
 import { Topbar } from "../components/Shell.tsx";
-import type { Route } from "../components/Shell.tsx";
 import { FieldTypeChip, Toggle } from "../components/UI.tsx";
 import { RuleEditor } from "../components/RuleEditor.tsx";
 import Icon from "../components/Icon.tsx";
+import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
 
 const FIELD_TYPES: FieldDef["type"][] = [
-  "text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json", "autodate",
+  "text", "number", "bool", "email", "url", "date",
+  "password", "editor", "geoPoint",
+  "file", "relation", "select", "json", "autodate",
 ];
+
+const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
+  text:     "Plain text. Min/max length, regex, unique.",
+  number:   "Numeric value. Min/max bounds.",
+  bool:     "True / false toggle.",
+  email:    "Email address (validated format).",
+  url:      "URL (validated format).",
+  date:     "Unix timestamp.",
+  file:     "File upload(s). Size + MIME limits, optional multi.",
+  relation: "Reference to another collection's record.",
+  select:   "Pick from a fixed list of values (single or multi).",
+  json:     "Arbitrary JSON value.",
+  autodate: "Auto-set on create / update.",
+  password: "Bcrypt-hashed. Never returned in API responses.",
+  editor:   "Rich text / HTML body.",
+  geoPoint: "Latitude / longitude coordinates.",
+};
 
 interface Rules {
   list: string; view: string; create: string; update: string; delete: string;
 }
 
-export default function CollectionEdit({
-  setRoute,
-  route,
-  toast,
-}: {
-  setRoute: (r: Route) => void;
-  route: Route;
-  toast: (text: string, icon?: string) => void;
-}) {
-  const collId = route.coll ?? "";
+export default function CollectionEdit() {
+  const params = useParams();
+  const navigate = useNavigate();
+  const collId = params["id"] ?? "";
   const [collection, setCollection] = useState<Collection | null>(null);
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -109,14 +124,20 @@ export default function CollectionEdit({
     });
     setSaving(false);
     toast("Changes saved");
-    setRoute({ page: "records", coll: collId });
+    navigate(`/_/collections/${collId}/records`);
   }
 
   async function handleDelete() {
-    if (!collection || !confirm(`Delete collection "${collection.name}" and all its records? This cannot be undone.`)) return;
+    if (!collection) return;
+    const ok = await confirm({
+      title: "Delete collection",
+      message: `Delete collection "${collection.name}" and ALL its records?\n\nThis drops the underlying table and cannot be undone.`,
+      danger: true,
+    });
+    if (!ok) return;
     await api.delete(`/api/collections/${collId}`);
     toast(`Collection deleted`, "trash");
-    setRoute({ page: "collections" });
+    navigate("/_/collections");
   }
 
   if (!collection) return <div className="empty">Loading…</div>;
@@ -135,10 +156,10 @@ export default function CollectionEdit({
           </span>
         }
         subtitle={`schema editor · ${fields.length} fields`}
-        onBack={() => setRoute({ page: "records", coll: collId })}
+        onBack={() => navigate(`/_/collections/${collId}/records`)}
         actions={
           <>
-            <button className="btn btn-ghost" onClick={() => setRoute({ page: "records", coll: collId })}>
+            <button className="btn btn-ghost" onClick={() => navigate(`/_/collections/${collId}/records`)}>
               Cancel
             </button>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
@@ -203,14 +224,7 @@ export default function CollectionEdit({
                   </div>
                 ))}
               </div>
-              <div className="add-field-bar">
-                <span className="label-mini">Add field</span>
-                {FIELD_TYPES.map((t) => (
-                  <span className="add-chip" key={t} onClick={() => addField(t)}>
-                    <Icon name="plus" size={10} />{t}
-                  </span>
-                ))}
-              </div>
+              <FieldTypePicker onPick={addField} />
             </div>
 
             {/* API rules */}
@@ -234,7 +248,7 @@ export default function CollectionEdit({
               </div>
             </div>
 
-            <IndexesSection collectionName={collection.name} fields={fields} toast={toast} />
+            <IndexesSection collectionName={collection.name} fields={fields} />
           </div>
 
           {/* Right: field options */}
@@ -333,7 +347,80 @@ export default function CollectionEdit({
                           onChange={(v) => updateSelOptions({ unique: v })}
                         />
                       </label>
+                      <label style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12 }}>Encrypt at rest</div>
+                          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                            AES-GCM. Disables filtering &amp; uniqueness on this field. Requires <span className="mono">VAULTBASE_ENCRYPTION_KEY</span>.
+                          </div>
+                        </div>
+                        <Toggle
+                          on={!!sel.options?.["encrypted"]}
+                          onChange={(v) => updateSelOptions({ encrypted: v })}
+                        />
+                      </label>
                     </>
+                  )}
+                  {sel.type === "json" && (
+                    <label style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12 }}>Encrypt at rest</div>
+                        <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                          AES-GCM. Requires <span className="mono">VAULTBASE_ENCRYPTION_KEY</span>.
+                        </div>
+                      </div>
+                      <Toggle
+                        on={!!sel.options?.["encrypted"]}
+                        onChange={(v) => updateSelOptions({ encrypted: v })}
+                      />
+                    </label>
+                  )}
+                  {sel.type === "password" && (
+                    <div>
+                      <label className="label">Min / Max length</label>
+                      <div className="row">
+                        <input
+                          className="input mono"
+                          type="number"
+                          min={0}
+                          value={(sel.options?.["min"] as number | undefined) ?? ""}
+                          onChange={(e) => updateSelOptions({ min: numOrUndef(e.target.value) })}
+                          placeholder="min (e.g. 8)"
+                        />
+                        <input
+                          className="input mono"
+                          type="number"
+                          min={0}
+                          value={(sel.options?.["max"] as number | undefined) ?? ""}
+                          onChange={(e) => updateSelOptions({ max: numOrUndef(e.target.value) })}
+                          placeholder="max"
+                        />
+                      </div>
+                      <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                        Stored as a bcrypt hash. Never returned by the API. To clear a password, send an empty string.
+                      </div>
+                    </div>
+                  )}
+                  {sel.type === "editor" && (
+                    <div>
+                      <label className="label">Max length</label>
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={0}
+                        value={(sel.options?.["max"] as number | undefined) ?? ""}
+                        onChange={(e) => updateSelOptions({ max: numOrUndef(e.target.value) })}
+                        placeholder="—"
+                      />
+                      <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+                        Stored as raw HTML. Sanitize on the client before rendering untrusted input.
+                      </div>
+                    </div>
+                  )}
+                  {sel.type === "geoPoint" && (
+                    <div className="muted" style={{ fontSize: 11, padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7 }}>
+                      Stored as <span className="mono">{`{ lat, lng }`}</span> JSON. Latitude in [-90, 90], longitude in [-180, 180].
+                    </div>
                   )}
                   {sel.type === "number" && (
                     <>
@@ -435,6 +522,18 @@ export default function CollectionEdit({
                           style={{ width: "100%" }}
                         />
                       </div>
+                      <label style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12 }}>Multiple files</div>
+                          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                            Stores an array of filenames instead of a single one.
+                          </div>
+                        </div>
+                        <Toggle
+                          on={!!sel.options?.["multiple"]}
+                          onChange={(v) => updateSelOptions({ multiple: v })}
+                        />
+                      </label>
                     </>
                   )}
                 </div>
@@ -455,11 +554,9 @@ interface IndexInfo { name: string; field: string; unique: boolean }
 function IndexesSection({
   collectionName,
   fields,
-  toast,
 }: {
   collectionName: string;
   fields: FieldDef[];
-  toast: (text: string, icon?: string) => void;
 }) {
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -488,7 +585,13 @@ function IndexesSection({
   }
 
   async function handleDelete(idx: IndexInfo) {
-    if (!confirm(`Drop index '${idx.name}'?`)) return;
+    const ok = await confirm({
+      title: "Drop index",
+      message: `Drop the SQL index "${idx.name}"?\n\nQueries that depend on it will get slower.`,
+      danger: true,
+      confirmLabel: "Drop",
+    });
+    if (!ok) return;
     const res = await api.delete<ApiResponse<null>>(
       `/api/admin/collections/${collectionName}/indexes/${idx.name}`
     );
@@ -563,6 +666,85 @@ function IndexesSection({
               </button>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FieldTypePicker({ onPick }: { onPick: (type: FieldDef["type"]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { setOpen(false); setQuery(""); }
+    }
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const filtered = FIELD_TYPES.filter(
+    (t) => t.includes(q) || FIELD_TYPE_DESC[t].toLowerCase().includes(q)
+  );
+
+  function pick(type: FieldDef["type"]) {
+    onPick(type);
+    setOpen(false);
+    setQuery("");
+  }
+
+  return (
+    <div ref={containerRef} className="field-type-picker">
+      {!open ? (
+        <button className="btn btn-ghost" onClick={() => setOpen(true)}>
+          <Icon name="plus" size={12} /> New field
+        </button>
+      ) : (
+        <div className="ftp-panel">
+          <div className="ftp-search">
+            <Icon name="search" size={12} />
+            <input
+              ref={inputRef}
+              className="ftp-search-input"
+              placeholder="Search field types…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && filtered[0]) pick(filtered[0]);
+              }}
+            />
+            <kbd className="kbd">esc</kbd>
+          </div>
+          <div className="ftp-list">
+            {filtered.length === 0 && (
+              <div className="ftp-empty">No matches for "{query}"</div>
+            )}
+            {filtered.map((t) => (
+              <div className="ftp-item" key={t} onClick={() => pick(t)}>
+                <span className="ftp-name">{t}</span>
+                <span className="ftp-desc">{FIELD_TYPE_DESC[t]}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

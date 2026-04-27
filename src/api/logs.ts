@@ -1,17 +1,18 @@
-import { and, asc, count, desc, eq, gte, inArray, like, lt, not } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
-import { getDb } from "../db/client.ts";
-import { logs, type NewLog } from "../db/schema.ts";
+import {
+  appendLogEntry,
+  listLogDates,
+  readLogs,
+  searchLogs,
+  type LogEntry,
+} from "../core/file-logger.ts";
 
 const SKIP_PREFIXES = ["/_/", "/api/admin/logs", "/realtime", "/api/health"];
 
 function shouldSkip(path: string): boolean {
   return SKIP_PREFIXES.some((p) => path.startsWith(p));
 }
-
-const LOG_MAX = 10_000;
-const LOG_KEEP = 8_000;
 
 export interface AuthLogContext {
   id: string;
@@ -27,9 +28,11 @@ export async function insertLog(
   ip: string | null,
   auth: AuthLogContext | null
 ): Promise<void> {
-  const db = getDb();
-  const row: NewLog = {
+  const tsSec = Math.floor(Date.now() / 1000);
+  const entry: LogEntry = {
     id: crypto.randomUUID(),
+    ts: new Date(tsSec * 1000).toISOString(),
+    created_at: tsSec,
     method,
     path,
     status,
@@ -38,26 +41,8 @@ export async function insertLog(
     auth_id: auth?.id ?? null,
     auth_type: auth?.type ?? null,
     auth_email: auth?.email ?? null,
-    created_at: Math.floor(Date.now() / 1000),
   };
-  await db.insert(logs).values(row);
-  void trimLogs(LOG_MAX, LOG_KEEP);
-}
-
-export async function trimLogs(max: number, keepCount: number): Promise<void> {
-  const db = getDb();
-  const [row] = await db.select({ c: count() }).from(logs);
-  const total = row?.c ?? 0;
-  if (total <= max) return;
-  const toDelete = total - keepCount;
-  const oldest = await db
-    .select({ id: logs.id })
-    .from(logs)
-    .orderBy(asc(logs.created_at))
-    .limit(toDelete);
-  if (oldest.length === 0) return;
-  const ids = oldest.map((r) => r.id);
-  await db.delete(logs).where(inArray(logs.id, ids));
+  appendLogEntry(entry);
 }
 
 export interface ListLogsOptions {
@@ -70,30 +55,38 @@ export interface ListLogsOptions {
   minDuration?: number;
 }
 
+function matches(e: LogEntry, opts: ListLogsOptions): boolean {
+  if (!opts.includeAdmin && e.path.startsWith("/api/admin/")) return false;
+  if (opts.method !== "all" && e.method !== opts.method) return false;
+  if (opts.status === "2xx" && !(e.status >= 200 && e.status < 300)) return false;
+  if (opts.status === "4xx" && !(e.status >= 400 && e.status < 500)) return false;
+  if (opts.status === "5xx" && !(e.status >= 500))                   return false;
+  if (opts.search) {
+    const q = opts.search.toLowerCase();
+    const haystack = [
+      e.path,
+      e.message ?? "",
+      e.hook_name ?? "",
+      e.hook_event ?? "",
+      e.hook_collection ?? "",
+    ].join(" ").toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  if (typeof opts.minDuration === "number" && opts.minDuration > 0 && e.duration_ms < opts.minDuration) return false;
+  return true;
+}
+
+const READ_CAP = 50_000;
+
 export async function listLogs(opts: ListLogsOptions) {
-  const db = getDb();
-  const { page, perPage, method, status, includeAdmin, search, minDuration } = opts;
+  const { page, perPage } = opts;
+  const all = await readLogs({ limit: READ_CAP });
+  const filtered = all.filter((e) => matches(e, opts));
+  const totalItems = filtered.length;
   const offset = (page - 1) * perPage;
-
-  const conditions = [];
-  if (!includeAdmin) conditions.push(not(like(logs.path, "/api/admin/%")));
-  if (method !== "all") conditions.push(eq(logs.method, method));
-  if (status === "2xx") conditions.push(and(gte(logs.status, 200), lt(logs.status, 300))!);
-  if (status === "4xx") conditions.push(and(gte(logs.status, 400), lt(logs.status, 500))!);
-  if (status === "5xx") conditions.push(gte(logs.status, 500));
-  if (search) conditions.push(like(logs.path, `%${search}%`));
-  if (typeof minDuration === "number" && minDuration > 0) conditions.push(gte(logs.duration_ms, minDuration));
-
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
-
-  const [rows, countResult] = await Promise.all([
-    db.select().from(logs).where(where).orderBy(desc(logs.created_at)).limit(perPage).offset(offset),
-    db.select({ c: count() }).from(logs).where(where),
-  ]);
-
-  const totalItems = countResult[0]?.c ?? 0;
+  const data = filtered.slice(offset, offset + perPage);
   return {
-    data: rows,
+    data,
     page,
     perPage,
     totalItems,
@@ -182,6 +175,39 @@ export function makeLogsPlugin(jwtSecret: string) {
           includeAdmin: t.Optional(t.String()),
           search: t.Optional(t.String()),
           minDuration: t.Optional(t.String()),
+        }),
+      }
+    )
+    .get("/api/admin/logs/files", async ({ request, set }) => {
+      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      try { await jose.jwtVerify(token, secret, { audience: "admin" }); }
+      catch { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      return { data: listLogDates() };
+    })
+    .post(
+      "/api/admin/logs/search",
+      async ({ request, body, set }) => {
+        const token = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        try { await jose.jwtVerify(token, secret, { audience: "admin" }); }
+        catch { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        if (!body.jsonpath || typeof body.jsonpath !== "string") {
+          set.status = 422; return { error: "jsonpath required", code: 422 };
+        }
+        const opts: { from?: string; to?: string; limit?: number } = {};
+        if (body.from) opts.from = body.from;
+        if (body.to) opts.to = body.to;
+        if (typeof body.limit === "number" && body.limit > 0) opts.limit = Math.min(5000, body.limit);
+        const result = await searchLogs(body.jsonpath, opts);
+        return { data: result };
+      },
+      {
+        body: t.Object({
+          jsonpath: t.String(),
+          from: t.Optional(t.String()),
+          to: t.Optional(t.String()),
+          limit: t.Optional(t.Number()),
         }),
       }
     );

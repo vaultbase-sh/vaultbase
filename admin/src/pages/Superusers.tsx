@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Modal } from "../components/UI.tsx";
+import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
+import { useAuth } from "../stores/auth.ts";
 import Icon from "../components/Icon.tsx";
 
 interface Admin {
@@ -10,13 +13,8 @@ interface Admin {
   created_at: number;
 }
 
-export default function Superusers({
-  adminEmail,
-  toast,
-}: {
-  adminEmail: string;
-  toast: (text: string, icon?: string) => void;
-}) {
+export default function Superusers() {
+  const adminEmail = useAuth((s) => s.email);
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState<Admin | null>(null);
@@ -31,7 +29,12 @@ export default function Superusers({
   useEffect(() => { load(); }, []);
 
   async function handleDelete(a: Admin) {
-    if (!confirm(`Delete superuser '${a.email}'?`)) return;
+    const ok = await confirm({
+      title: "Delete superuser",
+      message: `Delete superuser '${a.email}'?\n\nThey will lose admin access immediately.`,
+      danger: true,
+    });
+    if (!ok) return;
     const res = await api.delete<ApiResponse<null>>(`/api/admin/admins/${a.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Superuser deleted", "trash");

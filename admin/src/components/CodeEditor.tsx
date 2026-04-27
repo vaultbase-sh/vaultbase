@@ -53,8 +53,8 @@ function defineTheme() {
       { token: "string", foreground: "87b47e" },
       { token: "number", foreground: "86b9bb" },
       { token: "keyword", foreground: "b3703d" },
-      { token: "type", foreground: "1fd2ff" },
-      { token: "type.identifier", foreground: "1fd2ff" },
+      { token: "type", foreground: "4d8ce8" },
+      { token: "type.identifier", foreground: "4d8ce8" },
       { token: "identifier", foreground: "e6e6e6" },
       { token: "delimiter", foreground: "8b8b8b" },
       { token: "operator", foreground: "d4d4d4" },
@@ -64,24 +64,24 @@ function defineTheme() {
       "editor.foreground": "#e6e6e6",
       "editorLineNumber.foreground": "#525252",
       "editorLineNumber.activeForeground": "#a3a3a3",
-      "editor.selectionBackground": "#1fd2ff33",
+      "editor.selectionBackground": "#1055C944",
       "editor.lineHighlightBackground": "#ffffff05",
-      "editorCursor.foreground": "#1fd2ff",
+      "editorCursor.foreground": "#4d8ce8",
       "editorIndentGuide.background1": "#2a2a2a",
       "editorWidget.background": "#262626",
       "editorWidget.border": "#3a3a3a",
       "editorSuggestWidget.background": "#262626",
       "editorSuggestWidget.border": "#3a3a3a",
       "editorSuggestWidget.foreground": "#e6e6e6",
-      "editorSuggestWidget.selectedBackground": "#1fd2ff22",
-      "editorSuggestWidget.highlightForeground": "#1fd2ff",
+      "editorSuggestWidget.selectedBackground": "#1055C933",
+      "editorSuggestWidget.highlightForeground": "#4d8ce8",
       "editorHoverWidget.background": "#262626",
       "editorHoverWidget.border": "#3a3a3a",
       "scrollbarSlider.background": "#ffffff15",
       "scrollbarSlider.hoverBackground": "#ffffff22",
       "scrollbarSlider.activeBackground": "#ffffff33",
-      "editorBracketMatch.background": "#1fd2ff22",
-      "editorBracketMatch.border": "#1fd2ff",
+      "editorBracketMatch.background": "#1055C922",
+      "editorBracketMatch.border": "#1055C9",
     },
   });
   // Make this the default theme so even briefly-shown editors are dark
@@ -210,6 +210,50 @@ declare const ctx: HookContext;
 `;
 }
 
+function buildJobCtxDecl(): string {
+  return `
+${HOOK_BASE_DECL}
+
+interface JobContext {
+  /** Helper utilities (same as hook helpers) */
+  helpers: HookHelpers;
+  /** Unix seconds when this run was scheduled */
+  scheduledAt: number;
+}
+
+declare const ctx: JobContext;
+`;
+}
+
+function buildRouteCtxDecl(): string {
+  return `
+${HOOK_BASE_DECL}
+
+interface RouteContext {
+  /** Raw Request object */
+  req: Request;
+  /** HTTP method (GET, POST, …) */
+  method: string;
+  /** Inner path (after the /api/custom prefix) */
+  path: string;
+  /** Path params from :name segments */
+  params: Record<string, string>;
+  /** Query string params */
+  query: Record<string, string>;
+  /** Parsed JSON body (or text/null) */
+  body: any;
+  /** Authenticated user/admin or null */
+  auth: AuthContext | null;
+  /** Helper utilities (same as hook helpers) */
+  helpers: HookHelpers;
+  /** Mutate to set response status / headers */
+  set: { status: number; headers: Record<string, string> };
+}
+
+declare const ctx: RouteContext;
+`;
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 export interface CodeEditorProps {
@@ -220,6 +264,8 @@ export interface CodeEditorProps {
   hookContext?: boolean;
   hookCollectionName?: string | null;
   hookFields?: FieldDef[];
+  routeContext?: boolean;
+  jobContext?: boolean;
   readOnly?: boolean;
 }
 
@@ -231,21 +277,27 @@ export function CodeEditor({
   hookContext = false,
   hookCollectionName = null,
   hookFields = [],
+  routeContext = false,
+  jobContext = false,
   readOnly = false,
 }: CodeEditorProps) {
   const disposableRef = useRef<monaco.IDisposable | null>(null);
 
-  // Re-inject ctx types when collection changes
+  // Re-inject ctx types when context changes
   useEffect(() => {
-    if (!hookContext) return;
+    if (!hookContext && !routeContext && !jobContext) return;
     disposableRef.current?.dispose();
-    const decl = buildCtxDecl(hookCollectionName, hookFields);
+    const decl = jobContext
+      ? buildJobCtxDecl()
+      : routeContext
+      ? buildRouteCtxDecl()
+      : buildCtxDecl(hookCollectionName, hookFields);
     disposableRef.current = ts.javascriptDefaults.addExtraLib(decl, "vaultbase-ctx.d.ts");
     return () => {
       disposableRef.current?.dispose();
       disposableRef.current = null;
     };
-  }, [hookContext, hookCollectionName, JSON.stringify(hookFields)]);
+  }, [hookContext, routeContext, jobContext, hookCollectionName, JSON.stringify(hookFields)]);
 
   const handleBeforeMount: BeforeMount = (m) => {
     // Make sure the bundled monaco's theme is applied even if the editor instance

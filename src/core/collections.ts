@@ -5,7 +5,8 @@ import { collections, type Collection, type NewCollection } from "../db/schema.t
 
 export type FieldType =
   | "text" | "number" | "bool" | "file" | "relation"
-  | "select" | "autodate" | "email" | "url" | "date" | "json";
+  | "select" | "autodate" | "email" | "url" | "date" | "json"
+  | "password" | "editor" | "geoPoint";
 
 export interface FieldOptions {
   min?: number;
@@ -16,6 +17,8 @@ export interface FieldOptions {
   multiple?: boolean;
   maxSize?: number;
   mimeTypes?: string[];
+  /** Encrypt at rest (text/json types only). Requires VAULTBASE_ENCRYPTION_KEY. */
+  encrypted?: boolean;
 }
 
 export interface FieldDef {

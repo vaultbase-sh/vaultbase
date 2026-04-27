@@ -1,9 +1,48 @@
+# Dependencies
 node_modules/
-dist/
-vaultbase_data/
-vaultbase
-.worktrees/
-admin/dist/
 admin/node_modules/
+
+# Build output
+dist/
+admin/dist/
 drizzle/
+*.tsbuildinfo
+
+# Compiled binaries
+vaultbase
+vaultbase.exe
+releases/*
+!releases/.gitignore
+
+# Bun build artifacts
+.*.bun-build
+index.js.map
+
+# Data dirs (local DB, uploads, logs, secrets)
+vaultbase_data/
+vaultbase_data_test/
+*.db
+*.db-shm
+*.db-wal
+.secret
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Worktrees / IDE
+.worktrees/
 .claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs scratch
+docs/superpowers/plans/
+
+# Local screenshots / scratch
+images-claude/

@@ -145,6 +145,38 @@ function validateValue(field: FieldDef, value: unknown): string | null {
       // File upload validation happens in files API, not here
       return null;
 
+    case "password":
+      if (typeof value !== "string") return `${field.name} must be a string`;
+      // Empty allowed only when not required (handled elsewhere)
+      if (value === "") return null;
+      if (field.options?.min !== undefined && value.length < field.options.min) {
+        return `${field.name} must be at least ${field.options.min} characters`;
+      }
+      if (field.options?.max !== undefined && value.length > field.options.max) {
+        return `${field.name} must be at most ${field.options.max} characters`;
+      }
+      return null;
+
+    case "editor":
+      if (typeof value !== "string") return `${field.name} must be a string (HTML)`;
+      if (field.options?.max !== undefined && value.length > field.options.max) {
+        return `${field.name} must be at most ${field.options.max} characters`;
+      }
+      return null;
+
+    case "geoPoint": {
+      if (typeof value !== "object" || value === null) return `${field.name} must be { lat, lng }`;
+      const v = value as Record<string, unknown>;
+      const lat = v["lat"], lng = v["lng"];
+      if (typeof lat !== "number" || !isFinite(lat) || lat < -90 || lat > 90) {
+        return `${field.name}.lat must be a number in [-90, 90]`;
+      }
+      if (typeof lng !== "number" || !isFinite(lng) || lng < -180 || lng > 180) {
+        return `${field.name}.lng must be a number in [-180, 180]`;
+      }
+      return null;
+    }
+
     default:
       return null;
   }

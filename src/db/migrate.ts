@@ -58,25 +58,9 @@ export async function runMigrations() {
     )
   `);
 
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_logs (
-      id TEXT PRIMARY KEY,
-      method TEXT NOT NULL,
-      path TEXT NOT NULL,
-      status INTEGER NOT NULL,
-      duration_ms INTEGER NOT NULL,
-      ip TEXT,
-      auth_id TEXT,
-      auth_type TEXT,
-      auth_email TEXT,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  // Idempotent ADD COLUMN for existing DBs
-  for (const col of ["auth_id", "auth_type", "auth_email"]) {
-    try { client.exec(`ALTER TABLE vaultbase_logs ADD COLUMN ${col} TEXT`); } catch { /* already exists */ }
-  }
+  // Logs are now stored as JSONL files (see core/file-logger.ts).
+  // Drop legacy DB-backed logs table if upgrading from an older install.
+  client.exec(`DROP TABLE IF EXISTS vaultbase_logs`);
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_settings (
@@ -100,4 +84,33 @@ export async function runMigrations() {
   `);
   // Idempotent ADD COLUMN for existing DBs
   try { client.exec(`ALTER TABLE vaultbase_hooks ADD COLUMN name TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_routes (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_jobs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      cron TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at INTEGER,
+      next_run_at INTEGER,
+      last_status TEXT,
+      last_error TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
 }

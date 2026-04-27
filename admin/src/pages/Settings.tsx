@@ -1,23 +1,73 @@
 import { useEffect, useRef, useState } from "react";
+import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
+import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
+import { useAuth } from "../stores/auth.ts";
 
-export default function Settings({
-  toast,
-}: {
-  adminEmail: string;
-  toast: (text: string, icon?: string) => void;
-}) {
+type RuleAudience = "all" | "guest" | "auth";
+interface RateLimitRule {
+  label: string;
+  max: number;
+  windowMs: number;
+  audience: RuleAudience;
+}
+
+const DEFAULT_RULES: RateLimitRule[] = [
+  { label: "*:auth",   max: 10,  windowMs: 3000,  audience: "all" },
+  { label: "*:create", max: 60,  windowMs: 5000,  audience: "all" },
+  { label: "/api/*",   max: 300, windowMs: 10000, audience: "all" },
+];
+
+type SettingsTabId = "application" | "rate-limit" | "smtp" | "backup" | "danger";
+
+interface SettingsTab {
+  id: SettingsTabId;
+  label: string;
+  icon: string;
+  subtitle: string;
+}
+
+const SETTINGS_TABS: SettingsTab[] = [
+  { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
+  { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
+  { id: "smtp",        label: "SMTP / Email", icon: "scroll", subtitle: "outbound email server" },
+  { id: "backup",      label: "Backup & restore", icon: "download", subtitle: "SQLite snapshot" },
+  { id: "danger",      label: "Danger zone", icon: "alert", subtitle: "irreversible actions" },
+];
+
+export default function Settings() {
+  const [active, setActive] = useState<SettingsTabId>("application");
+  const activeTab = SETTINGS_TABS.find((t) => t.id === active) ?? SETTINGS_TABS[0];
+
   return (
     <>
-      <Topbar title="Settings" subtitle="Application configuration" />
-      <div className="app-body" style={{ maxWidth: 880 }}>
-        <ApplicationSection />
-        <RateLimitSection toast={toast} />
-        <BackupSection toast={toast} />
-        <DangerZone />
+      <Topbar title="Settings" subtitle={activeTab.subtitle} />
+      <div className="app-body settings-layout">
+        <aside className="settings-nav">
+          <ul className="settings-nav-list">
+            {SETTINGS_TABS.map((t) => (
+              <li
+                key={t.id}
+                className={`settings-nav-item ${active === t.id ? "active" : ""} ${t.id === "danger" ? "danger" : ""}`}
+                onClick={() => setActive(t.id)}
+              >
+                <Icon name={t.icon} size={14} />
+                <span>{t.label}</span>
+              </li>
+            ))}
+          </ul>
+        </aside>
+        <div className="settings-content">
+          {active === "application" && <ApplicationSection />}
+          {active === "rate-limit" && <RateLimitSection />}
+          {active === "smtp" && <SmtpSection />}
+          {active === "backup" && <BackupSection />}
+          {active === "danger" && <DangerZone />}
+        </div>
       </div>
     </>
   );
@@ -58,10 +108,15 @@ function ApplicationSection() {
 }
 
 // ── Rate limit ──────────────────────────────────────────────────────────────
-function RateLimitSection({ toast }: { toast: (text: string, icon?: string) => void }) {
+const AUDIENCE_OPTIONS = [
+  { label: "All",   value: "all"   },
+  { label: "Guest", value: "guest" },
+  { label: "Auth",  value: "auth"  },
+];
+
+function RateLimitSection() {
   const [enabled, setEnabled] = useState(true);
-  const [maxReq, setMaxReq] = useState("120");
-  const [windowSec, setWindowSec] = useState("60");
+  const [rules, setRules] = useState<RateLimitRule[]>(DEFAULT_RULES);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -71,79 +126,131 @@ function RateLimitSection({ toast }: { toast: (text: string, icon?: string) => v
         if (res.data["rate_limit.enabled"] !== undefined) {
           setEnabled(res.data["rate_limit.enabled"] === "1" || res.data["rate_limit.enabled"] === "true");
         }
-        if (res.data["rate_limit.max"]) setMaxReq(res.data["rate_limit.max"]);
-        if (res.data["rate_limit.window_ms"]) {
+        const raw = res.data["rate_limit.rules"];
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) setRules(parsed as RateLimitRule[]);
+          } catch { /* keep defaults */ }
+        } else if (res.data["rate_limit.max"] && res.data["rate_limit.window_ms"]) {
+          // Migrate legacy single-rule to new format
+          const max = parseInt(res.data["rate_limit.max"]);
           const ms = parseInt(res.data["rate_limit.window_ms"]);
-          if (!isNaN(ms)) setWindowSec(String(Math.round(ms / 1000)));
+          if (!isNaN(max) && !isNaN(ms)) {
+            setRules([{ label: "*", max, windowMs: ms, audience: "all" }]);
+          }
         }
       }
       setLoading(false);
     });
   }, []);
 
+  function updateRule(idx: number, patch: Partial<RateLimitRule>) {
+    setRules((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function removeRule(idx: number) {
+    setRules((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function addRule() {
+    setRules((prev) => [...prev, { label: "/api/", max: 60, windowMs: 5000, audience: "all" }]);
+  }
+
   async function handleSave() {
-    const max = parseInt(maxReq);
-    const winSec = parseInt(windowSec);
-    if (isNaN(max) || max < 1) { toast("Max requests must be a positive integer", "info"); return; }
-    if (isNaN(winSec) || winSec < 1) { toast("Window must be a positive integer (seconds)", "info"); return; }
+    for (const r of rules) {
+      if (!r.label.trim()) { toast("Rule label cannot be empty", "info"); return; }
+      if (!Number.isFinite(r.max) || r.max < 1) { toast(`Invalid max for "${r.label}"`, "info"); return; }
+      if (!Number.isFinite(r.windowMs) || r.windowMs < 1) { toast(`Invalid window for "${r.label}"`, "info"); return; }
+    }
     setSaving(true);
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
       "rate_limit.enabled": enabled ? "1" : "0",
-      "rate_limit.max": String(max),
-      "rate_limit.window_ms": String(winSec * 1000),
+      "rate_limit.rules": JSON.stringify(rules),
     });
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
-    toast("Rate limit settings saved");
+    toast("Rate limit rules saved");
   }
 
   return (
     <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Rate limiting</h3>
-        <span className="meta">per-IP token bucket</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Enabled</label>
-          <div className="help">When off, all requests bypass the limiter.</div>
-        </div>
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>Rate limiting</h3>
+          <span className="meta">per-IP, per-rule token bucket</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-            {enabled ? "Limiting active" : "Bypass — no rate limit"}
+          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
+            {enabled ? "Enabled" : "Bypass"}
           </span>
         </div>
-
-        <div className="label-block">
-          <label className="label">Max requests per window</label>
-          <div className="help">How many requests a single IP can make per window.</div>
-        </div>
-        <input
-          className="input mono"
-          type="number"
-          min={1}
-          value={maxReq}
-          onChange={(e) => setMaxReq(e.target.value)}
-          disabled={!enabled || loading}
-        />
-
-        <div className="label-block">
-          <label className="label">Window (seconds)</label>
-          <div className="help">Bucket refills proportionally across this window.</div>
-        </div>
-        <input
-          className="input mono"
-          type="number"
-          min={1}
-          value={windowSec}
-          onChange={(e) => setWindowSec(e.target.value)}
-          disabled={!enabled || loading}
-        />
       </div>
+
+      <div style={{ padding: "16px 18px" }}>
+        <div className="rl-table" style={{ opacity: enabled ? 1 : 0.5 }}>
+          <div className="rl-row rl-head">
+            <div>Rule label</div>
+            <div>Max requests<br/><span className="rl-sub">(per IP)</span></div>
+            <div>Interval<br/><span className="rl-sub">(in seconds)</span></div>
+            <div>Targeted users</div>
+            <div></div>
+          </div>
+          {rules.map((r, i) => (
+            <div className="rl-row" key={i}>
+              <input
+                className="input mono"
+                value={r.label}
+                onChange={(e) => updateRule(i, { label: e.target.value })}
+                placeholder="*:auth"
+                disabled={!enabled || loading}
+              />
+              <input
+                className="input mono"
+                type="number"
+                min={1}
+                value={r.max}
+                onChange={(e) => updateRule(i, { max: parseInt(e.target.value) || 0 })}
+                disabled={!enabled || loading}
+              />
+              <input
+                className="input mono"
+                type="number"
+                min={1}
+                value={Math.round(r.windowMs / 1000)}
+                onChange={(e) => updateRule(i, { windowMs: (parseInt(e.target.value) || 0) * 1000 })}
+                disabled={!enabled || loading}
+              />
+              <Dropdown
+                value={r.audience}
+                options={AUDIENCE_OPTIONS}
+                onChange={(e) => updateRule(i, { audience: e.value as RuleAudience })}
+                disabled={!enabled || loading}
+              />
+              <button
+                className="btn-icon danger"
+                onClick={() => removeRule(i)}
+                disabled={!enabled || loading}
+                title="Remove rule"
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}>
+          <button className="btn btn-ghost" onClick={addRule} disabled={!enabled || loading}>
+            <Icon name="plus" size={12} /> Add rate limit rule
+          </button>
+          <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+            Label = <code style={codeStyle}>{`<path>[:<action>]`}</code> · path: exact, prefix*, or *
+          </span>
+        </div>
+      </div>
+
       <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-          Skipped: <code style={{ fontFamily: "var(--font-mono)" }}>/_/, /realtime, /api/health, /api/admin/logs</code>
+          Actions: <code style={codeStyle}>auth</code> <code style={codeStyle}>create</code> <code style={codeStyle}>list</code> <code style={codeStyle}>view</code> <code style={codeStyle}>update</code> <code style={codeStyle}>delete</code>
         </span>
         <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
           {saving ? "Saving…" : "Save changes"}
@@ -162,7 +269,7 @@ const codeStyle: React.CSSProperties = {
 };
 
 // ── Backup / restore ─────────────────────────────────────────────────────────
-function BackupSection({ toast }: { toast: (text: string, icon?: string) => void }) {
+function BackupSection() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
 
@@ -189,7 +296,13 @@ function BackupSection({ toast }: { toast: (text: string, icon?: string) => void
   async function handleRestore(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm(`Restore from "${file.name}"? This will replace ALL current data.`)) {
+    const ok = await confirm({
+      title: "Restore from backup",
+      message: `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the contents of the uploaded SQLite file. This cannot be undone.`,
+      danger: true,
+      confirmLabel: "Restore",
+    });
+    if (!ok) {
       e.target.value = "";
       return;
     }
@@ -262,6 +375,182 @@ function BackupSection({ toast }: { toast: (text: string, icon?: string) => void
   );
 }
 
+// ── SMTP / Email ─────────────────────────────────────────────────────────────
+function SmtpSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("587");
+  const [secure, setSecure] = useState(false);
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [from, setFrom] = useState("");
+  const [testTo, setTestTo] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        const s = res.data;
+        setEnabled(s["smtp.enabled"] === "1" || s["smtp.enabled"] === "true");
+        setHost(s["smtp.host"] ?? "");
+        setPort(s["smtp.port"] ?? "587");
+        setSecure(s["smtp.secure"] === "1" || s["smtp.secure"] === "true");
+        setUser(s["smtp.user"] ?? "");
+        setPass(s["smtp.pass"] ?? "");
+        setFrom(s["smtp.from"] ?? "");
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  async function handleSave() {
+    const portNum = parseInt(port);
+    if (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
+      toast("Port must be 1–65535", "info"); return;
+    }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "smtp.enabled": enabled ? "1" : "0",
+      "smtp.host": host,
+      "smtp.port": String(portNum),
+      "smtp.secure": secure ? "1" : "0",
+      "smtp.user": user,
+      "smtp.pass": pass,
+      "smtp.from": from,
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("SMTP settings saved");
+  }
+
+  async function handleTest() {
+    if (!testTo.trim()) { toast("Enter a recipient email", "info"); return; }
+    setTesting(true);
+    const res = await api.post<ApiResponse<{ messageId: string }>>("/api/admin/settings/smtp/test", {
+      to: testTo.trim(),
+    });
+    setTesting(false);
+    if (res.error) { toast(`Test failed: ${res.error}`, "info"); return; }
+    toast(`Test email sent to ${testTo}`, "check");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>SMTP / Email</h3>
+          <span className="meta">outbound email via SMTP server</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
+            {enabled ? "Enabled" : "Disabled"}
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-section-body" style={{ opacity: enabled ? 1 : 0.5 }}>
+        <div className="label-block">
+          <label className="label">Host</label>
+          <div className="help">SMTP server hostname (e.g. <code style={codeStyle}>smtp.resend.com</code>)</div>
+        </div>
+        <input
+          className="input mono"
+          value={host}
+          onChange={(e) => setHost(e.target.value)}
+          placeholder="smtp.example.com"
+          disabled={!enabled || loading}
+        />
+
+        <div className="label-block">
+          <label className="label">Port</label>
+          <div className="help">Common: 587 (STARTTLS), 465 (TLS), 25 (plain)</div>
+        </div>
+        <input
+          className="input mono"
+          type="number"
+          min={1}
+          max={65535}
+          value={port}
+          onChange={(e) => setPort(e.target.value)}
+          disabled={!enabled || loading}
+        />
+
+        <div className="label-block">
+          <label className="label">Secure (TLS)</label>
+          <div className="help">Enable for port 465. Leave off for STARTTLS on 587.</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Toggle on={secure} onChange={setSecure} />
+          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+            {secure ? "TLS" : "STARTTLS"}
+          </span>
+        </div>
+
+        <div className="label-block">
+          <label className="label">Username</label>
+          <div className="help">SMTP auth username (often your email or API key id)</div>
+        </div>
+        <input
+          className="input mono"
+          value={user}
+          onChange={(e) => setUser(e.target.value)}
+          placeholder="apikey or user@example.com"
+          autoComplete="off"
+          disabled={!enabled || loading}
+        />
+
+        <div className="label-block">
+          <label className="label">Password</label>
+          <div className="help">SMTP auth password / API key. Stored in plaintext in the settings table.</div>
+        </div>
+        <input
+          className="input mono"
+          type="password"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          placeholder="••••••••"
+          autoComplete="new-password"
+          disabled={!enabled || loading}
+        />
+
+        <div className="label-block">
+          <label className="label">From address</label>
+          <div className="help">Sender used in <code style={codeStyle}>From:</code> header</div>
+        </div>
+        <input
+          className="input mono"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          placeholder='"Vaultbase" <noreply@example.com>'
+          disabled={!enabled || loading}
+        />
+      </div>
+
+      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            className="input mono"
+            style={{ width: 240 }}
+            value={testTo}
+            onChange={(e) => setTestTo(e.target.value)}
+            placeholder="test recipient email"
+            disabled={!enabled || loading}
+          />
+          <button className="btn btn-ghost" onClick={handleTest} disabled={!enabled || loading || testing}>
+            <Icon name="play" size={11} /> {testing ? "Sending…" : "Send test"}
+          </button>
+        </div>
+        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Danger zone ──────────────────────────────────────────────────────────────
 function DangerZone() {
   return (
@@ -279,7 +568,7 @@ function DangerZone() {
           <button
             className="btn btn-ghost"
             onClick={() => {
-              localStorage.removeItem("vaultbase_admin_token");
+              useAuth.getState().signOut();
               window.location.href = "/_/login";
             }}
           >

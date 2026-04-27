@@ -1,37 +1,39 @@
 import { useEffect, useState } from "react";
-import { api, type ApiResponse, type Collection, collColor, parseFields } from "../api.ts";
+import { useNavigate } from "react-router-dom";
+import { api, type Collection, collColor, parseFields } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
-import type { Route } from "../components/Shell.tsx";
 import { StatCard } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
+import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
+import { useCollections } from "../stores/collections.ts";
 import NewCollectionModal from "./NewCollectionModal.tsx";
 
 const SPARK = [0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9];
 
-export default function Collections({
-  setRoute,
-  toast,
-}: {
-  setRoute: (r: Route) => void;
-  toast: (text: string, icon?: string) => void;
-}) {
-  const [collections, setCollections] = useState<Collection[]>([]);
+export default function Collections() {
+  const navigate = useNavigate();
+  const collections = useCollections((s) => s.list);
+  const isLoading = useCollections((s) => s.loading);
+  const isLoaded = useCollections((s) => s.loaded);
+  const loadCollections = useCollections((s) => s.load);
+  const invalidate = useCollections((s) => s.invalidate);
+  const loading = isLoading || !isLoaded;
   const [tab, setTab] = useState<"all" | "auth" | "base">("all");
   const [showNew, setShowNew] = useState(false);
-  const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
-    const res = await api.get<ApiResponse<Collection[]>>("/api/collections");
-    if (res.data) setCollections(res.data);
-    setLoading(false);
-  }
+  function load() { invalidate(); void loadCollections(true); }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void loadCollections(); }, [loadCollections]);
 
   async function handleDelete(e: React.MouseEvent, id: string, name: string) {
     e.stopPropagation();
-    if (!confirm(`Delete collection "${name}" and all its records?`)) return;
+    const ok = await confirm({
+      title: "Delete collection",
+      message: `Delete collection "${name}" and ALL its records?\n\nThis drops the underlying table and cannot be undone.`,
+      danger: true,
+    });
+    if (!ok) return;
     await api.delete(`/api/collections/${id}`);
     toast(`Collection "${name}" deleted`, "trash");
     load();
@@ -137,7 +139,7 @@ export default function Collections({
               </thead>
               <tbody>
                 {filtered.map((c) => (
-                  <tr key={c.id} onClick={() => setRoute({ page: "records", coll: c.id })}>
+                  <tr key={c.id} onClick={() => navigate(`/_/collections/${c.id}/records`)}>
                     <td>
                       <div className="cell-name">
                         <div className={`coll-icon ${c.color}`}>
@@ -161,7 +163,7 @@ export default function Collections({
                           className="btn-icon"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setRoute({ page: "collection-edit", coll: c.id });
+                            navigate(`/_/collections/${c.id}/edit`);
                           }}
                           title="Edit schema"
                         >

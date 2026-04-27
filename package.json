@@ -8,6 +8,13 @@
     "build:admin": "cd admin && bun run build",
     "build": "bun run build:admin && bun build --compile --minify --sourcemap=none src/index.ts --outfile vaultbase",
     "build:compress": "bun run build && upx --best --lzma vaultbase.exe",
+    "build:all": "bun run build:admin && bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:linux-x64-musl && bun run build:macos-x64 && bun run build:macos-arm64 && bun run build:windows-x64",
+    "build:linux-x64":      "bun build --compile --target=bun-linux-x64       --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-linux-x64",
+    "build:linux-arm64":    "bun build --compile --target=bun-linux-arm64     --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-linux-arm64",
+    "build:linux-x64-musl": "bun build --compile --target=bun-linux-x64-musl  --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-linux-x64-musl",
+    "build:macos-x64":      "bun build --compile --target=bun-darwin-x64      --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-macos-x64",
+    "build:macos-arm64":    "bun build --compile --target=bun-darwin-arm64    --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-macos-arm64",
+    "build:windows-x64":    "bun build --compile --target=bun-windows-x64     --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-windows-x64.exe",
     "start": "bun src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -16,12 +23,16 @@
     "db:reset": "bun src/scripts/reset.ts"
   },
   "dependencies": {
+    "cron-parser": "^5.5.0",
     "drizzle-orm": "^0.44.0",
     "elysia": "^1.2.0",
-    "jose": "^5.9.0"
+    "jose": "^5.9.0",
+    "jsonpath-plus": "^10.4.0",
+    "nodemailer": "^8.0.6"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/nodemailer": "^8.0.0",
     "drizzle-kit": "^0.30.0",
     "typescript": "^5.8.0"
   }

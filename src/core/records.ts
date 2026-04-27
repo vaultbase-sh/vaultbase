@@ -12,6 +12,61 @@ import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
+import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
+
+const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json"]);
+
+async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
+  // Password: bcrypt-hash via Bun. Empty/null leaves column null.
+  if (field.type === "password") {
+    if (val === null || val === undefined || val === "") return null;
+    if (typeof val !== "string") return null;
+    // Skip if already a hash (idempotent re-save). Bun emits $argon2 by default.
+    if (val.startsWith("$argon2") || val.startsWith("$2a$") || val.startsWith("$2b$")) return val;
+    return await Bun.password.hash(val);
+  }
+  const encoded = encodeValue(val, field);
+  if (
+    field.options?.encrypted
+    && ENCRYPTABLE_TYPES.has(field.type)
+    && typeof encoded === "string"
+    && encoded.length > 0
+  ) {
+    return await encryptValue(encoded);
+  }
+  return encoded;
+}
+
+async function decodeAfterStorage(val: unknown, field: FieldDef): Promise<unknown> {
+  if (field.options?.encrypted && typeof val === "string" && isEncrypted(val)) {
+    const plain = await decryptValue(val);
+    return decodeValue(plain, field);
+  }
+  return decodeValue(val, field);
+}
+
+async function rowToMetaAsync(
+  row: Record<string, unknown>,
+  col: Collection,
+  fields: FieldDef[]
+): Promise<RecordWithMeta> {
+  const fieldByName = new Map(fields.map((f) => [f.name, f]));
+  const out: RecordWithMeta = {
+    id: String(row["id"]),
+    collectionId: col.id,
+    collectionName: col.name,
+    created: Number(row["created_at"] ?? 0),
+    updated: Number(row["updated_at"] ?? 0),
+  };
+  for (const [k, v] of Object.entries(row)) {
+    if (k === "id" || k === "created_at" || k === "updated_at") continue;
+    const def = fieldByName.get(k);
+    // Never expose password hashes via the API
+    if (def?.type === "password") continue;
+    out[k] = def ? await decodeAfterStorage(v, def) : v;
+  }
+  return out;
+}
 
 export interface ListOptions {
   page?: number;
@@ -54,7 +109,10 @@ function quoteIdent(name: string): string {
 }
 
 function isJsonField(field: FieldDef): boolean {
-  return field.type === "json" || (field.type === "select" && field.options?.multiple === true);
+  return field.type === "json"
+    || field.type === "geoPoint"
+    || (field.type === "select" && field.options?.multiple === true)
+    || (field.type === "file"   && field.options?.multiple === true);
 }
 
 /** Coerce a JS value to its DB-safe representation based on field type. */
@@ -176,12 +234,12 @@ export async function listRecords(
     totalPages = Math.ceil(totalItems / perPage);
   }
 
-  let items = rows.map((r) => rowToMeta(r, col, fields));
+  let items = await Promise.all(rows.map((r) => rowToMetaAsync(r, col, fields)));
 
   // Expand
   if (opts.expand) {
-    const expandFields = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
-    await expandRelations(items, expandFields, fields);
+    const expandPaths = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
+    await expandRelations(items, expandPaths, fields);
   }
 
   // Field projection
@@ -214,7 +272,7 @@ export async function getRecord(
   const tableRef = quoteIdent(userTableName(col.name));
   const client = rawClient();
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown> | undefined;
-  return row ? rowToMeta(row, col, fields) : null;
+  return row ? await rowToMetaAsync(row, col, fields) : null;
 }
 
 // ── Create ──────────────────────────────────────────────────────────────────
@@ -253,7 +311,7 @@ export async function createRecord(
     if (f.type === "autodate") continue; // not stored as user column
     if (Object.prototype.hasOwnProperty.call(data, f.name)) {
       insertCols.push(f.name);
-      insertVals.push(encodeValue((data as Record<string, unknown>)[f.name], f) as Binding);
+      insertVals.push(await encodeForStorage((data as Record<string, unknown>)[f.name], f) as Binding);
     }
   }
 
@@ -268,7 +326,7 @@ export async function createRecord(
   client.prepare(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`).run(...insertVals);
 
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
-  const result = rowToMeta(row, col, fields);
+  const result = await rowToMetaAsync(row, col, fields);
   broadcast(col.name, { type: "create", collection: col.name, record: result });
   runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   return result;
@@ -316,7 +374,7 @@ export async function updateRecord(
     if (f.type === "autodate") continue;
     if (Object.prototype.hasOwnProperty.call(data, f.name)) {
       setCols.push(`${quoteIdent(f.name)} = ?`);
-      setVals.push(encodeValue((data as Record<string, unknown>)[f.name], f) as Binding);
+      setVals.push(await encodeForStorage((data as Record<string, unknown>)[f.name], f) as Binding);
     }
   }
   setCols.push(`"updated_at" = ?`);
@@ -330,7 +388,7 @@ export async function updateRecord(
   }
 
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
-  const result = rowToMeta(row, col, fields);
+  const result = await rowToMetaAsync(row, col, fields);
   broadcast(col.name, { type: "update", collection: col.name, record: result });
   runAfterHook(col, "afterUpdate", {
     record: result as unknown as Record<string, unknown>,
@@ -373,14 +431,33 @@ export async function deleteRecord(
 
 // ── Relation expand ─────────────────────────────────────────────────────────
 
+/**
+ * Parse expand paths into a head→remaining-paths map.
+ * Example: ["author", "author.profile", "comments.user.team"]
+ *   → { "author": ["profile"], "comments": ["user.team"] }
+ */
+function parseExpandTree(paths: string[]): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const p of paths) {
+    const idx = p.indexOf(".");
+    const head = idx === -1 ? p : p.slice(0, idx);
+    const rest = idx === -1 ? null : p.slice(idx + 1);
+    if (!map.has(head)) map.set(head, []);
+    if (rest) map.get(head)!.push(rest);
+  }
+  return map;
+}
+
 async function expandRelations(
   items: RecordWithMeta[],
-  expandFields: string[],
+  expandPaths: string[],
   schema: FieldDef[]
 ): Promise<void> {
+  if (items.length === 0 || expandPaths.length === 0) return;
   const client = rawClient();
+  const tree = parseExpandTree(expandPaths);
 
-  for (const fieldName of expandFields) {
+  for (const [fieldName, restPaths] of tree) {
     const fieldDef = schema.find((f) => f.name === fieldName && f.type === "relation");
     if (!fieldDef?.collection) continue;
 
@@ -403,7 +480,8 @@ async function expandRelations(
       .prepare(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})`)
       .all(...ids) as Record<string, unknown>[];
 
-    const byId = new Map(rows.map((r) => [String(r["id"]), rowToMeta(r, targetCol, targetFields)]));
+    const expanded = await Promise.all(rows.map((r) => rowToMetaAsync(r, targetCol, targetFields)));
+    const byId = new Map(expanded.map((rec) => [rec.id, rec]));
 
     for (const item of items) {
       const refId = item[fieldName];
@@ -411,6 +489,11 @@ async function expandRelations(
         if (!item.expand) item.expand = {};
         item.expand[fieldName] = byId.get(refId);
       }
+    }
+
+    // Recurse: expand the remaining paths on the just-loaded target records
+    if (restPaths.length > 0) {
+      await expandRelations(expanded, restPaths, targetFields);
     }
   }
 }

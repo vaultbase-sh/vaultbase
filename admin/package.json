@@ -10,11 +10,15 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "cron-parser": "^5.5.0",
+    "cronstrue": "^3.14.0",
     "primeicons": "^7.0.0",
     "primereact": "^10.9.7",
+    "quill": "^2.0.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.6.0"
+    "react-router-dom": "^7.6.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

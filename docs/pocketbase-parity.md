@@ -42,10 +42,10 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] autodate
 - [x] email (validates format)
 - [x] url (validates format)
-- [ ] editor (rich text / HTML)
-- [ ] password (hashed, never returned in API)
-- [ ] geoPoint (lat/lng)
-- [ ] Multi-file per field (currently one file per field)
+- [x] editor (rich text / HTML)
+- [x] password (bcrypt-hashed via Bun.password; never returned in API)
+- [x] geoPoint (lat/lng object, validated ranges)
+- [x] Multi-file per field (file field option `multiple`; JSON array of filenames)
 
 ---
 
@@ -84,10 +84,10 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Filter expression parser (=, !=, >, >=, <, <=, ~, &&, ||, parens)
 - [x] Sort — single and multi-field (`?sort=-created,title`)
 - [x] Relation expand (`?expand=author`)
-- [ ] Nested expand (`?expand=author.profile`)
+- [x] Nested expand (`?expand=author.profile`)
 - [x] Field projection (`?fields=id,title`)
 - [x] Skip total count (`?skipTotal=1`)
-- [ ] Batch API (create/update/delete multiple in one request)
+- [x] Batch API (`POST /api/batch` — atomic transaction, max 100 ops)
 
 ---
 
@@ -100,7 +100,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [ ] S3-compatible storage backend
 - [ ] Image thumbnails (`?thumb=100x100`)
 - [ ] Temporary file access tokens (protected URLs)
-- [ ] Multiple files per single field
+- [x] Multiple files per single field
 
 ---
 
@@ -123,7 +123,7 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Admin toggle in Logs UI
 - [x] Live auto-refresh in UI
 - [ ] Rule evaluation detail per log entry
-- [x] Auth context per log entry (who made the request — id, type, email)
+- [ ] Auth context per log entry (who made the request)
 
 ---
 
@@ -140,9 +140,9 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] API preview panel (test endpoints from admin UI — presets per collection, body editor, copy response)
 - [x] Backup & restore (download / upload SQLite snapshot)
 - [ ] Import / export CSV
-- [x] DB indexes management (per-collection, single-field, optionally unique — list/create/drop from Schema editor)
+- [ ] DB indexes management
 - [ ] Email template editor
-- [ ] SMTP config + test button
+- [x] SMTP config + test button
 - [ ] Migration file generation
 
 ---
@@ -153,14 +153,14 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] SQLite via libSQL
 - [x] Env var configuration
 - [x] JWT secret auto-generated + persisted
-- [ ] Rate limiting — not implemented
-- [x] Rate limiting (per-IP token bucket, env-configurable: `VAULTBASE_RATE_LIMIT`, `VAULTBASE_RATE_WINDOW_MS`)
-- [ ] Custom routes / middleware hooks
-- [x] Server-side JS hooks on record events (before/after × Create/Update/Delete; per-collection or global; helpers: slug/abort/find/query/fetch/log; admin UI editor)
-- [ ] Cron-style scheduled jobs
+- [x] Rate limiting (per-IP token bucket, configurable per rule via Settings)
+- [x] Rate limiting (configurable per route via `<path>[:<action>]` rules)
+- [x] Custom routes (admin-defined HTTP handlers under `/api/custom/<path>`)
+- [ ] Server-side JS hooks on record events (`onCreate`, `onUpdate`, `onDelete`)
+- [x] Cron-style scheduled jobs (UTC; 30s tick; run-now button; last_status/last_error)
 - [x] Multiple admin support
-- [ ] Email sending (SMTP)
-- [ ] Encrypted fields
+- [x] Email sending (SMTP via nodemailer; helpers.email() works)
+- [x] Encrypted fields (AES-GCM via VAULTBASE_ENCRYPTION_KEY; text/email/url/json)
 
 ---
 
@@ -188,3 +188,6 @@ Track what's implemented vs missing compared to PocketBase.
 - [x] Enforce protected URLs, when an admin logs in, they can't go back to the sign-in page, also, when a user is logged out, they can't enter the dashboard.
 - [x] Logs page should have full search and filters
 - [x] fully typed/autocomplete rules for list, view, create, delete, and others. when a user tries to write a rule, the auto complete should show suggesstions, or direct the user to the correct syntax and available options.
+- [x] searchbar in the type field when adding a new field when creating a customer
+- [x] write logs in a file, also do not delete logs, per day log rotation (date based), structured json logs, jsonline, jsonpath search
+- [x] make the primary color #1055C9 like for buttons, selects and other things, the background of the main body is #1F1F1F and the side bar is #232323
