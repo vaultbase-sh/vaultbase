@@ -56,27 +56,36 @@ export const hooks = sqliteTable("vaultbase_hooks", {
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
+export const routes = sqliteTable("vaultbase_routes", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  code: text("code").notNull().default(""),
+  enabled: integer("enabled").notNull().default(1),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+export const jobs = sqliteTable("vaultbase_jobs", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  cron: text("cron").notNull(),
+  code: text("code").notNull().default(""),
+  enabled: integer("enabled").notNull().default(1),
+  last_run_at: integer("last_run_at"),
+  next_run_at: integer("next_run_at"),
+  last_status: text("last_status"),       // "ok" | "error"
+  last_error: text("last_error"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
 export const settings = sqliteTable("vaultbase_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
-
-export const logs = sqliteTable("vaultbase_logs", {
-  id: text("id").primaryKey(),
-  method: text("method").notNull(),
-  path: text("path").notNull(),
-  status: integer("status").notNull(),
-  duration_ms: integer("duration_ms").notNull(),
-  ip: text("ip"),
-  auth_id: text("auth_id"),
-  auth_type: text("auth_type"),
-  auth_email: text("auth_email"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-});
-
-export type Log = typeof logs.$inferSelect;
-export type NewLog = typeof logs.$inferInsert;
 
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;

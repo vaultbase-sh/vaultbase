@@ -1,58 +1,47 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import "./styles/globals.css";
 import { api, type ApiResponse } from "./api.ts";
-import { Sidebar, type Route as AppRoute } from "./components/Shell.tsx";
-import { ToastProvider, type ToastHandle } from "./components/UI.tsx";
+import { Sidebar } from "./components/Shell.tsx";
+import { ToastHost } from "./components/UI.tsx";
+import { ConfirmHost } from "./components/Confirm.tsx";
+import { useAuth } from "./stores/auth.ts";
 import Login from "./pages/Login.tsx";
 import Setup from "./pages/Setup.tsx";
 import Collections from "./pages/Collections.tsx";
-import Records from "./pages/Records.tsx";
-import CollectionEdit from "./pages/CollectionEdit.tsx";
 import Logs from "./pages/Logs.tsx";
 import Settings from "./pages/Settings.tsx";
 import Superusers from "./pages/Superusers.tsx";
 import ApiPreview from "./pages/ApiPreview.tsx";
-import HooksPage from "./pages/Hooks.tsx";
 
-function tokenValid(): boolean {
-  const token = localStorage.getItem("vaultbase_admin_token");
-  if (!token) return false;
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const payload = JSON.parse(atob(parts[1]!));
-    if (typeof payload.exp === "number" && payload.exp * 1000 < Date.now()) {
-      localStorage.removeItem("vaultbase_admin_token");
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Heavy pages — split into separate chunks (Monaco / Quill bundled inside)
+const Records = lazy(() => import("./pages/Records.tsx"));
+const CollectionEdit = lazy(() => import("./pages/CollectionEdit.tsx"));
+const HooksPage = lazy(() => import("./pages/Hooks.tsx"));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  if (!tokenValid()) return <Navigate to="/_/login" replace />;
+  const isAuthed = useAuth((s) => s.isAuthed);
+  if (!isAuthed) return <Navigate to="/_/login" replace />;
   return <>{children}</>;
 }
 
 function RequireUnauth({ children }: { children: React.ReactNode }) {
-  if (tokenValid()) return <Navigate to="/_/" replace />;
+  const isAuthed = useAuth((s) => s.isAuthed);
+  if (isAuthed) return <Navigate to="/_/" replace />;
   return <>{children}</>;
 }
 
 function SetupGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<"loading" | "needs-setup" | "exists">("loading");
+  const isAuthed = useAuth((s) => s.isAuthed);
   useEffect(() => {
-    if (tokenValid()) { setState("exists"); return; }
-    // POST setup with empty body — backend returns 400 if admin exists
+    if (isAuthed) { setState("exists"); return; }
     api.post<ApiResponse<{ id: string }>>("/api/admin/setup", {})
       .then((res) => setState(res.code === 400 ? "exists" : "needs-setup"))
       .catch(() => setState("needs-setup"));
-  }, []);
+  }, [isAuthed]);
   if (state === "loading") return null;
-  if (state === "exists") return <Navigate to={tokenValid() ? "/_/" : "/_/login"} replace />;
+  if (state === "exists") return <Navigate to={isAuthed ? "/_/" : "/_/login"} replace />;
   return <>{children}</>;
 }
 
@@ -65,65 +54,24 @@ function StubPage({ title, hint }: { title: string; hint: string }) {
   );
 }
 
-function AppShell() {
-  const toastRef = useRef<ToastHandle>(null);
-  const [route, setRoute] = useState<AppRoute>({ page: "collections" });
-
-  const adminEmail = (() => {
-    const token = localStorage.getItem("vaultbase_admin_token");
-    if (!token) return "";
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]!));
-      return (payload.email as string) ?? "";
-    } catch { return ""; }
-  })();
-
-  const toast = useCallback((text: string, _icon?: string) => {
-    const severity = _icon === "trash" ? "warn" : "success";
-    toastRef.current?.show(text, severity);
-  }, []);
-
-  let page: React.ReactNode;
-  switch (route.page) {
-    case "collections":
-      page = <Collections setRoute={setRoute} toast={toast} />;
-      break;
-    case "records":
-      page = <Records setRoute={setRoute} route={route} toast={toast} />;
-      break;
-    case "collection-edit":
-      page = <CollectionEdit setRoute={setRoute} route={route} toast={toast} />;
-      break;
-    case "logs":
-      page = <Logs />;
-      break;
-    case "api-preview":
-      page = <ApiPreview />;
-      break;
-    case "settings":
-      page = <Settings adminEmail={adminEmail} toast={toast} />;
-      break;
-    case "users":
-      page = <Superusers adminEmail={adminEmail} toast={toast} />;
-      break;
-    case "tokens":
-      page = <StubPage title="API tokens" hint="Scoped tokens for programmatic access. Coming in v2." />;
-      break;
-    case "hooks":
-      page = <HooksPage toast={toast} />;
-      break;
-    default:
-      page = <Collections setRoute={setRoute} toast={toast} />;
-  }
-
+function PageFallback() {
   return (
-    <>
-      <div className="app">
-        <Sidebar route={route} setRoute={setRoute} adminEmail={adminEmail} />
-        <main className="app-main">{page}</main>
-      </div>
-      <ToastProvider ref={toastRef} />
-    </>
+    <div style={{ flex: 1, padding: 40, color: "var(--text-muted)", textAlign: "center", fontSize: 12 }}>
+      Loading…
+    </div>
+  );
+}
+
+function AppShell() {
+  return (
+    <div className="app">
+      <Sidebar />
+      <main className="app-main">
+        <Suspense fallback={<PageFallback />}>
+          <Outlet />
+        </Suspense>
+      </main>
+    </div>
   );
 }
 
@@ -148,15 +96,31 @@ export default function App() {
           }
         />
         <Route
-          path="/_/*"
+          path="/_"
           element={
             <RequireAuth>
               <AppShell />
             </RequireAuth>
           }
-        />
+        >
+          <Route index element={<Navigate to="collections" replace />} />
+          <Route path="collections" element={<Collections />} />
+          <Route path="collections/:id/edit" element={<CollectionEdit />} />
+          <Route path="collections/:id/records" element={<Records />} />
+          <Route path="logs" element={<Logs />} />
+          <Route path="api-preview" element={<ApiPreview />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="users" element={<Superusers />} />
+          <Route path="hooks" element={<HooksPage />} />
+          <Route
+            path="tokens"
+            element={<StubPage title="API tokens" hint="Scoped tokens for programmatic access. Coming in v2." />}
+          />
+        </Route>
         <Route path="*" element={<Navigate to="/_/" replace />} />
       </Routes>
+      <ToastHost />
+      <ConfirmHost />
     </BrowserRouter>
   );
 }

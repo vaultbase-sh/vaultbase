@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
+import { useAuth } from "../stores/auth.ts";
 
 export default function Login() {
   const [email, setEmail] = useState("admin@vaultbase.local");
@@ -19,7 +20,7 @@ export default function Login() {
     });
     setLoading(false);
     if (res.data?.token) {
-      localStorage.setItem("vaultbase_admin_token", res.data.token);
+      useAuth.getState().signIn(res.data.token);
       navigate("/_/");
     } else {
       setError(res.error ?? "Invalid credentials");

@@ -19,6 +19,11 @@ interface LogEntry {
   auth_type: "user" | "admin" | null;
   auth_email: string | null;
   created_at: number;
+  kind?: "request" | "hook";
+  message?: string;
+  hook_collection?: string;
+  hook_event?: string;
+  hook_name?: string;
 }
 
 function relativeTime(ts: number): string {
@@ -29,7 +34,17 @@ function relativeTime(ts: number): string {
   return `${Math.floor(diff / 86400)}d`;
 }
 
+type LogMode = "live" | "search";
+
+interface LogFile { date: string; size: number }
+interface SearchHit { entry: LogEntry; matches: unknown[] }
+interface SearchPayload {
+  data: { matched: number; scanned: number; results: SearchHit[] };
+  error?: string;
+}
+
 export default function Logs() {
+  const [mode, setMode] = useState<LogMode>("live");
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -94,6 +109,7 @@ export default function Logs() {
                 { label: "POST",   value: "POST" },
                 { label: "PATCH",  value: "PATCH" },
                 { label: "DELETE", value: "DELETE" },
+                { label: "HOOK",   value: "HOOK" },
               ]}
               onChange={(e) => { setMethodFilter(e.value); setPage(1); }}
               style={{ height: 30, minWidth: 130, fontSize: 12 }}
@@ -128,6 +144,20 @@ export default function Logs() {
           </>
         }
       />
+      <div className="tabs" style={{ paddingLeft: 20 }}>
+        <div className={`tab ${mode === "live" ? "active" : ""}`} onClick={() => setMode("live")}>
+          <Icon name="activity" size={12} /> Recent
+        </div>
+        <div className={`tab ${mode === "search" ? "active" : ""}`} onClick={() => setMode("search")}>
+          <Icon name="search" size={12} /> JSONPath search
+        </div>
+        <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+          file logs: <code>data_dir/logs/&lt;date&gt;.jsonl</code>
+        </span>
+      </div>
+      {mode === "search" ? (
+        <LogSearchPanel />
+      ) : (
       <div className="app-body">
         <div className="filter-bar">
           <div
@@ -139,7 +169,7 @@ export default function Logs() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="search path — press Enter (e.g. /api/posts)"
+              placeholder="search path / hook name / event / message — press Enter"
             />
             {appliedSearch && (
               <button
@@ -191,10 +221,15 @@ export default function Logs() {
             body={(l: LogEntry) => <span className={`badge method-${l.method.toLowerCase()}`}>{l.method}</span>}
           />
           <Column
-            header="Path"
+            header="Path / Message"
             body={(l: LogEntry) => (
-              <span className="mono-cell" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 400 }}>
-                {l.path}
+              <span className="mono-cell" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 500 }}>
+                {l.kind === "hook" ? (
+                  <>
+                    <span style={{ color: "var(--accent-light)" }}>{l.path}</span>
+                    {l.message && <span className="muted" style={{ marginLeft: 8 }}>· {l.message}</span>}
+                  </>
+                ) : l.path}
               </span>
             )}
           />
@@ -214,6 +249,7 @@ export default function Logs() {
           />
         </DataTable>
       </div>
+      )}
 
       <Drawer
         open={!!openLog}
@@ -227,9 +263,35 @@ export default function Logs() {
         {openLog && (
           <div className="col" style={{ gap: 16 }}>
             <div>
-              <label className="label">Path</label>
+              <label className="label">{openLog.kind === "hook" ? "Hook" : "Path"}</label>
               <div className="code-block">{openLog.path}</div>
             </div>
+            {openLog.kind === "hook" && (
+              <>
+                <div className="row" style={{ gap: 16 }}>
+                  <div style={{ flex: 1 }}>
+                    <label className="label">Hook name</label>
+                    <div className="mono" style={{ fontSize: 12 }}>
+                      {openLog.hook_name || <span className="muted">(unnamed)</span>}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label className="label">Event</label>
+                    <div className="mono" style={{ fontSize: 12 }}>{openLog.hook_event || "—"}</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label className="label">Collection</label>
+                    <div className="mono" style={{ fontSize: 12 }}>{openLog.hook_collection || <span className="muted">(global)</span>}</div>
+                  </div>
+                </div>
+                {openLog.message && (
+                  <div>
+                    <label className="label">Message</label>
+                    <div className="code-block">{openLog.message}</div>
+                  </div>
+                )}
+              </>
+            )}
             <div className="row" style={{ gap: 16 }}>
               <div style={{ flex: 1 }}>
                 <label className="label">Status</label>
@@ -272,5 +334,161 @@ export default function Logs() {
         )}
       </Drawer>
     </>
+  );
+}
+
+function LogSearchPanel() {
+  const [files, setFiles] = useState<LogFile[]>([]);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [jsonpath, setJsonpath] = useState('$[?(@.status >= 400)]');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ matched: number; scanned: number; results: SearchHit[] } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<{ data: LogFile[] }>("/api/admin/logs/files").then((res) => {
+      if (res.data) setFiles(res.data);
+    });
+  }, []);
+
+  async function run() {
+    setRunning(true);
+    setErr(null);
+    setResult(null);
+    const body: { jsonpath: string; from?: string; to?: string; limit: number } = {
+      jsonpath,
+      limit: 500,
+    };
+    if (from) body.from = from;
+    if (to) body.to = to;
+    const res = await api.post<SearchPayload>("/api/admin/logs/search", body);
+    setRunning(false);
+    if (res.error) { setErr(res.error); return; }
+    if (res.data) setResult(res.data);
+  }
+
+  function fmtSize(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  }
+
+  return (
+    <div className="app-body">
+      <div className="editor-card" style={{ marginBottom: 16 }}>
+        <div className="editor-card-head">
+          <h3>Query</h3>
+          <span className="meta">JSONPath against JSONL files</span>
+        </div>
+        <div style={{ padding: 14, display: "grid", gap: 12 }}>
+          <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label className="label">From (UTC date)</label>
+              <input
+                className="input mono"
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+              />
+            </div>
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <label className="label">To (UTC date)</label>
+              <input
+                className="input mono"
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="label">JSONPath expression</label>
+            <input
+              className="input mono"
+              value={jsonpath}
+              onChange={(e) => setJsonpath(e.target.value)}
+              placeholder='$[?(@.status >= 400)]'
+              onKeyDown={(e) => { if (e.key === "Enter") run(); }}
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Each log entry is one document. Examples:{" "}
+              <code style={{ fontFamily: "var(--font-mono)" }}>$[?(@.status &gt;= 500)]</code>,{" "}
+              <code style={{ fontFamily: "var(--font-mono)" }}>$[?(@.path =~ /api\/users/)]</code>,{" "}
+              <code style={{ fontFamily: "var(--font-mono)" }}>$.auth_email</code>
+            </div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="muted" style={{ fontSize: 11 }}>
+              {files.length} log file{files.length === 1 ? "" : "s"} ·{" "}
+              {fmtSize(files.reduce((a, f) => a + f.size, 0))} total
+            </span>
+            <button className="btn btn-primary" onClick={run} disabled={running || !jsonpath.trim()}>
+              {running ? "Running…" : "Run query"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {err && (
+        <div className="editor-card" style={{ borderColor: "rgba(248,113,113,0.3)" }}>
+          <div style={{ padding: 14, color: "var(--danger)", fontSize: 12 }}>{err}</div>
+        </div>
+      )}
+
+      {result && (
+        <div className="editor-card">
+          <div className="editor-card-head">
+            <h3>Results</h3>
+            <span className="meta">
+              {result.matched} matched · {result.scanned} scanned
+            </span>
+          </div>
+          {result.results.length === 0 ? (
+            <div className="empty">No matches</div>
+          ) : (
+            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              {result.results.map((hit, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div>
+                    <label className="label">Entry</label>
+                    <pre className="code-block" style={{ margin: 0, maxHeight: 180 }}>
+                      {JSON.stringify(hit.entry, null, 2)}
+                    </pre>
+                  </div>
+                  <div>
+                    <label className="label">Matched values</label>
+                    <pre className="code-block" style={{ margin: 0, maxHeight: 180 }}>
+                      {JSON.stringify(hit.matches, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="editor-card" style={{ marginTop: 16 }}>
+        <div className="editor-card-head">
+          <h3>Available log files</h3>
+          <span className="meta">date-rotated, append-only, never deleted</span>
+        </div>
+        <div style={{ padding: 12 }}>
+          {files.length === 0 ? (
+            <div className="empty">No log files yet</div>
+          ) : (
+            <div className="col" style={{ gap: 4 }}>
+              {files.map((f) => (
+                <div key={f.date} className="row" style={{ gap: 12, padding: "6px 0", borderBottom: "0.5px solid rgba(255,255,255,0.04)" }}>
+                  <span className="mono" style={{ fontSize: 12, minWidth: 110 }}>{f.date}.jsonl</span>
+                  <span className="muted mono" style={{ fontSize: 11 }}>{fmtSize(f.size)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

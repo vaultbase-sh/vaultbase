@@ -4,13 +4,16 @@ import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
 import { Dropdown } from "primereact/dropdown";
 import { MultiSelect } from "primereact/multiselect";
+import { Editor as QuillEditor } from "primereact/editor";
 import {
   api, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
 } from "../api.ts";
+import { useNavigate, useParams } from "react-router-dom";
 import { Topbar } from "../components/Shell.tsx";
-import type { Route } from "../components/Shell.tsx";
 import { Drawer, FieldTypeChip, Modal, Toggle } from "../components/UI.tsx";
+import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
 import Icon from "../components/Icon.tsx";
 
 // ── New Record Modal ────────────────────────────────────────────────────────
@@ -45,9 +48,16 @@ function NewRecordModal({
   async function handleCreate() {
     setError(""); setFieldErrors({});
     setSaving(true);
+    // Strip empty password fields on create — server treats undefined as null
+    const passwordNames = new Set(fields.filter((f) => f.type === "password").map((f) => f.name));
+    const payload: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(values)) {
+      if (passwordNames.has(k) && (v === "" || v === null || v === undefined)) continue;
+      payload[k] = v;
+    }
     const res = await api.post<ApiResponse<RecordRow>>(
       `/api/${collectionName}`,
-      values
+      payload
     );
     setSaving(false);
     if (res.code === 422 && res.details) { setFieldErrors(res.details); setError(res.error ?? ""); return; }
@@ -255,6 +265,54 @@ function FieldInput({
       />
     );
   }
+  if (field.type === "password") {
+    return (
+      <input
+        className="input mono"
+        type="password"
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        placeholder="• • • • • • • •"
+        autoComplete="new-password"
+      />
+    );
+  }
+  if (field.type === "editor") {
+    return (
+      <QuillEditor
+        value={typeof value === "string" ? value : ""}
+        onTextChange={(e) => onChange(e.htmlValue ?? "")}
+        readOnly={readOnly}
+        style={{ height: 220 }}
+      />
+    );
+  }
+  if (field.type === "geoPoint") {
+    const v = (value && typeof value === "object" ? value : {}) as { lat?: number; lng?: number };
+    return (
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          className="input mono"
+          type="number"
+          step="any"
+          value={typeof v.lat === "number" ? String(v.lat) : ""}
+          onChange={(e) => onChange({ lat: e.target.valueAsNumber, lng: v.lng ?? 0 })}
+          readOnly={readOnly}
+          placeholder="lat"
+        />
+        <input
+          className="input mono"
+          type="number"
+          step="any"
+          value={typeof v.lng === "number" ? String(v.lng) : ""}
+          onChange={(e) => onChange({ lat: v.lat ?? 0, lng: e.target.valueAsNumber })}
+          readOnly={readOnly}
+          placeholder="lng"
+        />
+      </div>
+    );
+  }
   return (
     <input
       className={`input${["autodate"].includes(field.type) ? " mono" : ""}`}
@@ -266,16 +324,10 @@ function FieldInput({
 }
 
 // ── Main Records page ────────────────────────────────────────────────────────
-export default function Records({
-  setRoute,
-  route,
-  toast,
-}: {
-  setRoute: (r: Route) => void;
-  route: Route;
-  toast: (text: string, icon?: string) => void;
-}) {
-  const collId = route.coll ?? "";
+export default function Records() {
+  const params = useParams();
+  const navigate = useNavigate();
+  const collId = params["id"] ?? "";
   const [collection, setCollection] = useState<Collection | null>(null);
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -326,9 +378,17 @@ export default function Records({
     if (!collection || !openRec) return;
     setEditErrors({});
     setSaving(true);
+    // Strip empty password fields so we don't blank existing hashes on no-op edits
+    const fields = parseFields(collection.fields);
+    const passwordNames = new Set(fields.filter((f) => f.type === "password").map((f) => f.name));
+    const payload: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(editData)) {
+      if (passwordNames.has(k) && (v === "" || v === null || v === undefined)) continue;
+      payload[k] = v;
+    }
     const res = await api.patch<ApiResponse<RecordRow>>(
       `/api/${collection.name}/${String(openRec.id)}`,
-      editData
+      payload
     );
     setSaving(false);
     if (res.code === 422 && res.details) { setEditErrors(res.details); toast("Validation failed", "info"); return; }
@@ -339,7 +399,13 @@ export default function Records({
   }
 
   async function handleDelete(id: string) {
-    if (!collection || !confirm("Delete this record?")) return;
+    if (!collection) return;
+    const ok = await confirm({
+      title: "Delete record",
+      message: `Delete this record from "${collection.name}"?\n\nID: ${id}\n\nThis cannot be undone.`,
+      danger: true,
+    });
+    if (!ok) return;
     await api.delete(`/api/${collection.name}/${id}`);
     toast("Record deleted", "trash");
     setOpenRec(null);
@@ -380,13 +446,13 @@ export default function Records({
           ) : "Records"
         }
         subtitle={`${total.toLocaleString()} records`}
-        onBack={() => setRoute({ page: "collections" })}
+        onBack={() => navigate("/_/collections")}
         actions={
           <>
             {collection && (
               <button
                 className="btn btn-ghost"
-                onClick={() => setRoute({ page: "collection-edit", coll: collId })}
+                onClick={() => navigate(`/_/collections/${collId}/edit`)}
               >
                 <Icon name="pencil" size={12} /> Schema
               </button>

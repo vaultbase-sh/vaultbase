@@ -49,7 +49,10 @@ export interface ListResponse<T> {
 
 export interface FieldDef {
   name: string;
-  type: "text" | "number" | "bool" | "file" | "relation" | "select" | "autodate" | "date" | "json" | "email" | "url";
+  type:
+    | "text" | "number" | "bool" | "file" | "relation"
+    | "select" | "autodate" | "date" | "json" | "email" | "url"
+    | "password" | "editor" | "geoPoint";
   required?: boolean;
   system?: boolean;
   collection?: string;

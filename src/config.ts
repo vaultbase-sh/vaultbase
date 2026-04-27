@@ -6,6 +6,7 @@ export interface Config {
   dataDir: string;
   dbPath: string;
   uploadDir: string;
+  logsDir: string;
   jwtSecret: string;
   encryptionKey: string | undefined;
 }
@@ -28,6 +29,9 @@ export async function loadConfig(): Promise<Config> {
   const uploadDir = join(dataDir, "uploads");
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
+  const logsDir = join(dataDir, "logs");
+  if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+
   const jwtSecret =
     process.env["VAULTBASE_JWT_SECRET"] ?? (await loadJwtSecret(dataDir));
 
@@ -36,6 +40,7 @@ export async function loadConfig(): Promise<Config> {
     dataDir,
     dbPath: join(dataDir, "data.db"),
     uploadDir,
+    logsDir,
     jwtSecret,
     encryptionKey: process.env["VAULTBASE_ENCRYPTION_KEY"],
   };

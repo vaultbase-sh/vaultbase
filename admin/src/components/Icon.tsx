@@ -50,6 +50,8 @@ const Icon: React.FC<IconProps> = ({ name, size = 14, stroke = 1.5, style, class
     layers: <><polygon points="12 2 2 7 12 12 22 7 12 2"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></>,
     activity: <><path d="M22 12h-4l-3 9-6-18-3 9H2"/></>,
     server: <><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><circle cx="7" cy="6.5" r="0.5" fill="currentColor"/><circle cx="7" cy="17.5" r="0.5" fill="currentColor"/></>,
+    shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></>,
+    alert: <><path d="M12 2L2 20h20z"/><path d="M12 9v5M12 17v0"/></>,
   };
   return <svg {...props}>{paths[name] ?? null}</svg>;
 };

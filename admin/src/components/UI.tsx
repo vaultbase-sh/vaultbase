@@ -1,9 +1,10 @@
-import React, { useRef, useImperativeHandle, forwardRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { Dialog } from "primereact/dialog";
 import { Sidebar } from "primereact/sidebar";
 import { InputSwitch } from "primereact/inputswitch";
 import { Toast as PrimeToast } from "primereact/toast";
 import Icon from "./Icon.tsx";
+import { useToast } from "../stores/toast.ts";
 
 // ── FieldTypeChip ────────────────────────────────────────────────────────────
 export const FieldTypeChip: React.FC<{ type: string }> = ({ type }) => (
@@ -120,32 +121,28 @@ export const Drawer: React.FC<{
 );
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
-export interface ToastHandle {
-  show: (text: string, severity?: "success" | "info" | "warn" | "error") => void;
-}
-
-export const ToastProvider = forwardRef<ToastHandle>((_, ref) => {
+// Subscribes to the zustand toast store and forwards entries to PrimeReact's
+// Toast component. Mount once at the app root.
+export const ToastHost: React.FC = () => {
   const toastRef = useRef<PrimeToast>(null);
+  const queue = useToast((s) => s.queue);
+  const dismiss = useToast((s) => s.dismiss);
+  const seen = useRef<Set<number>>(new Set());
 
-  useImperativeHandle(ref, () => ({
-    show(text: string, severity: "success" | "info" | "warn" | "error" = "success") {
-      toastRef.current?.show({
-        severity,
-        detail: text,
-        life: 3000,
-      });
-    },
-  }));
+  useEffect(() => {
+    for (const entry of queue) {
+      if (seen.current.has(entry.id)) continue;
+      seen.current.add(entry.id);
+      toastRef.current?.show({ severity: entry.severity, detail: entry.text, life: 3000 });
+      // Drop from store after life so memory doesn't grow
+      setTimeout(() => dismiss(entry.id), 3500);
+    }
+  }, [queue, dismiss]);
 
   return <PrimeToast ref={toastRef} position="bottom-right" />;
-});
-
-ToastProvider.displayName = "ToastProvider";
+};
 
 // Legacy interface kept for pages that pass icon strings
 export interface Toast { id: string; text: string; icon?: string; color?: string }
-
-// Stub kept for backward compat — ToastProvider replaced ToastHost
-export const ToastHost: React.FC<{ toasts: Toast[] }> = () => null;
 
 export type { Toast as ToastEntry };

@@ -2,6 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
+import { appendHookLog } from "./file-logger.ts";
+import { sendEmail } from "./email.ts";
 import type { AuthContext } from "./rules.ts";
 
 export type HookEvent =
@@ -37,6 +39,7 @@ export interface HookHelpers {
 
 interface HookRow {
   id: string;
+  name: string;
   collection_name: string;
   event: string;
   code: string;
@@ -45,6 +48,7 @@ interface HookRow {
 
 interface CompiledHook {
   id: string;
+  name: string;
   fn: (ctx: HookContext) => Promise<unknown>;
 }
 
@@ -57,7 +61,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
 function compileHook(row: HookRow): CompiledHook | null {
   try {
     const fn = new AsyncFunction("ctx", row.code);
-    return { id: row.id, fn };
+    return { id: row.id, name: row.name ?? "", fn };
   } catch (e) {
     console.error(`[hooks] Failed to compile hook ${row.id}:`, e);
     return null;
@@ -102,8 +106,9 @@ export async function runBeforeHook(
 ): Promise<void> {
   const list = await lookupEnabledHooks(collection.name, event);
   for (const h of list) {
+    const helpers = makeHookHelpers({ collection: collection.name, event, auth: ctx.auth, name: h.name });
     try {
-      await h.fn(ctx);
+      await h.fn({ ...ctx, helpers });
     } catch (e) {
       if (e instanceof ValidationError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
@@ -121,8 +126,9 @@ export function runAfterHook(
   void (async () => {
     const list = await lookupEnabledHooks(collection.name, event);
     for (const h of list) {
+      const helpers = makeHookHelpers({ collection: collection.name, event, auth: ctx.auth, name: h.name });
       try {
-        await h.fn(ctx);
+        await h.fn({ ...ctx, helpers });
       } catch (e) {
         console.error(`[hooks] after-hook ${h.id} threw:`, e);
       }
@@ -132,7 +138,20 @@ export function runAfterHook(
 
 // ── Helpers factory ─────────────────────────────────────────────────────────
 
-export function makeHookHelpers(): HookHelpers {
+export interface HookHelperContext {
+  collection?: string;
+  event?: HookEvent;
+  auth?: AuthContext | null;
+  name?: string;
+}
+
+function formatLogArg(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v instanceof Error) return v.stack ?? v.message;
+  try { return JSON.stringify(v); } catch { return String(v); }
+}
+
+export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
   return {
     slug(s: string): string {
       return String(s)
@@ -160,11 +179,33 @@ export function makeHookHelpers(): HookHelpers {
     },
     fetch: globalThis.fetch.bind(globalThis),
     log(...args: unknown[]) {
-      console.log("[hook]", ...args);
+      const message = args.map(formatLogArg).join(" ");
+      console.log("[hook]", message);
+      const input: Parameters<typeof appendHookLog>[0] = { message };
+      if (ctx.collection !== undefined) input.collection = ctx.collection;
+      if (ctx.event !== undefined) input.event = ctx.event;
+      if (ctx.name) input.name = ctx.name;
+      if (ctx.auth !== undefined) {
+        input.auth = ctx.auth ? {
+          id: ctx.auth.id,
+          type: ctx.auth.type,
+          ...(ctx.auth.email ? { email: ctx.auth.email } : {}),
+        } : null;
+      }
+      appendHookLog(input);
     },
-    async email() {
-      // Placeholder until SMTP is wired up
-      throw new Error("email() not implemented yet — SMTP integration pending");
+    async email(opts) {
+      // Caller passes { to, subject, body }. Send as text by default; if body
+      // contains an HTML tag, also use it as the html part for clients that
+      // can render it.
+      const looksHtml = /<\w+[^>]*>/.test(opts.body);
+      const sendOpts: Parameters<typeof sendEmail>[0] = {
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.body,
+      };
+      if (looksHtml) sendOpts.html = opts.body;
+      await sendEmail(sendOpts);
     },
   };
 }

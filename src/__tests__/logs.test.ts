@@ -1,34 +1,35 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getDb } from "../db/client.ts";
-import { runMigrations } from "../db/migrate.ts";
-import { insertLog, listLogs, trimLogs } from "../api/logs.ts";
-import { logs } from "../db/schema.ts";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { setLogsDir } from "../core/file-logger.ts";
+import { insertLog, listLogs } from "../api/logs.ts";
 
-beforeEach(async () => {
-  initDb(":memory:");
-  await runMigrations();
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-logs-"));
+  setLogsDir(tmpDir);
 });
 
 afterEach(() => {
-  closeDb();
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe("insertLog", () => {
-  it("inserts a log row", async () => {
+  it("appends entry to file", async () => {
     await insertLog("GET", "/api/collections", 200, 4, null, null);
-    const db = getDb();
-    const rows = await db.select().from(logs);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.method).toBe("GET");
-    expect(rows[0]!.status).toBe(200);
-    expect(rows[0]!.duration_ms).toBe(4);
+    const result = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: false });
+    expect(result.totalItems).toBe(1);
+    expect(result.data[0]!.method).toBe("GET");
+    expect(result.data[0]!.status).toBe(200);
+    expect(result.data[0]!.duration_ms).toBe(4);
   });
 
   it("stores path", async () => {
     await insertLog("GET", "/api/posts", 200, 2, null, null);
-    const db = getDb();
-    const rows = await db.select().from(logs);
-    expect(rows[0]!.path).toBe("/api/posts");
+    const result = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: false });
+    expect(result.data[0]!.path).toBe("/api/posts");
   });
 });
 
@@ -68,17 +69,4 @@ describe("listLogs", () => {
     expect(result.data).toHaveLength(2);
     expect(result.data.every((r) => r.status >= 400 && r.status < 500)).toBe(true);
   });
-});
-
-describe("trimLogs", () => {
-  it("trims oldest rows when over limit", async () => {
-    for (let i = 0; i < 12; i++) {
-      await insertLog("GET", `/api/${i}`, 200, i, null, null);
-    }
-    await trimLogs(10, 8);
-    const db = getDb();
-    const rows = await db.select().from(logs);
-    expect(rows.length).toBeLessThanOrEqual(8);
-  });
-
 });

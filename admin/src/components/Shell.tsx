@@ -1,43 +1,39 @@
 import React from "react";
+import { NavLink, useNavigate } from "react-router-dom";
 import Icon from "./Icon.tsx";
+import { useAuth } from "../stores/auth.ts";
 
-export type Page =
-  | "collections" | "records" | "collection-edit"
-  | "logs" | "users" | "tokens" | "hooks" | "settings" | "api-preview";
+interface NavItem { to: string; label: string; icon: string }
+interface NavSection { label: string; items: NavItem[] }
 
-export interface Route { page: Page; coll?: string }
+const SECTIONS: NavSection[] = [
+  {
+    label: "Data",
+    items: [
+      { to: "/_/collections",  label: "Collections",  icon: "database" },
+      { to: "/_/logs",         label: "Logs",         icon: "scroll" },
+      { to: "/_/api-preview",  label: "API preview",  icon: "play" },
+    ],
+  },
+  {
+    label: "Auth",
+    items: [
+      { to: "/_/tokens",       label: "API tokens",   icon: "key" },
+      { to: "/_/hooks",        label: "Hooks",        icon: "webhook" },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { to: "/_/users",        label: "Superusers",   icon: "users" },
+      { to: "/_/settings",     label: "Settings",     icon: "settings" },
+    ],
+  },
+];
 
-// Sidebar
-export const Sidebar: React.FC<{
-  route: Route;
-  setRoute: (r: Route) => void;
-  adminEmail: string;
-}> = ({ route, setRoute, adminEmail }) => {
-  const sections = [
-    {
-      label: "Data",
-      items: [
-        { id: "collections" as Page, label: "Collections", icon: "database" },
-        { id: "logs" as Page, label: "Logs", icon: "scroll" },
-        { id: "api-preview" as Page, label: "API preview", icon: "play" },
-      ],
-    },
-    {
-      label: "Auth",
-      items: [
-        { id: "tokens" as Page, label: "API tokens", icon: "key" },
-        { id: "hooks" as Page, label: "Hooks", icon: "webhook" },
-      ],
-    },
-    {
-      label: "System",
-      items: [
-        { id: "users" as Page, label: "Superusers", icon: "users" },
-        { id: "settings" as Page, label: "Settings", icon: "settings" },
-      ],
-    },
-  ];
-
+export const Sidebar: React.FC = () => {
+  const adminEmail = useAuth((s) => s.email);
+  const navigate = useNavigate();
   const initials = adminEmail ? adminEmail[0]!.toUpperCase() : "A";
 
   return (
@@ -47,31 +43,28 @@ export const Sidebar: React.FC<{
         <div className="sb-brand-name">vaultbase</div>
         <div className="sb-brand-version mono">v0.1.0</div>
       </div>
-      {sections.map((sec) => (
+      {SECTIONS.map((sec) => (
         <div className="sb-section" key={sec.label}>
           <div className="sb-section-title">{sec.label}</div>
           <ul className="sb-nav">
-            {sec.items.map((item) => {
-              const active =
-                route.page === item.id ||
-                (item.id === "collections" &&
-                  (route.page === "collection-edit" || route.page === "records"));
-              return (
-                <li
-                  key={item.id}
-                  className={`sb-nav-item${active ? " active" : ""}`}
-                  onClick={() => setRoute({ page: item.id })}
+            {sec.items.map((item) => (
+              <li key={item.to}>
+                <NavLink
+                  to={item.to}
+                  className={({ isActive }) =>
+                    `sb-nav-item${isActive ? " active" : ""}`
+                  }
                 >
                   <Icon name={item.icon} size={15} />
                   <span>{item.label}</span>
-                </li>
-              );
-            })}
+                </NavLink>
+              </li>
+            ))}
           </ul>
         </div>
       ))}
       <div className="sb-bottom">
-        <div className="sb-admin-pill" onClick={() => setRoute({ page: "settings" })}>
+        <div className="sb-admin-pill" onClick={() => navigate("/_/settings")}>
           <div className="sb-admin-avatar">{initials}</div>
           <div className="sb-admin-meta">
             <div className="sb-admin-name">{adminEmail}</div>
