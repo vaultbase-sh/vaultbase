@@ -3,8 +3,10 @@ import { getDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
 import {
   getCollection,
+  listCollections,
   parseFields,
   userTableName,
+  type CascadeMode,
   type FieldDef,
 } from "./collections.ts";
 import { parseFilter } from "./filter.ts";
@@ -208,8 +210,10 @@ export async function listRecords(
   }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
 
-  // Build ORDER BY
-  const sortSpec = opts.sort ?? "-created_at";
+  // Build ORDER BY. View collections don't necessarily expose created_at /
+  // updated_at, so skip the default sort there — caller can opt in by passing
+  // a `sort` they know is valid for their query.
+  const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses = sortSpec.split(",").map((s) => s.trim()).filter(Boolean).map((s) => {
     const desc = s.startsWith("-");
     const field = desc ? s.slice(1) : s;
@@ -284,6 +288,7 @@ export async function createRecord(
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
+  if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
   data = data ?? {};
 
   // beforeCreate hook (can mutate data, throw to abort)
@@ -293,7 +298,7 @@ export async function createRecord(
   await validateRecord(col, data, "create");
 
   const fields = parseFields(col.fields);
-  const userFields = fields.filter((f) => !f.system);
+  const userFields = fields.filter((f) => !f.system && !f.implicit);
   const fieldByName = new Map(userFields.map((f) => [f.name, f]));
   const now = Math.floor(Date.now() / 1000);
 
@@ -342,6 +347,7 @@ export async function updateRecord(
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
+  if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
   data = data ?? {};
 
   const existing = await getRecord(collectionName, id);
@@ -359,7 +365,7 @@ export async function updateRecord(
   await validateRecord(col, data, "update", id);
 
   const fields = parseFields(col.fields);
-  const userFields = fields.filter((f) => !f.system);
+  const userFields = fields.filter((f) => !f.system && !f.implicit);
   const now = Math.floor(Date.now() / 1000);
 
   // Apply autodate onUpdate
@@ -400,16 +406,132 @@ export async function updateRecord(
 
 // ── Delete ──────────────────────────────────────────────────────────────────
 
+export class RestrictError extends Error {
+  details: Record<string, string>;
+  constructor(details: Record<string, string>) {
+    super("Cannot delete: record is referenced by other records");
+    this.details = details;
+  }
+}
+
+export class ReadOnlyCollectionError extends Error {
+  constructor(collectionName: string) {
+    super(`Collection '${collectionName}' is read-only (view collection)`);
+  }
+}
+
+interface IncomingRef {
+  collection: { id: string; name: string };
+  fieldName: string;
+  cascade: CascadeMode;
+}
+
+/** Find every (collection, field) pair that has a relation pointing at `targetCollectionName`. */
+async function findIncomingRefs(targetCollectionName: string): Promise<IncomingRef[]> {
+  const all = await listCollections();
+  const refs: IncomingRef[] = [];
+  for (const c of all) {
+    const fields = parseFields(c.fields);
+    for (const f of fields) {
+      if (f.type === "relation" && f.collection === targetCollectionName) {
+        refs.push({
+          collection: { id: c.id, name: c.name },
+          fieldName: f.name,
+          cascade: f.options?.cascade ?? "setNull",
+        });
+      }
+    }
+  }
+  return refs;
+}
+
+/**
+ * Apply cascade behavior to all incoming references before deleting `id`.
+ * `visited` prevents infinite loops on circular cascades.
+ */
+async function applyCascades(
+  targetColName: string,
+  id: string,
+  auth: AuthContext | null,
+  visited: Set<string>
+): Promise<void> {
+  const key = `${targetColName}:${id}`;
+  if (visited.has(key)) return;
+  visited.add(key);
+
+  const refs = await findIncomingRefs(targetColName);
+  if (refs.length === 0) return;
+  const client = rawClient();
+
+  for (const ref of refs) {
+    const refTable = quoteIdent(userTableName(ref.collection.name));
+    const fieldQ = quoteIdent(ref.fieldName);
+
+    if (ref.cascade === "restrict") {
+      const row = client
+        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ? LIMIT 1`)
+        .get(id);
+      if (row) {
+        throw new RestrictError({
+          [ref.collection.name]: `${ref.collection.name}.${ref.fieldName} still references this record`,
+        });
+      }
+      continue;
+    }
+
+    if (ref.cascade === "setNull") {
+      const affected = client
+        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
+        .all(id) as Array<{ id: string }>;
+      if (affected.length === 0) continue;
+      const now = Math.floor(Date.now() / 1000);
+      client
+        .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
+        .run(now, id);
+      // Notify realtime listeners with full record payloads. Hooks are skipped
+      // on purpose — cascade is a bulk operation and per-row hook execution
+      // would be surprisingly expensive.
+      for (const r of affected) {
+        const rec = await getRecord(ref.collection.name, r.id);
+        if (rec) broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec });
+      }
+      continue;
+    }
+
+    if (ref.cascade === "cascade") {
+      const affected = client
+        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
+        .all(id) as Array<{ id: string }>;
+      for (const r of affected) {
+        await deleteRecordInternal(ref.collection.name, r.id, auth, visited);
+      }
+    }
+  }
+}
+
 export async function deleteRecord(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null
 ): Promise<void> {
+  return deleteRecordInternal(collectionName, id, auth, new Set<string>());
+}
+
+async function deleteRecordInternal(
+  collectionName: string,
+  id: string,
+  auth: AuthContext | null,
+  visited: Set<string>
+): Promise<void> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
+  if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
 
   const existing = await getRecord(collectionName, id);
   if (!existing) return;
+
+  // Resolve incoming refs first — restrict throws here, before any hook runs.
+  await applyCascades(col.name, id, auth, visited);
 
   const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeDelete", {

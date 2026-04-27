@@ -55,6 +55,8 @@ export interface FieldDef {
     | "password" | "editor" | "geoPoint";
   required?: boolean;
   system?: boolean;
+  /** Auth-collection implicit field (email, verified). Storage lives on vaultbase_users. */
+  implicit?: boolean;
   collection?: string;
   options?: Record<string, unknown>;
   onCreate?: boolean;
@@ -64,7 +66,9 @@ export interface FieldDef {
 export interface Collection {
   id: string;
   name: string;
+  type: "base" | "auth" | "view";
   fields: string;
+  view_query: string | null;
   list_rule: string | null;
   view_rule: string | null;
   create_rule: string | null;
@@ -73,6 +77,21 @@ export interface Collection {
   created_at: number;
   updated_at: number;
 }
+
+export const AUTH_RESERVED_FIELD_NAMES = [
+  "email",
+  "password",
+  "verified",
+  "tokenKey",
+  "password_hash",
+  "email_verified",
+] as const;
+
+/** Display order matches what the schema editor renders. */
+export const AUTH_IMPLICIT_FIELDS: FieldDef[] = [
+  { name: "email",    type: "email", required: true, implicit: true, options: { unique: true } },
+  { name: "verified", type: "bool",  required: false, implicit: true },
+];
 
 export interface RecordRow {
   id: string;

@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
-import { createRecord, deleteRecord, getRecord, listRecords, updateRecord } from "../core/records.ts";
+import { createRecord, deleteRecord, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import type { AuthContext } from "../core/rules.ts";
 
@@ -146,6 +146,14 @@ export function makeBatchPlugin(jwtSecret: string) {
         if (e instanceof ValidationError) {
           set.status = 422;
           return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };
+        }
+        if (e instanceof RestrictError) {
+          set.status = 409;
+          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details };
+        }
+        if (e instanceof ReadOnlyCollectionError) {
+          set.status = 405;
+          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 405 };
         }
         const msg = e instanceof Error ? e.message : String(e);
         set.status = 500;

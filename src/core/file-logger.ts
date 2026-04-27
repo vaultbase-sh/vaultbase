@@ -8,6 +8,14 @@ import { JSONPath } from "jsonpath-plus";
  * external rotation/archival is the operator's responsibility.
  */
 
+export interface LogRuleEval {
+  rule: string;
+  collection: string;
+  expression: string | null;
+  outcome: "allow" | "deny" | "filter";
+  reason: string;
+}
+
 export interface LogEntry {
   id: string;
   ts: string;            // ISO timestamp
@@ -20,6 +28,8 @@ export interface LogEntry {
   auth_id?: string | null;
   auth_type?: "user" | "admin" | null;
   auth_email?: string | null;
+  /** Rules evaluated during this request (records API only). */
+  rules?: LogRuleEval[];
   // Hook-emitted log entries set kind="hook" and carry an arbitrary message.
   kind?: "request" | "hook";
   message?: string;

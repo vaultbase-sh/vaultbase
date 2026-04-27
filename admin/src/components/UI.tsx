@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { Dialog } from "primereact/dialog";
 import { Sidebar } from "primereact/sidebar";
-import { InputSwitch } from "primereact/inputswitch";
 import { Toast as PrimeToast } from "primereact/toast";
 import Icon from "./Icon.tsx";
 import { useToast } from "../stores/toast.ts";
@@ -14,9 +13,26 @@ export const FieldTypeChip: React.FC<{ type: string }> = ({ type }) => (
   </span>
 );
 
-// ── Toggle (PrimeReact InputSwitch) ──────────────────────────────────────────
-export const Toggle: React.FC<{ on: boolean; onChange: (v: boolean) => void }> = ({ on, onChange }) => (
-  <InputSwitch checked={on} onChange={(e) => onChange(e.value)} />
+// ── Toggle (custom — no PrimeReact dep) ──────────────────────────────────────
+export const Toggle: React.FC<{
+  on: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  ariaLabel?: string;
+}> = ({ on, onChange, disabled, ariaLabel }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={on}
+    aria-disabled={disabled || undefined}
+    aria-label={ariaLabel}
+    disabled={disabled}
+    data-on={on ? "true" : "false"}
+    className="vb-toggle"
+    onClick={(e) => { e.stopPropagation(); if (!disabled) onChange(!on); }}
+  >
+    <span className="vb-toggle-thumb" />
+  </button>
 );
 
 // ── StatCard ─────────────────────────────────────────────────────────────────

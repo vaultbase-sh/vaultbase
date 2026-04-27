@@ -92,3 +92,58 @@ export async function verifySmtp(): Promise<{ ok: boolean; error?: string }> {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+// ── Templates ────────────────────────────────────────────────────────────────
+
+export interface EmailTemplate {
+  subject: string;
+  body: string;
+}
+
+export const DEFAULT_TEMPLATES = {
+  verify: {
+    subject: "Verify your email",
+    body:
+      "Hi,\n\n" +
+      "Click the link below to verify your email address for {{appUrl}}:\n\n" +
+      "{{link}}\n\n" +
+      "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n",
+  },
+  reset: {
+    subject: "Reset your password",
+    body:
+      "Hi,\n\n" +
+      "We received a request to reset the password for your {{appUrl}} account.\n" +
+      "Click the link below to choose a new password:\n\n" +
+      "{{link}}\n\n" +
+      "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n",
+  },
+  otp: {
+    subject: "Your sign-in code",
+    body:
+      "Hi,\n\n" +
+      "Use this code to sign in to {{appUrl}}:\n\n" +
+      "    {{code}}\n\n" +
+      "Or click the link below:\n\n" +
+      "{{link}}\n\n" +
+      "Both expire in 10 minutes. If you didn't request this, you can ignore this email.\n",
+  },
+} as const;
+
+export function getAppUrl(): string {
+  return getAllSettings()["app.url"] ?? "";
+}
+
+export function getTemplate(kind: "verify" | "reset" | "otp"): EmailTemplate {
+  const s = getAllSettings();
+  const subjectKey = `email.${kind}.subject`;
+  const bodyKey = `email.${kind}.body`;
+  return {
+    subject: s[subjectKey]?.trim() || DEFAULT_TEMPLATES[kind].subject,
+    body: s[bodyKey]?.trim() || DEFAULT_TEMPLATES[kind].body,
+  };
+}
+
+export function renderTemplate(tpl: string, vars: Record<string, string>): string {
+  return tpl.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
+}

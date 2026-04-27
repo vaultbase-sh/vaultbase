@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
 import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
-import { parseFields, userTableName } from "./collections.ts";
+import { getCollection, parseFields, userTableName } from "./collections.ts";
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -33,7 +33,7 @@ export async function validateRecord(
   const errors: Record<string, string> = {};
 
   for (const field of schema) {
-    if (field.system || field.type === "autodate") continue;
+    if (field.system || field.implicit || field.type === "autodate") continue;
 
     const has = Object.prototype.hasOwnProperty.call(data, field.name);
     const value = data[field.name];
@@ -63,6 +63,12 @@ export async function validateRecord(
     if (field.options?.unique) {
       const isUnique = await checkUnique(collection, field.name, value, existingId);
       if (!isUnique) errors[field.name] = `${field.name} must be unique`;
+    }
+
+    // Relation target existence check (DB query)
+    if (field.type === "relation" && typeof value === "string" && value !== "") {
+      const targetErr = await checkRelationTarget(field, value);
+      if (targetErr) errors[field.name] = targetErr;
     }
   }
 
@@ -128,8 +134,7 @@ function validateValue(field: FieldDef, value: unknown): string | null {
 
     case "relation":
       if (typeof value !== "string") return `${field.name} must be a record id (string)`;
-      // Note: target existence not checked here — would require another query.
-      // Rely on FK constraint or app-level checks.
+      // Existence is verified by checkRelationTarget after this call.
       return null;
 
     case "date":
@@ -197,4 +202,15 @@ async function checkUnique(
   const params: Binding[] = existingId ? [value as Binding, existingId] : [value as Binding];
   const row = client.prepare(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`).get(...params);
   return row === null || row === undefined;
+}
+
+async function checkRelationTarget(field: FieldDef, id: string): Promise<string | null> {
+  if (!field.collection) return `${field.name}: relation has no target collection configured`;
+  const target = await getCollection(field.collection);
+  if (!target) return `${field.name}: target collection '${field.collection}' not found`;
+  const client = (getDb() as unknown as { $client: Database }).$client;
+  const tableRef = `"${userTableName(target.name)}"`;
+  const row = client.prepare(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`).get(id);
+  if (!row) return `${field.name}: referenced ${target.name} '${id}' does not exist`;
+  return null;
 }

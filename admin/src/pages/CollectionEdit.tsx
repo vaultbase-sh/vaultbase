@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
 import {
-  api, type ApiResponse, type Collection, type FieldDef, collColor, parseFields,
+  api, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, collColor, parseFields,
 } from "../api.ts";
+import { CodeEditor, type SqlSchema } from "../components/CodeEditor.tsx";
 import { useNavigate, useParams } from "react-router-dom";
 import { Topbar } from "../components/Shell.tsx";
 import { FieldTypeChip, Toggle } from "../components/UI.tsx";
@@ -49,6 +50,47 @@ export default function CollectionEdit() {
   const [rules, setRules] = useState<Rules>({ list: "", view: "", create: "", update: "", delete: "" });
   const [saving, setSaving] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
+  const [viewQuery, setViewQuery] = useState("");
+  const [viewError, setViewError] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
+  const isView = collection?.type === "view";
+
+  const sqlSchema: SqlSchema = useMemo(() => ({
+    tables: allCollections
+      .filter((c) => c.id !== collId) // exclude self while editing
+      .map((c) => {
+        const cols = ["id", "created_at", "updated_at"];
+        for (const f of parseFields(c.fields)) {
+          if (f.implicit && c.type === "auth") continue; // implicit fields don't have real columns
+          if (f.system) continue;
+          cols.push(f.name);
+        }
+        return { name: `vb_${c.name}`, collectionName: c.name, columns: cols };
+      }),
+  }), [allCollections, collId]);
+
+  async function validateView() {
+    if (!viewQuery.trim()) { setViewError("Empty query"); return; }
+    setValidating(true);
+    const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
+      "/api/admin/collections/preview-view",
+      { view_query: viewQuery.trim() }
+    );
+    setValidating(false);
+    if (res.error) {
+      setViewError(res.error);
+      toast(res.error, "info");
+      return;
+    }
+    setViewError(null);
+    if (res.data?.fields) {
+      // Preserve any user-customized field types where the column name still exists.
+      const oldByName = new Map(fields.map((f) => [f.name, f]));
+      const merged = res.data.fields.map((f) => oldByName.get(f.name) ?? f);
+      setFields(merged);
+    }
+    toast("Query validated", "check");
+  }
 
   useEffect(() => {
     api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
@@ -61,6 +103,7 @@ export default function CollectionEdit() {
       if (!res.data) return;
       setCollection(res.data);
       setFields(parseFields(res.data.fields));
+      setViewQuery(res.data.view_query ?? "");
       setRules({
         list: res.data.list_rule ?? "",
         view: res.data.view_rule ?? "",
@@ -104,6 +147,30 @@ export default function CollectionEdit() {
 
   async function handleSave() {
     if (!collection) return;
+
+    if (isView) {
+      if (!viewQuery.trim()) { toast("View collections need a SELECT query"); return; }
+      setSaving(true);
+      // Backend re-infers fields when view_query changes; we only send field defs
+      // when caller hasn't changed the query so user-tweaked field types persist.
+      const queryChanged = viewQuery.trim() !== (collection.view_query ?? "");
+      const payload: Record<string, unknown> = {
+        view_query: viewQuery.trim(),
+        list_rule: rules.list || null,
+        view_rule: rules.view || null,
+        create_rule: rules.create || null,
+        update_rule: rules.update || null,
+        delete_rule: rules.delete || null,
+      };
+      if (!queryChanged) payload["fields"] = fields.filter((f) => !f.system);
+      const res = await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, payload);
+      setSaving(false);
+      if (res.error) { toast(res.error, "info"); return; }
+      toast("Changes saved");
+      navigate(`/_/collections/${collId}/records`);
+      return;
+    }
+
     const userFields = fields.filter((f) => !f.system);
     const unnamed = userFields.filter((f) => !f.name);
     if (unnamed.length > 0) { toast("All fields must have a name."); return; }
@@ -113,6 +180,14 @@ export default function CollectionEdit() {
     if (badSelect) { toast(`Select field '${badSelect.name}' must have at least one allowed value`); return; }
     const badRelation = userFields.find((f) => f.type === "relation" && !f.collection);
     if (badRelation) { toast(`Relation field '${badRelation.name}' must have a target collection`); return; }
+    if (collection.type === "auth") {
+      const reserved = new Set<string>(AUTH_RESERVED_FIELD_NAMES);
+      const clash = userFields.find((f) => !f.implicit && reserved.has(f.name));
+      if (clash) {
+        toast(`'${clash.name}' is reserved on auth collections — managed by the implicit auth schema`);
+        return;
+      }
+    }
     setSaving(true);
     await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, {
       fields: userFields,
@@ -176,21 +251,52 @@ export default function CollectionEdit() {
       <div className="app-body">
         <div className="editor-layout">
           <div className="col" style={{ gap: 16 }}>
-            {/* Field list */}
+            {isView && (
+              <div className="editor-card">
+                <div className="editor-card-head">
+                  <h3>SELECT query</h3>
+                  <span className="meta">backed by SQLite VIEW <span className="mono">vb_{collection.name}</span></span>
+                </div>
+                <div style={{ padding: 14 }}>
+                  <CodeEditor
+                    language="sql"
+                    value={viewQuery}
+                    onChange={(v) => { setViewQuery(v); setViewError(null); }}
+                    sqlSchema={sqlSchema}
+                    markers={viewError ? [{ message: viewError, line: 1, severity: "error" }] : []}
+                    height={220}
+                  />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, gap: 10 }}>
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      Single SELECT only — no semicolons, no DML/DDL. Autocompletes <span className="mono">vb_*</span> tables and columns.
+                    </div>
+                    <button className="btn btn-ghost" onClick={validateView} disabled={validating}>
+                      <Icon name="play" size={11} />
+                      {validating ? "Validating…" : "Validate & refresh columns"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Field list — hidden for view collections (auto-derived from SQL) */}
+            {!isView && (
             <div className="editor-card">
               <div className="editor-card-head">
                 <h3>Schema fields</h3>
                 <span className="meta">{fields.length} fields</span>
               </div>
               <div>
-                {fields.map((f, i) => (
+                {fields.map((f, i) => {
+                  const nameLocked = f.system || f.implicit;
+                  return (
                   <div
                     key={i}
                     className={`field-row-edit${selectedIdx === i ? " selected" : ""}`}
                     onClick={() => setSelectedIdx(i)}
                   >
                     <span className="grip"><Icon name="grip" size={12} /></span>
-                    {f.system ? (
+                    {nameLocked ? (
                       <span className="name">{f.name}</span>
                     ) : (
                       <input
@@ -207,25 +313,34 @@ export default function CollectionEdit() {
                     <FieldTypeChip type={f.type} />
                     {f.required && <span className="req">required</span>}
                     {f.system && <span className="system">system</span>}
-                    {!f.system && (
-                      <>
-                        <Toggle
-                          on={f.required ?? false}
-                          onChange={(v) => setFields((fs) => fs.map((x, xi) => xi === i ? { ...x, required: v } : x))}
-                        />
-                        <button
-                          className="btn-icon"
-                          onClick={(e) => { e.stopPropagation(); removeField(i); }}
-                        >
-                          <Icon name="x" size={12} />
-                        </button>
-                      </>
+                    {f.implicit && <span className="system" title="Implicit auth field — managed schema, options editable">implicit</span>}
+                    {!nameLocked && (
+                      <button
+                        className="btn-icon"
+                        onClick={(e) => { e.stopPropagation(); removeField(i); }}
+                      >
+                        <Icon name="x" size={12} />
+                      </button>
+                    )}
+                    {f.implicit && (
+                      <Toggle
+                        on={f.required ?? false}
+                        onChange={(v) => setFields((fs) => fs.map((x, xi) => xi === i ? { ...x, required: v } : x))}
+                      />
+                    )}
+                    {!f.system && !f.implicit && (
+                      <Toggle
+                        on={f.required ?? false}
+                        onChange={(v) => setFields((fs) => fs.map((x, xi) => xi === i ? { ...x, required: v } : x))}
+                      />
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <FieldTypePicker onPick={addField} />
             </div>
+            )}
 
             {/* API rules */}
             <div className="editor-card">
@@ -234,7 +349,10 @@ export default function CollectionEdit() {
                 <span className="meta">empty = admin only · null = public</span>
               </div>
               <div>
-                {(["list", "view", "create", "update", "delete"] as const).map((r) => (
+                {(isView
+                  ? (["list", "view"] as const)
+                  : (["list", "view", "create", "update", "delete"] as const)
+                ).map((r) => (
                   <div className="rule-row" key={r}>
                     <span className="rule-name">{r} rule</span>
                     <RuleEditor
@@ -248,7 +366,7 @@ export default function CollectionEdit() {
               </div>
             </div>
 
-            <IndexesSection collectionName={collection.name} fields={fields} />
+            {!isView && <IndexesSection collectionName={collection.name} fields={fields} />}
           </div>
 
           {/* Right: field options */}
@@ -266,11 +384,11 @@ export default function CollectionEdit() {
                       className="input mono"
                       value={sel.name}
                       onChange={(e) => updateSel({ name: e.target.value.replace(/[^a-z0-9_]/g, "") })}
-                      disabled={sel.system}
+                      disabled={sel.system || sel.implicit}
                     />
-                    {sel.system && (
+                    {(sel.system || sel.implicit) && (
                       <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                        System field — name is locked
+                        {sel.implicit ? "Implicit auth field — name and type are locked, options are editable below" : "System field — name is locked"}
                       </div>
                     )}
                   </div>
@@ -287,7 +405,7 @@ export default function CollectionEdit() {
                               ? { borderColor: "var(--accent)", color: "var(--accent-light)", background: "var(--accent-glow)", borderStyle: "solid" }
                               : undefined
                           }
-                          onClick={() => !sel.system && updateSel({ type: t })}
+                          onClick={() => !(sel.system || sel.implicit) && updateSel({ type: t })}
                         >
                           {t}
                         </span>
@@ -453,27 +571,46 @@ export default function CollectionEdit() {
                     </>
                   )}
                   {sel.type === "relation" && (
-                    <div>
-                      <label className="label">Target collection</label>
-                      {allCollections.filter((c) => c.id !== collId).length === 0 ? (
-                        <div className="muted" style={{ fontSize: 11 }}>
-                          No other collections to link to.
-                        </div>
-                      ) : (
+                    <>
+                      <div>
+                        <label className="label">Target collection</label>
+                        {allCollections.filter((c) => c.id !== collId).length === 0 ? (
+                          <div className="muted" style={{ fontSize: 11 }}>
+                            No other collections to link to.
+                          </div>
+                        ) : (
+                          <Dropdown
+                            value={sel.collection ?? null}
+                            options={allCollections
+                              .filter((c) => c.id !== collId)
+                              .map((c) => c.name)}
+                            onChange={(e) => updateSel({ collection: e.value })}
+                            placeholder="Select a collection…"
+                            filter
+                            showClear
+                            style={{ width: "100%", height: 34 }}
+                            panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                          />
+                        )}
+                      </div>
+                      <div>
+                        <label className="label">On target delete</label>
                         <Dropdown
-                          value={sel.collection ?? null}
-                          options={allCollections
-                            .filter((c) => c.id !== collId)
-                            .map((c) => c.name)}
-                          onChange={(e) => updateSel({ collection: e.value })}
-                          placeholder="Select a collection…"
-                          filter
-                          showClear
+                          value={(sel.options?.["cascade"] as string | undefined) ?? "setNull"}
+                          options={[
+                            { label: "Set to null (default)", value: "setNull" },
+                            { label: "Cascade delete",        value: "cascade" },
+                            { label: "Restrict (block)",      value: "restrict" },
+                          ]}
+                          onChange={(e) => updateSelOptions({ cascade: e.value })}
                           style={{ width: "100%", height: 34 }}
                           panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
                         />
-                      )}
-                    </div>
+                        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                          What to do with this record when the referenced record is deleted.
+                        </div>
+                      </div>
+                    </>
                   )}
                   {sel.type === "select" && (
                     <>
@@ -532,6 +669,19 @@ export default function CollectionEdit() {
                         <Toggle
                           on={!!sel.options?.["multiple"]}
                           onChange={(v) => updateSelOptions({ multiple: v })}
+                        />
+                      </label>
+                      <label style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "8px 10px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12 }}>Protected</div>
+                          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                            Public GETs return 401. Issue a 1h access token via{" "}
+                            <span className="mono">POST /api/files/.../token</span>, then pass <span className="mono">?token=</span>.
+                          </div>
+                        </div>
+                        <Toggle
+                          on={!!sel.options?.["protected"]}
+                          onChange={(v) => updateSelOptions({ protected: v })}
                         />
                       </label>
                     </>
@@ -600,7 +750,7 @@ function IndexesSection({
     load();
   }
 
-  const indexable = fields.filter((f) => !f.system && f.type !== "autodate" && f.type !== "json" && f.type !== "file");
+  const indexable = fields.filter((f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "json" && f.type !== "file");
 
   return (
     <div className="editor-card">

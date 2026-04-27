@@ -341,6 +341,9 @@ export default function Records() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [selected, setSelected] = useState<RecordRow[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   async function loadCollection() {
     const res = await api.get<ApiResponse<Collection>>(`/api/collections/${collId}`);
@@ -350,17 +353,23 @@ export default function Records() {
   async function loadRecords(p = 1, f = appliedFilter) {
     if (!collection) return;
     setLoading(true);
-    const params = new URLSearchParams({ page: String(p), perPage: "30", sort });
-    if (f) params.set("filter", f);
-    const res = await api.get<ListResponse<RecordRow>>(
-      `/api/${collection.name}?${params}`
-    );
+    const params = new URLSearchParams({ page: String(p), perPage: "30" });
+    if (collection.type !== "auth") {
+      params.set("sort", sort);
+      if (f) params.set("filter", f);
+    }
+    const url = collection.type === "auth"
+      ? `/api/admin/users/${collection.name}?${params}`
+      : `/api/${collection.name}?${params}`;
+    const res = await api.get<ListResponse<RecordRow>>(url);
     if (res.data) { setRecords(res.data); setTotal(res.totalItems); }
     setLoading(false);
   }
 
   useEffect(() => { loadCollection(); }, [collId]);
   useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort]);
+  // Clear selection on navigation events; row references would otherwise be stale.
+  useEffect(() => { setSelected([]); }, [collId, page, appliedFilter, sort]);
 
   function openRecord(r: RecordRow) {
     setOpenRec(r);
@@ -378,6 +387,31 @@ export default function Records() {
     if (!collection || !openRec) return;
     setEditErrors({});
     setSaving(true);
+
+    if (collection.type === "auth") {
+      // Auth-user updates go through the admin users endpoint. Email + verified
+      // are top-level columns; everything else is shoved into the `data` blob.
+      const payload: Record<string, unknown> = {};
+      const dataObj: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(editData)) {
+        if (k === "email") payload["email"] = v;
+        else if (k === "verified") payload["verified"] = !!v;
+        else dataObj[k] = v;
+      }
+      if (Object.keys(dataObj).length > 0) payload["data"] = dataObj;
+      const res = await api.patch<ApiResponse<RecordRow>>(
+        `/api/admin/users/${collection.name}/${String(openRec.id)}`,
+        payload
+      );
+      setSaving(false);
+      if (res.code === 422 && res.details) { setEditErrors(res.details); toast("Validation failed", "info"); return; }
+      if (res.error) { toast(res.error, "info"); return; }
+      toast("User saved");
+      setOpenRec(null);
+      loadRecords(page);
+      return;
+    }
+
     // Strip empty password fields so we don't blank existing hashes on no-op edits
     const fields = parseFields(collection.fields);
     const passwordNames = new Set(fields.filter((f) => f.type === "password").map((f) => f.name));
@@ -400,21 +434,159 @@ export default function Records() {
 
   async function handleDelete(id: string) {
     if (!collection) return;
+    const isAuth = collection.type === "auth";
     const ok = await confirm({
-      title: "Delete record",
-      message: `Delete this record from "${collection.name}"?\n\nID: ${id}\n\nThis cannot be undone.`,
+      title: isAuth ? "Delete user" : "Delete record",
+      message: isAuth
+        ? `Delete this user from "${collection.name}"?\n\nID: ${id}\n\nThis cannot be undone.`
+        : `Delete this record from "${collection.name}"?\n\nID: ${id}\n\nThis cannot be undone.`,
       danger: true,
     });
     if (!ok) return;
-    await api.delete(`/api/${collection.name}/${id}`);
-    toast("Record deleted", "trash");
+    const url = isAuth
+      ? `/api/admin/users/${collection.name}/${id}`
+      : `/api/${collection.name}/${id}`;
+    await api.delete(url);
+    toast(isAuth ? "User deleted" : "Record deleted", "trash");
     setOpenRec(null);
+    loadRecords(page);
+  }
+
+  async function handleBulkDelete() {
+    if (!collection || selected.length === 0) return;
+    const isAuth = collection.type === "auth";
+    const ok = await confirm({
+      title: isAuth ? "Delete users" : "Delete records",
+      message: `Delete ${selected.length} ${isAuth ? "user" : "record"}${selected.length === 1 ? "" : "s"} from "${collection.name}"?\n\nThis cannot be undone.`,
+      danger: true,
+      confirmLabel: `Delete ${selected.length}`,
+    });
+    if (!ok) return;
+    setBulkDeleting(true);
+    const ids = selected.map((r) => String(r.id));
+    let failed = 0;
+
+    if (isAuth) {
+      // No batch API for auth users — sequential per-id deletes.
+      for (const id of ids) {
+        const res = await api.delete<ApiResponse<null>>(`/api/admin/users/${collection.name}/${id}`);
+        if (res.error) failed++;
+      }
+    } else {
+      // Use the atomic batch API in chunks of 100 (server cap).
+      const CHUNK = 100;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const slice = ids.slice(i, i + CHUNK);
+        const res = await api.post<{ data?: unknown[]; error?: string; code?: number }>(
+          "/api/batch",
+          {
+            requests: slice.map((id) => ({
+              method: "DELETE",
+              url: `/api/${collection.name}/${id}`,
+            })),
+          }
+        );
+        if (res.error) failed += slice.length; // batches are atomic — all-or-nothing per chunk
+      }
+    }
+
+    setBulkDeleting(false);
+    setSelected([]);
+    if (failed === 0) {
+      toast(`Deleted ${ids.length} ${isAuth ? "user" : "record"}${ids.length === 1 ? "" : "s"}`, "trash");
+    } else if (failed === ids.length) {
+      toast(`Bulk delete failed`, "info");
+    } else {
+      toast(`Deleted ${ids.length - failed} of ${ids.length}; ${failed} failed`, "info");
+    }
     loadRecords(page);
   }
 
   function applyFilter() {
     setPage(1);
     setAppliedFilter(filter);
+  }
+
+  function handleExport() {
+    if (!collection) return;
+    const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+    fetch(`/api/admin/export/${collection.name}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed: ${r.status}`);
+        return r.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${collection.name}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        toast(`Exported ${collection.name}.csv`, "download");
+      })
+      .catch((e) => toast(`Export failed: ${e instanceof Error ? e.message : String(e)}`, "info"));
+  }
+
+  function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !collection) return;
+    file.text().then(async (text) => {
+      const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+      const res = await fetch(`/api/admin/import/${collection.name}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/csv" },
+        body: text,
+      });
+      const j = (await res.json()) as { data?: { created: number; failed: number; total: number; errors: unknown[] }; error?: string };
+      if (j.error) { toast(`Import failed: ${j.error}`, "info"); return; }
+      const d = j.data!;
+      if (d.failed === 0) {
+        toast(`Imported ${d.created} of ${d.total} rows`, "check");
+      } else {
+        toast(`Imported ${d.created}, ${d.failed} failed (see console)`, "info");
+        console.warn(`Import errors for ${collection.name}:`, d.errors);
+      }
+      loadRecords(page);
+    });
+  }
+
+  async function handleImpersonate(id: string) {
+    if (!collection) return;
+    const res = await api.post<ApiResponse<{ token: string; record: { id: string; email: string } }>>(
+      `/api/admin/impersonate/${collection.name}/${id}`,
+      {}
+    );
+    if (res.error) { toast(res.error, "info"); return; }
+    if (!res.data?.token) { toast("No token returned", "info"); return; }
+    try {
+      await navigator.clipboard.writeText(res.data.token);
+      toast("Impersonation token copied to clipboard (1h expiry)", "check");
+    } catch {
+      toast("Token issued — paste from console", "check");
+      console.log("Impersonation token:", res.data.token);
+    }
+  }
+
+  async function handleDisableMfa(id: string) {
+    if (!collection) return;
+    const ok = await confirm({
+      title: "Disable MFA",
+      message: "Reset this user's MFA? They'll be able to sign in with just their password until they re-enroll.",
+      danger: true,
+      confirmLabel: "Disable MFA",
+    });
+    if (!ok) return;
+    const res = await api.patch<ApiResponse<RecordRow>>(
+      `/api/admin/users/${collection.name}/${id}`,
+      { mfa_enabled: false }
+    );
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("MFA disabled");
+    loadRecords(page);
+    setOpenRec(null);
   }
 
   const allFields = collection ? parseFields(collection.fields) : [];
@@ -457,12 +629,46 @@ export default function Records() {
                 <Icon name="pencil" size={12} /> Schema
               </button>
             )}
+            {collection?.type === "base" && (
+              <>
+                <button
+                  className="btn btn-ghost"
+                  onClick={handleExport}
+                  title="Download all records as CSV"
+                >
+                  <Icon name="download" size={12} /> Export
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => importInputRef.current?.click()}
+                  title="Upload a CSV to bulk-create records"
+                >
+                  <Icon name="upload" size={12} /> Import
+                </button>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: "none" }}
+                  onChange={handleImport}
+                />
+              </>
+            )}
             <button
               className="btn btn-primary"
               onClick={() => setShowNew(true)}
-              disabled={!collection}
+              disabled={!collection || collection.type === "auth" || collection.type === "view"}
+              title={
+                collection?.type === "auth" ? "Users register via POST /api/auth/<collection>/register"
+                : collection?.type === "view" ? "View collections are read-only"
+                : undefined
+              }
             >
-              <Icon name="plus" size={12} /> New record
+              <Icon name="plus" size={12} /> {
+                collection?.type === "auth" ? "New user"
+                : collection?.type === "view" ? "Read-only"
+                : "New record"
+              }
             </button>
           </>
         }
@@ -507,6 +713,39 @@ export default function Records() {
           </div>
         </div>
 
+        {selected.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "8px 14px",
+              background: "rgba(248,113,113,0.08)",
+              borderBottom: "0.5px solid rgba(248,113,113,0.25)",
+              fontSize: 12,
+              color: "var(--text-secondary)",
+            }}
+          >
+            <span>
+              <strong style={{ color: "var(--text-primary)" }}>{selected.length}</strong>{" "}
+              {collection?.type === "auth" ? "user" : "record"}{selected.length === 1 ? "" : "s"} selected
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setSelected([])} disabled={bulkDeleting}>
+                Clear
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting || collection?.type === "view"}
+              >
+                <Icon name="trash" size={12} />
+                {bulkDeleting ? "Deleting…" : `Delete ${selected.length}`}
+              </button>
+            </div>
+          </div>
+        )}
+
         <DataTable
           value={records}
           lazy
@@ -517,11 +756,22 @@ export default function Records() {
           onPage={(e: DataTablePageEvent) => setPage(Math.floor(e.first / 30) + 1)}
           loading={loading}
           onRowClick={(e) => openRecord(e.data as RecordRow)}
-          selection={openRec}
+          // PrimeReact's selection types pick the wrong union member here based on
+          // the conditional selectionMode prop; runtime accepts the array form.
+          selection={(collection?.type === "view" ? null : selected) as never}
+          onSelectionChange={((e: { value: RecordRow[] }) => setSelected(e.value)) as never}
+          selectionMode={collection?.type === "view" ? null : "multiple"}
           dataKey="id"
           emptyMessage={appliedFilter ? "No records match this filter." : "No records yet."}
           style={{ fontSize: 13 }}
         >
+          {collection?.type !== "view" && (
+            <Column
+              selectionMode="multiple"
+              headerStyle={{ width: "3rem" }}
+              bodyStyle={{ width: "3rem" }}
+            />
+          )}
           <Column
             field="id"
             header="id"
@@ -541,6 +791,22 @@ export default function Records() {
               )}
             />
           ))}
+          {collection?.type === "auth" && (
+            <Column
+              field="status"
+              header="status"
+              body={(r: RecordRow) => (
+                <span style={{ display: "inline-flex", gap: 4 }}>
+                  {r["mfa_enabled"] === true && (
+                    <span title="MFA enabled" style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "rgba(74,222,128,0.15)", color: "var(--success)" }}>MFA</span>
+                  )}
+                  {r["anonymous"] === true && (
+                    <span title="Anonymous user" style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "rgba(255,255,255,0.07)", color: "var(--text-muted)" }}>anon</span>
+                  )}
+                </span>
+              )}
+            />
+          )}
           <Column
             field="created"
             header="created"
@@ -566,23 +832,47 @@ export default function Records() {
       <Drawer
         open={!!openRec}
         onClose={() => setOpenRec(null)}
-        title="Edit record"
+        title={collection?.type === "view" ? "View record (read-only)" : "Edit record"}
         idLabel={openRec ? String(openRec.id).slice(0, 16) : undefined}
         footer={
-          <>
-            <button
-              className="btn btn-danger"
-              onClick={() => openRec && handleDelete(String(openRec.id))}
-            >
-              <Icon name="trash" size={12} /> Delete
-            </button>
-            <span style={{ flex: 1 }} />
-            <button className="btn btn-ghost" onClick={() => setOpenRec(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              <Icon name="check" size={12} />
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </>
+          collection?.type === "view" ? (
+            <button className="btn btn-ghost" onClick={() => setOpenRec(null)} style={{ marginLeft: "auto" }}>Close</button>
+          ) : (
+            <>
+              <button
+                className="btn btn-danger"
+                onClick={() => openRec && handleDelete(String(openRec.id))}
+              >
+                <Icon name="trash" size={12} /> Delete
+              </button>
+              {collection?.type === "auth" && openRec && (
+                <>
+                  {openRec["mfa_enabled"] === true && (
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => handleDisableMfa(String(openRec.id))}
+                      title="Reset MFA — user signs in with password only until they re-enroll"
+                    >
+                      <Icon name="key" size={12} /> Disable MFA
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => handleImpersonate(String(openRec.id))}
+                    title="Mint a 1h user JWT for support purposes (audited)"
+                  >
+                    <Icon name="users" size={12} /> Impersonate
+                  </button>
+                </>
+              )}
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-ghost" onClick={() => setOpenRec(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+                <Icon name="check" size={12} />
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </>
+          )
         }
       >
         {openRec && (
@@ -619,6 +909,7 @@ export default function Records() {
                     setEditErrors((prev) => { const { [f.name]: _, ...rest } = prev; return rest; });
                   }}
                   relationCache={editRelationCache}
+                  readOnly={collection?.type === "view"}
                 />
                 {editErrors[f.name] && (
                   <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>

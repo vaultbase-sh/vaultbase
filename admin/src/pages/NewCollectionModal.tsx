@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
-import { api, type ApiResponse, type Collection, type FieldDef } from "../api.ts";
+import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
 import { Modal, FieldTypeChip, Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
+import { CodeEditor, type SqlSchema } from "../components/CodeEditor.tsx";
 
 const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json"];
 
@@ -31,25 +32,72 @@ export default function NewCollectionModal({
   onCreate: (name: string) => void;
 }) {
   const [name, setName] = useState("");
+  const [type, setType] = useState<"base" | "auth" | "view">("base");
   const [fields, setFields] = useState<FieldDef[]>(SYSTEM_FIELDS);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
+  const [viewQuery, setViewQuery] = useState("");
+  const [viewError, setViewError] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
+
+  const sqlSchema: SqlSchema = useMemo(() => ({
+    tables: allCollections.map((c) => {
+      const cols = ["id", "created_at", "updated_at"];
+      for (const f of parseFields(c.fields)) {
+        if (f.implicit && c.type === "auth") continue;
+        if (f.system) continue;
+        cols.push(f.name);
+      }
+      return { name: `vb_${c.name}`, collectionName: c.name, columns: cols };
+    }),
+  }), [allCollections]);
+
+  async function validateView() {
+    if (!viewQuery.trim()) { setViewError("Empty query"); return; }
+    setValidating(true);
+    const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
+      "/api/admin/collections/preview-view",
+      { view_query: viewQuery.trim() }
+    );
+    setValidating(false);
+    if (res.error) { setViewError(res.error); return; }
+    setViewError(null);
+  }
 
   useEffect(() => {
     if (open) {
       setName("");
+      setType("base");
       setFields(SYSTEM_FIELDS);
       setExpanded(null);
       setError("");
       setLoading(false);
+      setViewQuery("");
       // Fetch existing collections for relation autocomplete
       api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
         if (res.data) setAllCollections(res.data);
       });
     }
   }, [open]);
+
+  // Keep implicit fields in sync with selected type. Implicit fields render
+  // ahead of the user-defined section and ahead of the trailing system fields.
+  // For view collections, fields are inferred from the SQL query on save.
+  useEffect(() => {
+    setFields((prev) => {
+      const userFields = prev.filter((f) => !f.system && !f.implicit);
+      if (type === "auth") {
+        return [...AUTH_IMPLICIT_FIELDS, ...userFields, ...SYSTEM_FIELDS];
+      }
+      if (type === "view") {
+        return SYSTEM_FIELDS;
+      }
+      return [...userFields, ...SYSTEM_FIELDS];
+    });
+    setExpanded(null);
+  }, [type]);
 
   const collectionNames = useMemo(
     () => allCollections.map((c) => c.name),
@@ -83,6 +131,23 @@ export default function NewCollectionModal({
   async function handleCreate() {
     const collName = cleanCollName(name);
     if (!collName) return;
+
+    if (type === "view") {
+      if (!viewQuery.trim()) { setError("View collections require a SELECT query."); return; }
+      setError("");
+      setLoading(true);
+      // For view collections we let the backend infer fields from the SQL.
+      const res = await api.post<ApiResponse<Collection>>("/api/collections", {
+        name: collName,
+        type,
+        view_query: viewQuery.trim(),
+      });
+      setLoading(false);
+      if (res.error) { setError(res.error); return; }
+      onCreate(collName);
+      return;
+    }
+
     const userFields = fields.filter((f) => !f.system);
     const unnamed = userFields.filter((f) => !f.name);
     if (unnamed.length > 0) { setError("All fields must have a name."); return; }
@@ -92,10 +157,19 @@ export default function NewCollectionModal({
     if (badSelect) { setError(`Select field '${badSelect.name}' must have at least one allowed value.`); return; }
     const badRelation = userFields.find((f) => f.type === "relation" && !f.collection);
     if (badRelation) { setError(`Relation field '${badRelation.name}' must have a target collection.`); return; }
+    if (type === "auth") {
+      const reserved = new Set<string>(AUTH_RESERVED_FIELD_NAMES);
+      const clash = userFields.find((f) => !f.implicit && reserved.has(f.name));
+      if (clash) {
+        setError(`'${clash.name}' is reserved on auth collections — managed by the implicit auth schema.`);
+        return;
+      }
+    }
     setError("");
     setLoading(true);
     const res = await api.post<ApiResponse<Collection>>("/api/collections", {
       name: collName,
+      type,
       fields: userFields,
     });
     setLoading(false);
@@ -152,21 +226,71 @@ export default function NewCollectionModal({
           </div>
         </div>
 
-        {/* Field schema */}
+        {/* Type */}
+        <div>
+          <label className="label">Type</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {(["base", "auth", "view"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setType(t)}
+                className={`btn ${type === t ? "btn-primary" : "btn-ghost"}`}
+                style={{ flex: 1, justifyContent: "center", textTransform: "capitalize" }}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+            {type === "auth" && <>Email + password sign-up via <span className="mono">/api/auth/{collName || "name"}/register</span>. Field names <span className="mono">email</span>, <span className="mono">password</span>, <span className="mono">verified</span> are managed by the implicit auth schema and cannot be redefined.</>}
+            {type === "view" && <>Read-only collection backed by a SQL <span className="mono">SELECT</span>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>}
+            {type === "base" && <>Standard records collection. CRUD via <span className="mono">/api/{collName || "name"}</span>.</>}
+          </div>
+        </div>
+
+        {/* SQL query (view collections only) */}
+        {type === "view" && (
+          <div>
+            <label className="label">SELECT query</label>
+            <CodeEditor
+              language="sql"
+              value={viewQuery}
+              onChange={(v) => { setViewQuery(v); setViewError(null); }}
+              sqlSchema={sqlSchema}
+              markers={viewError ? [{ message: viewError, line: 1, severity: "error" }] : []}
+              height={200}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, gap: 10 }}>
+              <div className="muted" style={{ fontSize: 11 }}>
+                Single SELECT only · autocomplete for <span className="mono">vb_*</span> tables and columns · backed by VIEW <span className="mono">vb_{collName || "name"}</span>.
+              </div>
+              <button className="btn btn-ghost" onClick={validateView} disabled={validating} type="button">
+                <Icon name="play" size={11} />
+                {validating ? "Validating…" : "Validate"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Field schema (hidden for view collections — fields are inferred from the SQL) */}
+        {type !== "view" && (
         <div>
           <label className="label">Schema · {fields.length} fields</label>
           <div className="field-list" style={{ borderRadius: 8 }}>
-            {fields.map((f, i) => (
+            {fields.map((f, i) => {
+              const locked = f.system || f.implicit;
+              return (
               <div key={i} style={{ borderBottom: i < fields.length - 1 ? "0.5px solid rgba(255,255,255,0.04)" : "none" }}>
                 <div
                   className={`field-row-edit${expanded === i ? " selected" : ""}`}
-                  style={{ padding: "8px 12px", gap: 8, borderBottom: "none" }}
+                  style={{ padding: "8px 12px", gap: 8, borderBottom: "none", opacity: locked ? 0.7 : 1 }}
                 >
                   <span className="grip" style={{ flexShrink: 0 }}>
                     <Icon name="grip" size={12} />
                   </span>
 
-                  {f.system ? (
+                  {locked ? (
                     <span className="name" style={{ minWidth: 140, fontSize: 12 }}>{f.name}</span>
                   ) : (
                     <input
@@ -179,7 +303,7 @@ export default function NewCollectionModal({
                     />
                   )}
 
-                  {f.system ? (
+                  {locked ? (
                     <FieldTypeChip type={f.type} />
                   ) : (
                     <Dropdown
@@ -191,7 +315,7 @@ export default function NewCollectionModal({
                     />
                   )}
 
-                  {!f.system && (
+                  {!locked && (
                     <label
                       style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}
                       onClick={(e) => e.stopPropagation()}
@@ -204,8 +328,10 @@ export default function NewCollectionModal({
                     </label>
                   )}
 
-                  {f.system ? (
-                    <span className="system" style={{ marginLeft: "auto", fontSize: 10.5 }}>system</span>
+                  {locked ? (
+                    <span className="system" style={{ marginLeft: "auto", fontSize: 10.5 }}>
+                      {f.implicit ? "implicit" : "system"}
+                    </span>
                   ) : (
                     <>
                       <button
@@ -228,7 +354,7 @@ export default function NewCollectionModal({
                   )}
                 </div>
 
-                {expanded === i && !f.system && (
+                {expanded === i && !locked && (
                   <FieldOptionsPanel
                     field={f}
                     onPatchOptions={(patch) => patchOptions(i, patch)}
@@ -237,7 +363,8 @@ export default function NewCollectionModal({
                   />
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
           <div className="add-field-bar" style={{ borderRadius: 8, marginTop: 6, border: "0.5px solid var(--border-default)" }}>
             <span className="label-mini">Add field</span>
@@ -248,6 +375,7 @@ export default function NewCollectionModal({
             ))}
           </div>
         </div>
+        )}
       </div>
     </Modal>
   );

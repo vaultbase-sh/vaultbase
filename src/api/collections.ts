@@ -1,11 +1,15 @@
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import {
+  CollectionValidationError,
   createCollection,
   deleteCollection,
+  fieldsFromViewColumns,
   getCollection,
+  inferViewColumns,
   listCollections,
   updateCollection,
+  validateViewQuery,
 } from "../core/collections.ts";
 
 function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
@@ -36,21 +40,54 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
-        const col = await createCollection({
-          name: body.name,
-          fields: JSON.stringify(body.fields ?? []),
-          list_rule: body.list_rule ?? null,
-          view_rule: body.view_rule ?? null,
-          create_rule: body.create_rule ?? null,
-          update_rule: body.update_rule ?? null,
-          delete_rule: body.delete_rule ?? null,
-        });
-        return { data: col };
+        const type = body.type ?? "base";
+        if (type !== "base" && type !== "auth" && type !== "view") {
+          set.status = 422;
+          return { error: "type must be 'base', 'auth', or 'view'", code: 422 };
+        }
+        if (type === "view" && !body.view_query) {
+          set.status = 422;
+          return { error: "view collections require a view_query", code: 422 };
+        }
+        try {
+          const init: Parameters<typeof createCollection>[0] = {
+            name: body.name,
+            type,
+            fields: JSON.stringify(body.fields ?? []),
+            create_rule: body.create_rule ?? null,
+            update_rule: body.update_rule ?? null,
+            delete_rule: body.delete_rule ?? null,
+          };
+          // Only forward list/view rules if explicitly provided so view-collection
+          // safe defaults (admin-only) kick in when omitted.
+          if (body.list_rule !== undefined) init.list_rule = body.list_rule;
+          if (body.view_rule !== undefined) init.view_rule = body.view_rule;
+          if (body.view_query !== undefined) init.view_query = body.view_query;
+          const col = await createCollection(init);
+          return { data: col };
+        } catch (e) {
+          if (e instanceof CollectionValidationError) {
+            set.status = 422;
+            return { error: e.message, code: 422, details: e.details };
+          }
+          if (e instanceof Error && /view query/i.test(e.message)) {
+            set.status = 422;
+            return { error: e.message, code: 422 };
+          }
+          // SQLite UNIQUE on collection name → friendly 400 instead of crashing
+          if (e instanceof Error && /UNIQUE constraint failed.*collections\.name/i.test(e.message)) {
+            set.status = 400;
+            return { error: `A collection named '${body.name}' already exists`, code: 400 };
+          }
+          throw e;
+        }
       },
       {
         body: t.Object({
           name: t.String(),
+          type: t.Optional(t.String()),
           fields: t.Optional(t.Array(t.Any())),
+          view_query: t.Optional(t.String()),
           list_rule: t.Optional(t.Nullable(t.String())),
           view_rule: t.Optional(t.Nullable(t.String())),
           create_rule: t.Optional(t.Nullable(t.String())),
@@ -69,21 +106,39 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         const update: Record<string, unknown> = {};
         if (body.name !== undefined) update["name"] = body.name;
         if (body.fields !== undefined) update["fields"] = JSON.stringify(body.fields);
+        if (body.view_query !== undefined) update["view_query"] = body.view_query;
         if ("list_rule" in body) update["list_rule"] = body.list_rule;
         if ("view_rule" in body) update["view_rule"] = body.view_rule;
         if ("create_rule" in body) update["create_rule"] = body.create_rule;
         if ("update_rule" in body) update["update_rule"] = body.update_rule;
         if ("delete_rule" in body) update["delete_rule"] = body.delete_rule;
-        const col = await updateCollection(
-          params.id,
-          update as Parameters<typeof updateCollection>[1]
-        );
-        return { data: col };
+        try {
+          const col = await updateCollection(
+            params.id,
+            update as Parameters<typeof updateCollection>[1]
+          );
+          return { data: col };
+        } catch (e) {
+          if (e instanceof CollectionValidationError) {
+            set.status = 422;
+            return { error: e.message, code: 422, details: e.details };
+          }
+          if (e instanceof Error && /view query/i.test(e.message)) {
+            set.status = 422;
+            return { error: e.message, code: 422 };
+          }
+          if (e instanceof Error && /UNIQUE constraint failed.*collections\.name/i.test(e.message)) {
+            set.status = 400;
+            return { error: `A collection with that name already exists`, code: 400 };
+          }
+          throw e;
+        }
       },
       {
         body: t.Object({
           name: t.Optional(t.String()),
           fields: t.Optional(t.Array(t.Any())),
+          view_query: t.Optional(t.String()),
           list_rule: t.Optional(t.Nullable(t.String())),
           view_rule: t.Optional(t.Nullable(t.String())),
           create_rule: t.Optional(t.Nullable(t.String())),
@@ -91,6 +146,27 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           delete_rule: t.Optional(t.Nullable(t.String())),
         }),
       }
+    )
+    // Dry-run a view query: validate syntax + infer columns. Lets the admin UI
+    // surface errors and refresh the field list without actually creating a view.
+    .post(
+      "/api/admin/collections/preview-view",
+      async ({ body, request, set }) => {
+        if (!(await isAdmin(request, jwtSecret))) {
+          set.status = 403;
+          return { error: "Forbidden", code: 403 };
+        }
+        try {
+          validateViewQuery(body.view_query);
+          const columns = inferViewColumns(body.view_query);
+          const fields = fieldsFromViewColumns(columns);
+          return { data: { columns, fields } };
+        } catch (e) {
+          set.status = 422;
+          return { error: e instanceof Error ? e.message : String(e), code: 422 };
+        }
+      },
+      { body: t.Object({ view_query: t.String() }) }
     )
     .delete("/api/collections/:id", async ({ params, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
