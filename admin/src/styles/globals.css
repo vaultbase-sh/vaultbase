@@ -1371,14 +1371,54 @@ a { color: inherit; text-decoration: none; }
 .p-sidebar .p-sidebar-header .p-sidebar-close:hover { background: rgba(255,255,255,0.09); color: var(--text-primary); }
 .p-sidebar-mask { background: rgba(0,0,0,0.6); }
 
-/* InputSwitch (Toggle) */
-.p-inputswitch { width: 30px; height: 17px; }
-.p-inputswitch .p-inputswitch-slider { background: rgba(255,255,255,0.1); border-radius: 999px; }
-.p-inputswitch .p-inputswitch-slider::before { width: 13px; height: 13px; left: 2px; bottom: 2px; background: white; border-radius: 50%; }
-.p-inputswitch.p-inputswitch-checked .p-inputswitch-slider { background: var(--accent); }
-.p-inputswitch.p-inputswitch-checked .p-inputswitch-slider::before { transform: translateX(13px); }
-.p-inputswitch:not(.p-disabled):hover .p-inputswitch-slider { background: rgba(255,255,255,0.15); }
-.p-inputswitch.p-inputswitch-checked:not(.p-disabled):hover .p-inputswitch-slider { background: color-mix(in srgb, var(--accent), black 15%); }
+/* Toggle — custom, no PrimeReact dependency */
+.vb-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 32px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  margin: 0;
+  border: 0.5px solid var(--border-default);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  outline: none;
+  vertical-align: middle;
+}
+.vb-toggle:hover { background: rgba(255, 255, 255, 0.1); }
+.vb-toggle:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); }
+.vb-toggle .vb-toggle-thumb {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: transform 150ms ease, background 150ms ease;
+}
+.vb-toggle[data-on="true"] {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent), white 20%);
+}
+.vb-toggle[data-on="true"]:hover {
+  background: color-mix(in srgb, var(--accent), white 8%);
+}
+.vb-toggle[data-on="true"] .vb-toggle-thumb {
+  transform: translateX(14px);
+  background: white;
+}
+.vb-toggle:disabled,
+.vb-toggle[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* Toast */
 .p-toast { z-index: 100; }

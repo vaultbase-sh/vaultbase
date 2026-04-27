@@ -6,7 +6,9 @@ import {
   readLogs,
   searchLogs,
   type LogEntry,
+  type LogRuleEval,
 } from "../core/file-logger.ts";
+import { clearRequestContext, getRuleEvals } from "../core/request-context.ts";
 
 const SKIP_PREFIXES = ["/_/", "/api/admin/logs", "/realtime", "/api/health"];
 
@@ -26,7 +28,8 @@ export async function insertLog(
   status: number,
   duration_ms: number,
   ip: string | null,
-  auth: AuthLogContext | null
+  auth: AuthLogContext | null,
+  rules?: LogRuleEval[]
 ): Promise<void> {
   const tsSec = Math.floor(Date.now() / 1000);
   const entry: LogEntry = {
@@ -42,6 +45,7 @@ export async function insertLog(
     auth_type: auth?.type ?? null,
     auth_email: auth?.email ?? null,
   };
+  if (rules && rules.length > 0) entry.rules = rules;
   appendLogEntry(entry);
 }
 
@@ -128,7 +132,9 @@ export function makeLogsPlugin(jwtSecret: string) {
       const ms = Date.now() - start;
       const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
       const auth = await extractAuth(request, secret);
-      void insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth);
+      const rules = getRuleEvals(request);
+      clearRequestContext(request);
+      void insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth, rules);
     })
     .onError({ as: "global" }, async ({ request, error }) => {
       const path = new URL(request.url).pathname;
@@ -139,7 +145,9 @@ export function makeLogsPlugin(jwtSecret: string) {
       const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
       const auth = await extractAuth(request, secret);
-      void insertLog(request.method, path, status, ms, ip, auth);
+      const rules = getRuleEvals(request);
+      clearRequestContext(request);
+      void insertLog(request.method, path, status, ms, ip, auth, rules);
     })
     .get(
       "/api/admin/logs",

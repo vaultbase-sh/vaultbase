@@ -39,15 +39,9 @@ export default function Collections() {
     load();
   }
 
-  // Detect collection type heuristic: if it has email + password_hash fields → auth
-  function collType(col: Collection) {
-    const fields = parseFields(col.fields);
-    return fields.some((f) => f.name === "email") ? "auth" : "base";
-  }
-
   const typed = collections.map((c, i) => ({
     ...c,
-    type: collType(c),
+    type: c.type ?? "base",
     color: collColor(i),
     fieldCount: parseFields(c.fields).length,
   }));

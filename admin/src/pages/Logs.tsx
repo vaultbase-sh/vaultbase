@@ -8,6 +8,14 @@ import { Topbar } from "../components/Shell.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
+interface LogRuleEval {
+  rule: string;
+  collection: string;
+  expression: string | null;
+  outcome: "allow" | "deny" | "filter";
+  reason: string;
+}
+
 interface LogEntry {
   id: string;
   method: string;
@@ -19,6 +27,7 @@ interface LogEntry {
   auth_type: "user" | "admin" | null;
   auth_email: string | null;
   created_at: number;
+  rules?: LogRuleEval[];
   kind?: "request" | "hook";
   message?: string;
   hook_collection?: string;
@@ -222,16 +231,35 @@ export default function Logs() {
           />
           <Column
             header="Path / Message"
-            body={(l: LogEntry) => (
-              <span className="mono-cell" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 500 }}>
-                {l.kind === "hook" ? (
-                  <>
-                    <span style={{ color: "var(--accent-light)" }}>{l.path}</span>
-                    {l.message && <span className="muted" style={{ marginLeft: 8 }}>· {l.message}</span>}
-                  </>
-                ) : l.path}
-              </span>
-            )}
+            body={(l: LogEntry) => {
+              const ruleDeny = l.rules?.some((r) => r.outcome === "deny");
+              const ruleCount = l.rules?.length ?? 0;
+              return (
+                <span className="mono-cell" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 500 }}>
+                  {l.kind === "hook" ? (
+                    <>
+                      <span style={{ color: "var(--accent-light)" }}>{l.path}</span>
+                      {l.message && <span className="muted" style={{ marginLeft: 8 }}>· {l.message}</span>}
+                    </>
+                  ) : l.path}
+                  {ruleCount > 0 && (
+                    <span
+                      title={`${ruleCount} rule${ruleCount === 1 ? "" : "s"} evaluated${ruleDeny ? " — denied by rule" : ""}`}
+                      style={{
+                        marginLeft: 8,
+                        fontSize: 10,
+                        padding: "1px 6px",
+                        borderRadius: 8,
+                        background: ruleDeny ? "rgba(248,113,113,0.12)" : "rgba(255,255,255,0.06)",
+                        color: ruleDeny ? "var(--danger)" : "var(--text-muted)",
+                      }}
+                    >
+                      {ruleDeny ? "rule deny" : `${ruleCount} rule${ruleCount === 1 ? "" : "s"}`}
+                    </span>
+                  )}
+                </span>
+              );
+            }}
           />
           <Column
             header="Status"
@@ -330,6 +358,64 @@ export default function Logs() {
               <label className="label">Timestamp</label>
               <div className="code-block">{new Date(openLog.created_at * 1000).toISOString()}</div>
             </div>
+            {openLog.rules && openLog.rules.length > 0 && (
+              <div>
+                <label className="label">Rule evaluation ({openLog.rules.length})</label>
+                <div className="col" style={{ gap: 6, marginTop: 4 }}>
+                  {openLog.rules.map((r, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        border: "0.5px solid var(--border-default)",
+                        borderRadius: 6,
+                        padding: "8px 10px",
+                        background: "rgba(255,255,255,0.02)",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--text-secondary)" }}
+                        >
+                          {r.collection}.{r.rule}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            padding: "1px 7px",
+                            borderRadius: 8,
+                            background:
+                              r.outcome === "allow" ? "rgba(74,222,128,0.12)"
+                              : r.outcome === "deny"  ? "rgba(248,113,113,0.12)"
+                              : "rgba(168,176,255,0.12)",
+                            color:
+                              r.outcome === "allow" ? "var(--success)"
+                              : r.outcome === "deny"  ? "var(--danger)"
+                              : "var(--accent-light)",
+                          }}
+                        >
+                          {r.outcome}
+                        </span>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{r.reason}</span>
+                      </div>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: r.expression ? "var(--text-primary)" : "var(--text-muted)",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {r.expression === null ? "(public — no rule set)"
+                          : r.expression === ""   ? "(admin only — empty rule)"
+                          : r.expression}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Drawer>

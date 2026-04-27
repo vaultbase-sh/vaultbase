@@ -8,9 +8,90 @@ import {
   deleteRecord,
   getRecord,
   listRecords,
+  ReadOnlyCollectionError,
+  RestrictError,
   updateRecord,
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
+import { recordRuleEval, type RuleOutcome } from "../core/request-context.ts";
+
+/**
+ * Run evaluateRule and record the outcome on the request for the logs plugin
+ * to flush. Returns the same boolean evaluateRule returns. Centralized so
+ * every call site gets the same human-readable reason in logs.
+ */
+function checkRule(
+  request: Request,
+  ruleName: string,
+  collectionName: string,
+  rule: string | null,
+  auth: AuthContext | null,
+  record: Record<string, unknown> | null
+): boolean {
+  let outcome: RuleOutcome;
+  let reason: string;
+  let allowed: boolean;
+  if (rule === null) {
+    allowed = true;
+    outcome = "allow";
+    reason = "public";
+  } else if (auth?.type === "admin") {
+    allowed = true;
+    outcome = "allow";
+    reason = "admin bypass";
+  } else if (rule === "") {
+    allowed = false;
+    outcome = "deny";
+    reason = "admin only";
+  } else {
+    allowed = evaluateRule(rule, auth, record);
+    outcome = allowed ? "allow" : "deny";
+    reason = allowed ? "rule passed" : "rule failed";
+  }
+  recordRuleEval(request, {
+    rule: ruleName,
+    collection: collectionName,
+    expression: rule,
+    outcome,
+    reason,
+  });
+  return allowed;
+}
+
+/**
+ * List rules are applied as SQL filters when set; record that fact so logs
+ * surface the behavior. Admin bypass surfaces separately.
+ */
+function recordListRule(
+  request: Request,
+  collectionName: string,
+  rule: string | null,
+  auth: AuthContext | null
+): void {
+  let outcome: RuleOutcome;
+  let reason: string;
+  if (rule === null) {
+    outcome = "allow"; reason = "public";
+  } else if (auth?.type === "admin") {
+    outcome = "allow"; reason = "admin bypass";
+  } else if (rule === "") {
+    outcome = "deny"; reason = "admin only";
+  } else {
+    outcome = "filter"; reason = "applied as SQL filter";
+  }
+  recordRuleEval(request, {
+    rule: "list_rule",
+    collection: collectionName,
+    expression: rule,
+    outcome,
+    reason,
+  });
+}
+
+function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError) {
+  set.status = 405;
+  return { error: err.message, code: 405 };
+}
 
 function validationResponse(set: { status?: number | string }, err: ValidationError) {
   set.status = 422;
@@ -49,6 +130,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         const auth = await getAuthContext(request, jwtSecret);
 
         // null = public; "" = admin only; expression rule → applied as filter
+        recordListRule(request, col.name, col.list_rule, auth);
         if (col.list_rule === "") {
           if (auth?.type !== "admin") { set.status = 403; return { error: "Forbidden", code: 403 }; }
         }
@@ -87,7 +169,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       const auth = await getAuthContext(request, jwtSecret);
       const record = await getRecord(params.collection, params.id);
       if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
-      if (!evaluateRule(col.view_rule, auth, record as unknown as Record<string, unknown>)) {
+      if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>)) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
       }
@@ -100,7 +182,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const auth = await getAuthContext(request, jwtSecret);
         // For create, rule evaluates against the incoming body
-        if (!evaluateRule(col.create_rule, auth, (body ?? {}) as Record<string, unknown>)) {
+        if (!checkRule(request, "create_rule", col.name, col.create_rule, auth, (body ?? {}) as Record<string, unknown>)) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
@@ -109,6 +191,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
+          if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
           throw e;
         }
       },
@@ -122,7 +205,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         const auth = await getAuthContext(request, jwtSecret);
         const existing = await getRecord(params.collection, params.id);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-        if (!evaluateRule(col.update_rule, auth, existing as unknown as Record<string, unknown>)) {
+        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, existing as unknown as Record<string, unknown>)) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
@@ -131,6 +214,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
+          if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
           throw e;
         }
       },
@@ -142,7 +226,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       const auth = await getAuthContext(request, jwtSecret);
       const existing = await getRecord(params.collection, params.id);
       if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-      if (!evaluateRule(col.delete_rule, auth, existing as unknown as Record<string, unknown>)) {
+      if (!checkRule(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>)) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
       }
@@ -150,6 +234,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
         await deleteRecord(params.collection, params.id, auth);
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
+        if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof RestrictError) {
+          set.status = 409;
+          return { error: e.message, code: 409, details: e.details };
+        }
         throw e;
       }
       return { data: null };

@@ -254,18 +254,111 @@ declare const ctx: RouteContext;
 `;
 }
 
+// ── SQL completion provider ─────────────────────────────────────────────────
+
+export interface SqlSchemaTable {
+  /** Real table/view name (e.g. "vb_posts"). */
+  name: string;
+  /** User-facing collection name shown in completion details. */
+  collectionName?: string;
+  columns: string[];
+}
+
+export interface SqlSchema {
+  tables: SqlSchemaTable[];
+}
+
+let sqlProviderDisposable: monaco.IDisposable | null = null;
+let activeSchema: SqlSchema = { tables: [] };
+
+function setSqlSchema(schema: SqlSchema): void {
+  activeSchema = schema;
+  if (sqlProviderDisposable) return; // provider closes over `activeSchema` so just bump it
+  sqlProviderDisposable = monaco.languages.registerCompletionItemProvider("sql", {
+    triggerCharacters: [".", " "],
+    provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+
+      // Look at what's immediately before the cursor (without the current word) to detect `<table>.`
+      const linePrefix = model.getValueInRange({
+        startLineNumber: position.lineNumber,
+        startColumn: 1,
+        endLineNumber: position.lineNumber,
+        endColumn: word.startColumn,
+      });
+      const dotMatch = linePrefix.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*$/);
+      if (dotMatch) {
+        const ref = dotMatch[1]!;
+        // Match by table name OR collection name OR vb_<collection>.
+        const t = activeSchema.tables.find(
+          (t) => t.name === ref || t.collectionName === ref || `vb_${t.collectionName}` === ref
+        );
+        if (t) {
+          return {
+            suggestions: t.columns.map((c) => ({
+              label: c,
+              kind: monaco.languages.CompletionItemKind.Field,
+              insertText: c,
+              range,
+              detail: `column · ${t.collectionName ?? t.name}`,
+            })),
+          };
+        }
+        return { suggestions: [] };
+      }
+
+      // Otherwise: suggest table names (both vb_* and bare) plus columns from any table.
+      const suggestions: monaco.languages.CompletionItem[] = [];
+      for (const t of activeSchema.tables) {
+        suggestions.push({
+          label: t.name,
+          kind: monaco.languages.CompletionItemKind.Class,
+          insertText: t.name,
+          range,
+          detail: `table${t.collectionName ? ` · ${t.collectionName}` : ""}`,
+        });
+        for (const c of t.columns) {
+          suggestions.push({
+            label: { label: c, description: t.collectionName ?? t.name },
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: c,
+            range,
+            detail: `${t.collectionName ?? t.name}.${c}`,
+          });
+        }
+      }
+      return { suggestions };
+    },
+  });
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 export interface CodeEditorProps {
   value: string;
   onChange: (v: string) => void;
-  language?: "javascript" | "typescript" | "json";
+  language?: "javascript" | "typescript" | "json" | "sql";
   height?: number | string;
   hookContext?: boolean;
   hookCollectionName?: string | null;
   hookFields?: FieldDef[];
   routeContext?: boolean;
   jobContext?: boolean;
+  /** Schema for SQL autocomplete — tables + columns. */
+  sqlSchema?: SqlSchema;
+  /** Diagnostic markers to publish on the model (e.g. SQL parse errors from server). */
+  markers?: Array<{
+    message: string;
+    line?: number;
+    column?: number;
+    severity?: "error" | "warning" | "info";
+  }>;
   readOnly?: boolean;
 }
 
@@ -279,9 +372,12 @@ export function CodeEditor({
   hookFields = [],
   routeContext = false,
   jobContext = false,
+  sqlSchema,
+  markers,
   readOnly = false,
 }: CodeEditorProps) {
   const disposableRef = useRef<monaco.IDisposable | null>(null);
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
 
   // Re-inject ctx types when context changes
   useEffect(() => {
@@ -299,13 +395,53 @@ export function CodeEditor({
     };
   }, [hookContext, routeContext, jobContext, hookCollectionName, JSON.stringify(hookFields)]);
 
+  // Refresh SQL schema for the global completion provider whenever it changes.
+  useEffect(() => {
+    if (language !== "sql" || !sqlSchema) return;
+    setSqlSchema(sqlSchema);
+  }, [language, JSON.stringify(sqlSchema)]);
+
+  // Publish error markers on the active model.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const owner = "vaultbase-sql";
+    if (!markers || markers.length === 0) {
+      monaco.editor.setModelMarkers(model, owner, []);
+      return;
+    }
+    const sev = (s: "error" | "warning" | "info" | undefined) =>
+      s === "warning" ? monaco.MarkerSeverity.Warning
+      : s === "info"  ? monaco.MarkerSeverity.Info
+      : monaco.MarkerSeverity.Error;
+    monaco.editor.setModelMarkers(
+      model,
+      owner,
+      markers.map((m) => {
+        const line = Math.max(1, m.line ?? 1);
+        const lineLen = model.getLineMaxColumn(Math.min(line, model.getLineCount()));
+        return {
+          message: m.message,
+          severity: sev(m.severity),
+          startLineNumber: line,
+          startColumn: m.column ?? 1,
+          endLineNumber: line,
+          endColumn: lineLen,
+        };
+      })
+    );
+  }, [JSON.stringify(markers)]);
+
   const handleBeforeMount: BeforeMount = (m) => {
     // Make sure the bundled monaco's theme is applied even if the editor instance
     // somehow ended up using the loader-fetched one.
     m.editor.setTheme("vaultbase-dark");
   };
 
-  const handleMount: OnMount = (_editor, m) => {
+  const handleMount: OnMount = (editor, m) => {
+    editorRef.current = editor;
     m.editor.setTheme("vaultbase-dark");
   };
 

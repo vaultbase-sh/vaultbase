@@ -4,7 +4,9 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 export const collections = sqliteTable("vaultbase_collections", {
   id: text("id").primaryKey(),
   name: text("name").notNull().unique(),
+  type: text("type").notNull().default("base"),
   fields: text("fields").notNull().default("[]"),
+  view_query: text("view_query"),
   list_rule: text("list_rule"),
   view_rule: text("view_rule"),
   create_rule: text("create_rule"),
@@ -21,9 +23,35 @@ export const users = sqliteTable("vaultbase_users", {
     .references(() => collections.id, { onDelete: "cascade" }),
   email: text("email").notNull(),
   password_hash: text("password_hash").notNull(),
+  email_verified: integer("email_verified").notNull().default(0),
+  totp_secret: text("totp_secret"),
+  totp_enabled: integer("totp_enabled").notNull().default(0),
+  is_anonymous: integer("is_anonymous").notNull().default(0),
   data: text("data").notNull().default("{}"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+export const authTokens = sqliteTable("vaultbase_auth_tokens", {
+  id: text("id").primaryKey(),
+  user_id: text("user_id").notNull(),
+  collection_id: text("collection_id").notNull(),
+  purpose: text("purpose").notNull(),
+  /** Short numeric code for OTP flow; nullable for token-only purposes. */
+  code: text("code"),
+  expires_at: integer("expires_at").notNull(),
+  used_at: integer("used_at"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+
+export const oauthLinks = sqliteTable("vaultbase_oauth_links", {
+  id: text("id").primaryKey(),
+  user_id: text("user_id").notNull(),
+  collection_id: text("collection_id").notNull(),
+  provider: text("provider").notNull(),
+  provider_user_id: text("provider_user_id").notNull(),
+  provider_email: text("provider_email"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
 export const admin = sqliteTable("vaultbase_admin", {

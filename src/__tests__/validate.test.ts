@@ -16,7 +16,9 @@ function makeCol(fields: FieldDef[]): Collection {
   return {
     id: "test_col",
     name: "test",
+    type: "base",
     fields: JSON.stringify(fields),
+    view_query: null,
     list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null,
     created_at: 0, updated_at: 0,
   };

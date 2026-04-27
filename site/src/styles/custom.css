@@ -1,0 +1,25 @@
+/* Brand color: Vaultbase accent #1055C9. Mapped to Starlight's accent palette so
+   it propagates to links, focus rings, sidebar highlights, and code copy buttons. */
+:root {
+  --sl-color-accent-low: #0a3a8c;
+  --sl-color-accent: #1055c9;
+  --sl-color-accent-high: #4d8ce8;
+  --sl-color-text-accent: #4d8ce8;
+}
+
+/* Slightly tighter monospace pairing — matches the admin UI's JetBrains Mono. */
+:root {
+  --sl-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Subtle dark backdrop tweak so it reads closer to the admin shell when both are open. */
+:root[data-theme="dark"] {
+  --sl-color-bg: #1a1a1a;
+  --sl-color-bg-nav: #232323;
+  --sl-color-bg-sidebar: #1f1f1f;
+}
+
+/* Code blocks: render with the same dark-tone the admin uses. */
+.expressive-code .frame {
+  border-radius: 8px;
+}
