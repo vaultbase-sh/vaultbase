@@ -7,12 +7,25 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Vaultbase",
-      description: "Self-hosted backend in a single binary — collections, REST API, auth, realtime, files, hooks. PocketBase-style, in TypeScript on Bun.",
+      description:
+        "Self-hosted backend in a single binary — collections, REST API, auth, realtime, files, hooks. TypeScript on Bun.",
       logo: { src: "./public/favicon.svg" },
       social: [
         { icon: "github", label: "GitHub", href: "https://github.com/vaultbase/vaultbase" },
       ],
       customCss: ["./src/styles/custom.css"],
+      // Font preconnects — pairs with the @import at the top of custom.css so
+      // the fetch starts as early as the browser can manage it.
+      head: [
+        {
+          tag: "link",
+          attrs: { rel: "preconnect", href: "https://fonts.googleapis.com" },
+        },
+        {
+          tag: "link",
+          attrs: { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" },
+        },
+      ],
       sidebar: [
         {
           label: "Getting Started",
@@ -31,18 +44,23 @@ export default defineConfig({
             { label: "Authentication", link: "/concepts/authentication/" },
             { label: "Realtime", link: "/concepts/realtime/" },
             { label: "Files", link: "/concepts/files/" },
+            { label: "Storage (S3 / R2)", link: "/concepts/storage/" },
+            { label: "Encrypted fields", link: "/concepts/encryption/" },
             { label: "Hooks · routes · cron", link: "/concepts/hooks/" },
+            { label: "Logging & rate limits", link: "/concepts/logging/" },
           ],
         },
         {
           label: "API Reference",
           items: [
             { label: "Authentication", link: "/api/authentication/" },
+            { label: "OAuth2", link: "/api/oauth2/" },
             { label: "Records", link: "/api/records/" },
             { label: "Collections", link: "/api/collections/" },
             { label: "Files", link: "/api/files/" },
             { label: "Realtime (WS)", link: "/api/realtime/" },
             { label: "Batch", link: "/api/batch/" },
+            { label: "Custom routes", link: "/api/custom-routes/" },
           ],
         },
         {
@@ -50,6 +68,7 @@ export default defineConfig({
           items: [
             { label: "Deployment", link: "/guides/deployment/" },
             { label: "Backups & migrations", link: "/guides/backups/" },
+            { label: "CSV import / export", link: "/guides/csv/" },
           ],
         },
         {
