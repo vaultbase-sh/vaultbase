@@ -87,6 +87,29 @@ Snapshot shape:
 Drops the DB-only fields (`id`, `created_at`, `updated_at`) since `name` is
 the cross-environment identifier.
 
+### Preview the diff before applying
+
+```http
+POST /api/admin/migrations/diff
+{ "snapshot": { ...JSON snapshot... } }
+   → { "data": {
+         "added":     [ "audits" ],
+         "modified":  [ { "name": "posts",   "changes": ["+ field tags (text)", "view_rule changed"] } ],
+         "unchanged": [ "users" ],
+         "removed":   [ "drafts" ]
+       } }
+```
+
+Returns admin-friendly change strings — what fields would be added /
+removed, which rules differ, and so on. Nothing is applied; this is purely
+read-only.
+
+The Admin **Migrations** tab shows this preview before **Apply** runs:
+chips for added / modified / unchanged / removed plus an expandable
+`<details>` block listing the per-collection changes for everything in
+`modified`. The **Apply** button stays disabled until the diff has loaded
+— you can't accidentally apply a snapshot you haven't reviewed.
+
 ### Apply
 
 **Settings → Migrations → Upload & apply** with mode selector, or:
@@ -137,8 +160,6 @@ Response:
   conversion). Drop + re-add the field to change a type.
 - **Collection type changes** (e.g. base → auth) are blocked in sync mode —
   drop the collection manually first.
-- **No diff viewer** today — you can't preview what `sync` will change before
-  applying. This is on the [Follow-ups list](https://github.com/vaultbase/vaultbase/blob/main/docs/pocketbase-parity.md).
 
 ## CSV import / export (data, base collections)
 

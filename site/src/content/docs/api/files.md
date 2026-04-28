@@ -43,25 +43,30 @@ Errors:
 ```http
 GET /api/files/<filename>
 GET /api/files/<filename>?thumb=200x200
+GET /api/files/<filename>?thumb=400x300&fit=cover
+GET /api/files/<filename>?thumb=400x300_cover         ← shorthand
 GET /api/files/<filename>?token=<jwt>
 ```
 
 Returns the binary stream. Headers:
 
-- `Content-Type` — original MIME, or `image/jpeg`/`image/png` for thumbs
+- `Content-Type` — original MIME for non-thumbs. For thumbs, the format is
+  preserved end-to-end: PNG → `image/png`, JPEG → `image/jpeg`, GIF →
+  `image/gif`, WebP → `image/webp`, AVIF → `image/avif`.
 
 Query params:
 
 | Param | Notes |
 |---|---|
-| `thumb` | `WIDTHxHEIGHT`, 1–4096 each axis. PNG/JPEG/GIF only — non-images served unchanged. |
+| `thumb` | `WIDTHxHEIGHT`, 1–4096 each axis. PNG / JPEG / GIF (animated frames preserved) / WebP / AVIF. Non-images served unchanged. Optional `_<mode>` suffix selects the fit mode. Output stays in the source format. |
+| `fit` | `contain` (default) · `cover` · `crop` (alias of `cover`). `cover` center-crops the source to the target aspect, then resizes to exactly `WxH`. Cache key includes mode. |
 | `token` | Required when the file's field has `protected: true`. |
 
 ## Issue a protected-file token
 
 ```http
 POST /api/files/<col>/<recordId>/<field>/<filename>/token
-Authorization: Bearer <admin-jwt>
+Authorization: Bearer <admin-or-user-jwt>
 ```
 
 Returns:
@@ -70,8 +75,20 @@ Returns:
 { "data": { "token": "<jwt>", "expires_at": 1730003600 } }
 ```
 
-1-hour TTL. The token's `filename` claim is checked at GET time — a token
-issued for `a.png` cannot unlock `b.png`.
+1-hour TTL. The token is a JWT with `audience: "file"` and a `filename`
+claim; the claim is checked at GET time — a token issued for `a.png`
+cannot unlock `b.png`.
+
+**Who can issue a token:** admins always pass. Authenticated users pass
+iff the collection's `view_rule` would let them read the parent record:
+`null` → public, `""` → admin only, expression → evaluated.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $JWT" \
+  https://api.example.com/api/files/posts/$ID/cover/$FN/token
+# → { "data": { "token": "<jwt>", "expires_at": 1730003600 } }
+```
 
 ## Delete
 

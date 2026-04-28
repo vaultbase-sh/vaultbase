@@ -97,6 +97,18 @@ helpers.email(opts: { to: string; subject: string; body: string }): Promise<void
 
 helpers.log(...args: unknown[]): void;
   // server-side log — appears as a HOOK row in the Logs page
+
+helpers.recordRule(opts: {
+  rule: string;                     // logical name, e.g. "custom-quota"
+  collection?: string;              // defaults to the active hook's collection
+  expression?: string | null;       // optional human-readable expression
+  outcome: "allow" | "deny" | "filter";
+  reason: string;
+}): void;
+  // attaches a custom policy decision to the active request log so it shows
+  // up in `entry.rules[]` and the Logs page's Rule outcome filter. Multiple
+  // calls accumulate. No-op when the hook runs without an HTTP request in
+  // scope (cron jobs, post-cascade chains, custom routes).
 ```
 
 ## Hook context shapes

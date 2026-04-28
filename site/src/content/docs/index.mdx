@@ -1,6 +1,6 @@
 ---
 title: Vaultbase
-description: Self-hosted backend in a single binary — collections, REST API, auth, realtime, files, hooks. PocketBase-style, in TypeScript on Bun.
+description: Self-hosted backend in a single binary — collections, REST API, auth, realtime, files, hooks. TypeScript on Bun.
 template: splash
 hero:
   tagline: A self-hosted backend in a single binary. Collections, REST API, auth, realtime, files, server-side hooks — TypeScript on Bun.
@@ -67,18 +67,21 @@ with a built-in admin UI.
   cross-environment sync
 - **Cron jobs** — UTC, Monaco editor, run-now button, last-run status
 
-## How it compares
+## At a glance
 
-|                          | Vaultbase | PocketBase | Supabase |
-|--------------------------|:---:|:---:|:---:|
-| Single binary            | ✅ | ✅ | ❌ |
-| Embedded DB              | ✅ SQLite | ✅ SQLite | ❌ Postgres |
-| Built-in admin           | ✅ | ✅ | ✅ |
-| Realtime                 | ✅ WS  | ✅ SSE | ✅ WS |
-| TypeScript stack         | ✅ | ❌ Go | ✅ |
-| Server-side JS hooks     | ✅ | ✅ JS VM | ✅ Edge functions |
-| OAuth providers (built-in)| 13 | 30+ | many |
-| Self-hosted              | ✅ | ✅ | ✅ |
+| Feature | Vaultbase |
+|---|---|
+| Single binary distribution | ✅ |
+| Embedded DB (SQLite, no server) | ✅ |
+| Built-in admin UI | ✅ |
+| Realtime (WebSocket) | ✅ |
+| TypeScript stack (Bun + Elysia) | ✅ |
+| Server-side JS hooks + custom routes + cron jobs | ✅ |
+| OAuth2 providers (Google, GitHub, Apple, Twitter/X, generic OIDC) | ✅ |
+| File storage (local + S3 / Cloudflare R2) | ✅ |
+| Encrypted fields (AES-GCM) | ✅ |
+| MFA / TOTP + recovery codes | ✅ |
+| Self-hosted, open source | ✅ |
 
 ## Get started
 

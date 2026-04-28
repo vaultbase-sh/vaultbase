@@ -71,10 +71,41 @@ Optional. Pass a user or admin JWT in two ways:
 1. **On connect** as a query param: `wss://host/realtime?token=<jwt>`
 2. **Mid-connection** via `{ "type": "auth", "token": "<jwt>" }`
 
-The auth context is stored per-connection and is available for future
-per-record filtering features. Today it's captured but not yet consulted at
-broadcast time — record-level access checks happen at REST API time, not
-WebSocket time.
+The auth context is stored per-connection and is **consulted at broadcast
+time** to enforce each collection's `view_rule` per subscriber.
+
+## Per-record rule filtering
+
+Every record event (create / update / delete / cascade) is filtered against
+the collection's `view_rule` for each subscriber individually:
+
+- **Admins** always receive the event (bypass).
+- **`view_rule = null`** (public) → every subscriber receives.
+- **`view_rule = ""`** (admin-only) → non-admin subscribers are silently skipped.
+- **Expression rule** → evaluated per-subscriber against the record. Failing
+  subscribers are skipped silently — no error message, no leak that the
+  record exists.
+
+Delete events evaluate against the **just-deleted record snapshot** so a rule
+like `owner = @request.auth.id` still works (the row is already gone in the DB
+by broadcast time).
+
+```js
+// Example: a rule like `owner = @request.auth.id`
+// Connection A is signed in as user u1, owner of post p7
+// Connection B is signed in as user u2, NOT the owner
+// Connection C is admin
+
+await fetch("/api/posts/p7", { method: "PATCH", body: JSON.stringify({ title: "edited" }) });
+
+// → A and C receive `update posts/p7`
+// → B receives nothing
+```
+
+:::tip
+This means a chatty client can't infer the existence of records it's not
+allowed to see. Useful for multi-tenant apps where `owner` is the tenant id.
+:::
 
 ## Cascade events
 
@@ -98,7 +129,8 @@ methods (or expose a custom route) to write.
 
 - **Single in-process subscription map** — Vaultbase is one binary; clustering
   realtime across nodes is out of scope.
-- **No SSE fallback** — WebSockets only. PocketBase uses SSE; we deliberately
-  chose WS.
+- **SSE fallback available** — `GET /api/realtime` (see the
+  [API page](/api/realtime/#sse-fallback)) for clients that can't open
+  WebSockets.
 - **Connection cap** — bound by Bun's WebSocket implementation (~thousands per
   process by default).

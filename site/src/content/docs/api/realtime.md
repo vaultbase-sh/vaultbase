@@ -73,8 +73,26 @@ ws.send(JSON.stringify({ type: "auth", token: jwt }));
 ```
 
 Auth context is stored per-connection and survives reconnect cycles via the
-client's reconnect logic. Today it's captured but **not yet consulted at
-broadcast time** — record-level access enforcement happens at REST API time.
+client's reconnect logic.
+
+## Per-record rule filtering
+
+Every event is filtered against the collection's `view_rule` per subscriber:
+
+| view_rule | Behavior |
+|---|---|
+| `null` (public) | Every subscriber receives |
+| `""` (admin only) | Only admin connections receive |
+| Expression (e.g. `owner = @request.auth.id`) | Evaluated per-subscriber against the record. Non-matching subscribers are skipped silently. |
+
+Admins always receive (bypass).
+
+Delete events evaluate against the **just-deleted record snapshot** so rules
+that reference per-record fields (like `owner = @request.auth.id`) still work.
+
+Filtering is silent — non-matching clients see no event, no error. A client
+without permission cannot infer existence of records they're not allowed to
+read.
 
 ## Lifecycle
 
@@ -91,9 +109,93 @@ client closes connection (or server closes on idle)
 Close handler removes the connection from every subscription set
 automatically.
 
-## Limits
+## SSE fallback
 
-- **No SSE fallback** — WebSockets only.
+For clients that can't open WebSockets (locked-down proxies, runtimes without
+a WS API), an HTTP-only fallback exposes the same fan-out via
+[Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html).
+
+### Open the stream
+
+```http
+GET /api/realtime
+Accept: text/event-stream
+```
+
+The server responds with `Content-Type: text/event-stream` and pushes:
+
+```
+event: connect
+data: {"type":"connected","clientId":"<uuid>"}
+
+event: message
+data: {"type":"create","collection":"posts","record":{...}}
+
+event: message
+data: {"type":"delete","collection":"posts","id":"abc"}
+
+: ping
+```
+
+The first frame carries a server-minted **`clientId`**. Use it to manage
+subscriptions over a side-channel HTTP request. `: ping` lines are SSE
+comments — clients ignore them; they keep idle connections alive through
+proxies (sent every 30 seconds).
+
+### Set subscriptions
+
+```http
+POST /api/realtime
+{ "clientId": "<from connect frame>",
+  "topics":   ["posts", "comments/abc"],
+  "token":    "<optional jwt>"        }
+   → { "data": { "clientId": "...", "topics": [...] } }
+```
+
+`subscriptions` and `collections` are accepted as aliases for `topics`.
+Calling this replaces the client's full topic list (PUT semantics).
+`token` attaches/refreshes the per-connection auth used for `view_rule`
+filtering — same JWTs the WS path uses.
+
+`404` if the `clientId` was never opened or has been torn down.
+
+### Tear down
+
+```http
+DELETE /api/realtime/<clientId>
+   → { "data": null }
+```
+
+Idempotent — unknown clientIds also return 200.
+
+### Behavior matches WebSocket
+
+- Same wildcard / per-record / per-collection topic forms.
+- Same `view_rule` filtering on every event.
+- Same admin-bypass.
+- Heartbeat every 30s.
+
+```js
+// Browser EventSource example
+const es = new EventSource("/api/realtime");
+let clientId = null;
+
+es.addEventListener("connect", (ev) => {
+  ({ clientId } = JSON.parse(ev.data));
+  fetch("/api/realtime", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
+    body: JSON.stringify({ clientId, topics: ["posts"], token: jwt }),
+  });
+});
+
+es.addEventListener("message", (ev) => {
+  const event = JSON.parse(ev.data);
+  // event.type === "create" | "update" | "delete"
+});
+```
+
+## Limits
 - **Single-process broadcast** — no clustering across nodes.
 - **Hooks bypass realtime** — `helpers.find/query` reads but doesn't fire
   events.

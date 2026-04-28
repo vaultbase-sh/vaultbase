@@ -98,7 +98,8 @@ Vaultbase reads `X-Forwarded-For` for the client IP — set it on your proxy.
 
 ### Caddy
 
-```caddyfile
+```text
+# Caddyfile
 api.example.com {
   reverse_proxy localhost:8091 {
     header_up X-Forwarded-For {remote_host}
@@ -169,10 +170,37 @@ feature flags — everything you'd typically configure via env vars in other
 backends — live in the `vaultbase_settings` table and are edited from the
 admin UI. So your deployment config is just env vars + the data directory.
 
-To pre-seed settings (e.g. CI seeding OAuth creds), you have two options:
+To pre-seed settings (e.g. CI seeding OAuth creds), you have three options:
 
 1. Apply a [migration snapshot](/guides/backups/) on startup that includes
    the settings.
 2. Restore a backed-up `data.db` that contains them.
+3. Pass a snapshot file at startup via the CLI flag (next section).
 
-Migration-on-startup as a CLI flag is on the [Follow-ups list](https://github.com/vaultbase/vaultbase/blob/main/docs/pocketbase-parity.md).
+## Apply a snapshot on startup
+
+For stateless deploys (immutable images, ephemeral containers, fresh dev
+environments), pass a schema snapshot directly to the binary:
+
+```bash
+./vaultbase --apply-snapshot=schema.json --snapshot-mode=additive
+```
+
+- `--snapshot-mode=additive` (default) — creates collections that don't exist;
+  leaves existing ones alone.
+- `--snapshot-mode=sync` — also updates existing collections so they match.
+- Both equals (`--flag=value`) and space (`--flag value`) forms work.
+- Idempotent — re-running with the same file is a no-op.
+
+On success, the binary prints `applied snapshot: N created, M updated, K
+unchanged` and continues to listen normally.
+
+On failure (missing file, invalid JSON, unknown mode, malformed snapshot, or
+any per-collection error), the message is written to stderr and the process
+exits with code `1` — **the server never starts**, so a broken snapshot
+won't silently boot a half-applied DB.
+
+```bash
+# Typical container entrypoint
+./vaultbase --apply-snapshot=/etc/vaultbase/schema.json --snapshot-mode=sync
+```

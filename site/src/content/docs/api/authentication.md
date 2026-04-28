@@ -47,6 +47,10 @@ POST /api/auth/<col>/login
 ```http
 POST /api/auth/<col>/login/mfa
 { "mfa_token": "...", "code": "<6 digits>" }
+
+# OR — single-use recovery code instead of TOTP code
+POST /api/auth/<col>/login/mfa
+{ "mfa_token": "...", "recovery_code": "a1b2c3d4" }
 ```
 
 ```http
@@ -104,7 +108,26 @@ POST /api/auth/<col>/totp/disable          { "code": "<6 digits>" }
 
 `disable` is intentionally **not** gated by the feature flag — once a user has
 MFA enabled, disabling it shouldn't break when an admin turns the feature off
-globally. Same for `/login/mfa`.
+globally. Same for `/login/mfa`. `/disable` also wipes any stored recovery
+codes for the user.
+
+### Recovery codes
+
+```http
+POST /api/auth/<col>/totp/recovery/regenerate    ← user JWT
+   → { "data": { "codes": ["a1b2c3d4", "e5f6g7h8", ...] } }   // 10 codes, plaintext, ONCE
+
+GET  /api/auth/<col>/totp/recovery/status        ← user JWT
+   → { "data": { "total": 10, "remaining": 7 } }
+```
+
+10 single-use 8-character codes per user, bcrypt-hashed at rest. Plaintext
+is returned **once** at generation time — there's no way to retrieve them
+again. Regenerating invalidates the previous batch.
+
+:::tip
+Save these somewhere safe — we only show them once.
+:::
 
 ## OAuth2
 
@@ -131,6 +154,19 @@ POST /api/auth/<col>/anonymous
 ```
 
 30-day JWT carrying `anonymous: true` claim.
+
+### Promote an anonymous account
+
+```http
+POST /api/auth/<col>/promote        ← anonymous user JWT
+{ "email": "alice@x.com", "password": "secret123" }
+   → { "data": { "token": "<jwt>", "record": { ... "anonymous": false } } }
+```
+
+Upgrades an existing anonymous record in place — keeps the user id, sets
+the email + password, clears `is_anonymous`, and re-issues a fresh
+non-anonymous JWT. Returns `403` if the caller's token isn't anonymous,
+`409` if the email is already taken in this collection.
 
 ## Admin impersonation
 

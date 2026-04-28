@@ -83,9 +83,25 @@ WHERE published = 1
 ```
 
 The schema editor renders the SELECT in a Monaco editor with autocomplete
-for `vb_*` tables and their columns. A "Validate & refresh columns" button
-re-runs the query at `LIMIT 0` to derive field names — defaults to `text`
-type for each, which you can override afterwards.
+for `vb_*` tables and their columns. Two buttons live beside it:
+
+- **Validate & refresh columns** — re-runs the query at `LIMIT 1` to derive
+  field names + sniff types (`POST /api/admin/collections/preview-view`).
+  Each column is classified from the sample row:
+  - JS `boolean` → `bool`
+  - integer 0/1 with `is_*`/`has_*`/`*_enabled` name → `bool`
+  - 10-digit unix timestamp with `*_at` suffix → `date`
+  - ISO date string → `date`
+  - `{...}` / `[...]` or JS object → `json`
+  - email regex → `email`
+  - `^https?://` → `url`
+  - else → `text` (also the fallback when the query returns no rows)
+
+  You can override any inferred type per-field afterwards.
+- **Preview 5 rows** — runs the query at `LIMIT 5` and renders a compact table
+  inline so you can sanity-check the output before saving
+  (`POST /api/admin/collections/preview-view-rows { view_query, limit? }`,
+  clamps `limit` to `[1, 100]`, default `5`).
 
 Defaults for view collections lean **safe** — `list_rule` and `view_rule`
 default to `""` (admin-only) since arbitrary SQL can read anything in the
