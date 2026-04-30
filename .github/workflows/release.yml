@@ -1,0 +1,104 @@
+name: Release
+
+# Triggered by pushing a `v*` tag (e.g. `v0.1.8`). Builds every cross-compile
+# target Bun supports, generates SHA-256 sidecars, attaches them all to a
+# fresh GitHub release. The install script (`deploy/install.sh`) consumes
+# these assets by name — keep this list in sync with the script.
+#
+# Manual trigger via `workflow_dispatch` is also wired so you can rebuild
+# release assets without re-tagging (useful when binaries get clobbered).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)release (e.g. v0.1.8). Must already exist."
+        required: true
+
+permissions:
+  contents: write   # publish releases + upload assets
+
+jobs:
+  build:
+    name: Build cross-compile targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: vaultbase
+    outputs:
+      tag: ${{ steps.resolve-tag.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve-tag
+        name: Resolve tag
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Building release ${TAG}"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build admin SPA (embedded in binaries via Bun macro)
+        run: bun run build:admin
+
+      - name: Cross-compile all targets
+        run: |
+          mkdir -p releases
+          # Bun supports cross-compile from any host — no Docker / cross-toolchain.
+          bun run build:linux-x64
+          bun run build:linux-arm64
+          bun run build:linux-x64-musl
+          bun run build:macos-x64
+          bun run build:macos-arm64
+          bun run build:windows-x64
+
+      - name: Generate SHA-256 sidecars
+        run: |
+          cd releases
+          for f in vaultbase-*; do
+            # Skip already-generated .sha256 files (rerun safety).
+            case "$f" in *.sha256) continue ;; esac
+            sha256sum "$f" | awk -v name="$f" '{ print $1 "  " name }' > "${f}.sha256"
+          done
+          ls -la
+
+      - name: Generate combined SHA256SUMS
+        run: |
+          cd releases
+          # One file with all hashes — easier to verify with a single download:
+          #   curl -O .../SHA256SUMS && sha256sum -c SHA256SUMS
+          cat vaultbase-*.sha256 \
+            | grep -v '^$' \
+            > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve-tag.outputs.tag }}
+          name: ${{ steps.resolve-tag.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            vaultbase/releases/vaultbase-linux-x64
+            vaultbase/releases/vaultbase-linux-x64.sha256
+            vaultbase/releases/vaultbase-linux-arm64
+            vaultbase/releases/vaultbase-linux-arm64.sha256
+            vaultbase/releases/vaultbase-linux-x64-musl
+            vaultbase/releases/vaultbase-linux-x64-musl.sha256
+            vaultbase/releases/vaultbase-macos-x64
+            vaultbase/releases/vaultbase-macos-x64.sha256
+            vaultbase/releases/vaultbase-macos-arm64
+            vaultbase/releases/vaultbase-macos-arm64.sha256
+            vaultbase/releases/vaultbase-windows-x64.exe
+            vaultbase/releases/SHA256SUMS

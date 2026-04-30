@@ -1,0 +1,37 @@
+# Vaultbase reverse-proxy + automatic HTTPS via Caddy.
+#
+#   apt install caddy   # or: snap install caddy
+#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Replace `api.example.com` with your domain. Caddy will provision a
+# Let's Encrypt cert automatically.
+
+api.example.com {
+    encode gzip zstd
+
+    # WebSocket realtime — keep upgrade headers + extend the read timeout.
+    @ws path /realtime
+    reverse_proxy @ws localhost:8091 {
+        transport http {
+            keepalive 60s
+        }
+    }
+
+    # SSE realtime fallback.
+    @sse path /api/realtime
+    reverse_proxy @sse localhost:8091 {
+        flush_interval -1
+    }
+
+    reverse_proxy localhost:8091 {
+        header_up X-Forwarded-For   {client_ip}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host              {host}
+    }
+
+    log {
+        output file /var/log/caddy/vaultbase-access.log
+        format console
+    }
+}
