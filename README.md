@@ -125,7 +125,35 @@ api.example.com {
 }
 ```
 
-### Cluster mode (multi-process)
+### Backups
+
+```bash
+# Local file
+vaultbase backup --to /var/backups/vaultbase-$(date +%F).db
+
+# Gzip
+vaultbase backup --to /var/backups/snap.db --gzip
+
+# S3 / R2 / B2 (creds via env)
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+  vaultbase backup --to s3://my-bucket/vb/snap.db
+
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... R2_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com \
+  vaultbase backup --to r2://my-bucket/vb/snap.db --gzip
+```
+
+Snapshots are atomic via SQLite's `VACUUM INTO` — concurrent writers are
+serialised but not blocked, and the resulting `.db` file is self-contained
+(no `*-wal` / `*-shm` sidecars to copy alongside). Cron-friendly:
+
+```cron
+30 3 * * * vaultbase /usr/local/bin/vaultbase backup --to s3://bucket/vb/snap-$(date +\%F).db --gzip --quiet
+```
+
+Restore via `POST /api/admin/restore` with the snapshot bytes (admin only)
+or by replacing the running DB file while the service is stopped.
+
+## Cluster mode (multi-process)
 
 A single Bun process is single-threaded — caps at one CPU core. For higher
 throughput on multi-core hosts, use the cluster orchestrator:
