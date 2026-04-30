@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache } from "../core/storage.ts";
 import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 function rawClient(): Database {
   return (getDb() as unknown as { $client: Database }).$client;
@@ -40,12 +40,8 @@ export function getAllSettings(): Record<string, string> {
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  try {
-    await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 export function makeSettingsPlugin(jwtSecret: string) {

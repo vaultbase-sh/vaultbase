@@ -1,6 +1,7 @@
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 import {
   appendLogEntry,
   listLogDates,
@@ -126,7 +127,11 @@ export async function extractAuth(request: Request, secret: Uint8Array): Promise
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
   try {
-    const { payload } = await jose.jwtVerify(token, secret);
+    // For attribution on the request-log entry we do NOT need the full
+    // recheck-principal pass — even a revoked-since-this-request token
+    // should still show who originated the call. The handler that
+    // serviced the request already enforced the live verification.
+    const { payload } = await jose.jwtVerify(token, secret, { issuer: "vaultbase" });
     const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
     if (aud !== "user" && aud !== "admin") return null;
     const ctx: AuthLogContext = {
@@ -179,9 +184,9 @@ export function makeLogsPlugin(jwtSecret: string) {
       async ({ request, query, set }) => {
         const token = request.headers.get("authorization")?.replace("Bearer ", "");
         if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        try {
-          await jose.jwtVerify(token, secret, { audience: "admin" });
-        } catch {
+        // Centralized verifier — fixes N-1 admin-token-bypass.
+        const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+        if (!ctx) {
           set.status = 401;
           return { error: "Unauthorized", code: 401 };
         }
@@ -218,8 +223,9 @@ export function makeLogsPlugin(jwtSecret: string) {
     .get("/api/admin/logs/files", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      try { await jose.jwtVerify(token, secret, { audience: "admin" }); }
-      catch { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      // Centralized verifier — fixes N-1 admin-token-bypass.
+      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       return { data: listLogDates() };
     })
     .post(
@@ -227,8 +233,9 @@ export function makeLogsPlugin(jwtSecret: string) {
       async ({ request, body, set }) => {
         const token = request.headers.get("authorization")?.replace("Bearer ", "");
         if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        try { await jose.jwtVerify(token, secret, { audience: "admin" }); }
-        catch { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        // Centralized verifier — fixes N-1 admin-token-bypass.
+        const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+        if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         if (!body.jsonpath || typeof body.jsonpath !== "string") {
           set.status = 422; return { error: "jsonpath required", code: 422 };
         }

@@ -1,8 +1,8 @@
 import { count, eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 interface AdminClaims {
   id: string;
@@ -15,16 +15,10 @@ async function verifyAdmin(
 ): Promise<AdminClaims | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
-  const secret = new TextEncoder().encode(jwtSecret);
-  try {
-    const { payload } = await jose.jwtVerify(token, secret, { audience: "admin" });
-    return {
-      id: payload["id"] as string,
-      email: (payload["email"] as string) ?? "",
-    };
-  } catch {
-    return null;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+  if (!ctx) return null;
+  return { id: ctx.id, email: ctx.email ?? "" };
 }
 
 export function makeAdminsPlugin(jwtSecret: string) {

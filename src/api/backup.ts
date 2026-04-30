@@ -1,19 +1,14 @@
 import { existsSync, renameSync } from "fs";
 import Elysia from "elysia";
-import * as jose from "jose";
 import { closeDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  const secret = new TextEncoder().encode(jwtSecret);
-  try {
-    await jose.jwtVerify(token, secret, { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 // SQLite magic header — used to verify uploads

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
-import { initDb, closeDb } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, type FieldDef } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
@@ -34,9 +34,24 @@ afterEach(() => {
 });
 
 async function signAdmin(): Promise<string> {
-  return await new jose.SignJWT({ id: "a1", email: "admin@test.local" })
+  // verifyAuthToken now requires `iss = "vaultbase"` and a matching admin
+  // row in the DB.
+  const { admin: adminTable } = await import("../db/schema.ts");
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await getDb().insert(adminTable).values({
+      id: "a1",
+      email: "admin@test.local",
+      password_hash: "x",
+      password_reset_at: 0,
+      created_at: now,
+    });
+  } catch { /* already inserted */ }
+  return await new jose.SignJWT({ id: "a1", email: "admin@test.local", jti: crypto.randomUUID() })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer("vaultbase")
     .setAudience("admin")
+    .setIssuedAt(now)
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(SECRET));
 }

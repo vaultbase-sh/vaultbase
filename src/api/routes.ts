@@ -1,19 +1,15 @@
 import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache } from "../core/routes.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  try {
-    await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 function validatePath(path: string): string | null {

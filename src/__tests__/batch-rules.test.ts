@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
-import { initDb, closeDb } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, type FieldDef } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
@@ -9,8 +9,12 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { makeBatchPlugin } from "../api/batch.ts";
+import { admin as adminTable, users as usersTable } from "../db/schema.ts";
 
 const SECRET = "test-secret-batch-rules";
+// verifyAuthToken now requires `iss = "vaultbase"` and a matching DB
+// row for the principal. Test fixtures must seed both.
+const ISSUER = "vaultbase";
 
 let tmpDir: string;
 
@@ -27,17 +31,44 @@ afterEach(() => {
 });
 
 async function signUser(id: string, email: string): Promise<string> {
-  return await new jose.SignJWT({ id, email })
+  // Seed the principal so verifyAuthToken's recheckPrincipal pass succeeds.
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await getDb().insert(usersTable).values({
+      id,
+      collection_id: "test",
+      email,
+      password_hash: "x",
+      data: "{}",
+      created_at: now,
+      updated_at: now,
+    });
+  } catch { /* already inserted */ }
+  return await new jose.SignJWT({ id, email, jti: crypto.randomUUID() })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer(ISSUER)
     .setAudience("user")
+    .setIssuedAt(now)
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(SECRET));
 }
 
 async function signAdmin(id: string): Promise<string> {
-  return await new jose.SignJWT({ id, email: "admin@test.local" })
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await getDb().insert(adminTable).values({
+      id,
+      email: "admin@test.local",
+      password_hash: "x",
+      password_reset_at: 0,
+      created_at: now,
+    });
+  } catch { /* already inserted */ }
+  return await new jose.SignJWT({ id, email: "admin@test.local", jti: crypto.randomUUID() })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer(ISSUER)
     .setAudience("admin")
+    .setIssuedAt(now)
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(SECRET));
 }
