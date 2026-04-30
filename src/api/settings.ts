@@ -4,6 +4,8 @@ import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
+import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache } from "../core/storage.ts";
+import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
 
 function rawClient(): Database {
   return (getDb() as unknown as { $client: Database }).$client;
@@ -62,12 +64,24 @@ export function makeSettingsPlugin(jwtSecret: string) {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
         }
+        // Pre-validate auth window keys before any write — reject the whole
+        // PATCH on the first invalid value rather than half-applying.
+        for (const [k, v] of Object.entries(body)) {
+          if (isAuthWindowKey(k)) {
+            const err = validateWindowSeconds(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+        }
         for (const [k, v] of Object.entries(body)) {
           setSetting(k, String(v));
         }
         // Bust caches that depend on settings
         invalidateRateLimitCache();
         invalidateEmailCache();
+        // Storage driver / S3 creds may have changed — drop the cached client
+        // and the local thumb cache (different bucket means different objects)
+        invalidateStorageCache();
+        clearThumbCache();
         return { data: getAllSettings() };
       },
       { body: t.Record(t.String(), t.Any()) }
@@ -97,5 +111,21 @@ export function makeSettingsPlugin(jwtSecret: string) {
         }
       },
       { body: t.Object({ to: t.String() }) }
-    );
+    )
+    // Storage round-trip test: write probe object → read back → delete
+    .post("/api/admin/settings/storage/test", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      const result = await testStorage();
+      if (!result.ok) { set.status = 500; return { error: result.error ?? "Storage test failed", code: 500 }; }
+      return { data: result };
+    })
+    // Storage status — what driver is in use, plus relevant identifiers
+    .get("/api/admin/settings/storage/status", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      return { data: getStorageStatus() };
+    });
 }

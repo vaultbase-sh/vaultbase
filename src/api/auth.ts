@@ -1,9 +1,20 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
-import { admin, authTokens, oauthLinks, users } from "../db/schema.ts";
-import { getCollection } from "../core/collections.ts";
+import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, users } from "../db/schema.ts";
+import { getCollection, parseFields } from "../core/collections.ts";
+import { validateRecord, ValidationError } from "../core/validate.ts";
+import { tokenWindowSeconds } from "../core/auth-tokens.ts";
+import {
+  dummyPasswordHash,
+  hmacRecoveryCode,
+  ISSUER,
+  redactEmail,
+  signAuthToken,
+  verifyAuthToken,
+} from "../core/sec.ts";
+import { getAllSettings } from "./settings.ts";
 import {
   getAppUrl,
   getTemplate,
@@ -13,10 +24,13 @@ import {
 } from "../core/email.ts";
 import {
   buildAuthorizeUrl,
+  codeChallengeFromVerifier,
   exchangeCodeForToken,
-  fetchProviderProfile,
+  fetchProviderProfileFromExchange,
+  generateCodeVerifier,
   isProviderEnabled,
   listEnabledProviders,
+  providerRequiresPkce,
   PROVIDERS,
 } from "../core/oauth2.ts";
 import {
@@ -33,11 +47,116 @@ function getSecret(secret: string): Uint8Array {
 const TOKEN_TTL_SECONDS = 60 * 60; // 1 hour
 const OTP_TTL_SECONDS = 10 * 60;   // 10 minutes
 const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
+const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
+
+const PASSWORD_MIN_LENGTH = 12;
+/** Pinned argon2id parameters so a Bun upgrade cannot silently downgrade. */
+const HASH_OPTS = { algorithm: "argon2id" as const, memoryCost: 19456, timeCost: 2 };
+
+async function hashPassword(plaintext: string): Promise<string> {
+  return await Bun.password.hash(plaintext, HASH_OPTS);
+}
+
+const MAX_OTP_ATTEMPTS = 5;
+
+function isRedirectUriAllowed(provider: string, uri: string): boolean {
+  const settings = getAllSettings();
+  const raw = settings[`oauth2.${provider}.allowed_redirect_uris`] ?? settings["oauth2.allowed_redirect_uris"] ?? "";
+  if (!raw) return true; // not configured → fall back to provider-side allowlist
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (list.includes("*")) return true;
+  return list.some((p) => p === uri || (p.endsWith("*") && uri.startsWith(p.slice(0, -1))));
+}
 
 function newToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Generate a single 8-character alphanumeric recovery code formatted as
+ * `XXXX-XXXX`. Uses an unambiguous alphabet (no 0/O, 1/I) to make codes
+ * easier to read off paper.
+ */
+const RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function newRecoveryCode(): string {
+  const buf = new Uint8Array(8);
+  crypto.getRandomValues(buf);
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    out += RECOVERY_ALPHABET[buf[i]! % RECOVERY_ALPHABET.length];
+  }
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}`;
+}
+
+async function generateRecoveryCodesFor(
+  userId: string,
+  collectionId: string,
+  jwtSecret: string
+): Promise<string[]> {
+  const db = getDb();
+  // Wipe any existing codes — regenerate is "replace all".
+  const old = await db
+    .select()
+    .from(mfaRecoveryCodes)
+    .where(and(eq(mfaRecoveryCodes.user_id, userId), eq(mfaRecoveryCodes.collection_id, collectionId)));
+  for (const row of old) {
+    try { await db.delete(mfaRecoveryLookup).where(eq(mfaRecoveryLookup.recovery_id, row.id)); } catch { /* noop */ }
+  }
+  await db
+    .delete(mfaRecoveryCodes)
+    .where(and(eq(mfaRecoveryCodes.user_id, userId), eq(mfaRecoveryCodes.collection_id, collectionId)));
+  const plain: string[] = [];
+  for (let i = 0; i < 10; i++) plain.push(newRecoveryCode());
+  const now = Math.floor(Date.now() / 1000);
+  for (const code of plain) {
+    const id = crypto.randomUUID();
+    const hash = await hashPassword(code);
+    const hmac = await hmacRecoveryCode(code, jwtSecret);
+    await db.insert(mfaRecoveryCodes).values({
+      id,
+      user_id: userId,
+      collection_id: collectionId,
+      code_hash: hash,
+      created_at: now,
+    });
+    await db.insert(mfaRecoveryLookup).values({ hmac, recovery_id: id });
+  }
+  return plain;
+}
+
+/**
+ * Run `validateRecord` against a collection's user-defined fields *and*
+ * any implicit fields (auth's email/verified). The default `validateRecord`
+ * skips implicit entries on the assumption their storage lives elsewhere;
+ * for register we still want admin-set custom options (min length, pattern)
+ * to apply to the incoming email/verified payload.
+ */
+async function validateAuthRegister(
+  col: { id: string; name: string; type: string; fields: string; created_at: number; updated_at: number; view_query: string | null; list_rule: string | null; view_rule: string | null; create_rule: string | null; update_rule: string | null; delete_rule: string | null; },
+  data: Record<string, unknown>
+): Promise<void> {
+  const fields = parseFields(col.fields).map((f) => ({ ...f, implicit: false }));
+  // Build a synthetic collection with implicit flags stripped so the validator
+  // checks options on email/verified just like any other field.
+  const synthetic = { ...col, fields: JSON.stringify(fields) };
+  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, "create");
+  // validateRecord's "email" branch only checks regex, not min/max length —
+  // enforce admin-set length constraints here so register matches the rest of
+  // the API surface (text-typed fields already get min/max from validateRecord).
+  const lenErrors: Record<string, string> = {};
+  for (const f of fields) {
+    if (f.type !== "email") continue;
+    const v = data[f.name];
+    if (typeof v !== "string" || v === "") continue;
+    if (f.options?.min !== undefined && v.length < f.options.min) {
+      lenErrors[f.name] = `${f.name} must be at least ${f.options.min} characters`;
+    } else if (f.options?.max !== undefined && v.length > f.options.max) {
+      lenErrors[f.name] = `${f.name} must be at most ${f.options.max} characters`;
+    }
+  }
+  if (Object.keys(lenErrors).length > 0) throw new ValidationError(lenErrors);
 }
 
 /** 6-digit numeric OTP, zero-padded. Avoids leading-zero ambiguity. */
@@ -123,51 +242,98 @@ async function issueOtpAndSend(
 
 export function makeAuthPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth" })
+    .get("/api/admin/setup/status", async () => {
+      const db = getDb();
+      const existing = await db.select().from(admin).limit(1);
+      return { data: { has_admin: existing.length > 0 } };
+    })
     .post(
       "/api/admin/setup",
-      async ({ body, set }) => {
+      async ({ body, request, set }) => {
+        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
+          set.status = 422;
+          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        }
+        // Optional setup-key gate. When `VAULTBASE_SETUP_KEY` is set, the
+        // request must carry it as `X-Setup-Key`. Closes the race where an
+        // attacker reaches /setup before the operator on a public IP.
+        const expected = process.env["VAULTBASE_SETUP_KEY"];
+        if (expected) {
+          const provided = request.headers.get("x-setup-key");
+          if (!provided || provided !== expected) {
+            set.status = 401;
+            return { error: "Setup key required", code: 401 };
+          }
+        }
         const db = getDb();
-        const existing = await db.select().from(admin).limit(1);
-        if (existing.length > 0) {
+        const id = crypto.randomUUID();
+        const hash = await hashPassword(body.password);
+        const now = Math.floor(Date.now() / 1000);
+        try {
+          // Atomic: UNIQUE on email + count check via INSERT-then-validate.
+          await db.insert(admin).values({
+            id,
+            email: body.email,
+            password_hash: hash,
+            password_reset_at: now,
+            created_at: now,
+          });
+        } catch {
           set.status = 400;
           return { error: "Admin already set up", code: 400 };
         }
-        const hash = await Bun.password.hash(body.password);
-        const id = crypto.randomUUID();
-        const now = Math.floor(Date.now() / 1000);
-        await db.insert(admin).values({ id, email: body.email, password_hash: hash, created_at: now });
+        // Confirm we're still the only admin — if a concurrent setup landed,
+        // delete our row to keep the install clean and refuse.
+        const all = await db.select().from(admin);
+        if (all.length > 1) {
+          await db.delete(admin).where(eq(admin.id, id));
+          set.status = 400;
+          return { error: "Admin already set up", code: 400 };
+        }
         return { data: { id, email: body.email } };
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
     .post(
       "/api/admin/auth/login",
-      async ({ body, set }) => {
+      async ({ body, request }) => {
         const db = getDb();
         const rows = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
         const a = rows[0];
-        if (!a) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
-        const valid = await Bun.password.verify(body.password, a.password_hash);
-        if (!valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
-        const token = await new jose.SignJWT({ id: a.id, email: a.email })
-          .setProtectedHeader({ alg: "HS256" })
-          .setAudience("admin")
-          .setExpirationTime("7d")
-          .sign(getSecret(jwtSecret));
-        return { data: { token, admin: { id: a.id, email: a.email } } };
+        const hashToCheck = a?.password_hash ?? dummyPasswordHash();
+        const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
+        if (!a || !valid) {
+          return new Response(JSON.stringify({ error: "Invalid credentials", code: 401 }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const ttl = tokenWindowSeconds("admin");
+        const { token } = await signAuthToken({
+          payload: { id: a.id, email: a.email },
+          audience: "admin",
+          expiresInSeconds: ttl,
+          jwtSecret,
+        });
+        const isHttps = new URL(request.url).protocol === "https:";
+        const secureFlag = isHttps ? " Secure;" : "";
+        const cookie = `vaultbase_admin_token=${token}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=${ttl}`;
+        return new Response(JSON.stringify({ data: { token, admin: { id: a.id, email: a.email } } }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": cookie,
+          },
+        });
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
     .get("/api/admin/auth/me", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      try {
-        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "admin" });
-        return { data: payload };
-      } catch {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      return { data: { id: ctx.id, email: ctx.email ?? "", aud: "admin", exp: ctx.exp } };
     })
     .post(
       "/api/auth/:collection/register",
@@ -175,10 +341,36 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
+          set.status = 422;
+          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        }
         const db = getDb();
         const existing = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
-        if (existing.length > 0) { set.status = 400; return { error: "Email already registered", code: 400 }; }
-        const hash = await Bun.password.hash(body.password);
+        // No-enumeration: always return a generic success. If the email is
+        // taken, queue a "complete account / reset password" email instead so
+        // the legitimate owner can recover, and refuse silently.
+        if (existing.length > 0) {
+          if (isSmtpConfigured()) {
+            issueAndSend("reset", { id: existing[0]!.id, email: existing[0]!.email }, col.id, col.name).catch((e) => {
+              console.error("[auth] reset email failed for", redactEmail(existing[0]!.email), "—", e instanceof Error ? e.message : e);
+            });
+          }
+          // Return the same shape as a fresh-success path so a network observer
+          // can't tell the two cases apart. `id` is the existing user's id —
+          // not a leak: knowing the id alone gives no access without auth.
+          return { data: { id: existing[0]!.id, email: body.email } };
+        }
+        try {
+          await validateAuthRegister(col, body as Record<string, unknown>);
+        } catch (e) {
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: "Validation failed", code: 422, details: e.details };
+          }
+          throw e;
+        }
+        const hash = await hashPassword(body.password);
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const { email, password, ...extra } = body;
@@ -192,9 +384,8 @@ export function makeAuthPlugin(jwtSecret: string) {
           updated_at: now,
         });
         if (isSmtpConfigured()) {
-          // Best-effort: don't block registration if SMTP send fails.
           issueAndSend("verify", { id, email }, col.id, col.name).catch((e) => {
-            console.error("[auth] verification email failed for", email, "—", e instanceof Error ? e.message : e);
+            console.error("[auth] verification email failed for", redactEmail(email), "—", e instanceof Error ? e.message : e);
           });
         }
         return { data: { id, email } };
@@ -215,11 +406,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         const db = getDb();
         const rows = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
         const u = rows[0];
-        if (!u) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
-        const valid = await Bun.password.verify(body.password, u.password_hash);
-        if (!valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
+        // Always verify (against dummy hash on miss) so timing is constant.
+        const hashToCheck = u?.password_hash ?? dummyPasswordHash();
+        const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
+        if (!u || !valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
 
-        // MFA enabled? Issue a short-lived ticket; finishing the login requires a TOTP code.
         if (u.totp_enabled === 1) {
           const ticket = newToken();
           const now = Math.floor(Date.now() / 1000);
@@ -233,22 +424,31 @@ export function makeAuthPlugin(jwtSecret: string) {
           return { data: { mfa_required: true, mfa_token: ticket } };
         }
 
-        const token = await new jose.SignJWT({ id: u.id, email: u.email, collection: params.collection })
-          .setProtectedHeader({ alg: "HS256" })
-          .setAudience("user")
-          .setExpirationTime("7d")
-          .sign(getSecret(jwtSecret));
+        const { token } = await signAuthToken({
+          payload: { id: u.id, email: u.email, collection: params.collection },
+          audience: "user",
+          expiresInSeconds: tokenWindowSeconds("user"),
+          jwtSecret,
+        });
         return { data: { token, record: { id: u.id, email: u.email } } };
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
-    // Step-2 of MFA login: trade the mfa_token + a valid TOTP code for a full JWT.
+    // Step-2 of MFA login: trade the mfa_token + a valid TOTP code (or a
+    // single-use recovery code) for a full JWT. Exactly one of `code` /
+    // `recovery_code` must be supplied.
     .post(
       "/api/auth/:collection/login/mfa",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const hasCode = typeof body.code === "string" && body.code.length > 0;
+        const hasRecovery = typeof body.recovery_code === "string" && body.recovery_code.length > 0;
+        if (hasCode === hasRecovery) {
+          set.status = 422;
+          return { error: "Provide exactly one of code or recovery_code", code: 422 };
+        }
         const db = getDb();
         const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.mfa_token)).limit(1);
         const tok = rows[0];
@@ -263,30 +463,129 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "MFA not configured for this account", code: 400 };
         }
-        if (!verifyTotpCode(u.totp_secret, body.code)) {
-          set.status = 401;
-          return { error: "Invalid code", code: 401 };
+        if (hasCode) {
+          if (!verifyTotpCode(u.totp_secret, body.code!)) {
+            // Brute-force gate per ticket.
+            const attempts = (tok.attempts ?? 0) + 1;
+            await db.update(authTokens).set({ attempts }).where(eq(authTokens.id, tok.id));
+            if (attempts >= MAX_OTP_ATTEMPTS) {
+              await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+            }
+            set.status = 401;
+            return { error: "Invalid code", code: 401 };
+          }
+        } else {
+          // O(1) HMAC lookup; the actual hash is still argon2id (defense in depth).
+          const hmac = await hmacRecoveryCode(body.recovery_code!, jwtSecret);
+          const lookupRows = await db
+            .select()
+            .from(mfaRecoveryLookup)
+            .where(eq(mfaRecoveryLookup.hmac, hmac))
+            .limit(1);
+          let matchId: string | null = null;
+          if (lookupRows[0]) {
+            const codeRow = await db
+              .select()
+              .from(mfaRecoveryCodes)
+              .where(and(
+                eq(mfaRecoveryCodes.id, lookupRows[0].recovery_id),
+                eq(mfaRecoveryCodes.user_id, u.id),
+                eq(mfaRecoveryCodes.collection_id, col.id),
+                isNull(mfaRecoveryCodes.used_at),
+              ))
+              .limit(1);
+            if (codeRow[0]) {
+              const ok = await Bun.password.verify(body.recovery_code!, codeRow[0].code_hash).catch(() => false);
+              if (ok) matchId = codeRow[0].id;
+            }
+          }
+          if (!matchId) {
+            const attempts = (tok.attempts ?? 0) + 1;
+            await db.update(authTokens).set({ attempts }).where(eq(authTokens.id, tok.id));
+            if (attempts >= MAX_OTP_ATTEMPTS) {
+              await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+            }
+            set.status = 401;
+            return { error: "Invalid recovery code", code: 401 };
+          }
+          await db.update(mfaRecoveryCodes).set({ used_at: now }).where(eq(mfaRecoveryCodes.id, matchId));
+          await db.delete(mfaRecoveryLookup).where(eq(mfaRecoveryLookup.recovery_id, matchId));
         }
         await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
-        const token = await new jose.SignJWT({ id: u.id, email: u.email, collection: col.name })
-          .setProtectedHeader({ alg: "HS256" })
-          .setAudience("user")
-          .setExpirationTime("7d")
-          .sign(getSecret(jwtSecret));
+        const { token } = await signAuthToken({
+          payload: { id: u.id, email: u.email, collection: col.name },
+          audience: "user",
+          expiresInSeconds: tokenWindowSeconds("user"),
+          jwtSecret,
+        });
         return { data: { token, record: { id: u.id, email: u.email } } };
       },
-      { body: t.Object({ mfa_token: t.String(), code: t.String() }) }
+      { body: t.Object({
+          mfa_token: t.String(),
+          code: t.Optional(t.String()),
+          recovery_code: t.Optional(t.String()),
+        }) }
+    )
+    // Mint 10 fresh recovery codes (replaces all existing). Returns plaintext.
+    .post(
+      "/api/auth/:collection/totp/recovery/regenerate",
+      async ({ params, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        if (!isAuthFeatureEnabled("mfa")) { set.status = 422; return { error: "MFA is disabled", code: 422 }; }
+        const token = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        let userId: string;
+        try {
+          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
+          userId = String(payload.id ?? "");
+          if (!userId) throw new Error("missing id");
+        } catch {
+          set.status = 401; return { error: "Unauthorized", code: 401 };
+        }
+        const db = getDb();
+        const rows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+        const u = rows[0];
+        if (!u || u.collection_id !== col.id) { set.status = 404; return { error: "User not found", code: 404 }; }
+        const codes = await generateRecoveryCodesFor(u.id, col.id, jwtSecret);
+        return { data: { codes } };
+      }
+    )
+    // Counts of recovery codes (never plaintext). Used by the UI to nag users
+    // to regenerate when they're running low.
+    .get(
+      "/api/auth/:collection/totp/recovery/status",
+      async ({ params, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const token = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        let userId: string;
+        try {
+          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
+          userId = String(payload.id ?? "");
+          if (!userId) throw new Error("missing id");
+        } catch {
+          set.status = 401; return { error: "Unauthorized", code: 401 };
+        }
+        const db = getDb();
+        const rows = await db
+          .select()
+          .from(mfaRecoveryCodes)
+          .where(and(eq(mfaRecoveryCodes.user_id, userId), eq(mfaRecoveryCodes.collection_id, col.id)));
+        const total = rows.length;
+        const remaining = rows.filter((r) => r.used_at === null).length;
+        return { data: { total, remaining } };
+      }
     )
     .get("/api/auth/me", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      try {
-        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-        return { data: payload };
-      } catch {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
+      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      return { data: { id: ctx.id, email: ctx.email ?? "", aud: "user", exp: ctx.exp } };
     })
     // ── Email verification ──────────────────────────────────────────────────
     // Authenticated user requests a fresh verification email for their address.
@@ -358,7 +657,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           try {
             await issueAndSend("reset", { id: u.id, email: u.email }, col.id, col.name);
           } catch (e) {
-            console.error("[auth] password reset email failed:", e instanceof Error ? e.message : e);
+            console.error("[auth] password reset email failed for", redactEmail(u.email), "—", e instanceof Error ? e.message : e);
           }
         }
         return { data: { sent: true } };
@@ -371,8 +670,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        if (typeof body.password !== "string" || body.password.length < 8) {
-          set.status = 422; return { error: "Password must be at least 8 characters", code: 422 };
+        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
+          set.status = 422; return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
         }
         const db = getDb();
         const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1);
@@ -381,7 +680,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!tok || tok.purpose !== "password_reset" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
-        const hash = await Bun.password.hash(body.password);
+        const hash = await hashPassword(body.password);
         await db.update(users).set({ password_hash: hash, updated_at: now }).where(eq(users.id, tok.user_id));
         await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
         return { data: { reset: true } };
@@ -410,7 +709,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           try {
             await issueOtpAndSend({ id: u.id, email: u.email }, col.id, col.name);
           } catch (e) {
-            console.error("[auth] otp email failed:", e instanceof Error ? e.message : e);
+            console.error("[auth] otp email failed for", redactEmail(u.email), "—", e instanceof Error ? e.message : e);
           }
         }
         return { data: { sent: true } };
@@ -418,6 +717,21 @@ export function makeAuthPlugin(jwtSecret: string) {
       { body: t.Object({ email: t.String() }) }
     )
     // Auth via OTP — accepts either the long token OR the short code.
+    // Logout — revokes the bearer token's `jti` and clears any auth cookies.
+    .post("/api/auth/logout", async ({ request }) => {
+      const { extractBearer, revokeToken } = await import("../core/sec.ts");
+      const token = extractBearer(request);
+      if (token) {
+        const ctx = await verifyAuthToken(token, jwtSecret, { recheckPrincipal: false });
+        if (ctx?.jti && ctx.exp) await revokeToken(ctx.jti, ctx.exp);
+      }
+      const isHttps = new URL(request.url).protocol === "https:";
+      const secureFlag = isHttps ? " Secure;" : "";
+      const headers = new Headers({ "content-type": "application/json" });
+      headers.append("set-cookie", `vaultbase_admin_token=; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=0`);
+      headers.append("set-cookie", `vaultbase_user_token=; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=0`);
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200, headers });
+    })
     .post(
       "/api/auth/:collection/otp/auth",
       async ({ params, body, set }) => {
@@ -458,9 +772,16 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!tok || tok.purpose !== "otp" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
+        if ((tok.attempts ?? 0) >= MAX_OTP_ATTEMPTS) {
+          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+          set.status = 400; return { error: "Invalid or expired code", code: 400 };
+        }
         const userRows = await db.select().from(users).where(eq(users.id, tok.user_id)).limit(1);
         const u = userRows[0];
-        if (!u) { set.status = 400; return { error: "User not found", code: 400 }; }
+        if (!u) {
+          await db.update(authTokens).set({ attempts: (tok.attempts ?? 0) + 1 }).where(eq(authTokens.id, tok.id));
+          set.status = 400; return { error: "User not found", code: 400 };
+        }
 
         await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
         // OTP-issued sessions imply the email is verified (the IdP — us — confirmed it).
@@ -480,11 +801,12 @@ export function makeAuthPlugin(jwtSecret: string) {
           });
           return { data: { mfa_required: true, mfa_token: ticket } };
         }
-        const jwt = await new jose.SignJWT({ id: u.id, email: u.email, collection: col.name })
-          .setProtectedHeader({ alg: "HS256" })
-          .setAudience("user")
-          .setExpirationTime("7d")
-          .sign(getSecret(jwtSecret));
+        const { token: jwt } = await signAuthToken({
+          payload: { id: u.id, email: u.email, collection: col.name },
+          audience: "user",
+          expiresInSeconds: tokenWindowSeconds("user"),
+          jwtSecret,
+        });
         return { data: { token: jwt, record: { id: u.id, email: u.email } } };
       },
       { body: t.Object({
@@ -581,6 +903,11 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
         await db.update(users).set({ totp_enabled: 0, totp_secret: null, updated_at: Math.floor(Date.now() / 1000) }).where(eq(users.id, u.id));
+        // Wipe recovery codes — they're useless without TOTP, and leaving
+        // them around would let a re-enabled MFA inherit stale codes.
+        await db
+          .delete(mfaRecoveryCodes)
+          .where(and(eq(mfaRecoveryCodes.user_id, u.id), eq(mfaRecoveryCodes.collection_id, col.id)));
         return { data: { enabled: false } };
       },
       { body: t.Object({ code: t.String() }) }
@@ -596,7 +923,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const id = crypto.randomUUID();
       const email = `anon_${id.replace(/-/g, "").slice(0, 16)}@anonymous.invalid`;
       const randomPw = crypto.randomUUID() + crypto.randomUUID();
-      const hash = await Bun.password.hash(randomPw);
+      const hash = await hashPassword(randomPw);
       const now = Math.floor(Date.now() / 1000);
       await getDb().insert(users).values({
         id,
@@ -608,13 +935,103 @@ export function makeAuthPlugin(jwtSecret: string) {
         created_at: now,
         updated_at: now,
       });
-      const jwt = await new jose.SignJWT({ id, email, collection: col.name, anonymous: true })
-        .setProtectedHeader({ alg: "HS256" })
-        .setAudience("user")
-        .setExpirationTime("30d") // anonymous sessions live longer for guest carts etc
-        .sign(getSecret(jwtSecret));
+      const { token: jwt } = await signAuthToken({
+        payload: { id, email, collection: col.name, anonymous: true },
+        audience: "user",
+        expiresInSeconds: tokenWindowSeconds("anonymous"),
+        jwtSecret,
+      });
       return { data: { token: jwt, record: { id, email, anonymous: true } } };
     })
+    // ── Anonymous → real account promotion ─────────────────────────────────
+    // Caller must be holding an anonymous user JWT; supplies a real email +
+    // password. We hash the password, flip is_anonymous=0, mint a fresh
+    // (non-anonymous) JWT. Validates email uniqueness and the collection's
+    // schema (so a min-length on `email` still applies).
+    .post(
+      "/api/auth/:collection/promote",
+      async ({ params, request, body, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const token = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        let userId: string;
+        let isAnon = false;
+        try {
+          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
+          userId = String(payload.id ?? "");
+          if (!userId) throw new Error("missing id");
+          isAnon = payload["anonymous"] === true;
+        } catch {
+          set.status = 401; return { error: "Unauthorized", code: 401 };
+        }
+        if (!isAnon) {
+          set.status = 422;
+          return { error: "Only anonymous accounts can be promoted", code: 422 };
+        }
+        const db = getDb();
+        const rows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+        const u = rows[0];
+        if (!u || u.collection_id !== col.id) { set.status = 404; return { error: "User not found", code: 404 }; }
+        if (u.is_anonymous !== 1) {
+          set.status = 422;
+          return { error: "Only anonymous accounts can be promoted", code: 422 };
+        }
+        // Validate against the collection's schema (implicit + user fields).
+        try {
+          await validateAuthRegister(col, body as Record<string, unknown>);
+        } catch (e) {
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: "Validation failed", code: 422, details: e.details };
+          }
+          throw e;
+        }
+        // Email uniqueness within the collection (excluding self).
+        const dup = await db
+          .select()
+          .from(users)
+          .where(and(eq(users.email, body.email), eq(users.collection_id, col.id)))
+          .limit(1);
+        if (dup.length > 0 && dup[0]!.id !== u.id) {
+          set.status = 409; return { error: "Email already in use", code: 409 };
+        }
+        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
+          set.status = 422;
+          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        }
+        const hash = await hashPassword(body.password);
+        const now = Math.floor(Date.now() / 1000);
+        const { email, password, ...extra } = body as Record<string, unknown>;
+        void password;
+        const update: Record<string, unknown> = {
+          email: email as string,
+          password_hash: hash,
+          is_anonymous: 0,
+          updated_at: now,
+        };
+        if (Object.keys(extra).length > 0) {
+          let existing: Record<string, unknown> = {};
+          try { existing = JSON.parse(u.data ?? "{}") as Record<string, unknown>; } catch { /* keep empty */ }
+          update["data"] = JSON.stringify({ ...existing, ...extra });
+        }
+        await db.update(users).set(update).where(eq(users.id, u.id));
+        const { token: jwt } = await signAuthToken({
+          payload: { id: u.id, email: email as string, collection: col.name },
+          audience: "user",
+          expiresInSeconds: tokenWindowSeconds("user"),
+          jwtSecret,
+        });
+        return { data: { token: jwt, record: { id: u.id, email: email as string } } };
+      },
+      {
+        body: t.Object(
+          { email: t.String(), password: t.String() },
+          { additionalProperties: true }
+        ),
+      }
+    )
     // ── Admin impersonation ────────────────────────────────────────────────
     // Admin mints a short-lived user JWT for support purposes. JWT carries
     // `impersonated_by` so audit logs can attribute actions to the admin.
@@ -640,16 +1057,12 @@ export function makeAuthPlugin(jwtSecret: string) {
         .limit(1);
       const u = rows[0];
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
-      const jwt = await new jose.SignJWT({
-          id: u.id,
-          email: u.email,
-          collection: col.name,
-          impersonated_by: adminId,
-        })
-        .setProtectedHeader({ alg: "HS256" })
-        .setAudience("user")
-        .setExpirationTime("1h") // short by design
-        .sign(getSecret(jwtSecret));
+      const { token: jwt } = await signAuthToken({
+        payload: { id: u.id, email: u.email, collection: col.name, impersonated_by: adminId },
+        audience: "user",
+        expiresInSeconds: tokenWindowSeconds("impersonate"),
+        jwtSecret,
+      });
       return { data: { token: jwt, record: { id: u.id, email: u.email }, impersonated_by: adminId } };
     })
     // ── OAuth2 ──────────────────────────────────────────────────────────────
@@ -661,6 +1074,13 @@ export function makeAuthPlugin(jwtSecret: string) {
       return { data: listEnabledProviders() };
     })
     // Returns the provider's authorize URL with the caller-supplied redirect/state.
+    // PKCE (RFC 7636):
+    //  - Client provides `code_challenge` → server bakes it into the URL untouched
+    //    and never stores anything; the client owns the verifier.
+    //  - Client omits `code_challenge` → server generates a verifier, stashes it
+    //    in `vaultbase_auth_tokens` keyed by `state` (purpose="oauth2_pkce"), and
+    //    bakes the derived challenge into the URL. Useful for confidential web
+    //    flows where the caller can't easily keep the verifier across the redirect.
     .get("/api/auth/:collection/oauth2/authorize", async ({ params, query, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -671,13 +1091,55 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!isProviderEnabled(query.provider)) {
         set.status = 422; return { error: `Provider '${query.provider}' is not enabled`, code: 422 };
       }
+      if (!isRedirectUriAllowed(query.provider, query.redirectUri)) {
+        set.status = 422; return { error: "redirectUri not in allowlist", code: 422 };
+      }
+      const state = query.state ?? "";
+      let codeChallenge: string | undefined;
+      let serverManagedPkce = false;
+      // Twitter (and any future requiresPkce provider) needs PKCE no matter what
+      // the caller asked for. Promote use_pkce so we generate + store the verifier.
+      const forcePkce = providerRequiresPkce(query.provider);
+      if (query.code_challenge) {
+        // Client-managed PKCE: trust their challenge, store nothing.
+        codeChallenge = query.code_challenge;
+      } else if (query.use_pkce === "1" || query.use_pkce === "true" || forcePkce) {
+        // Server-managed PKCE: generate verifier, store keyed by state.
+        if (!state) {
+          set.status = 422; return { error: "state is required when use_pkce=1", code: 422 };
+        }
+        const verifier = generateCodeVerifier();
+        codeChallenge = await codeChallengeFromVerifier(verifier);
+        const now = Math.floor(Date.now() / 1000);
+        try {
+          await getDb().insert(authTokens).values({
+            id: state,
+            user_id: "",       // pre-auth flow, no user yet
+            collection_id: col.id,
+            purpose: "oauth2_pkce",
+            code: verifier,    // reuse the `code` column to hold the verifier
+            expires_at: now + PKCE_TTL_SECONDS,
+          });
+        } catch (e) {
+          set.status = 422;
+          return { error: `Failed to persist PKCE state (state must be unique): ${e instanceof Error ? e.message : String(e)}`, code: 422 };
+        }
+        serverManagedPkce = true;
+      }
       try {
         const url = buildAuthorizeUrl({
           provider: query.provider,
           redirectUri: query.redirectUri,
-          state: query.state ?? "",
+          state,
+          ...(codeChallenge ? { codeChallenge, codeChallengeMethod: "S256" as const } : {}),
         });
-        return { data: { authorize_url: url } };
+        return {
+          data: {
+            authorize_url: url,
+            ...(codeChallenge ? { code_challenge: codeChallenge, code_challenge_method: "S256" } : {}),
+            pkce: serverManagedPkce ? "server" : codeChallenge ? "client" : "none",
+          },
+        };
       } catch (e) {
         set.status = 422;
         return { error: e instanceof Error ? e.message : String(e), code: 422 };
@@ -687,6 +1149,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         provider: t.String(),
         redirectUri: t.String(),
         state: t.Optional(t.String()),
+        code_challenge: t.Optional(t.String()),
+        use_pkce: t.Optional(t.String()),
       }),
     })
     // Exchange authorization code for a vaultbase JWT.
@@ -705,6 +1169,24 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!isProviderEnabled(body.provider)) {
         set.status = 422; return { error: `Provider '${body.provider}' is not enabled`, code: 422 };
       }
+      if (!isRedirectUriAllowed(body.provider, body.redirectUri)) {
+        set.status = 422; return { error: "redirectUri not in allowlist", code: 422 };
+      }
+
+      // PKCE — pull a server-stored verifier keyed by state, if one exists.
+      // Falls through silently when the caller is doing PKCE entirely client-side
+      // (or not at all). A stored verifier is consumed (used_at set) on lookup.
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+      let codeVerifier: string | undefined = body.code_verifier;
+      if (!codeVerifier && body.state) {
+        const tokRows = await db.select().from(authTokens).where(eq(authTokens.id, body.state)).limit(1);
+        const tok = tokRows[0];
+        if (tok && tok.purpose === "oauth2_pkce" && tok.collection_id === col.id && !tok.used_at && tok.expires_at >= now) {
+          codeVerifier = tok.code ?? undefined;
+          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        }
+      }
 
       let profile;
       try {
@@ -712,8 +1194,11 @@ export function makeAuthPlugin(jwtSecret: string) {
           provider: body.provider,
           code: body.code,
           redirectUri: body.redirectUri,
+          ...(codeVerifier ? { codeVerifier } : {}),
         });
-        profile = await fetchProviderProfile(body.provider, tok.access_token);
+        // Apple: identity comes from the id_token in the exchange response.
+        // Everyone else: hit the provider's userinfo endpoint with the access_token.
+        profile = await fetchProviderProfileFromExchange(body.provider, tok);
       } catch (e) {
         set.status = 400;
         return { error: e instanceof Error ? e.message : String(e), code: 400 };
@@ -722,9 +1207,6 @@ export function makeAuthPlugin(jwtSecret: string) {
         set.status = 400;
         return { error: "Provider returned an incomplete profile (missing id or email)", code: 400 };
       }
-
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
 
       // 1. Existing link?
       const linked = await db
@@ -737,7 +1219,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         userId = linked[0]!.user_id;
       }
 
-      // 2. Email-match (only if provider verified the email)
+      // 2. Email-match (only if provider verified the email).
+      //    Instead of auto-linking, return a 200 with `merge_required: true`
+      //    and a single-use `merge_token`. The caller must call
+      //    `/oauth2/merge-confirm` with the user's existing password (or a
+      //    valid user token for that user) to consent before we link.
       if (!userId && profile.emailVerified) {
         const existing = await db
           .select()
@@ -745,27 +1231,40 @@ export function makeAuthPlugin(jwtSecret: string) {
           .where(and(eq(users.email, profile.email), eq(users.collection_id, col.id)))
           .limit(1);
         if (existing.length > 0) {
-          userId = existing[0]!.id;
-          await db.insert(oauthLinks).values({
-            id: crypto.randomUUID(),
-            user_id: userId,
+          const matchedUserId = existing[0]!.id;
+          const mergeToken = crypto.randomUUID();
+          await db.insert(authTokens).values({
+            id: mergeToken,
+            user_id: matchedUserId,
             collection_id: col.id,
-            provider: body.provider,
-            provider_user_id: profile.id,
-            provider_email: profile.email,
+            purpose: "oauth2_merge",
+            code: JSON.stringify({
+              provider: body.provider,
+              provider_user_id: profile.id,
+              email: profile.email,
+              name: profile.name ?? null,
+            }),
+            expires_at: now + 15 * 60,
+            used_at: null,
+            created_at: now,
           });
-          // Mark verified since we trust the IdP's verification.
-          if (!existing[0]!.email_verified) {
-            await db.update(users).set({ email_verified: 1, updated_at: now }).where(eq(users.id, userId));
-          }
+          return {
+            data: {
+              merge_required: true,
+              merge_token: mergeToken,
+              email: profile.email,
+              provider: body.provider,
+              message:
+                "An account with this email already exists. Confirm with your existing password (or a valid user token) at POST /api/auth/:collection/oauth2/merge-confirm to link this provider.",
+            },
+          };
         }
       }
 
       // 3. Create new user
       if (!userId) {
-        // Random hash that no one can guess — user can use password reset to set one if they want password login too.
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
-        const hash = await Bun.password.hash(randomPw);
+        const hash = await hashPassword(randomPw);
         userId = crypto.randomUUID();
         await db.insert(users).values({
           id: userId,
@@ -787,39 +1286,196 @@ export function makeAuthPlugin(jwtSecret: string) {
         });
       }
 
-      const token = await new jose.SignJWT({ id: userId, email: profile.email, collection: col.name })
-        .setProtectedHeader({ alg: "HS256" })
-        .setAudience("user")
-        .setExpirationTime("7d")
-        .sign(getSecret(jwtSecret));
+      const { token } = await signAuthToken({
+        payload: { id: userId, email: profile.email, collection: col.name },
+        audience: "user",
+        expiresInSeconds: tokenWindowSeconds("user"),
+        jwtSecret,
+      });
       return { data: { token, record: { id: userId, email: profile.email } } };
     }, {
       body: t.Object({
         provider: t.String(),
         code: t.String(),
         redirectUri: t.String(),
+        // PKCE: client-supplied verifier wins; otherwise we look up by `state`.
+        state: t.Optional(t.String()),
+        code_verifier: t.Optional(t.String()),
       }),
     })
-    // Token refresh — works for both user and admin tokens
+    // Confirm a pending OAuth2 → existing-user merge. The exchange step
+    // returned `{ merge_required: true, merge_token }` because the IdP-verified
+    // email matched an existing account; this endpoint takes that token plus
+    // proof-of-ownership (the user's password OR a valid user JWT for that
+    // account) and performs the link.
+    .post("/api/auth/:collection/oauth2/merge-confirm", async ({ params, body, request, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+
+      const tokRows = await db.select().from(authTokens).where(eq(authTokens.id, body.merge_token)).limit(1);
+      const tok = tokRows[0];
+      if (!tok || tok.purpose !== "oauth2_merge" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
+        set.status = 401;
+        return { error: "Invalid or expired merge token", code: 401 };
+      }
+
+      let stored: { provider: string; provider_user_id: string; email: string; name: string | null };
+      try {
+        stored = JSON.parse(tok.code ?? "");
+      } catch {
+        set.status = 500;
+        return { error: "Corrupted merge token", code: 500 };
+      }
+
+      const userRows = await db.select().from(users).where(eq(users.id, tok.user_id)).limit(1);
+      const user = userRows[0];
+      if (!user || user.collection_id !== col.id) {
+        set.status = 401;
+        return { error: "Account no longer exists", code: 401 };
+      }
+
+      // Proof of ownership — accept either:
+      //   1. password (verify against the existing user's hash), OR
+      //   2. an Authorization: Bearer <user-jwt> belonging to this user.
+      let proven = false;
+      if (typeof body.password === "string" && body.password !== "") {
+        proven = await Bun.password.verify(body.password, user.password_hash);
+      }
+      if (!proven) {
+        const headerToken = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (headerToken) {
+          try {
+            const { payload } = await jose.jwtVerify(headerToken, getSecret(jwtSecret), { audience: "user" });
+            if (typeof payload["id"] === "string" && payload["id"] === user.id) proven = true;
+          } catch { /* invalid token — leave proven=false */ }
+        }
+      }
+      if (!proven) {
+        set.status = 401;
+        return { error: "Password or user token did not match the existing account", code: 401 };
+      }
+
+      // Already linked? If the same provider+provider_user_id row already
+      // exists for this user, treat the call as idempotent and just sign a JWT.
+      const existingLink = await db
+        .select()
+        .from(oauthLinks)
+        .where(and(
+          eq(oauthLinks.user_id, user.id),
+          eq(oauthLinks.provider, stored.provider),
+          eq(oauthLinks.provider_user_id, stored.provider_user_id)
+        ))
+        .limit(1);
+      if (existingLink.length === 0) {
+        await db.insert(oauthLinks).values({
+          id: crypto.randomUUID(),
+          user_id: user.id,
+          collection_id: col.id,
+          provider: stored.provider,
+          provider_user_id: stored.provider_user_id,
+          provider_email: stored.email,
+        });
+      }
+      if (!user.email_verified) {
+        await db.update(users).set({ email_verified: 1, updated_at: now }).where(eq(users.id, user.id));
+      }
+      await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+
+      const { token } = await signAuthToken({
+        payload: { id: user.id, email: user.email, collection: col.name },
+        audience: "user",
+        expiresInSeconds: tokenWindowSeconds("user"),
+        jwtSecret,
+      });
+      return { data: { token, record: { id: user.id, email: user.email }, linked_provider: stored.provider } };
+    }, {
+      body: t.Object({
+        merge_token: t.String(),
+        password: t.Optional(t.String()),
+      }),
+    })
+    // Unlink an OAuth2 provider from the calling user's account.
+    // Refuses to leave the user without ANY way to sign in: if the user has no
+    // password set (or only a placeholder; we can't tell post-hash) AND this
+    // would be their last remaining link, returns 409. Detects the "real" case
+    // by checking whether at least one OTHER link exists, OR a password_hash
+    // is present (any user has one — anonymous + oauth-only users still hold a
+    // random one — so the heuristic falls back to "must have ≥1 other sign-in
+    // path", i.e. another link OR a verified email + non-anonymous flag).
+    .delete("/api/auth/:collection/oauth2/:provider/unlink", async ({ params, request, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      let userId: string;
+      try {
+        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
+        userId = String(payload.id ?? "");
+        if (!userId) throw new Error("missing id");
+      } catch {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      const db = getDb();
+      const userRows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+      const u = userRows[0];
+      if (!u || u.collection_id !== col.id) { set.status = 404; return { error: "User not found", code: 404 }; }
+
+      const linkRows = await db
+        .select()
+        .from(oauthLinks)
+        .where(and(
+          eq(oauthLinks.user_id, userId),
+          eq(oauthLinks.provider, params.provider),
+        ))
+        .limit(1);
+      if (linkRows.length === 0) {
+        set.status = 404; return { error: "No link for that provider", code: 404 };
+      }
+
+      // Lockout guard: a user with no password and no other oauth link would
+      // be unable to sign in again. password_hash is NOT NULL at the schema
+      // level, but oauth-only users carry an empty/placeholder hash that we
+      // treat as "no password". (We can't actually distinguish a placeholder
+      // from a hashed password without extra metadata, so callers who want
+      // password+oauth must keep the password column non-empty — which the
+      // standard register flow does.)
+      const allLinks = await db
+        .select()
+        .from(oauthLinks)
+        .where(eq(oauthLinks.user_id, userId));
+      const remainingAfter = allLinks.filter((l) => l.provider !== params.provider).length;
+      const hasPassword = u.password_hash !== "" && u.is_anonymous !== 1;
+      if (!hasPassword && remainingAfter === 0) {
+        set.status = 409;
+        return { error: "Cannot unlink — would leave you locked out", code: 409 };
+      }
+
+      await db.delete(oauthLinks).where(and(
+        eq(oauthLinks.user_id, userId),
+        eq(oauthLinks.provider, params.provider),
+      ));
+      return { data: null };
+    })
+    // Token refresh — re-validates that the principal still exists.
     .post("/api/auth/refresh", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      const sec = getSecret(jwtSecret);
-      try {
-        const { payload } = await jose.jwtVerify(token, sec);
-        const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
-        if (aud !== "user" && aud !== "admin") { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        // Re-sign with same claims, fresh expiry
-        const { exp: _exp, iat: _iat, nbf: _nbf, ...claims } = payload;
-        const newToken = await new jose.SignJWT(claims as jose.JWTPayload)
-          .setProtectedHeader({ alg: "HS256" })
-          .setAudience(aud)
-          .setExpirationTime("7d")
-          .sign(sec);
-        return { data: { token: newToken } };
-      } catch {
-        set.status = 401;
-        return { error: "Token expired or invalid", code: 401 };
+      const ctx = await verifyAuthToken(token, jwtSecret);
+      if (!ctx) { set.status = 401; return { error: "Token expired or invalid", code: 401 }; }
+      if (ctx.type !== "user" && ctx.type !== "admin") {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      const claims: jose.JWTPayload = { id: ctx.id };
+      if (ctx.email) claims.email = ctx.email;
+      const { token: newToken } = await signAuthToken({
+        payload: claims,
+        audience: ctx.type,
+        expiresInSeconds: tokenWindowSeconds("refresh"),
+        jwtSecret,
+      });
+      return { data: { token: newToken } };
     });
 }

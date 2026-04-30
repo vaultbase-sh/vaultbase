@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 import { useAuth } from "../stores/auth.ts";
+import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
 
 export default function Login() {
-  const [email, setEmail] = useState("admin@vaultbase.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -20,7 +21,9 @@ export default function Login() {
     });
     setLoading(false);
     if (res.data?.token) {
-      useAuth.getState().signIn(res.data.token);
+      const { setMemoryToken } = await import("../api.ts");
+      setMemoryToken(res.data.token);
+      await useAuth.getState().signIn();
       navigate("/_/");
     } else {
       setError(res.error ?? "Invalid credentials");
@@ -31,7 +34,7 @@ export default function Login() {
     <div className="auth-shell">
       <div className="auth-card">
         <div className="auth-brand">
-          <div className="sb-brand-mark" />
+          <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
           <div className="name">vaultbase</div>
         </div>
         <div>
@@ -51,6 +54,7 @@ export default function Login() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
               autoFocus
             />
           </div>
@@ -69,9 +73,6 @@ export default function Login() {
             {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>
-        <div className="auth-foot">
-          First time? <a href="/_/setup" style={{ color: "var(--accent-light)" }}>Set up admin account →</a>
-        </div>
       </div>
     </div>
   );

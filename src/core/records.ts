@@ -3,13 +3,78 @@ import { getDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
 import {
   getCollection,
+  getCollectionCached,
   listCollections,
   parseFields,
   userTableName,
   type CascadeMode,
   type FieldDef,
 } from "./collections.ts";
-import { parseFilter } from "./filter.ts";
+import { parseFilter, type CollectionLookup } from "./filter.ts";
+import { maybeRecordHistory } from "./record-history.ts";
+
+/**
+ * Build a lookup the rule SQL compiler uses for joined-collection view_rule
+ * inheritance + back-relation ref-field validation. Synchronous interface
+ * (the compiler runs in a hot path), so we hit the in-process collection
+ * cache. Cold-cache → returns null and the compiler conservatively denies
+ * for non-admin callers.
+ */
+/**
+ * Prepared-statement cache — bun:sqlite re-parses SQL on every `.prepare()`
+ * call which dominates list-endpoint latency under load. We keep one cached
+ * statement per unique SQL string. Evicted only on schema changes (collection
+ * rename / field add/drop).
+ */
+const STMT_CACHE = new Map<string, { stmt: ReturnType<Database["prepare"]> }>();
+const STMT_CACHE_MAX = 256;
+
+function getCachedStmt(client: Database, sql: string): ReturnType<Database["prepare"]> {
+  const hit = STMT_CACHE.get(sql);
+  if (hit) return hit.stmt;
+  if (STMT_CACHE.size >= STMT_CACHE_MAX) {
+    const oldest = STMT_CACHE.keys().next().value;
+    if (oldest !== undefined) STMT_CACHE.delete(oldest);
+  }
+  const stmt = client.prepare(sql);
+  STMT_CACHE.set(sql, { stmt });
+  return stmt;
+}
+
+function preparedAll(client: Database, sql: string, params: unknown[]): unknown[] {
+  return (getCachedStmt(client, sql) as unknown as {
+    all: (...args: unknown[]) => unknown[];
+  }).all(...params);
+}
+
+function preparedGet(client: Database, sql: string, params: unknown[]): unknown {
+  return (getCachedStmt(client, sql) as unknown as {
+    get: (...args: unknown[]) => unknown;
+  }).get(...params);
+}
+
+/** Drop the cache when collection schema changes. */
+export function invalidatePreparedStatements(): void {
+  STMT_CACHE.clear();
+}
+
+function makeCollectionLookup(): CollectionLookup {
+  return (name: string) => {
+    const col = getCollectionCached(name);
+    if (!col) return null;
+    let fieldNames: Set<string>;
+    try {
+      const parsed = parseFields(col.fields);
+      fieldNames = new Set(parsed.map((f) => f.name));
+    } catch {
+      fieldNames = new Set();
+    }
+    return {
+      viewRule: col.view_rule,
+      hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
+    };
+  };
+}
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { validateRecord } from "./validate.ts";
@@ -113,6 +178,7 @@ function quoteIdent(name: string): string {
 function isJsonField(field: FieldDef): boolean {
   return field.type === "json"
     || field.type === "geoPoint"
+    || field.type === "vector"
     || (field.type === "select" && field.options?.multiple === true)
     || (field.type === "file"   && field.options?.multiple === true);
 }
@@ -200,12 +266,19 @@ export async function listRecords(
   const whereParts: string[] = [];
   const whereParams: Binding[] = [];
 
+  // Lookup callback so the SQL compiler can inherit joined-collection rules
+  // and validate back-relation ref fields.
+  const lookup = makeCollectionLookup();
+  const filterOpts = { auth: opts.auth ?? null, lookup, hostIdField: "id" } as const;
+
   if (opts.filter) {
-    const compiled = parseFilter(opts.filter, tname, opts.auth ?? null);
+    let compiled;
+    try { compiled = parseFilter(opts.filter, tname, filterOpts); } catch { compiled = null; }
     if (compiled) { whereParts.push(compiled.sql); whereParams.push(...(compiled.params as Binding[])); }
   }
   if (opts.accessRule) {
-    const compiled = parseFilter(opts.accessRule, tname, opts.auth ?? null);
+    let compiled;
+    try { compiled = parseFilter(opts.accessRule, tname, filterOpts); } catch { compiled = null; }
     if (compiled) { whereParts.push(compiled.sql); whereParams.push(...(compiled.params as Binding[])); }
   }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -222,18 +295,16 @@ export async function listRecords(
   });
   const orderSql = orderClauses.length > 0 ? `ORDER BY ${orderClauses.join(", ")}` : "";
 
-  // Execute SELECT
-  const rows = client
-    .prepare(`SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`)
-    .all(...whereParams, perPage, offset) as Record<string, unknown>[];
+  // Execute SELECT — prepared statement cached by SQL string shape.
+  const selectSql = `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
+  const rows = preparedAll(client, selectSql, [...whereParams, perPage, offset]) as Record<string, unknown>[];
 
   // Total count (optional)
   let totalItems = -1;
   let totalPages = -1;
   if (!opts.skipTotal) {
-    const cnt = client
-      .prepare(`SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`)
-      .get(...whereParams) as { c: number } | undefined;
+    const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
+    const cnt = preparedGet(client, countSql, whereParams) as { c: number } | undefined;
     totalItems = cnt?.c ?? 0;
     totalPages = Math.ceil(totalItems / perPage);
   }
@@ -332,7 +403,15 @@ export async function createRecord(
 
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
-  broadcast(col.name, { type: "create", collection: col.name, record: result });
+  await maybeRecordHistory(col, id, {
+    op: "create",
+    snapshot: result as unknown as Record<string, unknown>,
+    auth,
+  });
+  broadcast(col.name, { type: "create", collection: col.name, record: result }, {
+    viewRule: col.view_rule,
+    record: result as unknown as Record<string, unknown>,
+  });
   runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   return result;
 }
@@ -395,7 +474,15 @@ export async function updateRecord(
 
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
-  broadcast(col.name, { type: "update", collection: col.name, record: result });
+  await maybeRecordHistory(col, id, {
+    op: "update",
+    snapshot: result as unknown as Record<string, unknown>,
+    auth,
+  });
+  broadcast(col.name, { type: "update", collection: col.name, record: result }, {
+    viewRule: col.view_rule,
+    record: result as unknown as Record<string, unknown>,
+  });
   runAfterHook(col, "afterUpdate", {
     record: result as unknown as Record<string, unknown>,
     existing: existing as unknown as Record<string, unknown>,
@@ -421,7 +508,7 @@ export class ReadOnlyCollectionError extends Error {
 }
 
 interface IncomingRef {
-  collection: { id: string; name: string };
+  collection: { id: string; name: string; view_rule: string | null };
   fieldName: string;
   cascade: CascadeMode;
 }
@@ -435,7 +522,7 @@ async function findIncomingRefs(targetCollectionName: string): Promise<IncomingR
     for (const f of fields) {
       if (f.type === "relation" && f.collection === targetCollectionName) {
         refs.push({
-          collection: { id: c.id, name: c.name },
+          collection: { id: c.id, name: c.name, view_rule: c.view_rule },
           fieldName: f.name,
           cascade: f.options?.cascade ?? "setNull",
         });
@@ -493,7 +580,10 @@ async function applyCascades(
       // would be surprisingly expensive.
       for (const r of affected) {
         const rec = await getRecord(ref.collection.name, r.id);
-        if (rec) broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec });
+        if (rec) broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
+          viewRule: ref.collection.view_rule,
+          record: rec as unknown as Record<string, unknown>,
+        });
       }
       continue;
     }
@@ -542,7 +632,16 @@ async function deleteRecordInternal(
 
   const tableRef = quoteIdent(userTableName(col.name));
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
-  broadcast(col.name, { type: "delete", collection: col.name, id });
+  await maybeRecordHistory(col, id, {
+    op: "delete",
+    snapshot: existing as unknown as Record<string, unknown>,
+    auth,
+  });
+  // Pass the just-deleted record snapshot so per-subscriber view_rule eval still has fields.
+  broadcast(col.name, { type: "delete", collection: col.name, id }, {
+    viewRule: col.view_rule,
+    record: existing as unknown as Record<string, unknown>,
+  });
 
   runAfterHook(col, "afterDelete", {
     record: {},

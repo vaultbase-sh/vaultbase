@@ -214,7 +214,7 @@ export function RuleEditor({ value, onChange, schemaFields, placeholder }: RuleE
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxHeight: 240,
             overflowY: "auto",
-            zIndex: 50,
+            zIndex: 100,
           }}
         >
           {suggestions.map((s, i) => (

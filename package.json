@@ -6,8 +6,10 @@
     "dev": "bun --watch src/index.ts",
     "dev:admin": "cd admin && bun dev",
     "dev:docs": "cd site && bun run dev",
+    "dev:landing": "cd landing && bun run dev",
     "build:admin": "cd admin && bun run build",
     "build:docs": "cd site && bun run build",
+    "build:landing": "cd landing && bun run build",
     "build": "bun run build:admin && bun build --compile --minify --sourcemap=none src/index.ts --outfile vaultbase",
     "build:compress": "bun run build && upx --best --lzma vaultbase",
     "build:all": "bun run build:admin && bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:linux-x64-musl && bun run build:macos-x64 && bun run build:macos-arm64 && bun run build:windows-x64",
@@ -18,6 +20,7 @@
     "build:macos-arm64": "bun build --compile --target=bun-darwin-arm64    --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-macos-arm64",
     "build:windows-x64": "bun build --compile --target=bun-windows-x64     --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-windows-x64.exe",
     "start": "bun src/index.ts",
+    "start:cluster": "bun src/cluster.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
@@ -26,6 +29,8 @@
     "compress": "upx --best --lzma releases/vaultbase-linux-arm64"
   },
   "dependencies": {
+    "@jsquash/avif": "^2.1.1",
+    "@jsquash/webp": "^1.5.0",
     "cron-parser": "^5.5.0",
     "drizzle-orm": "^0.44.0",
     "elysia": "^1.2.0",
@@ -35,7 +40,7 @@
     "nodemailer": "^8.0.6"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.3.0",
     "@types/nodemailer": "^8.0.0",
     "drizzle-kit": "^0.30.0",
     "typescript": "^5.8.0"

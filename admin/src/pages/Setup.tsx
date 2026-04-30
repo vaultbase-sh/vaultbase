@@ -1,20 +1,19 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 import Icon from "../components/Icon.tsx";
+import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
 
 type Step = "welcome" | "admin" | "done";
 
 export default function Setup() {
   const [step, setStep] = useState<Step>("welcome");
   const [adminEmail, setAdminEmail] = useState("");
-  const navigate = useNavigate();
 
   return (
     <div className="auth-shell">
       <div className="auth-card wide" style={{ width: 520 }}>
         <div className="auth-brand">
-          <div className="sb-brand-mark" />
+          <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
           <div className="name">vaultbase</div>
           <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
             v0.1.0
@@ -25,7 +24,7 @@ export default function Setup() {
 
         {step === "welcome" && <WelcomeStep onNext={() => setStep("admin")} />}
         {step === "admin"   && <AdminStep   onDone={(email) => { setAdminEmail(email); setStep("done"); }} />}
-        {step === "done"    && <DoneStep    email={adminEmail} onFinish={() => navigate("/_/login")} />}
+        {step === "done"    && <DoneStep    email={adminEmail} onFinish={() => { window.location.assign("/_/login"); }} />}
       </div>
     </div>
   );

@@ -5,6 +5,13 @@ import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { invalidateJobsCache, nextRunFromCron, runJob, validateCron } from "../core/jobs.ts";
 
+function validateMode(mode: string): string | null {
+  if (mode === "inline") return null;
+  const m = /^worker:(.+)$/.exec(mode);
+  if (!m || !m[1]!.trim()) return `Invalid mode "${mode}" — expected "inline" or "worker:<queue>"`;
+  return null;
+}
+
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
@@ -34,6 +41,9 @@ export function makeJobsPlugin(jwtSecret: string) {
         }
         const cronErr = validateCron(body.cron);
         if (cronErr) { set.status = 422; return { error: `Invalid cron: ${cronErr}`, code: 422 }; }
+        const mode = body.mode ?? "inline";
+        const modeErr = validateMode(mode);
+        if (modeErr) { set.status = 422; return { error: modeErr, code: 422 }; }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const next = nextRunFromCron(body.cron, now);
@@ -43,6 +53,7 @@ export function makeJobsPlugin(jwtSecret: string) {
           cron: body.cron,
           code: body.code ?? "",
           enabled: body.enabled === false ? 0 : 1,
+          mode,
           last_run_at: null,
           next_run_at: next,
           last_status: null,
@@ -60,6 +71,7 @@ export function makeJobsPlugin(jwtSecret: string) {
           cron: t.String(),
           code: t.Optional(t.String()),
           enabled: t.Optional(t.Boolean()),
+          mode: t.Optional(t.String()),
         }),
       }
     )
@@ -70,7 +82,7 @@ export function makeJobsPlugin(jwtSecret: string) {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
         }
-        const update: { name?: string; cron?: string; code?: string; enabled?: number; next_run_at?: number; updated_at: number } = {
+        const update: { name?: string; cron?: string; code?: string; enabled?: number; mode?: string; next_run_at?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
         if (body.name !== undefined) update.name = body.name;
@@ -82,6 +94,11 @@ export function makeJobsPlugin(jwtSecret: string) {
         }
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
+        if (body.mode !== undefined) {
+          const modeErr = validateMode(body.mode);
+          if (modeErr) { set.status = 422; return { error: modeErr, code: 422 }; }
+          update.mode = body.mode;
+        }
         await getDb().update(jobs).set(update).where(eq(jobs.id, params.id));
         invalidateJobsCache();
         const row = await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1);
@@ -94,6 +111,7 @@ export function makeJobsPlugin(jwtSecret: string) {
           cron: t.Optional(t.String()),
           code: t.Optional(t.String()),
           enabled: t.Optional(t.Boolean()),
+          mode: t.Optional(t.String()),
         }),
       }
     )

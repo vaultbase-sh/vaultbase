@@ -182,6 +182,22 @@ function validateValue(field: FieldDef, value: unknown): string | null {
       return null;
     }
 
+    case "vector": {
+      const dims = field.options?.dimensions;
+      if (typeof dims !== "number" || !Number.isInteger(dims) || dims < 1 || dims > 4096) {
+        return `${field.name} schema is invalid: dimensions must be an integer in [1, 4096]`;
+      }
+      if (!Array.isArray(value)) return `${field.name} must be a number[] of length ${dims}`;
+      if (value.length !== dims) return `${field.name} must have exactly ${dims} elements (got ${value.length})`;
+      for (let i = 0; i < value.length; i++) {
+        const n = value[i];
+        if (typeof n !== "number" || !Number.isFinite(n)) {
+          return `${field.name}[${i}] must be a finite number`;
+        }
+      }
+      return null;
+    }
+
     default:
       return null;
   }

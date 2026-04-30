@@ -83,6 +83,48 @@ export async function sendEmail(opts: EmailOptions): Promise<{ messageId: string
   return { messageId: info.messageId };
 }
 
+/**
+ * Rich variant — supports cc/bcc/replyTo, custom from override, and
+ * attachments. Backs `helpers.mails.send` for hooks.
+ */
+export interface RichEmailOptions extends EmailOptions {
+  cc?: string;
+  bcc?: string;
+  replyTo?: string;
+  from?: string;
+  attachments?: Array<{
+    filename: string;
+    content: string | Uint8Array;
+    contentType?: string;
+  }>;
+}
+
+export async function sendMailRich(opts: RichEmailOptions): Promise<{ messageId: string }> {
+  const { config, transporter } = getTransporter();
+  const sendOpts: Parameters<Transporter["sendMail"]>[0] = {
+    from: opts.from ?? config.from,
+    to: opts.to,
+    subject: opts.subject,
+  };
+  if (opts.cc) sendOpts.cc = opts.cc;
+  if (opts.bcc) sendOpts.bcc = opts.bcc;
+  if (opts.replyTo) sendOpts.replyTo = opts.replyTo;
+  if (opts.text) sendOpts.text = opts.text;
+  if (opts.html) sendOpts.html = opts.html;
+  if (opts.attachments?.length) {
+    sendOpts.attachments = opts.attachments.map((a) => {
+      const att: { filename: string; content: string | Buffer; contentType?: string } = {
+        filename: a.filename,
+        content: a.content instanceof Uint8Array ? Buffer.from(a.content) : a.content,
+      };
+      if (a.contentType) att.contentType = a.contentType;
+      return att;
+    });
+  }
+  const info = await transporter.sendMail(sendOpts);
+  return { messageId: info.messageId };
+}
+
 export async function verifySmtp(): Promise<{ ok: boolean; error?: string }> {
   try {
     const { transporter } = getTransporter();

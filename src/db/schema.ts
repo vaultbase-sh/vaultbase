@@ -12,8 +12,31 @@ export const collections = sqliteTable("vaultbase_collections", {
   create_rule: text("create_rule"),
   update_rule: text("update_rule"),
   delete_rule: text("delete_rule"),
+  /** When 1, every record write produces a `vaultbase_record_history` row. */
+  history_enabled: integer("history_enabled").notNull().default(0),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+/**
+ * Append-only audit + restore log of record writes for collections that have
+ * `history_enabled=1`. Snapshot is the post-write record state on
+ * create/update, and the pre-delete state on delete.
+ */
+export const recordHistory = sqliteTable("vaultbase_record_history", {
+  id: text("id").primaryKey(),
+  collection: text("collection").notNull(),
+  record_id: text("record_id").notNull(),
+  /** "create" | "update" | "delete" */
+  op: text("op").notNull(),
+  /** JSON-encoded record snapshot (post-write for create/update; pre-delete for delete). */
+  snapshot: text("snapshot").notNull(),
+  /** Caller id, or null for unauthenticated / cron / hook contexts. */
+  actor_id: text("actor_id"),
+  /** "user" | "admin" | null. */
+  actor_type: text("actor_type"),
+  /** Unix-seconds timestamp of the write. */
+  at: integer("at").notNull().default(sql`(unixepoch())`),
 });
 
 export const users = sqliteTable("vaultbase_users", {
@@ -39,7 +62,31 @@ export const authTokens = sqliteTable("vaultbase_auth_tokens", {
   purpose: text("purpose").notNull(),
   /** Short numeric code for OTP flow; nullable for token-only purposes. */
   code: text("code"),
+  /** Failed attempts for OTP/MFA brute-force protection. */
+  attempts: integer("attempts").notNull().default(0),
   expires_at: integer("expires_at").notNull(),
+  used_at: integer("used_at"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+
+/** JWT revocation list. Tokens carrying a `jti` listed here are rejected. */
+export const tokenRevocations = sqliteTable("vaultbase_token_revocations", {
+  jti: text("jti").primaryKey(),
+  expires_at: integer("expires_at").notNull(),
+  revoked_at: integer("revoked_at").notNull().default(sql`(unixepoch())`),
+});
+
+/** HMAC-keyed lookup for MFA recovery codes (no per-attempt argon2 fan-out). */
+export const mfaRecoveryLookup = sqliteTable("vaultbase_mfa_recovery_lookup", {
+  hmac: text("hmac").primaryKey(),
+  recovery_id: text("recovery_id").notNull(),
+});
+
+export const mfaRecoveryCodes = sqliteTable("vaultbase_mfa_recovery_codes", {
+  id: text("id").primaryKey(),
+  user_id: text("user_id").notNull(),
+  collection_id: text("collection_id").notNull(),
+  code_hash: text("code_hash").notNull(),
   used_at: integer("used_at"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
@@ -58,6 +105,11 @@ export const admin = sqliteTable("vaultbase_admin", {
   id: text("id").primaryKey(),
   email: text("email").notNull(),
   password_hash: text("password_hash").notNull(),
+  /**
+   * Tokens issued before this timestamp are rejected. Bumped on password reset
+   * or admin-driven force-logout.
+   */
+  password_reset_at: integer("password_reset_at").notNull().default(0),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
@@ -101,12 +153,65 @@ export const jobs = sqliteTable("vaultbase_jobs", {
   cron: text("cron").notNull(),
   code: text("code").notNull().default(""),
   enabled: integer("enabled").notNull().default(1),
+  /**
+   * "inline" (default): cron tick runs the job's code in-process.
+   * "worker:<queue>": cron tick enqueues onto the named queue; a worker
+   * consumes it asynchronously. Heavy work leaves the request runtime.
+   */
+  mode: text("mode").notNull().default("inline"),
   last_run_at: integer("last_run_at"),
   next_run_at: integer("next_run_at"),
   last_status: text("last_status"),       // "ok" | "error"
   last_error: text("last_error"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+/**
+ * Worker definitions. A worker compiles user-supplied JS that pulls jobs
+ * from a named queue and processes them. Multiple workers can share a
+ * queue (concurrency adds across workers).
+ */
+export const workers = sqliteTable("vaultbase_workers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  queue: text("queue").notNull(),
+  code: text("code").notNull().default(""),
+  enabled: integer("enabled").notNull().default(1),
+  /** Max in-flight jobs this worker will process at once. */
+  concurrency: integer("concurrency").notNull().default(1),
+  /** Per-job retry budget — applied when the job's enqueue opts don't override. */
+  retry_max: integer("retry_max").notNull().default(3),
+  /** "exponential" (1s,2s,4s,…) or "fixed" (uses retry_delay_ms each time) */
+  retry_backoff: text("retry_backoff").notNull().default("exponential"),
+  /** Used as base for exponential / fixed delay between retries, in ms. */
+  retry_delay_ms: integer("retry_delay_ms").notNull().default(1000),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+/**
+ * Append-only log of every job enqueued. Tracks lifecycle: queued →
+ * running → succeeded / failed / dead. The actual queue primitives live
+ * in-memory (Phase 1) or Redis (future Phase 2); this table is the
+ * audit trail and admin dashboard data source.
+ */
+export const jobsLog = sqliteTable("vaultbase_jobs_log", {
+  id: text("id").primaryKey(),
+  queue: text("queue").notNull(),
+  worker_id: text("worker_id"),
+  /** JSON-encoded payload as enqueued. */
+  payload: text("payload").notNull().default("{}"),
+  /** Unique-key dedup (skip enqueue if a non-finished job has the same key). */
+  unique_key: text("unique_key"),
+  attempt: integer("attempt").notNull().default(1),
+  status: text("status").notNull().default("queued"),  // queued | running | succeeded | failed | dead
+  error: text("error"),
+  /** Earliest time the job is allowed to run. Used for delayed jobs + retry backoff. */
+  scheduled_at: integer("scheduled_at").notNull().default(sql`(unixepoch())`),
+  enqueued_at: integer("enqueued_at").notNull().default(sql`(unixepoch())`),
+  started_at: integer("started_at"),
+  finished_at: integer("finished_at"),
 });
 
 export const settings = sqliteTable("vaultbase_settings", {

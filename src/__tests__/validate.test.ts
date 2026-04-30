@@ -20,6 +20,7 @@ function makeCol(fields: FieldDef[]): Collection {
     fields: JSON.stringify(fields),
     view_query: null,
     list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null,
+    history_enabled: 0,
     created_at: 0, updated_at: 0,
   };
 }

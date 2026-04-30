@@ -1,0 +1,76 @@
+description: "Vaultbase — Bun + Elysia + SQLite vault/BaaS. Admin SPA at /_/, API at /api/. JWT (HS256) bearer auth with admin audience. Local dev only, throwaway DB. Setup flow at /_/setup creates first admin; run that before pentest. Default port 8091 (override with VAULTBASE_PORT)."
+
+authentication:
+  login_type: form
+  login_url: "http://host.docker.internal:8091/_/login"
+  credentials:
+    username: "khalid.m.sheet@gmail.com"
+    password: "khalid_98"
+
+  login_flow:
+    - "Type $username into the email input field"
+    - "Type $password into the password input field"
+    - "Click the 'Sign in' button"
+
+  success_condition:
+    type: text_contains
+    value: "All systems nominal"
+
+rules:
+  avoid:
+    - description: "Skip the setup wizard — re-running it would wipe admin state"
+      type: path
+      url_path: "/_/setup"
+
+    - description: "Do not register new admins via setup endpoint"
+      type: path
+      url_path: "/api/admin/setup"
+
+    - description: "Skip logout to keep session alive across exploit attempts"
+      type: path
+      url_path: "/api/admin/auth/logout"
+
+    - description: "Avoid destructive DB reset script paths if exposed"
+      type: path
+      url_path: "/api/admin/reset"
+
+  focus:
+    - description: "Admin auth — JWT issuance, password verify, /me endpoint"
+      type: path
+      url_path: "/api/admin/auth"
+
+    - description: "User auth collections — register/login/MFA/TOTP/OAuth2 — high authz risk"
+      type: path
+      url_path: "/api/auth"
+
+    - description: "Records CRUD — generic collection access, primary IDOR/authz surface"
+      type: path
+      url_path: "/api/collections"
+
+    - description: "Settings — privileged config endpoints, admin-only authz"
+      type: path
+      url_path: "/api/settings"
+
+    - description: "File upload/download — path traversal, SSRF on remote fetch, MIME issues"
+      type: path
+      url_path: "/api/files"
+
+    - description: "Hooks — server-side script/queue triggers, possible RCE/SSRF surface"
+      type: path
+      url_path: "/api/hooks"
+
+    - description: "Backup/restore — file-write primitives, path traversal"
+      type: path
+      url_path: "/api/backup"
+
+    - description: "Custom collection rules engine — expression injection / sandbox escape"
+      type: path
+      url_path: "/api/_rules"
+
+    - description: "Realtime SSE/WS — auth bypass on subscribe, cross-tenant leakage"
+      type: path
+      url_path: "/api/realtime"
+
+# pipeline:
+#   retry_preset: subscription
+#   max_concurrent_pipelines: 2

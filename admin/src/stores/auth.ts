@@ -1,72 +1,53 @@
 import { create } from "zustand";
+import { api, type ApiResponse } from "../api.ts";
 
 interface AuthState {
-  token: string | null;
   email: string;
   isAuthed: boolean;
   expiresAt: number | null;
-  signIn: (token: string) => void;
-  signOut: () => void;
-  refresh: () => void;
+  loaded: boolean;
+  /** Pull auth state from the server (cookie-based). */
+  load: () => Promise<void>;
+  /** Called after a successful POST /api/admin/auth/login. */
+  signIn: (_token?: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
-const STORAGE_KEY = "vaultbase_admin_token";
+interface MePayload { id: string; email: string; aud: string; exp?: number }
 
-function parseJwt(token: string): { email: string; exp: number | null } | null {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]!));
-    const email = typeof payload.email === "string" ? payload.email : "";
-    const exp = typeof payload.exp === "number" ? payload.exp : null;
-    return { email, exp };
-  } catch {
-    return null;
-  }
-}
-
-function readToken(): { token: string; email: string; expiresAt: number | null } | null {
-  const t = localStorage.getItem(STORAGE_KEY);
-  if (!t) return null;
-  const parsed = parseJwt(t);
-  if (!parsed) return null;
-  if (parsed.exp !== null && parsed.exp * 1000 < Date.now()) {
-    localStorage.removeItem(STORAGE_KEY);
-    return null;
-  }
-  return { token: t, email: parsed.email, expiresAt: parsed.exp };
-}
-
-export const useAuth = create<AuthState>((set) => {
-  const initial = readToken();
-  return {
-    token: initial?.token ?? null,
-    email: initial?.email ?? "",
-    isAuthed: !!initial,
-    expiresAt: initial?.expiresAt ?? null,
-    signIn: (token: string) => {
-      const parsed = parseJwt(token);
-      localStorage.setItem(STORAGE_KEY, token);
+export const useAuth = create<AuthState>((set) => ({
+  email: "",
+  isAuthed: false,
+  expiresAt: null,
+  loaded: false,
+  load: async () => {
+    const res = await api.get<ApiResponse<MePayload>>("/api/admin/auth/me");
+    if (res.data?.id) {
       set({
-        token,
-        email: parsed?.email ?? "",
-        expiresAt: parsed?.exp ?? null,
+        email: res.data.email ?? "",
+        expiresAt: res.data.exp ?? null,
         isAuthed: true,
+        loaded: true,
       });
-    },
-    signOut: () => {
-      localStorage.removeItem(STORAGE_KEY);
-      set({ token: null, email: "", expiresAt: null, isAuthed: false });
-    },
-    refresh: () => {
-      const fresh = readToken();
-      set({
-        token: fresh?.token ?? null,
-        email: fresh?.email ?? "",
-        expiresAt: fresh?.expiresAt ?? null,
-        isAuthed: !!fresh,
-      });
-    },
-  };
-});
+    } else {
+      set({ email: "", expiresAt: null, isAuthed: false, loaded: true });
+    }
+  },
+  signIn: async () => {
+    // Token is already on the cookie — pull /me to populate UI state.
+    await useAuth.getState().load();
+  },
+  signOut: async () => {
+    try { await api.post<ApiResponse<unknown>>("/api/auth/logout", {}); } catch { /* noop */ }
+    const { setMemoryToken } = await import("../api.ts");
+    setMemoryToken(null);
+    set({ email: "", expiresAt: null, isAuthed: false, loaded: true });
+  },
+  refresh: async () => {
+    await useAuth.getState().load();
+  },
+}));
 
 export function tokenValid(): boolean {
   return useAuth.getState().isAuthed;

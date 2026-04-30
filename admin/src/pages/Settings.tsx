@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
+import { Tag } from "primereact/tag";
 import { api, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Toggle } from "../components/UI.tsx";
@@ -23,7 +24,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
   { label: "/api/*",   max: 300, windowMs: 10000, audience: "all" },
 ];
 
-type SettingsTabId = "application" | "rate-limit" | "smtp" | "templates" | "auth" | "oauth2" | "backup" | "migrations" | "danger";
+type SettingsTabId = "application" | "rate-limit" | "smtp" | "templates" | "auth" | "oauth2" | "storage" | "backup" | "migrations" | "danger";
 
 interface SettingsTab {
   id: SettingsTabId;
@@ -39,6 +40,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "templates",   label: "Email templates", icon: "scroll", subtitle: "verify + reset emails" },
   { id: "auth",        label: "Auth features", icon: "key", subtitle: "OTP · MFA · anonymous · impersonation" },
   { id: "oauth2",      label: "OAuth2", icon: "shield", subtitle: "third-party sign-in providers" },
+  { id: "storage",     label: "File storage", icon: "database", subtitle: "local FS · S3 · Cloudflare R2" },
   { id: "backup",      label: "Backup & restore", icon: "download", subtitle: "SQLite snapshot" },
   { id: "migrations",  label: "Migrations", icon: "layers", subtitle: "schema snapshot · environment sync" },
   { id: "danger",      label: "Danger zone", icon: "alert", subtitle: "irreversible actions" },
@@ -71,8 +73,14 @@ export default function Settings() {
           {active === "rate-limit" && <RateLimitSection />}
           {active === "smtp" && <SmtpSection />}
           {active === "templates" && <EmailTemplatesSection />}
-          {active === "auth" && <AuthFeaturesSection />}
+          {active === "auth" && (
+            <>
+              <AuthFeaturesSection />
+              <SessionLifetimesSection />
+            </>
+          )}
           {active === "oauth2" && <OAuth2Section />}
+          {active === "storage" && <StorageSection />}
           {active === "backup" && <BackupSection />}
           {active === "migrations" && <MigrationsSection />}
           {active === "danger" && <DangerZone />}
@@ -824,13 +832,185 @@ function AuthFeaturesSection() {
   );
 }
 
+// ── Session lifetimes (JWT windows, including anonymous) ────────────────────
+
+interface SessionKindRow {
+  kind: "anonymous" | "user" | "admin" | "impersonate" | "refresh" | "file";
+  label: string;
+  description: string;
+  defaultSeconds: number;
+}
+
+const SESSION_KINDS: SessionKindRow[] = [
+  { kind: "anonymous",   label: "Anonymous", description: "Guest sessions minted by POST /api/auth/:collection/anonymous.",            defaultSeconds: 30 * 24 * 3600 },
+  { kind: "user",        label: "User",      description: "Standard user JWTs (login, register, OAuth2, magic link).",                  defaultSeconds:  7 * 24 * 3600 },
+  { kind: "admin",       label: "Admin",     description: "Admin JWTs minted by POST /api/admin/auth/login.",                            defaultSeconds:  7 * 24 * 3600 },
+  { kind: "impersonate", label: "Impersonate", description: "JWTs issued by admin impersonation. Keep short — these escalate access.",  defaultSeconds:       3600 },
+  { kind: "refresh",     label: "Refresh",   description: "Window applied when /refresh re-mints a token. Acts as the sliding ratchet.", defaultSeconds:  7 * 24 * 3600 },
+  { kind: "file",        label: "File access", description: "Protected-file URLs minted via POST /api/files/.../token.",                defaultSeconds:       3600 },
+];
+
+function fmtDuration(seconds: number): string {
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0)  return `${seconds / 3600}h`;
+  if (seconds % 60 === 0)    return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+const PRESETS: Array<{ label: string; seconds: number }> = [
+  { label: "1 hour",  seconds:        3600 },
+  { label: "1 day",   seconds:       86400 },
+  { label: "7 days",  seconds:  7 * 86400 },
+  { label: "30 days", seconds: 30 * 86400 },
+  { label: "90 days", seconds: 90 * 86400 },
+];
+
+function SessionLifetimesSection() {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        const next: Record<string, string> = {};
+        for (const k of SESSION_KINDS) {
+          const v = res.data[`auth.${k.kind}.window_seconds`];
+          next[k.kind] = v ?? String(k.defaultSeconds);
+        }
+        setValues(next);
+      }
+      setLoading(false);
+    });
+  }, []);
+
+  function setVal(kind: SessionKindRow["kind"], value: string) {
+    setValues((prev) => ({ ...prev, [kind]: value }));
+  }
+
+  async function handleSave() {
+    // Client-side validation for clearer toast messages — server re-validates.
+    for (const k of SESSION_KINDS) {
+      const n = parseInt(values[k.kind] ?? "", 10);
+      if (!Number.isFinite(n) || n < 60) {
+        toast(`${k.label}: must be at least 60 seconds`, "info");
+        return;
+      }
+      if (n > 365 * 86400) {
+        toast(`${k.label}: must be at most 365 days`, "info");
+        return;
+      }
+    }
+    setSaving(true);
+    const payload: Record<string, string> = {};
+    for (const k of SESSION_KINDS) {
+      payload[`auth.${k.kind}.window_seconds`] = String(parseInt(values[k.kind] ?? "0", 10));
+    }
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", payload);
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Session lifetimes saved");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Session lifetimes</h3>
+        <span className="meta">JWT exp window per token kind, in seconds</span>
+      </div>
+
+      <div className="settings-section-body" style={{ gridTemplateColumns: "1fr", padding: "10px 14px" }}>
+        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
+          Changing a window affects <strong>newly issued</strong> tokens only — existing tokens keep their original expiry. To revoke active sessions immediately, rotate the JWT secret in <code style={codeStyle}>data_dir/.secret</code> and restart.
+        </div>
+
+        {SESSION_KINDS.map((k) => {
+          const current = parseInt(values[k.kind] ?? String(k.defaultSeconds), 10);
+          const isDefault = current === k.defaultSeconds;
+          return (
+            <div
+              key={k.kind}
+              style={{
+                border: "0.5px solid var(--border-default)",
+                borderRadius: 7,
+                padding: "12px 14px",
+                marginBottom: 8,
+                background: "rgba(255,255,255,0.02)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>
+                    {k.label}{" "}
+                    <span className="muted mono" style={{ fontSize: 10, fontWeight: 400 }}>
+                      ({fmtDuration(current)}{isDefault ? " · default" : ""})
+                    </span>
+                  </div>
+                  <div className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>{k.description}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  className="input mono"
+                  type="number"
+                  min={60}
+                  max={365 * 86400}
+                  value={values[k.kind] ?? ""}
+                  onChange={(e) => setVal(k.kind, e.target.value)}
+                  disabled={loading}
+                  style={{ width: 140 }}
+                />
+                <span className="muted" style={{ fontSize: 11 }}>seconds</span>
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    className="btn btn-ghost"
+                    style={{ fontSize: 11, padding: "2px 8px", height: 24 }}
+                    onClick={() => setVal(k.kind, String(p.seconds))}
+                    disabled={loading}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── OAuth2 ───────────────────────────────────────────────────────────────────
+
+interface OAuthProviderExtraField {
+  /** Full settings key, e.g. `oauth2.apple.team_id`. */
+  key: string;
+  label: string;
+  /** "text" by default; "password" hides the value, "textarea" renders multi-line. */
+  type?: "text" | "password" | "textarea";
+  placeholder?: string;
+}
 
 interface OAuthProviderRow {
   name: string;
   displayName: string;
   helpUrl: string;
   redirectHint: string;
+  /**
+   * Apple uses a non-standard credential set (Services ID + Team ID + Key ID +
+   * private key). OIDC needs URLs + scopes + display name. Standard providers
+   * skip this and lean on the universal client_id + client_secret pair.
+   */
+  hideStandardClientSecret?: boolean;
+  hideStandardClientId?: boolean;
+  extraFields?: OAuthProviderExtraField[];
 }
 
 const OAUTH_PROVIDERS: OAuthProviderRow[] = [
@@ -847,6 +1027,41 @@ const OAUTH_PROVIDERS: OAuthProviderRow[] = [
   { name: "bitbucket", displayName: "Bitbucket", helpUrl: "https://bitbucket.org/account/settings/app-passwords/",          redirectHint: "Create an OAuth consumer with your callback URL; grant Account: Email + Read." },
   { name: "notion",    displayName: "Notion",    helpUrl: "https://www.notion.so/my-integrations",                          redirectHint: "Configure a public OAuth integration; add your callback URL." },
   { name: "patreon",   displayName: "Patreon",   helpUrl: "https://www.patreon.com/portal/registration/register-clients",   redirectHint: "Add your callback URL to the client's Redirect URIs." },
+  // Apple uses a JWT-as-client-secret signed locally with the Apple-issued private key.
+  {
+    name: "apple",
+    displayName: "Apple",
+    helpUrl: "https://developer.apple.com/account/resources/identifiers/list/serviceId",
+    redirectHint: "Configure your Services ID with your callback URL as a Return URL; the private key file (.p8) belongs to a Sign In with Apple-enabled key.",
+    hideStandardClientSecret: true,
+    extraFields: [
+      { key: "oauth2.apple.team_id",     label: "Team ID",     placeholder: "10-char Apple Developer Team ID" },
+      { key: "oauth2.apple.key_id",      label: "Key ID",      placeholder: "10-char Key ID for your .p8" },
+      { key: "oauth2.apple.private_key", label: "Private key (PEM)", type: "textarea",
+        placeholder: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----" },
+    ],
+  },
+  // Twitter v2 OAuth2 — PKCE is auto-engaged server-side.
+  {
+    name: "twitter",
+    displayName: "Twitter / X",
+    helpUrl: "https://developer.twitter.com/en/portal/projects-and-apps",
+    redirectHint: "In your Twitter app's User authentication settings, add your callback URL. Email is gated behind Elevated access; provider_email may be a placeholder.",
+  },
+  // OIDC — endpoint URLs + display name come from settings.
+  {
+    name: "oidc",
+    displayName: "OIDC (generic)",
+    helpUrl: "https://openid.net/connect/",
+    redirectHint: "Configure any OIDC-compliant IdP (Auth0, Keycloak, Okta, etc.) — set the display name to override how it's labeled to end users.",
+    extraFields: [
+      { key: "oauth2.oidc.display_name",      label: "Display name", placeholder: "Auth0 / Keycloak / …" },
+      { key: "oauth2.oidc.authorization_url", label: "Authorization URL", placeholder: "https://your-idp/authorize" },
+      { key: "oauth2.oidc.token_url",         label: "Token URL",         placeholder: "https://your-idp/oauth/token" },
+      { key: "oauth2.oidc.userinfo_url",      label: "Userinfo URL",      placeholder: "https://your-idp/userinfo" },
+      { key: "oauth2.oidc.scopes",            label: "Scopes",            placeholder: "openid profile email" },
+    ],
+  },
 ];
 
 function OAuth2Section() {
@@ -887,8 +1102,15 @@ function OAuth2Section() {
     const payload: Record<string, string> = {};
     for (const p of OAUTH_PROVIDERS) {
       payload[`oauth2.${p.name}.enabled`] = isOn(p.name) ? "1" : "0";
-      payload[`oauth2.${p.name}.client_id`] = get(`oauth2.${p.name}.client_id`);
-      payload[`oauth2.${p.name}.client_secret`] = get(`oauth2.${p.name}.client_secret`);
+      if (!p.hideStandardClientId) {
+        payload[`oauth2.${p.name}.client_id`] = get(`oauth2.${p.name}.client_id`);
+      }
+      if (!p.hideStandardClientSecret) {
+        payload[`oauth2.${p.name}.client_secret`] = get(`oauth2.${p.name}.client_secret`);
+      }
+      for (const f of p.extraFields ?? []) {
+        payload[f.key] = get(f.key);
+      }
     }
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", payload);
     setSaving(false);
@@ -975,30 +1197,66 @@ function OAuth2Section() {
                   }}
                 >
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, paddingTop: 12 }}>
-                    <div>
-                      <label className="label">Client ID</label>
-                      <input
-                        className="input mono"
-                        value={get(`oauth2.${p.name}.client_id`)}
-                        onChange={(e) => set(`oauth2.${p.name}.client_id`, e.target.value)}
-                        placeholder="client identifier"
-                        autoComplete="off"
-                        disabled={loading}
-                      />
-                    </div>
-                    <div>
-                      <label className="label">Client secret</label>
-                      <input
-                        className="input mono"
-                        type="password"
-                        value={get(`oauth2.${p.name}.client_secret`)}
-                        onChange={(e) => set(`oauth2.${p.name}.client_secret`, e.target.value)}
-                        placeholder="••••••••"
-                        autoComplete="new-password"
-                        disabled={loading}
-                      />
-                    </div>
+                    {!p.hideStandardClientId && (
+                      <div>
+                        <label className="label">{p.name === "apple" ? "Services ID" : "Client ID"}</label>
+                        <input
+                          className="input mono"
+                          value={get(`oauth2.${p.name}.client_id`)}
+                          onChange={(e) => set(`oauth2.${p.name}.client_id`, e.target.value)}
+                          placeholder="client identifier"
+                          autoComplete="off"
+                          disabled={loading}
+                        />
+                      </div>
+                    )}
+                    {!p.hideStandardClientSecret && (
+                      <div>
+                        <label className="label">Client secret</label>
+                        <input
+                          className="input mono"
+                          type="password"
+                          value={get(`oauth2.${p.name}.client_secret`)}
+                          onChange={(e) => set(`oauth2.${p.name}.client_secret`, e.target.value)}
+                          placeholder="••••••••"
+                          autoComplete="new-password"
+                          disabled={loading}
+                        />
+                      </div>
+                    )}
                   </div>
+
+                  {p.extraFields && p.extraFields.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {p.extraFields.map((f) => (
+                        <div key={f.key}>
+                          <label className="label">{f.label}</label>
+                          {f.type === "textarea" ? (
+                            <textarea
+                              className="input mono"
+                              value={get(f.key)}
+                              onChange={(e) => set(f.key, e.target.value)}
+                              placeholder={f.placeholder}
+                              autoComplete="off"
+                              rows={6}
+                              disabled={loading}
+                              style={{ fontFamily: "var(--font-mono)", fontSize: 11, resize: "vertical" }}
+                            />
+                          ) : (
+                            <input
+                              className="input mono"
+                              type={f.type === "password" ? "password" : "text"}
+                              value={get(f.key)}
+                              onChange={(e) => set(f.key, e.target.value)}
+                              placeholder={f.placeholder}
+                              autoComplete="off"
+                              disabled={loading}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                     <div className="muted" style={{ fontSize: 11, flex: 1 }}>
@@ -1038,11 +1296,24 @@ interface MigrationsApplyResult {
   errors: Array<{ collection: string; error: string }>;
 }
 
+interface MigrationsDiffResult {
+  added:     Array<{ name: string; type: string }>;
+  modified:  Array<{ name: string; type: string; changes: string[] }>;
+  unchanged: Array<{ name: string }>;
+  removed:   Array<{ name: string }>;
+}
+
 function MigrationsSection() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<"additive" | "sync">("additive");
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState<MigrationsApplyResult | null>(null);
+
+  // Diff preview state — populated when admin selects a snapshot file.
+  const [pendingSnapshot, setPendingSnapshot] = useState<object | null>(null);
+  const [pendingFileName, setPendingFileName] = useState<string>("");
+  const [diff, setDiff] = useState<MigrationsDiffResult | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
 
   function handleDownload() {
     const token = localStorage.getItem("vaultbase_admin_token") ?? "";
@@ -1066,17 +1337,48 @@ function MigrationsSection() {
       .catch((e) => toast(`Snapshot failed: ${e instanceof Error ? e.message : String(e)}`, "info"));
   }
 
-  async function handleApply(e: React.ChangeEvent<HTMLInputElement>) {
+  function clearPending() {
+    setPendingSnapshot(null);
+    setPendingFileName("");
+    setDiff(null);
+  }
+
+  async function handleSelectFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    let snapshot: unknown;
+    let snapshot: object;
     try {
-      snapshot = JSON.parse(await file.text());
+      const parsed = JSON.parse(await file.text());
+      if (!parsed || typeof parsed !== "object") {
+        toast("Snapshot must be a JSON object", "info");
+        return;
+      }
+      snapshot = parsed;
     } catch {
       toast("Selected file is not valid JSON", "info");
       return;
     }
+    setPendingSnapshot(snapshot);
+    setPendingFileName(file.name);
+    setDiff(null);
+    setResult(null);
+    setDiffLoading(true);
+    const res = await api.post<ApiResponse<MigrationsDiffResult>>(
+      "/api/admin/migrations/diff",
+      { snapshot }
+    );
+    setDiffLoading(false);
+    if (res.error) {
+      toast(`Diff failed: ${res.error}`, "info");
+      clearPending();
+      return;
+    }
+    setDiff(res.data ?? null);
+  }
+
+  async function handleApply() {
+    if (!pendingSnapshot || !diff) return;
     if (mode === "sync") {
       const ok = await confirm({
         title: "Apply in sync mode",
@@ -1092,7 +1394,7 @@ function MigrationsSection() {
     setResult(null);
     const res = await api.post<ApiResponse<MigrationsApplyResult>>(
       "/api/admin/migrations/apply",
-      { snapshot, mode }
+      { snapshot: pendingSnapshot, mode }
     );
     setApplying(false);
     if (res.error) { toast(res.error, "info"); return; }
@@ -1102,7 +1404,17 @@ function MigrationsSection() {
       `Applied: ${d.created.length} created · ${d.updated.length} updated · ${d.skipped.length} skipped${d.errors.length ? ` · ${d.errors.length} failed` : ""}`,
       d.errors.length ? "info" : "check"
     );
+    // Clear pending after a successful apply so the panel resets.
+    clearPending();
   }
+
+  // For the summary line / button-disabled state, "will create" / "will update"
+  // depend on the chosen mode: additive only creates, sync also updates.
+  const willCreate = diff ? diff.added.length : 0;
+  const willUpdate = diff ? (mode === "sync" ? diff.modified.length : 0) : 0;
+  const willLeave  = diff
+    ? diff.unchanged.length + (mode === "additive" ? diff.modified.length : 0)
+    : 0;
 
   return (
     <div className="settings-section">
@@ -1150,18 +1462,135 @@ function MigrationsSection() {
             type="file"
             accept=".json,application/json"
             style={{ display: "none" }}
-            onChange={handleApply}
+            onChange={handleSelectFile}
           />
-          <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <button
               className="btn btn-ghost"
               onClick={() => fileInputRef.current?.click()}
-              disabled={applying}
+              disabled={applying || diffLoading}
             >
-              <Icon name="upload" size={12} /> {applying ? "Applying…" : "Upload & apply"}
+              <Icon name="upload" size={12} /> {pendingFileName ? "Choose different file" : "Choose snapshot file"}
             </button>
+            {pendingFileName && (
+              <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {pendingFileName}
+              </span>
+            )}
+            {pendingFileName && (
+              <button
+                className="btn-icon"
+                onClick={clearPending}
+                disabled={applying}
+                title="Clear selection"
+                style={{ marginLeft: "auto" }}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            )}
           </div>
         </div>
+
+        {/* ── Diff preview panel ─────────────────────────────────────────── */}
+        {(diffLoading || diff !== null) && (
+          <div className="label-block span2" style={{ marginTop: 6 }}>
+            <div
+              style={{
+                border: "0.5px solid var(--border-default)",
+                borderRadius: 7,
+                padding: "12px 14px",
+                background: "rgba(255,255,255,0.02)",
+              }}
+            >
+              {diffLoading && (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Computing diff…</div>
+              )}
+
+              {diff && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                    <strong style={{ fontSize: 12 }}>Preview</strong>
+                    <Tag value={`${diff.added.length} added`} severity="success" rounded />
+                    <Tag value={`${diff.modified.length} modified`} severity="warning" rounded />
+                    <Tag value={`${diff.unchanged.length} unchanged`} severity="secondary" rounded />
+                    <Tag value={`${diff.removed.length} removed`} severity="danger" rounded />
+                  </div>
+
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
+                    Will create <strong>{willCreate}</strong>
+                    {" · "}update <strong>{willUpdate}</strong>
+                    {" · "}leave <strong>{willLeave}</strong> unchanged
+                    {mode === "additive" && diff.modified.length > 0 && (
+                      <span className="muted" style={{ marginLeft: 6 }}>
+                        ({diff.modified.length} drift visible — switch to Sync to update)
+                      </span>
+                    )}
+                  </div>
+
+                  {diff.added.length > 0 && (
+                    <DiffGroup label="Added" tone="success">
+                      {diff.added.map((a) => (
+                        <DiffLine key={a.name} name={a.name} suffix={a.type} />
+                      ))}
+                    </DiffGroup>
+                  )}
+
+                  {diff.modified.length > 0 && (
+                    <DiffGroup label="Modified" tone="warning">
+                      {diff.modified.map((m) => (
+                        <details key={m.name} className="mig-diff-details">
+                          <summary>
+                            <span className="mono" style={{ fontSize: 11 }}>{m.name}</span>
+                            <span className="muted" style={{ fontSize: 10.5, marginLeft: 6 }}>{m.type}</span>
+                            <span className="muted" style={{ fontSize: 10.5, marginLeft: 6 }}>
+                              · {m.changes.length} change{m.changes.length === 1 ? "" : "s"}
+                            </span>
+                          </summary>
+                          <ul style={{ margin: "4px 0 6px 0", paddingLeft: 20, fontSize: 11, color: "var(--text-secondary)" }}>
+                            {m.changes.map((c, i) => (
+                              <li key={i} className="mono">{c}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      ))}
+                    </DiffGroup>
+                  )}
+
+                  {diff.unchanged.length > 0 && (
+                    <DiffGroup label="Unchanged" tone="muted">
+                      {diff.unchanged.map((u) => (
+                        <DiffLine key={u.name} name={u.name} muted />
+                      ))}
+                    </DiffGroup>
+                  )}
+
+                  {diff.removed.length > 0 && (
+                    <DiffGroup label="Removed" tone="danger" note="(not deleted by apply)">
+                      {diff.removed.map((r) => (
+                        <DiffLine key={r.name} name={r.name} />
+                      ))}
+                    </DiffGroup>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Apply button row ───────────────────────────────────────────── */}
+        {pendingSnapshot && (
+          <div className="label-block span2" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button
+              className="btn btn-primary"
+              onClick={handleApply}
+              disabled={applying || diffLoading || !diff}
+            >
+              <Icon name="upload" size={12} /> {applying
+                ? "Applying…"
+                : mode === "sync" ? "Apply (sync mode)" : "Apply"}
+            </button>
+          </div>
+        )}
       </div>
 
       {result && (
@@ -1186,6 +1615,258 @@ function MigrationsSection() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Diff preview helpers ─────────────────────────────────────────────────────
+function DiffGroup({
+  label,
+  tone,
+  note,
+  children,
+}: {
+  label: string;
+  tone: "success" | "warning" | "muted" | "danger";
+  note?: string;
+  children: React.ReactNode;
+}) {
+  const color =
+    tone === "success" ? "var(--success)"
+    : tone === "warning" ? "var(--warning)"
+    : tone === "danger"  ? "var(--danger)"
+    : "var(--text-muted)";
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 11, color, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 4 }}>
+        {label}
+        {note && (
+          <span className="muted" style={{ marginLeft: 6, textTransform: "none", letterSpacing: 0, fontStyle: "italic" }}>
+            {note}
+          </span>
+        )}
+      </div>
+      <div style={{ paddingLeft: 4 }}>{children}</div>
+    </div>
+  );
+}
+
+function DiffLine({ name, suffix, muted }: { name: string; suffix?: string; muted?: boolean }) {
+  return (
+    <div style={{ fontSize: 11, lineHeight: 1.7, color: muted ? "var(--text-muted)" : "var(--text-primary)" }}>
+      <span className="mono">{name}</span>
+      {suffix && <span className="muted" style={{ marginLeft: 6 }}>{suffix}</span>}
+    </div>
+  );
+}
+
+// ── File storage (local / S3 / R2) ──────────────────────────────────────────
+function StorageSection() {
+  const [driver, setDriver] = useState<"local" | "s3">("local");
+  const [endpoint, setEndpoint] = useState("");
+  const [bucket, setBucket] = useState("");
+  const [region, setRegion] = useState("auto");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [publicUrl, setPublicUrl] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<{ driver: string; bucket?: string; endpoint?: string } | null>(null);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        const s = res.data;
+        setDriver(s["storage.driver"] === "s3" ? "s3" : "local");
+        setEndpoint(s["s3.endpoint"] ?? "");
+        setBucket(s["s3.bucket"] ?? "");
+        setRegion(s["s3.region"] ?? "auto");
+        setAccessKeyId(s["s3.access_key_id"] ?? "");
+        setSecretAccessKey(s["s3.secret_access_key"] ?? "");
+        setPublicUrl(s["s3.public_url"] ?? "");
+      }
+      setLoading(false);
+    });
+    api.get<ApiResponse<{ driver: string; bucket?: string; endpoint?: string }>>(
+      "/api/admin/settings/storage/status"
+    ).then((res) => { if (res.data) setStatus(res.data); });
+  }, []);
+
+  function applyR2Preset() {
+    setRegion("auto");
+    if (!endpoint) setEndpoint("https://<account-id>.r2.cloudflarestorage.com");
+  }
+  function applyS3Preset() {
+    setRegion("us-east-1");
+    setEndpoint("");
+  }
+
+  async function handleSave() {
+    if (driver === "s3") {
+      if (!bucket.trim())          { toast("Bucket name required", "info"); return; }
+      if (!accessKeyId.trim())     { toast("Access key id required", "info"); return; }
+      if (!secretAccessKey.trim()) { toast("Secret access key required", "info"); return; }
+    }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "storage.driver": driver,
+      "s3.endpoint": endpoint,
+      "s3.bucket": bucket,
+      "s3.region": region,
+      "s3.access_key_id": accessKeyId,
+      "s3.secret_access_key": secretAccessKey,
+      "s3.public_url": publicUrl,
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Storage settings saved");
+    const s = await api.get<ApiResponse<{ driver: string; bucket?: string; endpoint?: string }>>(
+      "/api/admin/settings/storage/status"
+    );
+    if (s.data) setStatus(s.data);
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    const res = await api.post<ApiResponse<{ ok: boolean; driver: string }>>(
+      "/api/admin/settings/storage/test",
+      {}
+    );
+    setTesting(false);
+    if (res.error) { toast(`Test failed: ${res.error}`, "info"); return; }
+    toast(`Storage test passed (${res.data?.driver})`, "check");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>File storage</h3>
+          <span className="meta">where uploaded files live</span>
+        </div>
+        {status && (
+          <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+            active: <span style={{ color: "var(--accent-light)" }}>{status.driver}</span>
+            {status.bucket && <> · {status.bucket}</>}
+          </span>
+        )}
+      </div>
+
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Driver</label>
+          <div className="help">Switching drivers does not migrate existing files. Plan accordingly.</div>
+        </div>
+        <Dropdown
+          value={driver}
+          options={[
+            { label: "Local filesystem (default)", value: "local" },
+            { label: "S3-compatible (AWS S3, Cloudflare R2, MinIO, …)", value: "s3" },
+          ]}
+          onChange={(e) => setDriver(e.value)}
+          disabled={loading}
+        />
+
+        {driver === "s3" && (
+          <>
+            <div className="label-block">
+              <label className="label">Preset</label>
+              <div className="help">One-click defaults for common providers.</div>
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn btn-ghost" onClick={applyR2Preset}>
+                Cloudflare R2
+              </button>
+              <button className="btn btn-ghost" onClick={applyS3Preset}>
+                AWS S3
+              </button>
+            </div>
+
+            <div className="label-block">
+              <label className="label">Endpoint</label>
+              <div className="help">
+                R2: <code style={codeStyle}>{`https://<account-id>.r2.cloudflarestorage.com`}</code>.
+                AWS S3: leave blank.
+              </div>
+            </div>
+            <input
+              className="input mono"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              placeholder="https://acc.r2.cloudflarestorage.com"
+            />
+
+            <div className="label-block">
+              <label className="label">Bucket</label>
+              <div className="help">Must exist already. Vaultbase does not create buckets.</div>
+            </div>
+            <input
+              className="input mono"
+              value={bucket}
+              onChange={(e) => setBucket(e.target.value)}
+              placeholder="vaultbase-uploads"
+            />
+
+            <div className="label-block">
+              <label className="label">Region</label>
+              <div className="help">R2: <code style={codeStyle}>auto</code>. AWS: e.g. <code style={codeStyle}>us-east-1</code>.</div>
+            </div>
+            <input
+              className="input mono"
+              value={region}
+              onChange={(e) => setRegion(e.target.value)}
+              placeholder="auto"
+            />
+
+            <div className="label-block">
+              <label className="label">Access key ID</label>
+              <div className="help">For R2: an API token with Object Read &amp; Write.</div>
+            </div>
+            <input
+              className="input mono"
+              value={accessKeyId}
+              onChange={(e) => setAccessKeyId(e.target.value)}
+              autoComplete="off"
+            />
+
+            <div className="label-block">
+              <label className="label">Secret access key</label>
+              <div className="help">Stored in plaintext in the settings table. Treat the DB accordingly.</div>
+            </div>
+            <input
+              className="input mono"
+              type="password"
+              value={secretAccessKey}
+              onChange={(e) => setSecretAccessKey(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="new-password"
+            />
+
+            <div className="label-block">
+              <label className="label">Public URL <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+              <div className="help">
+                If your bucket is fronted by a CDN/public domain, files can link directly to it. Leave blank to proxy bytes through Vaultbase.
+              </div>
+            </div>
+            <input
+              className="input mono"
+              value={publicUrl}
+              onChange={(e) => setPublicUrl(e.target.value)}
+              placeholder="https://cdn.example.com"
+            />
+          </>
+        )}
+      </div>
+
+      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <button className="btn btn-ghost" onClick={handleTest} disabled={testing}>
+          <Icon name="play" size={11} /> {testing ? "Testing…" : "Test connection"}
+        </button>
+        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
     </div>
   );
 }

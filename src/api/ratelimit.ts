@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import Elysia from "elysia";
 import { getDb } from "../db/client.ts";
+import { trustedClientIp } from "../core/sec.ts";
 
 /**
  * Per-IP, per-rule token-bucket rate limiter.
@@ -125,10 +126,10 @@ export function invalidateRateLimitCache(): void {
   buckets.clear();
 }
 
-function ipFromRequest(request: Request): string {
-  const fwd = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (fwd) return fwd;
-  return request.headers.get("x-real-ip") ?? "unknown";
+function ipFromRequest(request: Request, peerIp: string | null): string {
+  // Honor x-forwarded-for / x-real-ip ONLY when the immediate peer is in the
+  // configured `VAULTBASE_TRUSTED_PROXIES` list. Otherwise use the socket peer.
+  return trustedClientIp(request, peerIp);
 }
 
 function detectAction(method: string, path: string): RuleAction | null {
@@ -213,7 +214,7 @@ setInterval(() => {
 }, 60_000);
 
 export function makeRateLimitPlugin() {
-  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, ({ request, set }) => {
+  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, ({ request, server, set }) => {
     const path = new URL(request.url).pathname;
     if (shouldSkip(path)) return;
     const cfg = loadConfig();
@@ -223,7 +224,14 @@ export function makeRateLimitPlugin() {
     const match = findRule(cfg.rules, path, request.method, hasAuth);
     if (!match) return;
 
-    const ip = ipFromRequest(request);
+    // Bun exposes the peer IP via `server.requestIP(request)`. Elysia surfaces
+    // `server` on the handler context.
+    let peerIp: string | null = null;
+    try {
+      const s = server as unknown as { requestIP?: (r: Request) => { address: string } | null };
+      peerIp = s?.requestIP?.(request)?.address ?? null;
+    } catch { /* not all runtimes expose this */ }
+    const ip = ipFromRequest(request, peerIp);
     const key = `${ip}|${match.index}`;
     if (!consumeToken(key, match.rule.max, match.rule.windowMs)) {
       set.status = 429;

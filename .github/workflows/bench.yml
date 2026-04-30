@@ -1,0 +1,94 @@
+name: Benchmark regression guard
+
+# Runs on every PR and push to main. Fails if RPS drops below the floor or
+# p99 spikes above the ceiling. Thresholds live in scripts/bench.sh.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: vaultbase
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install oha
+        run: |
+          curl -L -o /tmp/oha https://github.com/hatoo/oha/releases/latest/download/oha-linux-amd64
+          chmod +x /tmp/oha
+          sudo mv /tmp/oha /usr/local/bin/oha
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build admin (embedded into binary)
+        run: bun run build:admin
+
+      - name: Boot server in background
+        env:
+          PORT: 8091
+          VAULTBASE_ADMIN_EMAIL: bench@local
+          VAULTBASE_ADMIN_PASSWORD: bench-test-password
+        run: |
+          bun src/index.ts &
+          echo $! > /tmp/vb.pid
+          # Wait for /api/health to come up
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8091/api/health | grep -q '^200$'; then
+              echo "server up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Mint admin token (login or create)
+        id: admin
+        run: |
+          # Wait for setup endpoint to settle, then login.
+          TOKEN=$(curl -s -X POST http://127.0.0.1:8091/api/admin/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"bench@local","password":"bench-test-password"}' \
+            | jq -r '.data.token // .token // empty')
+          if [ -z "${TOKEN}" ]; then
+            echo "Failed to mint admin token" >&2
+            curl -v http://127.0.0.1:8091/api/admin/auth/login -H 'Content-Type: application/json' \
+              -d '{"email":"bench@local","password":"bench-test-password"}' >&2
+            exit 1
+          fi
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Seed bench collection
+        env:
+          ADMIN_TOKEN: ${{ steps.admin.outputs.token }}
+          ROWS: 200
+        run: bash scripts/seed-bench-collection.sh
+
+      - name: Run benchmark guard
+        env:
+          ADMIN_TOKEN: ${{ steps.admin.outputs.token }}
+          MIN_RPS: 3500
+          MAX_P99_MS: 30
+          MAX_ERRORS: 0
+        run: bash scripts/bench.sh
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/vb.pid ]; then
+            kill "$(cat /tmp/vb.pid)" || true
+          fi

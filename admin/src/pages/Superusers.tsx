@@ -44,8 +44,7 @@ export default function Superusers() {
   return (
     <>
       <Topbar
-        title="Superusers"
-        subtitle={`${admins.length} account${admins.length === 1 ? "" : "s"} with full system access`}
+        crumbs={[{ label: "Superusers" }]}
         actions={
           <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
             <Icon name="plus" size={12} /> New superuser
@@ -57,7 +56,19 @@ export default function Superusers() {
           {loading ? (
             <div className="empty">Loading…</div>
           ) : admins.length === 0 ? (
-            <div className="empty">No superusers.</div>
+            <div className="empty-state">
+              <div className="ic"><Icon name="users" size={20} /></div>
+              <h4>No superusers</h4>
+              <p>
+                Superusers have full admin access — they can manage collections,
+                edit hooks, and impersonate any user.
+              </p>
+              <div className="row">
+                <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
+                  <Icon name="plus" size={12} /> New superuser
+                </button>
+              </div>
+            </div>
           ) : (
             <table className="table">
               <thead>

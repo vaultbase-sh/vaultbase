@@ -4,9 +4,10 @@ import {
   CollectionValidationError,
   createCollection,
   deleteCollection,
-  fieldsFromViewColumns,
   getCollection,
   inferViewColumns,
+  inferViewFields,
+  previewViewRows,
   listCollections,
   updateCollection,
   validateViewQuery,
@@ -63,6 +64,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           if (body.list_rule !== undefined) init.list_rule = body.list_rule;
           if (body.view_rule !== undefined) init.view_rule = body.view_rule;
           if (body.view_query !== undefined) init.view_query = body.view_query;
+          if (body.history_enabled !== undefined) init.history_enabled = body.history_enabled ? 1 : 0;
           const col = await createCollection(init);
           return { data: col };
         } catch (e) {
@@ -93,6 +95,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           create_rule: t.Optional(t.Nullable(t.String())),
           update_rule: t.Optional(t.Nullable(t.String())),
           delete_rule: t.Optional(t.Nullable(t.String())),
+          history_enabled: t.Optional(t.Boolean()),
         }),
       }
     )
@@ -112,6 +115,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         if ("create_rule" in body) update["create_rule"] = body.create_rule;
         if ("update_rule" in body) update["update_rule"] = body.update_rule;
         if ("delete_rule" in body) update["delete_rule"] = body.delete_rule;
+        if (body.history_enabled !== undefined) update["history_enabled"] = body.history_enabled ? 1 : 0;
         try {
           const col = await updateCollection(
             params.id,
@@ -144,6 +148,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           create_rule: t.Optional(t.Nullable(t.String())),
           update_rule: t.Optional(t.Nullable(t.String())),
           delete_rule: t.Optional(t.Nullable(t.String())),
+          history_enabled: t.Optional(t.Boolean()),
         }),
       }
     )
@@ -159,7 +164,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         try {
           validateViewQuery(body.view_query);
           const columns = inferViewColumns(body.view_query);
-          const fields = fieldsFromViewColumns(columns);
+          const fields = inferViewFields(body.view_query);
           return { data: { columns, fields } };
         } catch (e) {
           set.status = 422;
@@ -167,6 +172,26 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         }
       },
       { body: t.Object({ view_query: t.String() }) }
+    )
+    // Preview the first N rows a view query would return. Lets the admin UI
+    // sanity-check a query before saving the collection — no view is created.
+    .post(
+      "/api/admin/collections/preview-view-rows",
+      async ({ body, request, set }) => {
+        if (!(await isAdmin(request, jwtSecret))) {
+          set.status = 403;
+          return { error: "Forbidden", code: 403 };
+        }
+        try {
+          const limit = typeof body.limit === "number" ? body.limit : 5;
+          const result = previewViewRows(body.view_query, limit);
+          return { data: result };
+        } catch (e) {
+          set.status = 422;
+          return { error: e instanceof Error ? e.message : String(e), code: 422 };
+        }
+      },
+      { body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
     )
     .delete("/api/collections/:id", async ({ params, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
