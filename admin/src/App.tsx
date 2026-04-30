@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import Collections from "./pages/Collections.tsx";
 import Logs from "./pages/Logs.tsx";
+import AuditLog from "./pages/AuditLog.tsx";
 import Settings from "./pages/Settings.tsx";
 import Superusers from "./pages/Superusers.tsx";
 import ApiPreview from "./pages/ApiPreview.tsx";
@@ -123,6 +124,7 @@ export default function App() {
             <Route path="collections/:id/edit" element={<CollectionEdit />} />
             <Route path="collections/:id/records" element={<Records />} />
             <Route path="logs" element={<Logs />} />
+            <Route path="audit-log" element={<AuditLog />} />
             <Route path="api-preview" element={<ApiPreview />} />
             <Route path="settings" element={<Settings />} />
             <Route path="users" element={<Superusers />} />
