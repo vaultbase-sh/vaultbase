@@ -167,6 +167,21 @@ async function main() {
     return;
   }
 
+  // `vaultbase backup --to <dest>` — atomic SQLite snapshot + push.
+  // Skips server boot entirely so cron / one-shot ops can run alongside
+  // a live `vaultbase` daemon (VACUUM INTO is concurrent-safe).
+  if (process.argv[2] === "backup") {
+    const config = await loadConfig();
+    const { runBackup } = await import("./scripts/backup.ts");
+    try {
+      await runBackup(config.dbPath, process.argv.slice(3));
+      process.exit(0);
+    } catch (e) {
+      process.stderr.write(`vaultbase backup: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(2);
+    }
+  }
+
   const config = await loadConfig();
   const flags = parseCliArgs(process.argv.slice(2));
 
