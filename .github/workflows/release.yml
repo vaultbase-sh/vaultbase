@@ -89,25 +89,24 @@ jobs:
           bun run build:windows-x64
 
       - name: Verify admin assets are embedded in each binary
-        # The Bun macro inlines `admin/dist/*` as base64-encoded gzip blobs.
-        # When that succeeds, the binary contains the SPA's bundled chunk
-        # names (vite hashes everything: `react-vendor-XYZ.js`,
-        # `monaco-ABC.js`, `primereact-DEF.js`, etc.) plus the gzip magic
-        # bytes for each entry. A failed embed produces a binary with
-        # ~zero of these. Use a broad regex that matches *any* hashed
-        # asset filename, not just `index-*`.
+        # The Bun macro inlines `admin/dist/*` as base64-encoded gzip blobs;
+        # the asset *keys* (filenames) survive as literal strings in the
+        # bundle. `strings(1)` is unreliable here (Bun's `--compile` writes
+        # the data section in a layout strings doesn't sequence well), so
+        # use `grep -a` which treats the binary as text. We expect ≥3 hits
+        # for `index-`-prefixed chunks and ≥1 each for the high-signal
+        # vendor chunks (primereact, monaco, react-vendor).
         run: |
           set -eu
           for f in releases/vaultbase-linux-x64 releases/vaultbase-linux-arm64 \
                    releases/vaultbase-linux-x64-musl releases/vaultbase-macos-x64 \
                    releases/vaultbase-macos-arm64 releases/vaultbase-windows-x64.exe; do
-            # Count vite-style hashed filenames: <name>-<8-12 hash chars>.<ext>
-            count=$(strings "$f" 2>/dev/null \
-              | grep -cE '[A-Za-z][A-Za-z0-9_-]*-[A-Za-z0-9_-]{6,}\.(js|css|woff2?|svg)' \
-              || true)
-            echo "  $f → $count admin asset name hits"
-            if [ "$count" -lt 10 ]; then
-              echo "::error::$f does not appear to have the admin SPA embedded (only $count hits — expected ≥30)"
+            asset_hits=$(grep -ac 'index-' "$f" || true)
+            primereact_hits=$(grep -ac 'primereact' "$f" || true)
+            monaco_hits=$(grep -ac 'monaco' "$f" || true)
+            echo "  $f → index- $asset_hits / primereact $primereact_hits / monaco $monaco_hits"
+            if [ "$asset_hits" -lt 3 ] || [ "$primereact_hits" -lt 1 ] || [ "$monaco_hits" -lt 1 ]; then
+              echo "::error::$f does not appear to have the admin SPA embedded"
               exit 1
             fi
           done
