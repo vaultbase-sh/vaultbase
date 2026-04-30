@@ -4,6 +4,7 @@ import { getDb } from "../db/client.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache } from "../core/storage.ts";
+import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 
@@ -78,6 +79,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
         // and the local thumb cache (different bucket means different objects)
         invalidateStorageCache();
         clearThumbCache();
+        invalidateEgressCache();
         return { data: getAllSettings() };
       },
       { body: t.Record(t.String(), t.Any()) }

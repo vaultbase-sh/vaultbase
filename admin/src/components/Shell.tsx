@@ -27,6 +27,7 @@ const SECTIONS: NavSection[] = [
     label: "System",
     items: [
       { to: "/_/users",        label: "Superusers",   icon: "users" },
+      { to: "/_/audit-log",    label: "Audit log",    icon: "shield" },
       { to: "/_/settings",     label: "Settings",     icon: "settings" },
     ],
   },
@@ -44,7 +45,7 @@ export const Sidebar: React.FC = () => {
           <VaultbaseLogo size={22} />
         </span>
         <div className="sb-brand-name">vaultbase</div>
-        <div className="sb-brand-version mono">v0.1.0</div>
+        <div className="sb-brand-version mono">v0.1.5</div>
       </div>
       {SECTIONS.map((sec) => (
         <div className="sb-section" key={sec.label}>
