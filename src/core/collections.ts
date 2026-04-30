@@ -116,8 +116,21 @@ export function _resetCollectionCache(): void {
   void clearPreparedStatementsOnSchemaChange();
 }
 
+/**
+ * Parse a collection's `fields` column. Defensive: every records-API request
+ * passes through this — a single corrupted DB row would otherwise 500 every
+ * subsequent call to that collection. Returns `[]` on parse failure and logs
+ * once so operators can find + repair the bad row.
+ */
 export function parseFields(raw: string): FieldDef[] {
-  return JSON.parse(raw) as FieldDef[];
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as FieldDef[]) : [];
+  } catch (e) {
+    console.error(`[parseFields] malformed JSON in collection.fields — treating as empty: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
 }
 
 // ── Table naming ────────────────────────────────────────────────────────────
