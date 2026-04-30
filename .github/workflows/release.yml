@@ -25,9 +25,6 @@ jobs:
     name: Build cross-compile targets
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: vaultbase
     outputs:
       tag: ${{ steps.resolve-tag.outputs.tag }}
 
@@ -90,15 +87,15 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            vaultbase/releases/vaultbase-linux-x64
-            vaultbase/releases/vaultbase-linux-x64.sha256
-            vaultbase/releases/vaultbase-linux-arm64
-            vaultbase/releases/vaultbase-linux-arm64.sha256
-            vaultbase/releases/vaultbase-linux-x64-musl
-            vaultbase/releases/vaultbase-linux-x64-musl.sha256
-            vaultbase/releases/vaultbase-macos-x64
-            vaultbase/releases/vaultbase-macos-x64.sha256
-            vaultbase/releases/vaultbase-macos-arm64
-            vaultbase/releases/vaultbase-macos-arm64.sha256
-            vaultbase/releases/vaultbase-windows-x64.exe
-            vaultbase/releases/SHA256SUMS
+            releases/vaultbase-linux-x64
+            releases/vaultbase-linux-x64.sha256
+            releases/vaultbase-linux-arm64
+            releases/vaultbase-linux-arm64.sha256
+            releases/vaultbase-linux-x64-musl
+            releases/vaultbase-linux-x64-musl.sha256
+            releases/vaultbase-macos-x64
+            releases/vaultbase-macos-x64.sha256
+            releases/vaultbase-macos-arm64
+            releases/vaultbase-macos-arm64.sha256
+            releases/vaultbase-windows-x64.exe
+            releases/SHA256SUMS

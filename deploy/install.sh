@@ -30,7 +30,7 @@
 set -eu
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-REPO="vaultbase/vaultbase"
+REPO="vaultbase-sh/vaultbase"
 RELEASES_URL="https://github.com/${REPO}/releases"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/vaultbase"
