@@ -242,4 +242,23 @@ export async function runMigrations() {
   `);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_record_history_lookup ON vaultbase_record_history(collection, record_id, at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_record_history_at ON vaultbase_record_history(at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_audit_log (
+      id TEXT PRIMARY KEY,
+      actor_id TEXT,
+      actor_email TEXT,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT,
+      status INTEGER NOT NULL,
+      ip TEXT,
+      summary TEXT,
+      at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_actor ON vaultbase_audit_log(actor_id, at)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_at ON vaultbase_audit_log(at)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_action ON vaultbase_audit_log(action, at)`);
 }
