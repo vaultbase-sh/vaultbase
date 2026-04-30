@@ -287,6 +287,16 @@ function sleepMs(ms: number): Promise<void> {
 }
 
 async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Response> {
+  // SSRF guard (N-2): refuse to issue the request when the resolved host
+  // falls into a denylisted CIDR (default: RFC1918 + link-local +
+  // loopback + IPv6 unique-local). Throws EgressBlockedError on deny so
+  // the caller's retry loop in `request()` does not silently swallow the
+  // block (we re-throw without retrying — see request() below). Settings
+  // override via `hooks.http.deny` / `hooks.http.allow` /
+  // `hooks.http.deny = "off"`. See core/hook-egress.ts.
+  const { assertEgressAllowed } = await import("./hook-egress.ts");
+  await assertEgressAllowed(opts.url);
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -343,6 +353,8 @@ function makeHttp(): HttpHelpers {
         if (parsed !== undefined) out.json = parsed;
         return out;
       } catch (e) {
+        // Egress block is a permanent decision — never retry.
+        if (e instanceof Error && e.name === "EgressBlockedError") throw e;
         lastErr = e;
         if (attempt < tries) await sleepMs(initialDelay * 2 ** (attempt - 1));
       }
