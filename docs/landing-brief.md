@@ -337,7 +337,7 @@ Tertiary: **Star on GitHub** (community / social proof)
 
 ## Repository facts
 
-- **Repo**: github.com/vaultbase/vaultbase (canonical link in README)
+- **Repo**: github.com/vaultbase-sh/vaultbase (canonical link in README)
 - **License**: MIT
 - **Status**: actively developed, pre-1.0
 - **Current version**: see `package.json` and `<dataDir>/.secret` —

@@ -13,9 +13,6 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: vaultbase
 
     steps:
       - uses: actions/checkout@v4
