@@ -8,6 +8,7 @@ import { validateRecord, ValidationError } from "../core/validate.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
   dummyPasswordHash,
+  HASH_OPTS,
   hmacRecoveryCode,
   ISSUER,
   redactEmail,
@@ -50,9 +51,6 @@ const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
 const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
 
 const PASSWORD_MIN_LENGTH = 12;
-/** Pinned argon2id parameters so a Bun upgrade cannot silently downgrade. */
-const HASH_OPTS = { algorithm: "argon2id" as const, memoryCost: 19456, timeCost: 2 };
-
 async function hashPassword(plaintext: string): Promise<string> {
   return await Bun.password.hash(plaintext, HASH_OPTS);
 }
