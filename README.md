@@ -205,6 +205,24 @@ bun test            # backend tests
 bun run typecheck
 ```
 
+### Note on local `bun run build`
+
+The compile pipeline patches `node_modules/imagescript/codecs/node/index.js`
+in place to stub the native encoder (Bun `--compile` cannot bundle
+dlopen-able `.node` binaries — the patched stub keeps top-level imports
+working in the single-file binary; JPEG/GIF *encode* paths fall through to
+PNG / @jsquash codecs).
+
+Side effect: after running any `bun run build:*`, the imagescript native
+encoder is gone from `node_modules` and 2 GIF/JPEG-encode tests will fail
+locally. Restore with:
+
+```bash
+bun install --force
+```
+
+CI is unaffected (every workflow run installs fresh).
+
 ## License
 
 MIT.
