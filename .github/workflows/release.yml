@@ -55,6 +55,24 @@ jobs:
       - name: Build admin SPA (embedded in binaries via Bun macro)
         run: bun run build:admin
 
+      - name: Verify admin build output
+        # Fail loudly if admin/dist is missing or empty — the Bun macro embeds
+        # this content into every binary. An empty dist silently produces
+        # binaries that serve "Admin UI not built" at /_/.
+        run: |
+          set -eu
+          if [ ! -f admin/dist/index.html ]; then
+            echo "::error::admin/dist/index.html missing — admin build did not produce output"
+            ls -la admin/dist/ 2>/dev/null || echo "(admin/dist does not exist)"
+            exit 1
+          fi
+          ASSET_COUNT=$(find admin/dist/assets -type f 2>/dev/null | wc -l)
+          if [ "$ASSET_COUNT" -lt 1 ]; then
+            echo "::error::admin/dist/assets has no files"
+            exit 1
+          fi
+          echo "admin/dist OK — $(du -sh admin/dist | cut -f1), $ASSET_COUNT asset files"
+
       - name: Cross-compile all targets
         run: |
           mkdir -p releases
@@ -65,6 +83,24 @@ jobs:
           bun run build:macos-x64
           bun run build:macos-arm64
           bun run build:windows-x64
+
+      - name: Verify admin assets are embedded in each binary
+        # Catch the case where the macro silently inlined an empty object.
+        # Each build should contain dozens of admin asset names; a count near
+        # zero means the embed step failed and the binary will serve
+        # "Admin UI not built" at /_/.
+        run: |
+          set -eu
+          for f in releases/vaultbase-linux-x64 releases/vaultbase-linux-arm64 \
+                   releases/vaultbase-linux-x64-musl releases/vaultbase-macos-x64 \
+                   releases/vaultbase-macos-arm64 releases/vaultbase-windows-x64.exe; do
+            count=$(strings "$f" 2>/dev/null | grep -cE 'index-[A-Za-z0-9_-]+\.(js|css)' || true)
+            echo "  $f → $count admin asset name hits"
+            if [ "$count" -lt 5 ]; then
+              echo "::error::$f does not appear to have the admin SPA embedded (only $count hits)"
+              exit 1
+            fi
+          done
 
       - name: Generate SHA-256 sidecars
         run: |
