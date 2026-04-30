@@ -24,7 +24,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
   { label: "/api/*",   max: 300, windowMs: 10000, audience: "all" },
 ];
 
-type SettingsTabId = "application" | "rate-limit" | "smtp" | "templates" | "auth" | "oauth2" | "storage" | "backup" | "migrations" | "danger";
+type SettingsTabId = "application" | "rate-limit" | "egress" | "smtp" | "templates" | "auth" | "oauth2" | "storage" | "backup" | "migrations" | "danger";
 
 interface SettingsTab {
   id: SettingsTabId;
@@ -36,6 +36,7 @@ interface SettingsTab {
 const SETTINGS_TABS: SettingsTab[] = [
   { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
   { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
+  { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
   { id: "smtp",        label: "SMTP / Email", icon: "scroll", subtitle: "outbound email server" },
   { id: "templates",   label: "Email templates", icon: "scroll", subtitle: "verify + reset emails" },
   { id: "auth",        label: "Auth features", icon: "key", subtitle: "OTP · MFA · anonymous · impersonation" },
@@ -71,6 +72,7 @@ export default function Settings() {
         <div className="settings-content">
           {active === "application" && <ApplicationSection />}
           {active === "rate-limit" && <RateLimitSection />}
+          {active === "egress" && <EgressSection />}
           {active === "smtp" && <SmtpSection />}
           {active === "templates" && <EmailTemplatesSection />}
           {active === "auth" && (
@@ -284,6 +286,101 @@ const codeStyle: React.CSSProperties = {
   borderRadius: 3,
   color: "var(--text-secondary)",
 };
+
+// ── Hook egress (SSRF guard) ────────────────────────────────────────────────
+const DEFAULT_DENY_HUMAN =
+  "0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, " +
+  "172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7, fe80::/10";
+
+function EgressSection() {
+  const [deny, setDeny] = useState("");
+  const [allow, setAllow] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        setDeny(res.data["hooks.http.deny"] ?? "");
+        setAllow(res.data["hooks.http.allow"] ?? "");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "hooks.http.deny": deny.trim(),
+      "hooks.http.allow": allow.trim(),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Egress filters saved");
+  }
+
+  const off = deny.trim().toLowerCase() === "off";
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Hook egress (SSRF guard)</h3>
+        <span className="meta">filters <code style={codeStyle}>helpers.http(...)</code> outbound calls</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Deny CIDRs (comma-separated)</label>
+          <div className="help">
+            Default deny when blank: <span className="mono" style={{ fontSize: 11 }}>{DEFAULT_DENY_HUMAN}</span>.
+            Set <code style={codeStyle}>off</code> to disable filtering entirely (NOT recommended for public deployments).
+          </div>
+        </div>
+        <textarea
+          className="input mono"
+          rows={3}
+          value={deny}
+          onChange={(e) => setDeny(e.target.value)}
+          placeholder="(blank = use default deny)"
+          disabled={!loaded}
+          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+        />
+        {off && (
+          <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12 }}>
+            <Icon name="alert" size={12} /> Egress filtering is OFF — hooks can reach any IP including private RFC1918 ranges.
+          </div>
+        )}
+
+        <div className="label-block" style={{ marginTop: 16 }}>
+          <label className="label">Allow CIDRs (comma-separated)</label>
+          <div className="help">
+            Punches a hole in deny — e.g. <code style={codeStyle}>10.5.0.0/16</code> to permit one internal subnet
+            without disabling the rest of the deny list. Empty by default.
+          </div>
+        </div>
+        <textarea
+          className="input mono"
+          rows={2}
+          value={allow}
+          onChange={(e) => setAllow(e.target.value)}
+          placeholder="(blank = no allow exceptions)"
+          disabled={!loaded}
+          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+        />
+
+        <div className="help" style={{ marginTop: 12 }}>
+          <strong>Known limitation:</strong> filtering happens after DNS resolution; a malicious DNS server can
+          still race-rebind a host between resolution and connect. Defense-in-depth alongside an operator-level
+          firewall (iptables / VPC NACL) is recommended.
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ── Backup / restore ─────────────────────────────────────────────────────────
 function BackupSection() {
