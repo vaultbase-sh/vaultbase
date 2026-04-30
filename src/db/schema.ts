@@ -220,6 +220,38 @@ export const settings = sqliteTable("vaultbase_settings", {
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
+/**
+ * Append-only audit log of state-changing admin API calls. One row per
+ * mutating request to /api/admin/* — captures who did what, when, and a
+ * minimal summary. Never UPDATEd, never DELETEd through application code.
+ *
+ * Compliance value: SOC 2-curious shops typically need a "who did what"
+ * trail; debugging value: "which admin deleted that collection three days
+ * ago" lookups go from hard to one query.
+ */
+export const auditLog = sqliteTable("vaultbase_audit_log", {
+  id: text("id").primaryKey(),
+  /** Admin id from the JWT — null only on unauthenticated paths (rare for /admin). */
+  actor_id: text("actor_id"),
+  /** Email cached at the time of the action — survives admin row deletion. */
+  actor_email: text("actor_email"),
+  /** HTTP method on the admin endpoint. */
+  method: text("method").notNull(),
+  /** URL path (without query string) — e.g. "/api/admin/collections". */
+  path: text("path").notNull(),
+  /** Logical action label, e.g. "collection.create" / "settings.update". */
+  action: text("action").notNull(),
+  /** Best-effort target identifier (collection name, admin id, file id, ...). */
+  target: text("target"),
+  /** HTTP status code returned. */
+  status: integer("status").notNull(),
+  /** Source IP, reading X-Forwarded-For only when peer is in TRUSTED_PROXIES. */
+  ip: text("ip"),
+  /** Optional human-readable summary or short JSON of changed fields. */
+  summary: text("summary"),
+  at: integer("at").notNull().default(sql`(unixepoch())`),
+});
+
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
 export type User = typeof users.$inferSelect;

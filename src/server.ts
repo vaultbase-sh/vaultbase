@@ -24,6 +24,7 @@ import { makeBatchPlugin } from "./api/batch.ts";
 import { makeCsvPlugin } from "./api/csv.ts";
 import { makeMigrationsPlugin } from "./api/migrations.ts";
 import { makeMetricsPlugin } from "./api/metrics.ts";
+import { makeAuditLogPlugin } from "./api/audit-log.ts";
 import { startScheduler } from "./core/jobs.ts";
 import { startQueueScheduler } from "./core/queues.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
@@ -128,6 +129,7 @@ export function createServer(config: Config) {
     .use(makeCsvPlugin(config.jwtSecret))
     .use(makeMigrationsPlugin(config.jwtSecret))
     .use(makeMetricsPlugin(config.jwtSecret))
+    .use(makeAuditLogPlugin(config.jwtSecret))
     .use(makeCollectionsPlugin(config.jwtSecret))
     .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
     .use(makeAdminPlugin())
