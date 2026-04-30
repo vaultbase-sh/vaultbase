@@ -6,6 +6,18 @@ import { createServer } from "./server.ts";
 import { applySnapshot, SnapshotShapeError, type ApplyMode } from "./core/migrations.ts";
 import { drainLogBuffer, drainLogBufferSync } from "./core/file-logger.ts";
 
+// Top-level safety net — log + keep the process up rather than crash on a
+// stray rejection from a `void asyncFn()` site. Default Node behaviour is
+// to terminate the process; for a backend that has scheduler ticks, queue
+// runners, and fire-and-forget log writes, that's the wrong default.
+process.on("unhandledRejection", (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  process.stderr.write(`[unhandled-rejection] ${msg}\n`);
+});
+process.on("uncaughtException", (e) => {
+  process.stderr.write(`[uncaught-exception] ${e.stack ?? e.message}\n`);
+});
+
 interface CliFlags {
   applySnapshot?: string;
   snapshotMode: ApplyMode;
