@@ -19,6 +19,12 @@
 #   # you want to configure first)
 #   curl -fsSL https://get.vaultbase.dev | sh -s -- --no-start
 #
+#   # Verify cosign keyless signature before installing (requires `cosign`
+#   # on PATH — install from https://docs.sigstore.dev/cosign/installation/).
+#   # Confirms the binary was built and signed by the project's GitHub
+#   # Actions runner via the Sigstore Fulcio chain.
+#   curl -fsSL https://get.vaultbase.dev | sh -s -- --verify-sig
+#
 # Re-running the script upgrades the binary in place. Existing data dir,
 # JWT secret, and admin accounts are preserved.
 #
@@ -45,6 +51,7 @@ VERSION=""
 PORT="${DEFAULT_PORT}"
 NO_START=0
 NO_SYSTEMD=0
+VERIFY_SIG=0
 
 # ── Output helpers ──────────────────────────────────────────────────────────
 say()    { printf '%s\n' "$*"; }
@@ -64,6 +71,7 @@ while [ $# -gt 0 ]; do
         --port=*)     PORT="${1#*=}"; shift ;;
         --no-start)   NO_START=1; shift ;;
         --no-systemd) NO_SYSTEMD=1; shift ;;
+        --verify-sig) VERIFY_SIG=1; shift ;;
         --help|-h)
             sed -n '3,30p' "$0" 2>/dev/null || true
             exit 0 ;;
@@ -138,6 +146,8 @@ fi
 ASSET="vaultbase-${ARCH}"
 URL="${RELEASES_URL}/download/${VERSION}/${ASSET}"
 SHA_URL="${URL}.sha256"
+SIG_URL="${URL}.sig"
+CERT_URL="${URL}.pem"
 
 # ── Download + verify ───────────────────────────────────────────────────────
 header "Download"
@@ -164,6 +174,26 @@ if curl -fsSL --retry 2 -o "${TMP}/vaultbase.sha256" "${SHA_URL}" 2>/dev/null; t
     ok "SHA-256 verified"
 else
     warn "No .sha256 published for this release — skipping integrity check."
+fi
+
+# Optional cosign keyless signature verification (--verify-sig). Confirms the
+# binary was built and signed by the project's GitHub Actions runner via the
+# Sigstore Fulcio chain. Requires `cosign` on PATH.
+if [ "${VERIFY_SIG}" -eq 1 ]; then
+    if ! command -v cosign >/dev/null 2>&1; then
+        die "--verify-sig requested but \`cosign\` is not on PATH. Install: https://docs.sigstore.dev/cosign/installation/"
+    fi
+    say "Fetching cosign signature + certificate..."
+    curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}"
+    curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}"
+    cosign verify-blob \
+        --certificate "${TMP}/vaultbase.pem" \
+        --signature "${TMP}/vaultbase.sig" \
+        --certificate-identity-regexp "^https://github\\.com/${REPO}/" \
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        "${TMP}/vaultbase" \
+        || { err "Cosign verification failed."; exit 2; }
+    ok "Cosign signature verified — binary built by ${REPO} GitHub Actions"
 fi
 
 chmod 0755 "${TMP}/vaultbase"
