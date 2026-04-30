@@ -1,19 +1,16 @@
 import { and, count, eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { users } from "../db/schema.ts";
 import { getCollection } from "../core/collections.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  try {
-    await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — checks signature, audience, expiry, issuer,
+  // jti revocation, and password_reset_at. Fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 interface UserRow {
