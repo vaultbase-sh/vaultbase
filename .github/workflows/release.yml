@@ -42,7 +42,14 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install dependencies
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install admin dependencies
+        # Admin has its own package.json + bun.lock — `cd admin && bun run build`
+        # would otherwise hit "module not found: zustand / @types/react" in CI
+        # because the root install does not descend into the admin subproject.
+        working-directory: admin
         run: bun install --frozen-lockfile
 
       - name: Build admin SPA (embedded in binaries via Bun macro)
