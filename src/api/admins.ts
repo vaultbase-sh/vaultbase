@@ -1,8 +1,11 @@
 import { count, eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
+import { HASH_OPTS, verifyAuthToken } from "../core/sec.ts";
+
+/** Minimum admin password length — matches `PASSWORD_MIN_LENGTH` in auth.ts. */
+const ADMIN_PASSWORD_MIN_LENGTH = 12;
 
 interface AdminClaims {
   id: string;
@@ -15,16 +18,10 @@ async function verifyAdmin(
 ): Promise<AdminClaims | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
-  const secret = new TextEncoder().encode(jwtSecret);
-  try {
-    const { payload } = await jose.jwtVerify(token, secret, { audience: "admin" });
-    return {
-      id: payload["id"] as string,
-      email: (payload["email"] as string) ?? "",
-    };
-  } catch {
-    return null;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+  if (!ctx) return null;
+  return { id: ctx.id, email: ctx.email ?? "" };
 }
 
 export function makeAdminsPlugin(jwtSecret: string) {
@@ -46,9 +43,9 @@ export function makeAdminsPlugin(jwtSecret: string) {
       async ({ request, body, set }) => {
         const me = await verifyAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        if (body.password.length < 8) {
+        if (body.password.length < ADMIN_PASSWORD_MIN_LENGTH) {
           set.status = 422;
-          return { error: "Password must be at least 8 characters", code: 422 };
+          return { error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters`, code: 422 };
         }
         const db = getDb();
         const existing = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
@@ -56,7 +53,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "Email already in use", code: 400 };
         }
-        const hash = await Bun.password.hash(body.password);
+        const hash = await Bun.password.hash(body.password, HASH_OPTS);
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await db.insert(admin).values({ id, email: body.email, password_hash: hash, created_at: now });
@@ -86,11 +83,11 @@ export function makeAdminsPlugin(jwtSecret: string) {
           update.email = body.email;
         }
         if (body.password !== undefined) {
-          if (body.password.length < 8) {
+          if (body.password.length < ADMIN_PASSWORD_MIN_LENGTH) {
             set.status = 422;
-            return { error: "Password must be at least 8 characters", code: 422 };
+            return { error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters`, code: 422 };
           }
-          update.password_hash = await Bun.password.hash(body.password);
+          update.password_hash = await Bun.password.hash(body.password, HASH_OPTS);
         }
         if (Object.keys(update).length === 0) {
           return { data: { id: params.id, email: target[0]!.email } };

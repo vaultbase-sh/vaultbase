@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 interface IndexInfo {
   name: string;
@@ -13,12 +13,8 @@ interface IndexInfo {
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  try {
-    await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 function rawClient(): Database {

@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { invalidateJobsCache, nextRunFromCron, runJob, validateCron } from "../core/jobs.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 
 function validateMode(mode: string): string | null {
   if (mode === "inline") return null;
@@ -15,12 +15,8 @@ function validateMode(mode: string): string | null {
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
-  try {
-    await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { audience: "admin" });
-    return true;
-  } catch {
-    return false;
-  }
+  // Centralized verifier — fixes N-1 admin-token-bypass.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 export function makeJobsPlugin(jwtSecret: string) {
