@@ -119,9 +119,12 @@ fi
 header "Resolve release"
 
 if [ -z "${VERSION}" ]; then
-    VERSION="$(curl -fsSL -o /dev/null -w '%{redirect_url}' "${RELEASES_URL}/latest" \
+    # Capture the redirect target without following — `/releases/latest` 302s
+    # to `/releases/tag/<vX.Y.Z>`. We must NOT pass `-L` here or curl follows
+    # the redirect and `%{redirect_url}` ends up empty.
+    VERSION="$(curl -fsS -o /dev/null -w '%{redirect_url}' "${RELEASES_URL}/latest" \
         | sed 's|.*/tag/||')"
-    [ -n "${VERSION}" ] || die "Could not resolve latest release tag from GitHub."
+    [ -n "${VERSION}" ] || die "Could not resolve latest release tag from GitHub. Check ${RELEASES_URL} — does this repo have any published releases yet?"
     ok "Latest release: ${VERSION}"
 else
     case "${VERSION}" in
