@@ -20,7 +20,38 @@ Each of these compiles admin-supplied JS via `new AsyncFunction("ctx", code)` an
 - **Queue workers** — `vaultbase/src/core/queues.ts` — pulled from the `vaultbase_jobs_log` queue.
 - **View collections** — `vaultbase/src/core/collections.ts::createUserView` — admin-supplied SQL backs a `CREATE VIEW`. The `validateViewQuery` guard rejects DDL/DML keywords and obvious abuse, but a determined admin can still read sensitive tables in their `SELECT`.
 
-Each compiled function gets a `helpers` object including `helpers.fetch` (untrusted-network egress) and `helpers.query` (passes through the rule engine). For hardened deployments, run vaultbase under a network namespace / firewall that blocks egress to internal IP ranges and to cloud metadata services (`169.254.169.254`).
+Each compiled function gets a `helpers` object including `helpers.http` /
+`helpers.fetch` (untrusted-network egress) and `helpers.query` (passes through
+the rule engine).
+
+**`helpers.http` SSRF guard (since v0.1.4):** every request runs through
+`core/hook-egress.ts::assertEgressAllowed` before `fetch()`. The default deny
+list blocks RFC1918 private space (10/8, 172.16/12, 192.168/16), CGNAT
+(100.64/10), loopback (127/8 + ::1), link-local (169.254/16, fe80::/10 —
+covers AWS / GCP / Azure metadata), and IPv6 unique-local (fc00::/7).
+
+Operator overrides via Settings:
+- `hooks.http.deny` — comma-separated CIDR list **replacing** the default
+  (opt-in to a thinner list when the default blocks legitimate internal
+  services). Set to the literal `"off"` to disable filtering entirely.
+- `hooks.http.allow` — comma-separated CIDR list evaluated *after* deny.
+  Punches a hole through (e.g.) `127.0.0.0/8` for a specific sidecar
+  without disabling the rest of the loopback block.
+
+The guard is defense-in-depth — it does not replace kernel-level egress
+filtering. For hardened deployments still run vaultbase under a network
+namespace / nftables egress filter as belt-and-braces. Known limitation:
+DNS rebinding (attacker controls the hostname's DNS, flips the answer
+between our resolve check and `fetch()`'s internal resolve). Use
+kernel-level filtering when you need bulletproof guarantees.
+
+`helpers.fetch` (raw Bun `fetch`) is NOT routed through the egress guard —
+it's the unguarded form intentionally exposed for cases where the new SSRF
+guard would interfere. Legacy hooks that called `helpers.fetch` keep working;
+prefer `helpers.http.request` for new code.
+
+`helpers.query` does NOT enforce the egress guard — it goes through the
+SQLite rule engine, not the network.
 
 ## Token lifecycle
 
