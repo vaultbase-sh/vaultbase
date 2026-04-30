@@ -89,19 +89,25 @@ jobs:
           bun run build:windows-x64
 
       - name: Verify admin assets are embedded in each binary
-        # Catch the case where the macro silently inlined an empty object.
-        # Each build should contain dozens of admin asset names; a count near
-        # zero means the embed step failed and the binary will serve
-        # "Admin UI not built" at /_/.
+        # The Bun macro inlines `admin/dist/*` as base64-encoded gzip blobs.
+        # When that succeeds, the binary contains the SPA's bundled chunk
+        # names (vite hashes everything: `react-vendor-XYZ.js`,
+        # `monaco-ABC.js`, `primereact-DEF.js`, etc.) plus the gzip magic
+        # bytes for each entry. A failed embed produces a binary with
+        # ~zero of these. Use a broad regex that matches *any* hashed
+        # asset filename, not just `index-*`.
         run: |
           set -eu
           for f in releases/vaultbase-linux-x64 releases/vaultbase-linux-arm64 \
                    releases/vaultbase-linux-x64-musl releases/vaultbase-macos-x64 \
                    releases/vaultbase-macos-arm64 releases/vaultbase-windows-x64.exe; do
-            count=$(strings "$f" 2>/dev/null | grep -cE 'index-[A-Za-z0-9_-]+\.(js|css)' || true)
+            # Count vite-style hashed filenames: <name>-<8-12 hash chars>.<ext>
+            count=$(strings "$f" 2>/dev/null \
+              | grep -cE '[A-Za-z][A-Za-z0-9_-]*-[A-Za-z0-9_-]{6,}\.(js|css|woff2?|svg)' \
+              || true)
             echo "  $f → $count admin asset name hits"
-            if [ "$count" -lt 5 ]; then
-              echo "::error::$f does not appear to have the admin SPA embedded (only $count hits)"
+            if [ "$count" -lt 10 ]; then
+              echo "::error::$f does not appear to have the admin SPA embedded (only $count hits — expected ≥30)"
               exit 1
             fi
           done
