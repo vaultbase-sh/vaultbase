@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write   # publish releases + upload assets
+  id-token: write   # cosign keyless signing via Sigstore OIDC
 
 jobs:
   build:
@@ -131,6 +132,46 @@ jobs:
             > SHA256SUMS
           cat SHA256SUMS
 
+      # ── SBOM via syft ────────────────────────────────────────────────────
+      # CycloneDX JSON next to each binary lets downstream consumers know what
+      # was bundled — drop into trivy / grype / dependency-track to track
+      # advisories per release.
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0.20.0
+
+      - name: Generate SBOMs (CycloneDX JSON per binary)
+        run: |
+          cd releases
+          for f in vaultbase-linux-x64 vaultbase-linux-arm64 vaultbase-linux-x64-musl \
+                   vaultbase-macos-x64 vaultbase-macos-arm64 vaultbase-windows-x64.exe; do
+            echo "→ SBOM for $f"
+            syft "$f" -o cyclonedx-json > "${f}.cdx.json"
+          done
+          # One SBOM for the source tree too (NPM dependency graph + lockfile).
+          syft dir:. -o cyclonedx-json > vaultbase-source.cdx.json
+          ls -la *.cdx.json
+
+      # ── Cosign keyless sigs ─────────────────────────────────────────────
+      # Uses the GitHub Actions OIDC token via Sigstore Fulcio — no static
+      # signing key to manage. Verifiers check the cert chain + transparency
+      # log entry. install.sh's --verify-sig flag consumes these.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts (keyless)
+        run: |
+          cd releases
+          for f in vaultbase-linux-x64 vaultbase-linux-arm64 vaultbase-linux-x64-musl \
+                   vaultbase-macos-x64 vaultbase-macos-arm64 vaultbase-windows-x64.exe \
+                   SHA256SUMS; do
+            echo "→ signing $f"
+            cosign sign-blob --yes \
+              --output-signature="${f}.sig" \
+              --output-certificate="${f}.pem" \
+              "$f"
+          done
+          ls -la *.sig *.pem
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -141,13 +182,34 @@ jobs:
           files: |
             releases/vaultbase-linux-x64
             releases/vaultbase-linux-x64.sha256
+            releases/vaultbase-linux-x64.sig
+            releases/vaultbase-linux-x64.pem
+            releases/vaultbase-linux-x64.cdx.json
             releases/vaultbase-linux-arm64
             releases/vaultbase-linux-arm64.sha256
+            releases/vaultbase-linux-arm64.sig
+            releases/vaultbase-linux-arm64.pem
+            releases/vaultbase-linux-arm64.cdx.json
             releases/vaultbase-linux-x64-musl
             releases/vaultbase-linux-x64-musl.sha256
+            releases/vaultbase-linux-x64-musl.sig
+            releases/vaultbase-linux-x64-musl.pem
+            releases/vaultbase-linux-x64-musl.cdx.json
             releases/vaultbase-macos-x64
             releases/vaultbase-macos-x64.sha256
+            releases/vaultbase-macos-x64.sig
+            releases/vaultbase-macos-x64.pem
+            releases/vaultbase-macos-x64.cdx.json
             releases/vaultbase-macos-arm64
             releases/vaultbase-macos-arm64.sha256
+            releases/vaultbase-macos-arm64.sig
+            releases/vaultbase-macos-arm64.pem
+            releases/vaultbase-macos-arm64.cdx.json
             releases/vaultbase-windows-x64.exe
+            releases/vaultbase-windows-x64.exe.sig
+            releases/vaultbase-windows-x64.exe.pem
+            releases/vaultbase-windows-x64.exe.cdx.json
             releases/SHA256SUMS
+            releases/SHA256SUMS.sig
+            releases/SHA256SUMS.pem
+            releases/vaultbase-source.cdx.json
