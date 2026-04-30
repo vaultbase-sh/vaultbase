@@ -9,6 +9,7 @@ import { drainLogBuffer, drainLogBufferSync } from "./core/file-logger.ts";
 interface CliFlags {
   applySnapshot?: string;
   snapshotMode: ApplyMode;
+  setupAdmin?: { email: string; password: string; force: boolean };
 }
 
 /**
@@ -17,6 +18,31 @@ interface CliFlags {
  */
 export function parseCliArgs(argv: string[]): CliFlags {
   const flags: CliFlags = { snapshotMode: "additive" };
+  // Sub-command form: `vaultbase setup-admin --email … --password …`.
+  if (argv[0] === "setup-admin") {
+    let email = "";
+    let password = "";
+    let force = false;
+    for (let i = 1; i < argv.length; i++) {
+      const arg = argv[i] ?? "";
+      if (arg.startsWith("--email=")) email = arg.slice("--email=".length);
+      else if (arg === "--email") { const v = argv[++i]; if (v) email = v; }
+      else if (arg.startsWith("--password=")) password = arg.slice("--password=".length);
+      else if (arg === "--password") { const v = argv[++i]; if (v) password = v; }
+      else if (arg === "--force") force = true;
+      else if (arg === "--help" || arg === "-h") {
+        process.stdout.write(
+          `Usage: vaultbase setup-admin --email <e> --password <p> [--force]\n` +
+          `\n` +
+          `Bootstraps an admin account from the CLI — never exposes the web wizard.\n` +
+          `Refuses to run when an admin already exists, unless --force is passed.\n`,
+        );
+        process.exit(0);
+      }
+    }
+    flags.setupAdmin = { email, password, force };
+    return flags;
+  }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (typeof arg !== "string") continue;
@@ -48,6 +74,35 @@ export function parseCliArgs(argv: string[]): CliFlags {
     }
   }
   return flags;
+}
+
+async function setupAdminFromCli(opts: { email: string; password: string; force: boolean }): Promise<void> {
+  if (!opts.email || !opts.password) {
+    process.stderr.write(`vaultbase: setup-admin requires both --email and --password\n`);
+    process.exit(1);
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(opts.email)) {
+    process.stderr.write(`vaultbase: --email is not a valid email address\n`);
+    process.exit(1);
+  }
+  if (opts.password.length < 8) {
+    process.stderr.write(`vaultbase: --password must be at least 8 characters\n`);
+    process.exit(1);
+  }
+  const db = getDb();
+  const existing = await db.select({ id: admin.id, email: admin.email }).from(admin).limit(1);
+  if (existing.length > 0 && !opts.force) {
+    process.stderr.write(
+      `vaultbase: an admin already exists (${existing[0]?.email}). ` +
+      `Re-run with --force to add another, or use the admin UI to manage existing admins.\n`,
+    );
+    process.exit(1);
+  }
+  const hash = await Bun.password.hash(opts.password);
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await db.insert(admin).values({ id, email: opts.email, password_hash: hash, password_reset_at: 0, created_at: now });
+  process.stdout.write(`vaultbase: admin '${opts.email}' created.\n`);
 }
 
 async function applySnapshotFromCli(path: string, mode: ApplyMode): Promise<void> {
@@ -92,11 +147,27 @@ async function applySnapshotFromCli(path: string, mode: ApplyMode): Promise<void
 }
 
 async function main() {
+  // `vaultbase cluster` — spawn N worker processes via the cluster
+  // orchestrator. Lazy-import so the cluster module's top-level code (which
+  // immediately spawns) only runs when actually requested.
+  if (process.argv[2] === "cluster") {
+    await import("./cluster.ts");
+    return;
+  }
+
   const config = await loadConfig();
   const flags = parseCliArgs(process.argv.slice(2));
 
   initDb(`file:${config.dbPath}`);
   await runMigrations();
+
+  // CLI sub-command — bootstrap an admin from a script + exit. Skips
+  // server boot entirely so headless deploys can configure without ever
+  // exposing the web setup wizard.
+  if (flags.setupAdmin) {
+    await setupAdminFromCli(flags.setupAdmin);
+    process.exit(0);
+  }
 
   if (flags.applySnapshot) {
     await applySnapshotFromCli(flags.applySnapshot, flags.snapshotMode);

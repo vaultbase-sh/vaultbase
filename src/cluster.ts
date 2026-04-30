@@ -58,9 +58,28 @@ const workers: WorkerHandle[] = [];
 let shuttingDown = false;
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
+/**
+ * Pick the right command to spawn a worker. Two cases:
+ *   - Compiled binary deploy (`vaultbase cluster` from /usr/local/bin): the
+ *     parent IS the binary; spawn `process.execPath` directly so the worker
+ *     also runs the binary (no Bun runtime needed at the spawn site).
+ *   - Source-tree dev (`bun src/cluster.ts`): spawn `bun src/index.ts`.
+ *
+ * Detection: when running compiled, `process.argv[1]` is empty and
+ * `process.execPath` ends with the binary name; otherwise we're under Bun.
+ */
+function workerCmd(): string[] {
+  // Bun sets `process.isBun` always; the compiled binary embeds Bun + the
+  // user code, so `--bun` style flags aren't applicable. Use the binary
+  // path directly for the compiled case.
+  const isCompiled = !process.argv[1] || /vaultbase(\.exe)?$/.test(process.execPath);
+  if (isCompiled) return [process.execPath];
+  return ["bun", "src/index.ts"];
+}
+
 function spawnWorker(id: number): WorkerHandle {
   const proc = Bun.spawn({
-    cmd: ["bun", "src/index.ts"],
+    cmd: workerCmd(),
     env: {
       ...process.env,
       VAULTBASE_WORKER_ID: String(id),
