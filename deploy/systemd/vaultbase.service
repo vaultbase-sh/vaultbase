@@ -33,9 +33,10 @@ LockPersonality=yes
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+# `SystemCallFilter` was removed: Bun uses syscalls outside the
+# `@system-service` set (notably some io_uring + mmap variants), which
+# triggers SIGSYS and a core dump under seccomp. The remaining hardening
+# above is enough to neutralise the typical privilege-escalation paths.
 
 # Vaultbase only needs to write inside its data dir. ProtectSystem=strict
 # makes /etc/vaultbase read-only from the service's view (config is read once).
