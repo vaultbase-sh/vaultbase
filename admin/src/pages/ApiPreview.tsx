@@ -123,6 +123,35 @@ export default function ApiPreview() {
     }
   }
 
+  function buildCurl(): string {
+    const url = path.startsWith("http") ? path : `${window.location.origin}${path}`;
+    const lines = [`curl -X ${method} \\`, `  '${url}'`];
+    if (includeAuth) lines.push(`  -H 'Authorization: Bearer <admin-token>' \\`);
+    if (method !== "GET" && method !== "DELETE" && body.trim()) {
+      lines.push(`  -H 'Content-Type: application/json' \\`);
+      lines.push(`  -d ${JSON.stringify(body)}`);
+    }
+    return lines.join("\n");
+  }
+
+  function buildFetch(): string {
+    const url = path.startsWith("http") ? path : path;
+    const headers: Record<string, string> = {};
+    if (includeAuth) headers["Authorization"] = "Bearer <admin-token>";
+    if (method !== "GET" && method !== "DELETE" && body.trim()) headers["Content-Type"] = "application/json";
+    const init: Record<string, unknown> = { method };
+    if (Object.keys(headers).length) init.headers = headers;
+    if (method !== "GET" && method !== "DELETE" && body.trim()) {
+      init.body = body;
+    }
+    return `await fetch(${JSON.stringify(url)}, ${JSON.stringify(init, null, 2)});`;
+  }
+
+  function copy(text: string, label: string): void {
+    void navigator.clipboard.writeText(text);
+    void import("../stores/toast.ts").then((m) => m.toast(`${label} copied`, "check"));
+  }
+
   function formatBody(text: string, contentType: string): string {
     if (contentType.includes("application/json")) {
       try { return JSON.stringify(JSON.parse(text), null, 2); } catch { /* fall through */ }
@@ -136,8 +165,17 @@ export default function ApiPreview() {
   return (
     <>
       <Topbar
-        title="API preview"
-        subtitle="Test endpoints against this server"
+        crumbs={[{ label: "API preview" }]}
+        actions={
+          <>
+            <button className="btn btn-ghost" onClick={() => copy(buildCurl(), "curl")}>
+              <Icon name="copy" size={11} /> Copy curl
+            </button>
+            <button className="btn btn-ghost" onClick={() => copy(buildFetch(), "fetch()")}>
+              <Icon name="code" size={11} /> Copy fetch()
+            </button>
+          </>
+        }
       />
       <div className="app-body" style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 16, alignItems: "start" }}>
         {/* Presets sidebar */}
@@ -264,7 +302,7 @@ export default function ApiPreview() {
                   background: "rgba(255,255,255,0.015)",
                 }}
               >
-                <span className={`mono ${statusClass(response.status)}`} style={{ fontWeight: 500 }}>
+                <span className={`badge ${response.status === 0 ? "danger" : response.status < 300 ? "success" : response.status < 400 ? "info" : response.status < 500 ? "warning" : "danger"}`} style={{ fontSize: 11 }}>
                   {response.status === 0 ? "ERR" : response.status}
                 </span>
                 <span className="muted mono" style={{ fontSize: 11 }}>{response.ms}ms</span>

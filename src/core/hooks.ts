@@ -1,10 +1,35 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { sendEmail } from "./email.ts";
+import { recordRuleEval, type RuleOutcome } from "./request-context.ts";
 import type { AuthContext } from "./rules.ts";
+import { makeExtraHelpers, type ExtraHookHelpers } from "./hook-helpers-extra.ts";
+
+/**
+ * Per-async-context store carrying the active HTTP Request through
+ * records-core into hook execution. Set by `runWithHookRequest` (called from
+ * `src/api/records.ts` create/update/delete handlers) so that
+ * `helpers.recordRule(...)` can attach rule outcomes to the request log
+ * without records-core needing to know about Request.
+ */
+const hookRequestStorage = new AsyncLocalStorage<Request>();
+
+/**
+ * Run `fn` with `request` available to any hook helpers fired during the
+ * call. Hooks invoked outside this scope (cron jobs, custom routes,
+ * post-cascade flows) get `undefined` and `recordRule` becomes a no-op.
+ */
+export function runWithHookRequest<T>(request: Request, fn: () => T): T {
+  return hookRequestStorage.run(request, fn);
+}
+
+export function getActiveHookRequest(): Request | undefined {
+  return hookRequestStorage.getStore();
+}
 
 export type HookEvent =
   | "beforeCreate" | "afterCreate"
@@ -24,7 +49,20 @@ export interface HookContext {
   helpers: HookHelpers;
 }
 
-export interface HookHelpers {
+export interface HookRecordRuleOpts {
+  /** Logical name of the rule (e.g. "custom-quota"). */
+  rule: string;
+  /** Collection the rule applies to. Defaults to the active hook's collection. */
+  collection?: string;
+  /** Optional human-readable expression text. */
+  expression?: string | null;
+  /** "allow" | "deny" | "filter" — same shape as the records-API rule eval. */
+  outcome: RuleOutcome;
+  /** Human-readable explanation. */
+  reason: string;
+}
+
+export interface HookHelpers extends ExtraHookHelpers {
   slug(s: string): string;
   abort(message: string): never;
   find(collection: string, id: string): Promise<Record<string, unknown> | null>;
@@ -35,6 +73,29 @@ export interface HookHelpers {
   fetch: typeof globalThis.fetch;
   log(...args: unknown[]): void;
   email(opts: { to: string; subject: string; body: string }): Promise<void>;
+  /**
+   * Record a custom policy decision on the active request log (records API).
+   * No-op when the hook runs without a Request in scope (cron jobs, post-cascade
+   * hooks, custom routes invoking records-core directly, etc.). Multiple calls
+   * accumulate.
+   */
+  recordRule(opts: HookRecordRuleOpts): void;
+  /**
+   * Enqueue a job onto a named queue. Returns the job id and a `deduped`
+   * flag (true when an existing non-finished job with the same `uniqueKey`
+   * was returned instead of creating a new one).
+   */
+  enqueue(
+    queue: string,
+    payload: unknown,
+    opts?: {
+      delay?: number;
+      uniqueKey?: string;
+      retries?: number;
+      backoff?: "exponential" | "fixed";
+      retryDelayMs?: number;
+    }
+  ): Promise<{ jobId: string; deduped: boolean }>;
 }
 
 interface HookRow {
@@ -102,11 +163,18 @@ async function lookupEnabledHooks(
 export async function runBeforeHook(
   collection: Collection,
   event: "beforeCreate" | "beforeUpdate" | "beforeDelete",
-  ctx: HookContext
+  ctx: HookContext,
+  request?: Request
 ): Promise<void> {
   const list = await lookupEnabledHooks(collection.name, event);
+  // Resolve effective request: explicit arg wins; otherwise inherit ALS scope.
+  const effectiveReq = request ?? hookRequestStorage.getStore();
   for (const h of list) {
-    const helpers = makeHookHelpers({ collection: collection.name, event, auth: ctx.auth, name: h.name });
+    const helperCtx: HookHelperContext = {
+      collection: collection.name, event, auth: ctx.auth, name: h.name,
+    };
+    if (effectiveReq) helperCtx.request = effectiveReq;
+    const helpers = makeHookHelpers(helperCtx);
     try {
       await h.fn({ ...ctx, helpers });
     } catch (e) {
@@ -120,13 +188,19 @@ export async function runBeforeHook(
 export function runAfterHook(
   collection: Collection,
   event: "afterCreate" | "afterUpdate" | "afterDelete",
-  ctx: HookContext
+  ctx: HookContext,
+  request?: Request
 ): void {
   // Fire-and-forget; errors are logged but don't fail the request
+  const effectiveReq = request ?? hookRequestStorage.getStore();
   void (async () => {
     const list = await lookupEnabledHooks(collection.name, event);
     for (const h of list) {
-      const helpers = makeHookHelpers({ collection: collection.name, event, auth: ctx.auth, name: h.name });
+      const helperCtx: HookHelperContext = {
+        collection: collection.name, event, auth: ctx.auth, name: h.name,
+      };
+      if (effectiveReq) helperCtx.request = effectiveReq;
+      const helpers = makeHookHelpers(helperCtx);
       try {
         await h.fn({ ...ctx, helpers });
       } catch (e) {
@@ -143,6 +217,12 @@ export interface HookHelperContext {
   event?: HookEvent;
   auth?: AuthContext | null;
   name?: string;
+  /**
+   * Optional Request the hook is running under. When present (or when a Request
+   * is available via `runWithHookRequest`), `helpers.recordRule(...)` attaches
+   * eval entries to the request log. Otherwise `recordRule` is a silent no-op.
+   */
+  request?: Request;
 }
 
 function formatLogArg(v: unknown): string {
@@ -152,7 +232,9 @@ function formatLogArg(v: unknown): string {
 }
 
 export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
+  const extra = makeExtraHelpers();
   return {
+    ...extra,
     slug(s: string): string {
       return String(s)
         .toLowerCase()
@@ -206,6 +288,27 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
       };
       if (looksHtml) sendOpts.html = opts.body;
       await sendEmail(sendOpts);
+    },
+    async enqueue(queue, payload, opts = {}) {
+      // Lazy-import to break the queues → hooks → queues cycle.
+      const { enqueue } = await import("./queues.ts");
+      return enqueue(queue, payload, opts);
+    },
+    recordRule(opts: HookRecordRuleOpts): void {
+      // Prefer an explicitly-provided Request, then fall back to the
+      // AsyncLocalStorage-tracked one set by `runWithHookRequest`. If neither
+      // is present (cron jobs, post-cascade hooks, etc.), silently no-op so
+      // hook code is portable across contexts.
+      const req = ctx.request ?? hookRequestStorage.getStore();
+      if (!req) return;
+      const collection = opts.collection ?? ctx.collection ?? "";
+      recordRuleEval(req, {
+        rule: opts.rule,
+        collection,
+        expression: opts.expression ?? null,
+        outcome: opts.outcome,
+        reason: opts.reason,
+      });
     },
   };
 }

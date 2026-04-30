@@ -29,6 +29,12 @@ interface JobRow {
   cron: string;
   code: string;
   enabled: number;
+  /**
+   * "inline" (default) → cron tick executes the job's code in-process.
+   * "worker:<queue>"   → cron tick enqueues a job onto the named queue,
+   *                       and a worker on that queue processes it async.
+   */
+  mode: string;
   last_run_at: number | null;
   next_run_at: number | null;
 }
@@ -73,16 +79,52 @@ export async function runJob(jobId: string): Promise<{ ok: boolean; error?: stri
   const rows = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
   const row = rows[0] as JobRow | undefined;
   if (!row) return { ok: false, error: "Job not found" };
-  const fn = compile(row);
-  if (!fn) return { ok: false, error: "Failed to compile job code" };
-
   const now = Math.floor(Date.now() / 1000);
-  const helpers = makeHookHelpers({ name: row.name });
-  const ctx: JobContext = { helpers, scheduledAt: now };
-
   let nextRun: number | null = null;
   try { nextRun = nextRunFromCron(row.cron, now); }
   catch { nextRun = null; }
+
+  // Worker-mode: cron tick enqueues onto the named queue and returns. The
+  // worker handles execution async — the job's `code` is treated as the
+  // payload's "kind" hint via job.name (workers can branch on it).
+  const workerMatch = /^worker:(.+)$/.exec(row.mode ?? "inline");
+  if (workerMatch) {
+    const queue = workerMatch[1]!.trim();
+    if (!queue) {
+      const msg = `Invalid mode "${row.mode}" — expected "worker:<queue>"`;
+      await db.update(jobs).set({
+        last_run_at: now, last_status: "error", last_error: msg,
+        next_run_at: nextRun, updated_at: now,
+      }).where(eq(jobs.id, jobId));
+      return { ok: false, error: msg };
+    }
+    try {
+      const { enqueue } = await import("./queues.ts");
+      const r = await enqueue(queue, { jobId, jobName: row.name, scheduledAt: now });
+      await db.update(jobs).set({
+        last_run_at: now, last_status: "ok", last_error: null,
+        next_run_at: nextRun, updated_at: now,
+      }).where(eq(jobs.id, jobId));
+      appendHookLog({
+        name: row.name,
+        message: `cron job "${row.name || row.id.slice(0, 8)}" enqueued onto ${queue} (job=${r.jobId}${r.deduped ? " · deduped" : ""})`,
+      });
+      return { ok: true };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await db.update(jobs).set({
+        last_run_at: now, last_status: "error", last_error: msg,
+        next_run_at: nextRun, updated_at: now,
+      }).where(eq(jobs.id, jobId));
+      return { ok: false, error: msg };
+    }
+  }
+
+  const fn = compile(row);
+  if (!fn) return { ok: false, error: "Failed to compile job code" };
+
+  const helpers = makeHookHelpers({ name: row.name });
+  const ctx: JobContext = { helpers, scheduledAt: now };
 
   try {
     await fn(ctx);

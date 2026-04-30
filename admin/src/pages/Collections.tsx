@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type Collection, collColor, parseFields } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import { Topbar, PageHeader } from "../components/Shell.tsx";
 import { StatCard } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
@@ -111,15 +111,22 @@ export default function Collections() {
           {loading ? (
             <div className="empty">Loading…</div>
           ) : filtered.length === 0 ? (
-            <div className="empty">
-              No collections yet.{" "}
-              <button
-                className="btn btn-ghost"
-                style={{ display: "inline-flex", height: 24, padding: "0 10px", fontSize: 12 }}
-                onClick={() => setShowNew(true)}
-              >
-                Create one
-              </button>
+            <div className="empty-state">
+              <div className="ic"><Icon name="database" size={20} /></div>
+              <h4>No collections yet</h4>
+              <p>
+                Collections are typed SQL tables with API rules and realtime
+                broadcasts. Create one to get started — pick <code className="mono">base</code> for data,{" "}
+                <code className="mono">auth</code> for users.
+              </p>
+              <div className="row">
+                <button className="btn btn-primary" onClick={() => setShowNew(true)}>
+                  <Icon name="plus" size={12} /> New collection
+                </button>
+                <a className="btn btn-ghost" href="https://vaultbase.dev/concepts/collections/" target="_blank" rel="noreferrer">
+                  Read docs <Icon name="arrowRight" size={11} />
+                </a>
+              </div>
             </div>
           ) : (
             <table className="table">

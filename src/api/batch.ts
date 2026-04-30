@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
+import { getCollection } from "../core/collections.ts";
 import { createRecord, deleteRecord, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
+import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 
 interface BatchRequest {
@@ -70,13 +72,25 @@ function parseOp(method: string, urlStr: string): ParsedOp | { error: string } {
   return { error: `Unsupported method ${M} for ${urlStr}` };
 }
 
-async function dispatchOp(op: ParsedOp, body: unknown, auth: AuthContext | null): Promise<BatchResult> {
+async function dispatchOp(
+  request: Request,
+  op: ParsedOp,
+  body: unknown,
+  auth: AuthContext | null
+): Promise<BatchResult> {
+  // Per-op rule enforcement — same checks the records HTTP layer runs.
+  const col = await getCollection(op.collection);
+  if (!col) return { status: 404, body: { error: `Collection '${op.collection}' not found`, code: 404 } };
+
   switch (op.kind) {
     case "create": {
+      checkRuleOrThrow(request, "create_rule", col.name, col.create_rule, auth, (body ?? {}) as Record<string, unknown>);
       const rec = await createRecord(op.collection, body as Record<string, unknown>, auth);
       return { status: 201, body: rec };
     }
     case "list": {
+      const allowed = recordListRule(request, col.name, col.list_rule, auth);
+      if (!allowed) throw new RuleDeniedError("list_rule");
       const q = op.query ?? new URLSearchParams();
       const opts: Parameters<typeof listRecords>[1] = {};
       if (q.get("page"))    opts.page = parseInt(q.get("page")!) || 1;
@@ -87,19 +101,30 @@ async function dispatchOp(op: ParsedOp, body: unknown, auth: AuthContext | null)
       if (q.get("fields"))  opts.fields = q.get("fields")!;
       if (q.get("skipTotal") === "1") opts.skipTotal = true;
       opts.auth = auth;
+      // Apply expression rule as access filter (admins bypass)
+      if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
+        opts.accessRule = col.list_rule;
+      }
       const result = await listRecords(op.collection, opts);
       return { status: 200, body: result };
     }
     case "get": {
       const rec = await getRecord(op.collection, op.id!);
       if (!rec) return { status: 404, body: { error: "Record not found", code: 404 } };
+      checkRuleOrThrow(request, "view_rule", col.name, col.view_rule, auth, rec as unknown as Record<string, unknown>);
       return { status: 200, body: rec };
     }
     case "update": {
+      const existing = await getRecord(op.collection, op.id!);
+      if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
+      checkRuleOrThrow(request, "update_rule", col.name, col.update_rule, auth, existing as unknown as Record<string, unknown>);
       const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth);
       return { status: 200, body: rec };
     }
     case "delete": {
+      const existing = await getRecord(op.collection, op.id!);
+      if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
+      checkRuleOrThrow(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>);
       await deleteRecord(op.collection, op.id!, auth);
       return { status: 204, body: null };
     }
@@ -136,13 +161,17 @@ export function makeBatchPlugin(jwtSecret: string) {
       const results: BatchResult[] = [];
       try {
         for (let i = 0; i < parsed.length; i++) {
-          const result = await dispatchOp(parsed[i]!, requests[i]!.body, auth);
+          const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, auth);
           results.push(result);
         }
         client.exec("COMMIT");
         return { data: results };
       } catch (e) {
         client.exec("ROLLBACK");
+        if (e instanceof RuleDeniedError) {
+          set.status = 403;
+          return { error: `Batch failed at request ${results.length}: forbidden by ${e.ruleName}`, code: 403 };
+        }
         if (e instanceof ValidationError) {
           set.status = 422;
           return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };

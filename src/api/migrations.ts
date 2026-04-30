@@ -1,14 +1,18 @@
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import {
-  CollectionValidationError,
-  createCollection,
-  getCollection,
   listCollections,
   parseFields,
-  updateCollection,
-  type FieldDef,
 } from "../core/collections.ts";
+import {
+  applySnapshot,
+  computeSnapshotDiff,
+  describeCollectionChanges,
+  SnapshotShapeError,
+  type ApplyMode,
+  type CollectionSnapshot,
+  type Snapshot,
+} from "../core/migrations.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -22,54 +26,11 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 }
 
 /**
- * Stable JSON shape for a collection definition. Persisted across environments
- * and applied by `/migrations/apply`. We deliberately drop `id`, `created_at`,
- * `updated_at` — `name` is the cross-environment identifier.
+ * Re-exported for tests / older imports — the canonical home is now
+ * `src/core/migrations.ts`.
  */
-interface CollectionSnapshot {
-  name: string;
-  type: "base" | "auth" | "view";
-  fields: FieldDef[];
-  view_query?: string | null;
-  list_rule?: string | null;
-  view_rule?: string | null;
-  create_rule?: string | null;
-  update_rule?: string | null;
-  delete_rule?: string | null;
-}
-
-interface Snapshot {
-  /** Iso timestamp of the snapshot. */
-  generated_at: string;
-  /** Schema version of the snapshot format itself — bump if we change the shape. */
-  version: 1;
-  collections: CollectionSnapshot[];
-}
-
-interface ApplyResult {
-  created: string[];
-  updated: string[];
-  skipped: string[];
-  errors: Array<{ collection: string; error: string }>;
-}
-
-function fieldsEqual(a: FieldDef[], b: FieldDef[]): boolean {
-  if (a.length !== b.length) return false;
-  // Compare normalized JSON to ignore field-order shuffles inside `options`.
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-function isCollectionInSync(existing: Awaited<ReturnType<typeof getCollection>>, snap: CollectionSnapshot): boolean {
-  if (!existing) return false;
-  if (existing.type !== snap.type) return false;
-  if ((existing.view_query ?? null) !== (snap.view_query ?? null)) return false;
-  if ((existing.list_rule ?? null)   !== (snap.list_rule ?? null))   return false;
-  if ((existing.view_rule ?? null)   !== (snap.view_rule ?? null))   return false;
-  if ((existing.create_rule ?? null) !== (snap.create_rule ?? null)) return false;
-  if ((existing.update_rule ?? null) !== (snap.update_rule ?? null)) return false;
-  if ((existing.delete_rule ?? null) !== (snap.delete_rule ?? null)) return false;
-  return fieldsEqual(parseFields(existing.fields), snap.fields);
-}
+export const _describeCollectionChanges = describeCollectionChanges;
+export { computeSnapshotDiff };
 
 export function makeMigrationsPlugin(jwtSecret: string) {
   return new Elysia({ name: "migrations" })
@@ -103,7 +64,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/migrations/apply",
+      "/api/admin/migrations/diff",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401;
@@ -122,88 +83,56 @@ export function makeMigrationsPlugin(jwtSecret: string) {
           set.status = 422;
           return { error: "snapshot.collections must be an array", code: 422 };
         }
+        const data = await computeSnapshotDiff(snap);
+        return { data };
+      },
+      {
+        body: t.Object({
+          snapshot: t.Any(),
+        }),
+      }
+    )
 
-        const mode = body.mode ?? "additive";
+    .post(
+      "/api/admin/migrations/apply",
+      async ({ request, body, set }) => {
+        if (!(await isAdmin(request, jwtSecret))) {
+          set.status = 401;
+          return { error: "Unauthorized", code: 401 };
+        }
+        if (!body.snapshot || typeof body.snapshot !== "object") {
+          set.status = 422;
+          return { error: "snapshot object required", code: 422 };
+        }
+
+        const mode = (body.mode ?? "additive") as ApplyMode;
         if (mode !== "additive" && mode !== "sync") {
           set.status = 422;
           return { error: "mode must be 'additive' or 'sync'", code: 422 };
         }
 
-        const result: ApplyResult = { created: [], updated: [], skipped: [], errors: [] };
-
-        for (const c of snap.collections) {
-          if (!c.name || typeof c.name !== "string") {
-            result.errors.push({ collection: String(c?.name ?? "?"), error: "missing name" });
-            continue;
+        let result;
+        try {
+          result = await applySnapshot(body.snapshot, { mode });
+        } catch (e) {
+          if (e instanceof SnapshotShapeError) {
+            set.status = 422;
+            return { error: e.message, code: 422 };
           }
-          const existing = await getCollection(c.name);
-
-          if (!existing) {
-            try {
-              await createCollection({
-                name: c.name,
-                type: c.type,
-                fields: JSON.stringify(c.fields ?? []),
-                view_query: c.view_query ?? null,
-                list_rule: c.list_rule ?? null,
-                view_rule: c.view_rule ?? null,
-                create_rule: c.create_rule ?? null,
-                update_rule: c.update_rule ?? null,
-                delete_rule: c.delete_rule ?? null,
-              });
-              result.created.push(c.name);
-            } catch (e) {
-              result.errors.push({
-                collection: c.name,
-                error: e instanceof CollectionValidationError ? e.message
-                     : e instanceof Error ? e.message
-                     : String(e),
-              });
-            }
-            continue;
-          }
-
-          // Existing collection
-          if (mode === "additive") {
-            result.skipped.push(c.name);
-            continue;
-          }
-
-          // sync mode
-          if (isCollectionInSync(existing, c)) {
-            result.skipped.push(c.name);
-            continue;
-          }
-          if (existing.type !== c.type) {
-            // Changing type would re-create storage; require manual intervention.
-            result.errors.push({
-              collection: c.name,
-              error: `cannot change type ${existing.type} → ${c.type} via sync (drop the collection manually first)`,
-            });
-            continue;
-          }
-          try {
-            await updateCollection(existing.id, {
-              fields: JSON.stringify(c.fields ?? []),
-              view_query: c.view_query ?? null,
-              list_rule: c.list_rule ?? null,
-              view_rule: c.view_rule ?? null,
-              create_rule: c.create_rule ?? null,
-              update_rule: c.update_rule ?? null,
-              delete_rule: c.delete_rule ?? null,
-            });
-            result.updated.push(c.name);
-          } catch (e) {
-            result.errors.push({
-              collection: c.name,
-              error: e instanceof CollectionValidationError ? e.message
-                   : e instanceof Error ? e.message
-                   : String(e),
-            });
-          }
+          throw e;
         }
 
-        return { data: result };
+        // Preserve the existing HTTP response shape: callers expect
+        // `{ created, updated, skipped, errors }` where `skipped` is the union
+        // of "skipped because additive" + "unchanged because already in sync".
+        return {
+          data: {
+            created: result.created,
+            updated: result.updated,
+            skipped: [...result.skipped, ...result.unchanged],
+            errors:  result.errors,
+          },
+        };
       },
       {
         body: t.Object({

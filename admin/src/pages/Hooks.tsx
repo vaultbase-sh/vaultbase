@@ -11,7 +11,63 @@ import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 
-type Tab = "hooks" | "routes" | "jobs";
+type Tab = "hooks" | "routes" | "jobs" | "workers" | "joblog";
+
+interface Worker {
+  id: string;
+  name: string;
+  queue: string;
+  code: string;
+  enabled: number;
+  concurrency: number;
+  retry_max: number;
+  retry_backoff: "exponential" | "fixed";
+  retry_delay_ms: number;
+  created_at: number;
+  updated_at: number;
+}
+
+type JobLogStatus = "queued" | "running" | "succeeded" | "failed" | "dead";
+
+interface JobLogRow {
+  id: string;
+  queue: string;
+  worker_id: string | null;
+  payload: string;
+  unique_key: string | null;
+  attempt: number;
+  status: JobLogStatus;
+  error: string | null;
+  scheduled_at: number;
+  enqueued_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+interface QueueStat {
+  queue: string;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  dead: number;
+}
+
+const WORKER_TEMPLATE = `// Worker — processes jobs from a named queue.
+// Available context:
+//   ctx.payload  — the enqueued payload (JSON-decoded)
+//   ctx.attempt  — 1-indexed attempt (incremented on retry)
+//   ctx.queue    — queue name
+//   ctx.jobId    — job id (vaultbase_jobs_log row)
+//   ctx.helpers  — slug, abort, find, query, fetch, log, email, enqueue,
+//                  recordRule
+
+ctx.helpers.log("processing", ctx.queue, "job", ctx.jobId, "attempt", ctx.attempt);
+
+// Throw to fail (worker will retry per retry_max + backoff). Return any value
+// to mark the job succeeded.
+return { ok: true };
+`;
 
 interface Hook {
   id: string;
@@ -41,6 +97,8 @@ interface CronJob {
   cron: string;
   code: string;
   enabled: number;
+  /** "inline" or "worker:<queue>" */
+  mode: string;
   last_run_at: number | null;
   next_run_at: number | null;
   last_status: string | null;
@@ -136,10 +194,18 @@ export default function Hooks() {
         <div className={`tab ${tab === "jobs" ? "active" : ""}`} onClick={() => setTab("jobs")}>
           <Icon name="refresh" size={12} /> Cron jobs
         </div>
+        <div className={`tab ${tab === "workers" ? "active" : ""}`} onClick={() => setTab("workers")}>
+          <Icon name="zap" size={12} /> Workers
+        </div>
+        <div className={`tab ${tab === "joblog" ? "active" : ""}`} onClick={() => setTab("joblog")}>
+          <Icon name="scroll" size={12} /> Jobs log
+        </div>
       </div>
       {tab === "hooks" && <HooksTab />}
       {tab === "routes" && <RoutesTab />}
       {tab === "jobs" && <JobsTab />}
+      {tab === "workers" && <WorkersTab />}
+      {tab === "joblog" && <JobsLogTab />}
     </>
   );
 }
@@ -975,6 +1041,8 @@ function JobEditor({
   const [cron, setCron] = useState("0 * * * *");
   const [code, setCode] = useState(JOB_TEMPLATE);
   const [enabled, setEnabled] = useState(true);
+  const [modeKind, setModeKind] = useState<"inline" | "worker">("inline");
+  const [modeQueue, setModeQueue] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const cronAnalysis = useMemo(() => analyzeCron(cron), [cron]);
@@ -986,11 +1054,16 @@ function JobEditor({
       setCron(job.cron);
       setCode(job.code);
       setEnabled(!!job.enabled);
+      const m = /^worker:(.+)$/.exec(job.mode ?? "inline");
+      if (m) { setModeKind("worker"); setModeQueue(m[1]!.trim()); }
+      else   { setModeKind("inline"); setModeQueue(""); }
     } else {
       setName("");
       setCron("0 * * * *");
       setCode(JOB_TEMPLATE);
       setEnabled(true);
+      setModeKind("inline");
+      setModeQueue("");
     }
     setError("");
     setSaving(false);
@@ -999,9 +1072,14 @@ function JobEditor({
   async function handleSave() {
     if (!cron.trim()) { setError("Cron expression required"); return; }
     if (!cronAnalysis.valid) { setError(`Invalid cron: ${cronAnalysis.error ?? "unknown"}`); return; }
+    if (modeKind === "worker" && !modeQueue.trim()) {
+      setError("Queue name required for worker mode");
+      return;
+    }
     setSaving(true);
     setError("");
-    const body = { name: name.trim(), cron: cron.trim(), code, enabled };
+    const mode = modeKind === "worker" ? `worker:${modeQueue.trim()}` : "inline";
+    const body = { name: name.trim(), cron: cron.trim(), code, enabled, mode };
     const res = isNew
       ? await api.post<ApiResponse<CronJob>>("/api/admin/jobs", body)
       : await api.patch<ApiResponse<CronJob>>(`/api/admin/jobs/${job!.id}`, body);
@@ -1084,6 +1162,30 @@ function JobEditor({
               style={{ width: 180, height: 32 }}
             />
           </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Run mode</span>
+            <Dropdown
+              value={modeKind}
+              options={[
+                { label: "Inline (in-process)", value: "inline" },
+                { label: "Enqueue onto worker queue", value: "worker" },
+              ]}
+              onChange={(e) => setModeKind(e.value)}
+              style={{ width: 220, height: 32 }}
+            />
+          </div>
+          {modeKind === "worker" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Queue</span>
+              <input
+                className="input mono"
+                style={{ height: 32, width: 160, fontSize: 12 }}
+                value={modeQueue}
+                onChange={(e) => setModeQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
+                placeholder="default"
+              />
+            </div>
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
             <Toggle on={enabled} onChange={setEnabled} />
             <span>Enabled</span>
@@ -1162,5 +1264,561 @@ function JobEditor({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+// ── Workers tab ────────────────────────────────────────────────────────────
+function WorkersTab() {
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [stats, setStats] = useState<QueueStat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<Worker | null>(null);
+  const [showNew, setShowNew] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const [w, s] = await Promise.all([
+      api.get<ApiResponse<Worker[]>>("/api/admin/workers"),
+      api.get<ApiResponse<QueueStat[]>>("/api/admin/queues/stats"),
+    ]);
+    if (w.data) setWorkers(w.data);
+    if (s.data) setStats(s.data);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  async function toggleEnabled(w: Worker) {
+    const res = await api.patch<ApiResponse<Worker>>(`/api/admin/workers/${w.id}`, { enabled: !w.enabled });
+    if (res.error) { toast(res.error, "info"); return; }
+    toast(`Worker ${w.enabled ? "disabled" : "enabled"}`);
+    load();
+  }
+
+  async function handleDelete(w: Worker) {
+    const ok = await confirm({
+      title: "Delete worker",
+      message: `Delete worker "${w.name || "(unnamed)"}" on queue "${w.queue}"?\n\nIn-flight jobs will finish; queued jobs stay in the log.`,
+      danger: true,
+    });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<null>>(`/api/admin/workers/${w.id}`);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Worker deleted", "trash");
+    load();
+  }
+
+  const statByQueue = useMemo(() => {
+    const m = new Map<string, QueueStat>();
+    for (const s of stats) m.set(s.queue, s);
+    return m;
+  }, [stats]);
+
+  return (
+    <>
+      <div style={{ padding: "12px 20px 0", display: "flex", justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={() => setShowNew(true)}>
+          <Icon name="plus" size={12} /> New worker
+        </button>
+      </div>
+      <div className="app-body">
+        <div className="table-wrap">
+          {loading ? (
+            <div className="empty">Loading…</div>
+          ) : workers.length === 0 ? (
+            <div className="empty">
+              No workers. Workers process jobs from a named queue. Enqueue from hooks/routes/cron via{" "}
+              <span className="mono">ctx.helpers.enqueue("queue-name", payload)</span>.
+            </div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th style={{ width: 130 }}>Queue</th>
+                  <th style={{ width: 100, textAlign: "right" }}>Concurrency</th>
+                  <th style={{ width: 130 }}>Retry</th>
+                  <th style={{ width: 220 }}>Backlog</th>
+                  <th style={{ width: 80 }}>Enabled</th>
+                  <th style={{ width: 90, textAlign: "right" }} />
+                </tr>
+              </thead>
+              <tbody>
+                {workers.map((w) => {
+                  const s = statByQueue.get(w.queue);
+                  return (
+                    <tr key={w.id}>
+                      <td onClick={() => setEditing(w)} style={{ cursor: "pointer" }}>
+                        {w.name ? (
+                          <span style={{ fontSize: 13, fontWeight: 500 }}>{w.name}</span>
+                        ) : (
+                          <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
+                        )}
+                      </td>
+                      <td className="mono-cell" style={{ fontSize: 12 }}>{w.queue}</td>
+                      <td className="mono-cell" style={{ textAlign: "right", fontSize: 12 }}>{w.concurrency}</td>
+                      <td className="mono-cell" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                        {w.retry_max} × {w.retry_backoff} ({w.retry_delay_ms}ms)
+                      </td>
+                      <td>
+                        {s ? (
+                          <span style={{ display: "inline-flex", gap: 8, fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                            <span style={{ color: "var(--accent-light)" }}>{s.queued}q</span>
+                            <span style={{ color: "var(--warning)" }}>{s.running}r</span>
+                            <span style={{ color: "var(--success)" }}>{s.succeeded}✓</span>
+                            <span style={{ color: "var(--danger)" }}>{s.dead}☠</span>
+                          </span>
+                        ) : (
+                          <span className="muted" style={{ fontSize: 11 }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <Toggle on={!!w.enabled} onChange={() => toggleEnabled(w)} />
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
+                          <button className="btn-icon" onClick={() => setEditing(w)} title="Edit">
+                            <Icon name="pencil" size={12} />
+                          </button>
+                          <button className="btn-icon danger" onClick={() => handleDelete(w)} title="Delete">
+                            <Icon name="trash" size={12} />
+                          </button>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      <WorkerEditor
+        worker={editing}
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        onSaved={() => { toast("Worker saved"); load(); }}
+      />
+      <WorkerEditor
+        worker={null}
+        open={showNew}
+        onClose={() => setShowNew(false)}
+        onSaved={() => { toast("Worker created"); load(); }}
+      />
+    </>
+  );
+}
+
+function WorkerEditor({
+  worker,
+  open,
+  onClose,
+  onSaved,
+}: {
+  worker: Worker | null;
+  open: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isNew = !worker;
+  const [name, setName] = useState("");
+  const [queue, setQueue] = useState("default");
+  const [code, setCode] = useState(WORKER_TEMPLATE);
+  const [enabled, setEnabled] = useState(true);
+  const [concurrency, setConcurrency] = useState(1);
+  const [retryMax, setRetryMax] = useState(3);
+  const [backoff, setBackoff] = useState<"exponential" | "fixed">("exponential");
+  const [retryDelayMs, setRetryDelayMs] = useState(1000);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    if (worker) {
+      setName(worker.name ?? "");
+      setQueue(worker.queue);
+      setCode(worker.code);
+      setEnabled(!!worker.enabled);
+      setConcurrency(worker.concurrency);
+      setRetryMax(worker.retry_max);
+      setBackoff(worker.retry_backoff);
+      setRetryDelayMs(worker.retry_delay_ms);
+    } else {
+      setName("");
+      setQueue("default");
+      setCode(WORKER_TEMPLATE);
+      setEnabled(true);
+      setConcurrency(1);
+      setRetryMax(3);
+      setBackoff("exponential");
+      setRetryDelayMs(1000);
+    }
+    setError("");
+    setSaving(false);
+  }, [open, worker]);
+
+  async function handleSave() {
+    if (!queue.trim()) { setError("Queue name required"); return; }
+    setSaving(true);
+    setError("");
+    const body = {
+      name: name.trim(),
+      queue: queue.trim(),
+      code,
+      enabled,
+      concurrency,
+      retry_max: retryMax,
+      retry_backoff: backoff,
+      retry_delay_ms: retryDelayMs,
+    };
+    const res = isNew
+      ? await api.post<ApiResponse<Worker>>("/api/admin/workers", body)
+      : await api.patch<ApiResponse<Worker>>(`/api/admin/workers/${worker!.id}`, body);
+    setSaving(false);
+    if (res.error) { setError(res.error); return; }
+    onSaved();
+    onClose();
+  }
+
+  return (
+    <Dialog
+      visible={open}
+      onHide={onClose}
+      header={
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{isNew ? "New worker" : (name || "Edit worker")}</span>
+          {!isNew && worker && (
+            <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
+              {worker.id.slice(0, 12)}…
+            </span>
+          )}
+        </div>
+      }
+      modal
+      draggable={false}
+      resizable={false}
+      maximizable
+      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
+      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 12, padding: "12px 18px",
+            borderBottom: "0.5px solid var(--border-default)",
+            background: "var(--bg-surface)", flexWrap: "wrap",
+          }}
+        >
+          <FieldCol label="Name">
+            <input className="input" style={{ height: 32, width: 220, fontSize: 13 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. send-emails" />
+          </FieldCol>
+          <FieldCol label="Queue">
+            <input
+              className="input mono"
+              style={{ height: 32, width: 200, fontSize: 12 }}
+              value={queue}
+              onChange={(e) => setQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
+              placeholder="default"
+            />
+          </FieldCol>
+          <FieldCol label="Concurrency">
+            <input
+              className="input mono"
+              type="number"
+              min={1}
+              style={{ height: 32, width: 80, fontSize: 12 }}
+              value={concurrency}
+              onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </FieldCol>
+          <FieldCol label="Retries">
+            <input
+              className="input mono"
+              type="number"
+              min={0}
+              style={{ height: 32, width: 80, fontSize: 12 }}
+              value={retryMax}
+              onChange={(e) => setRetryMax(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </FieldCol>
+          <FieldCol label="Backoff">
+            <Dropdown
+              value={backoff}
+              options={[
+                { label: "Exponential", value: "exponential" },
+                { label: "Fixed",       value: "fixed" },
+              ]}
+              onChange={(e) => setBackoff(e.value)}
+              style={{ width: 140, height: 32 }}
+            />
+          </FieldCol>
+          <FieldCol label="Delay (ms)">
+            <input
+              className="input mono"
+              type="number"
+              min={50}
+              style={{ height: 32, width: 100, fontSize: 12 }}
+              value={retryDelayMs}
+              onChange={(e) => setRetryDelayMs(Math.max(50, Number(e.target.value) || 50))}
+            />
+          </FieldCol>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
+            <Toggle on={enabled} onChange={setEnabled} />
+            <span>Enabled</span>
+          </label>
+          <div style={{ flex: 1 }} />
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <CodeEditor
+              value={code}
+              onChange={setCode}
+              language="javascript"
+              workerContext
+              height="100%"
+            />
+          </div>
+          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <span>Throw to fail (counts as a retry attempt) · Return any value to mark succeeded</span>
+            <span>·</span>
+            <span>Scheduler polls every 500ms · Single worker per queue per tick</span>
+          </div>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function FieldCol({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+// ── Jobs log tab ───────────────────────────────────────────────────────────
+const JOB_STATUSES: Array<{ label: string; value: JobLogStatus | "" }> = [
+  { label: "All",        value: "" },
+  { label: "Queued",     value: "queued" },
+  { label: "Running",    value: "running" },
+  { label: "Succeeded",  value: "succeeded" },
+  { label: "Failed",     value: "failed" },
+  { label: "Dead",       value: "dead" },
+];
+
+function JobsLogTab() {
+  const [rows, setRows] = useState<JobLogRow[]>([]);
+  const [stats, setStats] = useState<QueueStat[]>([]);
+  const [queueFilter, setQueueFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<JobLogStatus | "">("");
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<JobLogRow | null>(null);
+
+  async function load() {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (queueFilter) params.set("queue", queueFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    params.set("page", String(page));
+    params.set("perPage", "50");
+    const [j, s] = await Promise.all([
+      api.get<{ data: JobLogRow[] }>(`/api/admin/queues/jobs?${params.toString()}`),
+      api.get<ApiResponse<QueueStat[]>>("/api/admin/queues/stats"),
+    ]);
+    setRows(j.data ?? []);
+    if (s.data) setStats(s.data);
+    setLoading(false);
+  }
+  useEffect(() => { void load(); }, [queueFilter, statusFilter, page]);
+
+  async function handleRetry(j: JobLogRow) {
+    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/admin/queues/jobs/${j.id}/retry`, {});
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Job re-queued", "check");
+    load();
+  }
+
+  async function handleDiscard(j: JobLogRow) {
+    const ok = await confirm({
+      title: "Discard job",
+      message: `Discard job ${j.id.slice(0, 8)}…? Audit trail will be lost.`,
+      danger: true,
+      confirmLabel: "Discard",
+    });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<null>>(`/api/admin/queues/jobs/${j.id}`);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Job discarded", "trash");
+    load();
+  }
+
+  const queueOptions = [{ label: "All queues", value: "" }, ...stats.map((s) => ({ label: s.queue, value: s.queue }))];
+
+  return (
+    <>
+      <div style={{ padding: "12px 20px 0", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <Dropdown
+          value={queueFilter}
+          options={queueOptions}
+          onChange={(e) => { setPage(1); setQueueFilter(e.value); }}
+          style={{ height: 32, minWidth: 180 }}
+        />
+        <Dropdown
+          value={statusFilter}
+          options={JOB_STATUSES}
+          onChange={(e) => { setPage(1); setStatusFilter(e.value); }}
+          style={{ height: 32, minWidth: 140 }}
+        />
+        <button className="btn btn-ghost" onClick={load} title="Refresh">
+          <Icon name="refresh" size={12} /> Refresh
+        </button>
+        <div style={{ flex: 1 }} />
+        <div className="muted" style={{ fontSize: 11, display: "flex", gap: 12 }}>
+          {stats.map((s) => (
+            <span key={s.queue} style={{ fontFamily: "var(--font-mono)" }}>
+              <span style={{ color: "var(--text-secondary)" }}>{s.queue}:</span>{" "}
+              <span style={{ color: "var(--accent-light)" }}>{s.queued}q</span>{" "}
+              <span style={{ color: "var(--warning)" }}>{s.running}r</span>{" "}
+              <span style={{ color: "var(--danger)" }}>{s.dead}☠</span>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="app-body">
+        <div className="table-wrap">
+          {loading ? (
+            <div className="empty">Loading…</div>
+          ) : rows.length === 0 ? (
+            <div className="empty">No jobs match the current filters.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ width: 110 }}>Status</th>
+                  <th style={{ width: 130 }}>Queue</th>
+                  <th>Job id</th>
+                  <th style={{ width: 60, textAlign: "right" }}>Try</th>
+                  <th style={{ width: 130 }}>Enqueued</th>
+                  <th style={{ width: 130 }}>Finished</th>
+                  <th style={{ width: 130, textAlign: "right" }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((j) => (
+                  <tr key={j.id}>
+                    <td>
+                      <span className={`badge ${jobBadgeClass(j.status)}`}>{j.status}</span>
+                    </td>
+                    <td className="mono-cell" style={{ fontSize: 12 }}>{j.queue}</td>
+                    <td className="mono-cell" style={{ fontSize: 11, cursor: "pointer" }} onClick={() => setSelected(j)}>
+                      {j.id.slice(0, 16)}…
+                    </td>
+                    <td className="mono-cell" style={{ textAlign: "right", fontSize: 12 }}>{j.attempt}</td>
+                    <td className="muted mono-cell" style={{ fontSize: 11 }}>{fmtRelTime(j.enqueued_at)}</td>
+                    <td className="muted mono-cell" style={{ fontSize: 11 }}>{fmtRelTime(j.finished_at)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
+                        {(j.status === "failed" || j.status === "dead" || j.status === "succeeded") && (
+                          <button className="btn-icon" onClick={() => handleRetry(j)} title="Re-queue">
+                            <Icon name="refresh" size={11} />
+                          </button>
+                        )}
+                        {j.status !== "running" && (
+                          <button className="btn-icon danger" onClick={() => handleDiscard(j)} title="Discard">
+                            <Icon name="trash" size={12} />
+                          </button>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div style={{ padding: "8px 20px", display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+          <button className="btn btn-ghost" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            <Icon name="chevronLeft" size={12} /> Prev
+          </button>
+          <span className="muted mono" style={{ fontSize: 11 }}>page {page}</span>
+          <button className="btn btn-ghost" disabled={rows.length < 50} onClick={() => setPage((p) => p + 1)}>
+            Next <Icon name="chevronRight" size={12} />
+          </button>
+        </div>
+      </div>
+
+      <Dialog
+        visible={!!selected}
+        onHide={() => setSelected(null)}
+        header={selected ? `Job ${selected.id.slice(0, 12)}…` : ""}
+        modal draggable={false} resizable={false}
+        style={{ width: 640 }}
+      >
+        {selected && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <KV k="status" v={selected.status} />
+            <KV k="queue" v={selected.queue} />
+            <KV k="worker_id" v={selected.worker_id ?? "—"} />
+            <KV k="attempt" v={String(selected.attempt)} />
+            <KV k="unique_key" v={selected.unique_key ?? "—"} />
+            <KV k="enqueued_at"  v={fmtRelTime(selected.enqueued_at)} />
+            <KV k="scheduled_at" v={fmtRelTime(selected.scheduled_at)} />
+            <KV k="started_at"   v={fmtRelTime(selected.started_at)} />
+            <KV k="finished_at"  v={fmtRelTime(selected.finished_at)} />
+            <div>
+              <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>payload</div>
+              <pre className="mono" style={{ background: "var(--bg-deep)", padding: 10, borderRadius: 6, fontSize: 11.5, maxHeight: 240, overflow: "auto" }}>
+                {tryPretty(selected.payload)}
+              </pre>
+            </div>
+            {selected.error && (
+              <div>
+                <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>error</div>
+                <pre className="mono" style={{ background: "rgba(248,113,113,0.08)", color: "#fca5a5", padding: 10, borderRadius: 6, fontSize: 11.5, maxHeight: 240, overflow: "auto" }}>
+                  {selected.error}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </Dialog>
+    </>
+  );
+}
+
+function jobBadgeClass(s: JobLogStatus): string {
+  if (s === "succeeded") return "success";
+  if (s === "running") return "warning";
+  if (s === "failed" || s === "dead") return "danger";
+  return "auth";
+}
+
+function tryPretty(s: string): string {
+  try { return JSON.stringify(JSON.parse(s), null, 2); }
+  catch { return s; }
+}
+
+function KV({ k, v }: { k: string; v: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <span className="muted mono" style={{ fontSize: 11, minWidth: 110 }}>{k}</span>
+      <span className="mono" style={{ fontSize: 12 }}>{v}</span>
+    </div>
   );
 }

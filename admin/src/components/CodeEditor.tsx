@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Editor, { loader, type BeforeMount, type OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -149,6 +149,163 @@ interface HookHelpers {
   log(...args: unknown[]): void;
   /** Send email (pending SMTP) */
   email(opts: { to: string; subject: string; body: string }): Promise<void>;
+  /**
+   * Enqueue a job onto a named queue. Returns the new job id, or the existing
+   * one when \`uniqueKey\` matched a non-finished job (\`deduped: true\`).
+   */
+  enqueue(
+    queue: string,
+    payload: unknown,
+    opts?: {
+      delay?: number;
+      uniqueKey?: string;
+      retries?: number;
+      backoff?: "exponential" | "fixed";
+      retryDelayMs?: number;
+    }
+  ): Promise<{ jobId: string; deduped: boolean }>;
+  /**
+   * Record a custom policy decision on the active request log (records API).
+   * No-op outside an HTTP request context (cron jobs, post-cascade hooks, etc.).
+   * Multiple calls accumulate.
+   */
+  recordRule(opts: {
+    /** Logical name of the rule (e.g. "custom-quota") */
+    rule: string;
+    /** Defaults to the active hook's collection */
+    collection?: string;
+    /** Optional human-readable expression text */
+    expression?: string | null;
+    outcome: "allow" | "deny" | "filter";
+    reason: string;
+  }): void;
+
+  // ── Extra namespaces (phase 2: PocketBase JSVM parity) ────────────────────
+  security: {
+    /** Hex digest of \`data\`. */
+    hash(alg: "sha256" | "sha384" | "sha512", data: string | Uint8Array): Promise<string>;
+    /** Hex HMAC of \`data\` with \`key\`. */
+    hmac(alg: "sha256" | "sha384" | "sha512", key: string | Uint8Array, data: string | Uint8Array): Promise<string>;
+    /** Random hex (default) or base64url string. \`byteLen\` is the entropy in bytes. */
+    randomString(byteLen: number, alphabet?: "hex" | "base64url"): string;
+    randomBytes(len: number): Uint8Array;
+    /** Sign a JWT (HS256). \`expiresIn\` accepts seconds or "1h", "7d", etc. */
+    jwtSign(
+      payload: Record<string, unknown>,
+      secret: string,
+      opts?: { expiresIn?: number | string; issuer?: string; audience?: string }
+    ): Promise<string>;
+    /** Verify a JWT (HS256). Throws on failure. */
+    jwtVerify(
+      token: string,
+      secret: string,
+      opts?: { issuer?: string; audience?: string }
+    ): Promise<Record<string, unknown>>;
+    /** AES-GCM encrypt with the server-configured key. */
+    aesEncrypt(plaintext: string): Promise<string>;
+    aesDecrypt(ciphertext: string): Promise<string>;
+    constantTimeEqual(a: string, b: string): boolean;
+  };
+  path: {
+    join(...parts: string[]): string;
+    basename(p: string, ext?: string): string;
+    dirname(p: string): string;
+    /** Extension including the leading dot ("" if none). */
+    ext(p: string): string;
+    normalize(p: string): string;
+  };
+  template: {
+    /** Render \`{{var}}\` and \`{{#if path}}...{{/if}}\` against \`vars\`. NOT html-escaped. */
+    render(template: string, vars: Record<string, unknown>): string;
+    escapeHtml(s: string): string;
+  };
+  http: {
+    request(opts: {
+      url: string;
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+      headers?: Record<string, string>;
+      body?: string | Uint8Array | Record<string, unknown> | null;
+      json?: boolean;
+      retries?: number;
+      retryDelayMs?: number;
+      timeoutMs?: number;
+    }): Promise<{
+      status: number;
+      ok: boolean;
+      headers: Record<string, string>;
+      text: string;
+      json?: unknown;
+    }>;
+    getJson<T = unknown>(url: string, headers?: Record<string, string>): Promise<T>;
+    postJson<T = unknown>(url: string, body: unknown, headers?: Record<string, string>): Promise<T>;
+  };
+  util: {
+    sleep(ms: number): Promise<void>;
+    /** Safe JSON.parse — returns null on invalid input. */
+    unmarshal<T = unknown>(s: string): T | null;
+    readerToString(input: ReadableStream<Uint8Array> | Response): Promise<string>;
+  };
+  db: {
+    /** Run a SELECT and return rows. Bind params positionally (\`?\`) or named (\`:name\`). */
+    query<T = Record<string, any>>(sql: string, ...params: any[]): T[];
+    queryOne<T = Record<string, any>>(sql: string, ...params: any[]): T | null;
+    /** Run INSERT / UPDATE / DELETE. */
+    exec(sql: string, ...params: any[]): { changes: number; lastInsertRowid: number | bigint };
+    /** Run multiple statements at once (no parameters). For migrations only. */
+    execMulti(sql: string): void;
+  };
+  fs: {
+    /** Read file as UTF-8 text. */
+    read(path: string): Promise<string>;
+    readBytes(path: string): Promise<Uint8Array>;
+    /** Write file (overwrites). Creates parent dir if missing. */
+    write(path: string, data: string | Uint8Array): Promise<void>;
+    append(path: string, data: string | Uint8Array): Promise<void>;
+    exists(path: string): Promise<boolean>;
+    stat(path: string): Promise<{ size: number; isFile: boolean; isDirectory: boolean; mtime: number }>;
+    list(dir: string): Promise<string[]>;
+    mkdir(dir: string, opts?: { recursive?: boolean }): Promise<void>;
+    remove(path: string, opts?: { recursive?: boolean }): Promise<void>;
+    copy(src: string, dst: string): Promise<void>;
+    /** Best-effort MIME type guess from extension. */
+    mimeOf(path: string): string;
+  };
+  os: {
+    env(name: string): string;
+    cwd(): string;
+    platform(): string;
+    arch(): string;
+    hostname(): string;
+  };
+  mails: {
+    send(opts: {
+      to: string;
+      cc?: string;
+      bcc?: string;
+      replyTo?: string;
+      from?: string;
+      subject: string;
+      text?: string;
+      html?: string;
+      attachments?: Array<{
+        filename: string;
+        content: string | Uint8Array;
+        contentType?: string;
+      }>;
+    }): Promise<{ messageId: string }>;
+  };
+  cron: {
+    /** Add or replace a cron job by name. Schedule is standard 5-field UTC cron. */
+    add(opts: {
+      name: string;
+      schedule: string;
+      code: string;
+      enabled?: boolean;
+    }): Promise<{ id: string }>;
+    /** Remove a cron job by name. */
+    remove(name: string): Promise<boolean>;
+    list(): Promise<{ id: string; name: string; schedule: string; enabled: boolean }[]>;
+  };
 }
 `;
 
@@ -222,6 +379,27 @@ interface JobContext {
 }
 
 declare const ctx: JobContext;
+`;
+}
+
+function buildWorkerCtxDecl(): string {
+  return `
+${HOOK_BASE_DECL}
+
+interface WorkerContext {
+  /** The enqueued payload, JSON-decoded */
+  payload: any;
+  /** 1-indexed attempt counter (incremented on each retry) */
+  attempt: number;
+  /** Queue name this job came from */
+  queue: string;
+  /** Job id (matches the row in vaultbase_jobs_log) */
+  jobId: string;
+  /** Helper utilities (same as hook helpers) */
+  helpers: HookHelpers;
+}
+
+declare const ctx: WorkerContext;
 `;
 }
 
@@ -350,6 +528,7 @@ export interface CodeEditorProps {
   hookFields?: FieldDef[];
   routeContext?: boolean;
   jobContext?: boolean;
+  workerContext?: boolean;
   /** Schema for SQL autocomplete — tables + columns. */
   sqlSchema?: SqlSchema;
   /** Diagnostic markers to publish on the model (e.g. SQL parse errors from server). */
@@ -360,6 +539,10 @@ export interface CodeEditorProps {
     severity?: "error" | "warning" | "info";
   }>;
   readOnly?: boolean;
+  /** Render a status strip below the editor (cursor pos, lang, ok/error count). */
+  statusStrip?: boolean;
+  /** File-name shown in the optional toolbar tab strip. */
+  fileName?: string;
 }
 
 export function CodeEditor({
@@ -372,18 +555,25 @@ export function CodeEditor({
   hookFields = [],
   routeContext = false,
   jobContext = false,
+  workerContext = false,
   sqlSchema,
   markers,
   readOnly = false,
+  statusStrip = false,
+  fileName,
 }: CodeEditorProps) {
   const disposableRef = useRef<monaco.IDisposable | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const [cursor, setCursor] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
+  const [problems, setProblems] = useState<{ errors: number; warnings: number }>({ errors: 0, warnings: 0 });
 
   // Re-inject ctx types when context changes
   useEffect(() => {
-    if (!hookContext && !routeContext && !jobContext) return;
+    if (!hookContext && !routeContext && !jobContext && !workerContext) return;
     disposableRef.current?.dispose();
-    const decl = jobContext
+    const decl = workerContext
+      ? buildWorkerCtxDecl()
+      : jobContext
       ? buildJobCtxDecl()
       : routeContext
       ? buildRouteCtxDecl()
@@ -393,7 +583,7 @@ export function CodeEditor({
       disposableRef.current?.dispose();
       disposableRef.current = null;
     };
-  }, [hookContext, routeContext, jobContext, hookCollectionName, JSON.stringify(hookFields)]);
+  }, [hookContext, routeContext, jobContext, workerContext, hookCollectionName, JSON.stringify(hookFields)]);
 
   // Refresh SQL schema for the global completion provider whenever it changes.
   useEffect(() => {
@@ -443,19 +633,41 @@ export function CodeEditor({
   const handleMount: OnMount = (editor, m) => {
     editorRef.current = editor;
     m.editor.setTheme("vaultbase-dark");
+    if (!statusStrip) return;
+    editor.onDidChangeCursorPosition((e) => {
+      setCursor({ line: e.position.lineNumber, col: e.position.column });
+    });
+    const updateProblems = () => {
+      const model = editor.getModel();
+      if (!model) return;
+      const all = m.editor.getModelMarkers({ resource: model.uri });
+      let errors = 0, warnings = 0;
+      for (const mk of all) {
+        if (mk.severity === m.MarkerSeverity.Error) errors++;
+        else if (mk.severity === m.MarkerSeverity.Warning) warnings++;
+      }
+      setProblems({ errors, warnings });
+    };
+    updateProblems();
+    m.editor.onDidChangeMarkers(updateProblems);
   };
+
+  const wrapperHeight = typeof height === "number" ? `${height}px` : height;
 
   return (
     <div
+      className="vb-editor"
       style={{
-        border: "0.5px solid var(--border-default)",
-        borderRadius: 7,
-        overflow: "hidden",
-        background: "#1f1f1f",
-        height: typeof height === "number" ? `${height}px` : height,
+        height: wrapperHeight,
         minHeight: 200,
       }}
     >
+      {fileName !== undefined && (
+        <div className="vb-editor-bar">
+          <span className="vb-editor-tab on">{fileName}</span>
+        </div>
+      )}
+      <div className="vb-editor-body">
       <Editor
         height="100%"
         defaultLanguage={language}
@@ -494,6 +706,22 @@ export function CodeEditor({
           readOnly,
         }}
       />
+      </div>
+      {statusStrip && (
+        <div className="vb-editor-status">
+          <span className="ok-dot" data-ok={problems.errors === 0 ? "true" : "false"} />
+          <span>
+            {problems.errors === 0 && problems.warnings === 0
+              ? "ok"
+              : `${problems.errors} error${problems.errors === 1 ? "" : "s"}` +
+                (problems.warnings ? ` · ${problems.warnings} warning${problems.warnings === 1 ? "" : "s"}` : "")}
+          </span>
+          <span className="sep">·</span>
+          <span>{language}</span>
+          <span className="spacer" />
+          <span>Ln {cursor.line}, Col {cursor.col}</span>
+        </div>
+      )}
     </div>
   );
 }

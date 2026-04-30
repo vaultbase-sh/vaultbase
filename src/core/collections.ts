@@ -6,7 +6,7 @@ import { collections, type Collection, type NewCollection } from "../db/schema.t
 export type FieldType =
   | "text" | "number" | "bool" | "file" | "relation"
   | "select" | "autodate" | "email" | "url" | "date" | "json"
-  | "password" | "editor" | "geoPoint";
+  | "password" | "editor" | "geoPoint" | "vector";
 
 export interface FieldOptions {
   min?: number;
@@ -31,6 +31,12 @@ export interface FieldOptions {
    * query param signed by an admin via POST .../token.
    */
   protected?: boolean;
+  /**
+   * Vector-only. Number of dimensions in the embedding (1-4096). All values
+   * stored under a vector field must be numeric arrays of exactly this length;
+   * shorter / longer arrays fail validation.
+   */
+  dimensions?: number;
 }
 
 export type CascadeMode = NonNullable<FieldOptions["cascade"]>;
@@ -80,9 +86,34 @@ export interface FieldDef {
 
 const cache = new Map<string, Collection>();
 
+/**
+ * Synchronous accessor used by hot-path consumers (rule SQL compiler) that
+ * cannot await. Returns `null` if the collection isn't already cached;
+ * callers fall through to whatever conservative behavior they prefer in the
+ * cold-cache case. Async `getCollection` warms this cache on every read.
+ */
+export function getCollectionCached(nameOrId: string): Collection | null {
+  return cache.get(nameOrId) ?? null;
+}
+
+/**
+ * Lazy-imported drop of the records-layer prepared-statement cache so a
+ * schema change doesn't keep returning rows from a stale plan. Lazy because
+ * `core/collections.ts` is loaded before `core/records.ts`.
+ */
+async function clearPreparedStatementsOnSchemaChange(): Promise<void> {
+  try {
+    const mod = await import("./records.ts");
+    mod.invalidatePreparedStatements?.();
+  } catch { /* records module not loaded yet — nothing to clear */ }
+}
+
 /** Reset the in-memory collection cache. Exported for tests + DB-reset hooks. */
 export function _resetCollectionCache(): void {
   cache.clear();
+  // Schema mutated — drop cached prepared statements (their SQL embeds table
+  // / column names that may have changed).
+  void clearPreparedStatementsOnSchemaChange();
 }
 
 export function parseFields(raw: string): FieldDef[] {
@@ -110,8 +141,18 @@ function rawClient(): Database {
   return (getDb() as unknown as { $client: Database }).$client;
 }
 
+/** SQLite identifier quoting that escapes embedded `"` (DDL-safe). */
 function quoteIdent(name: string): string {
-  return `"${name}"`;
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/** Identifier shape allowed for collection / field / table names. */
+const SQL_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
+export function assertSqlIdent(name: string, kind: string): void {
+  if (!SQL_IDENT_RE.test(name)) {
+    throw new Error(`invalid ${kind} name '${name}' — must match ${SQL_IDENT_RE}`);
+  }
 }
 
 function colDefSql(field: FieldDef): string {
@@ -123,6 +164,8 @@ function colDefSql(field: FieldDef): string {
 
 /** Create the per-collection user table. */
 export function createUserTable(collectionName: string, fields: FieldDef[]): void {
+  assertSqlIdent(collectionName, "collection");
+  for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
   const tname = quoteIdent(userTableName(collectionName));
   const userColDefs = fields
     .filter((f) => !f.system && f.type !== "autodate")
@@ -138,6 +181,7 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
 
 /** Drop the per-collection user table. */
 export function dropUserTable(collectionName: string): void {
+  assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
   rawClient().exec(`DROP TABLE IF EXISTS ${tname}`);
 }
@@ -153,13 +197,16 @@ export function dropUserTable(collectionName: string): void {
 export function validateViewQuery(query: string): void {
   const q = query.trim();
   if (!q) throw new Error("View query is empty");
-  // Strip a trailing semicolon if any, then reject any remaining ones.
   const body = q.replace(/;\s*$/, "");
   if (body.includes(";")) throw new Error("View query must be a single statement");
-  if (!/^select\b/i.test(body)) throw new Error("View query must begin with SELECT");
-  // Forbid statements that mutate state, even in CTEs/subqueries.
-  const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex)\b/i;
-  if (banned.test(body)) throw new Error("View query may only SELECT");
+  // Strip /* ... */ and -- ... line comments before keyword scanning so
+  // attackers can't hide banned tokens inside comments.
+  const stripped = body
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*/g, " ");
+  if (!/^select\b/i.test(stripped.trim())) throw new Error("View query must begin with SELECT");
+  const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex|load_extension|with|recursive)\b/i;
+  if (banned.test(stripped)) throw new Error("View query may only SELECT");
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */
@@ -179,6 +226,23 @@ export function inferViewColumns(query: string): string[] {
   return names;
 }
 
+/**
+ * Run the view query with a LIMIT clause and return the resulting rows.
+ * Wrapping in a subquery preserves whatever ORDER BY / LIMIT the admin wrote
+ * (their own clamps stack with ours). Rows are returned as plain objects keyed
+ * by column name — useful for the admin UI's "preview rows" button.
+ */
+export function previewViewRows(query: string, limit = 5): { columns: string[]; rows: Array<Record<string, unknown>> } {
+  validateViewQuery(query);
+  const body = query.trim().replace(/;\s*$/, "");
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const wrapped = `SELECT * FROM (${body}) LIMIT ${safeLimit}`;
+  const stmt = rawClient().prepare(wrapped);
+  const rows = stmt.all() as Array<Record<string, unknown>>;
+  const columns = (stmt as unknown as { columnNames?: string[] }).columnNames ?? Object.keys(rows[0] ?? {});
+  return { columns, rows };
+}
+
 /** Build default text-typed field defs from inferred column names. id/created/updated remain implicit. */
 export function fieldsFromViewColumns(columns: string[]): FieldDef[] {
   return columns
@@ -187,8 +251,92 @@ export function fieldsFromViewColumns(columns: string[]): FieldDef[] {
     .map((c) => ({ name: c, type: "text" as const, required: false }));
 }
 
+const VIEW_META_COLUMNS = new Set(["id", "created", "created_at", "updated", "updated_at"]);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const URL_RE = /^https?:\/\//;
+const BOOL_NAME_RE = /^(is_|has_)|(_enabled)$/;
+
+/**
+ * Decide a FieldType from a single sample value + the column name. Names matter
+ * for the bool/date hints (a 0/1 column called `count` shouldn't become bool;
+ * a 10-digit unix epoch in `published_at` should become date).
+ */
+function classifyValue(value: unknown, columnName: string): FieldType {
+  if (value === null || value === undefined) return "text";
+
+  if (typeof value === "boolean") return "bool";
+
+  if (typeof value === "number" && !isNaN(value)) {
+    // 0/1 with a bool-ish column name → bool. Otherwise number.
+    if ((value === 0 || value === 1) && BOOL_NAME_RE.test(columnName)) return "bool";
+    // 10-digit unix epoch in *_at column → date.
+    if (
+      Number.isInteger(value) &&
+      value >= 1_000_000_000 &&
+      value <= 9_999_999_999 &&
+      columnName.endsWith("_at")
+    ) {
+      return "date";
+    }
+    return "number";
+  }
+
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (ISO_DATE_RE.test(s)) return "date";
+    // Numeric string that's a 10-digit unix epoch in *_at column → date.
+    if (/^\d{10}$/.test(s) && columnName.endsWith("_at")) {
+      const n = Number(s);
+      if (n >= 1_000_000_000 && n <= 9_999_999_999) return "date";
+    }
+    if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+      return "json";
+    }
+    if (EMAIL_RE.test(s)) return "email";
+    if (URL_RE.test(s)) return "url";
+    return "text";
+  }
+
+  // Plain JS object/array (e.g. JSON column already deserialized) → json.
+  if (typeof value === "object") return "json";
+
+  return "text";
+}
+
+/**
+ * Build properly-typed field defs by sniffing the first non-null sample row of
+ * a view query. SQLite views don't carry typed metadata for arbitrary
+ * expressions, so we run `SELECT * FROM (<body>) LIMIT 1` and classify each
+ * column's first observed value. Columns with no sample (or all-null) fall
+ * back to "text".
+ */
+export function inferViewFields(query: string): FieldDef[] {
+  validateViewQuery(query);
+  const columns = inferViewColumns(query);
+  const userColumns = columns.filter((c) => !VIEW_META_COLUMNS.has(c));
+  if (userColumns.length === 0) return [];
+
+  // One sample row is enough — algorithm spec uses the first non-null per column.
+  let sample: Record<string, unknown> | undefined;
+  try {
+    const { rows } = previewViewRows(query, 1);
+    sample = rows[0];
+  } catch {
+    // If the query fails at execution time, fall back to text-typed fields.
+    return userColumns.map((c) => ({ name: c, type: "text" as const, required: false }));
+  }
+
+  return userColumns.map((c) => {
+    const v = sample ? sample[c] : null;
+    const type = v === null || v === undefined ? "text" : classifyValue(v, c);
+    return { name: c, type, required: false };
+  });
+}
+
 /** Create the SQLite VIEW backing a view collection. */
 export function createUserView(collectionName: string, query: string): void {
+  assertSqlIdent(collectionName, "collection");
   validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
   const body = query.trim().replace(/;\s*$/, "");
@@ -197,6 +345,7 @@ export function createUserView(collectionName: string, query: string): void {
 
 /** Drop the SQLite VIEW backing a view collection. */
 export function dropUserView(collectionName: string): void {
+  assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
   rawClient().exec(`DROP VIEW IF EXISTS ${tname}`);
 }
@@ -207,6 +356,8 @@ export function alterUserTable(
   oldFields: FieldDef[],
   newFields: FieldDef[]
 ): void {
+  assertSqlIdent(collectionName, "collection");
+  for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
   const tname = quoteIdent(userTableName(collectionName));
   const client = rawClient();
 
@@ -306,8 +457,8 @@ export async function createCollection(
     if (!data.view_query) throw new Error("View collections require a view_query");
     validateViewQuery(data.view_query);
     const incoming = parseFields(data.fields ?? "[]");
-    // If caller didn't pre-populate fields, infer column names from the query.
-    fields = incoming.length > 0 ? incoming : fieldsFromViewColumns(inferViewColumns(data.view_query));
+    // If caller didn't pre-populate fields, infer column names + types from the query.
+    fields = incoming.length > 0 ? incoming : inferViewFields(data.view_query);
   } else {
     const incoming = parseFields(data.fields ?? "[]");
     assertValidFieldsForType(type, incoming);
@@ -371,7 +522,7 @@ export async function updateCollection(
       createUserView(before.name, newQuery);
       // Re-infer fields if the caller didn't supply explicit field defs.
       if (data.fields === undefined) {
-        const inferred = fieldsFromViewColumns(inferViewColumns(newQuery));
+        const inferred = inferViewFields(newQuery);
         data = { ...data, fields: JSON.stringify(inferred) };
       }
     }

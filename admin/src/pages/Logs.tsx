@@ -59,6 +59,7 @@ export default function Logs() {
   const [page, setPage] = useState(1);
   const [methodFilter, setMethodFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [ruleOutcomeFilter, setRuleOutcomeFilter] = useState<"all" | "any" | "allow" | "deny" | "filter">("all");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showAdmin, setShowAdmin] = useState(false);
   const [search, setSearch] = useState("");
@@ -78,13 +79,14 @@ export default function Logs() {
     });
     if (appliedSearch) params.set("search", appliedSearch);
     if (minDuration && parseInt(minDuration) > 0) params.set("minDuration", minDuration);
+    if (ruleOutcomeFilter !== "all") params.set("ruleOutcome", ruleOutcomeFilter);
     const res = await api.get<ListResponse<LogEntry>>(`/api/admin/logs?${params}`);
     if (res.data) {
       setEntries(res.data);
       setTotal(res.totalItems);
     }
     setLoading(false);
-  }, [methodFilter, statusFilter, showAdmin, appliedSearch, minDuration]);
+  }, [methodFilter, statusFilter, showAdmin, appliedSearch, minDuration, ruleOutcomeFilter]);
 
   useEffect(() => {
     setLoading(true);
@@ -103,11 +105,13 @@ export default function Logs() {
   const statusClass = (s: number) =>
     s < 300 ? "status-2xx" : s < 400 ? "status-3xx" : s < 500 ? "status-4xx" : "status-5xx";
 
+  const statusBadgeClass = (s: number): string =>
+    s < 300 ? "success" : s < 400 ? "info" : s < 500 ? "warning" : "danger";
+
   return (
     <>
       <Topbar
-        title="Logs"
-        subtitle={`${total.toLocaleString()} entries · ${autoRefresh ? "live" : "paused"}`}
+        crumbs={[{ label: "Logs" }]}
         actions={
           <>
             <Dropdown
@@ -133,6 +137,19 @@ export default function Logs() {
               ]}
               onChange={(e) => { setStatusFilter(e.value); setPage(1); }}
               style={{ height: 30, minWidth: 120, fontSize: 12 }}
+            />
+            <Dropdown
+              value={ruleOutcomeFilter}
+              options={[
+                { label: "All rules",       value: "all"    },
+                { label: "Any rule eval",   value: "any"    },
+                { label: "Rule allow",      value: "allow"  },
+                { label: "Rule deny",       value: "deny"   },
+                { label: "Rule filter",     value: "filter" },
+              ]}
+              onChange={(e) => { setRuleOutcomeFilter(e.value); setPage(1); }}
+              style={{ height: 30, minWidth: 150, fontSize: 12 }}
+              title="Filter by per-request rule evaluation outcome"
             />
             <button
               className={`btn ${showAdmin ? "btn-ghost" : "btn-ghost"}`}
@@ -263,8 +280,12 @@ export default function Logs() {
           />
           <Column
             header="Status"
-            style={{ width: 80 }}
-            body={(l: LogEntry) => <span className={`mono-cell ${statusClass(l.status)}`} style={{ fontWeight: 500 }}>{l.status}</span>}
+            style={{ width: 90 }}
+            body={(l: LogEntry) => (
+              <span className={`badge ${statusBadgeClass(l.status)}`} style={{ fontSize: 10.5 }}>
+                {l.status}
+              </span>
+            )}
           />
           <Column
             header="Duration"

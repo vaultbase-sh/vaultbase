@@ -1,9 +1,8 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Dialog } from "primereact/dialog";
 import { Sidebar } from "primereact/sidebar";
-import { Toast as PrimeToast } from "primereact/toast";
 import Icon from "./Icon.tsx";
-import { useToast } from "../stores/toast.ts";
+import { useToast, type ToastSeverity } from "../stores/toast.ts";
 
 // ── FieldTypeChip ────────────────────────────────────────────────────────────
 export const FieldTypeChip: React.FC<{ type: string }> = ({ type }) => (
@@ -121,12 +120,13 @@ export const Drawer: React.FC<{
       {footer && (
         <div
           style={{
-            padding: "12px 0 0",
-            borderTop: "0.5px solid var(--border-default)",
+            padding: "12px 20px",
+            borderTop: "1px solid var(--border-subtle)",
             display: "flex",
-            gap: 8,
+            gap: "var(--space-2)",
             justifyContent: "flex-end",
-            marginTop: 16,
+            background: "var(--bg-app)",
+            margin: "16px -20px -18px",
           }}
         >
           {footer}
@@ -137,25 +137,88 @@ export const Drawer: React.FC<{
 );
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
-// Subscribes to the zustand toast store and forwards entries to PrimeReact's
-// Toast component. Mount once at the app root.
+// Custom toast host (per admin redesign §13). Bottom-right stack of
+// bg-panel-2 cards with mono icon + body + dismiss. Identical messages
+// fired in quick succession aggregate into one card with a × N counter.
+const TOAST_LIFE_MS = 3500;
+const TOAST_AGGREGATE_WINDOW_MS = 3000;
+
+interface ToastIconProps { sev: ToastSeverity }
+
+function ToastIcon({ sev }: ToastIconProps) {
+  if (sev === "error") return <Icon name="alert" size={16} style={{ color: "#ff7b7b" }} />;
+  if (sev === "warn")  return <Icon name="alert" size={16} style={{ color: "#fbbf24" }} />;
+  if (sev === "info")  return <Icon name="info"  size={16} style={{ color: "#60a5fa" }} />;
+  return <Icon name="check" size={16} style={{ color: "#4ade80" }} />;
+}
+
 export const ToastHost: React.FC = () => {
-  const toastRef = useRef<PrimeToast>(null);
   const queue = useToast((s) => s.queue);
   const dismiss = useToast((s) => s.dismiss);
-  const seen = useRef<Set<number>>(new Set());
+  const seen = useRef<Map<number, number>>(new Map()); // id → timer
+  const [counts, setCounts] = useState<Record<number, number>>({});
 
   useEffect(() => {
     for (const entry of queue) {
       if (seen.current.has(entry.id)) continue;
-      seen.current.add(entry.id);
-      toastRef.current?.show({ severity: entry.severity, detail: entry.text, life: 3000 });
-      // Drop from store after life so memory doesn't grow
-      setTimeout(() => dismiss(entry.id), 3500);
+
+      // Aggregate: fold into the most-recent visible toast with the same text.
+      const visible = queue.filter((e) => seen.current.has(e.id) || e.id === entry.id);
+      const sibling = visible.find(
+        (e) => e.id !== entry.id && e.text === entry.text && e.severity === entry.severity
+              && Date.now() - e.ts < TOAST_AGGREGATE_WINDOW_MS
+      );
+      if (sibling) {
+        // Increment sibling count, drop the new one.
+        setCounts((prev) => ({ ...prev, [sibling.id]: (prev[sibling.id] ?? 1) + 1 }));
+        // Refresh sibling timer.
+        const oldTimer = seen.current.get(sibling.id);
+        if (oldTimer) clearTimeout(oldTimer);
+        const newTimer = window.setTimeout(() => dismiss(sibling.id), TOAST_LIFE_MS);
+        seen.current.set(sibling.id, newTimer);
+        // Immediately remove the new dup from store.
+        dismiss(entry.id);
+        continue;
+      }
+
+      const timer = window.setTimeout(() => dismiss(entry.id), TOAST_LIFE_MS);
+      seen.current.set(entry.id, timer);
+    }
+    // Clean up timers for entries that left the queue.
+    for (const [id, timer] of seen.current.entries()) {
+      if (!queue.find((e) => e.id === id)) {
+        clearTimeout(timer);
+        seen.current.delete(id);
+        setCounts((prev) => {
+          if (!(id in prev)) return prev;
+          const { [id]: _drop, ...rest } = prev;
+          return rest;
+        });
+      }
     }
   }, [queue, dismiss]);
 
-  return <PrimeToast ref={toastRef} position="bottom-right" />;
+  return (
+    <div className="toast-host">
+      {queue.map((entry) => {
+        const count = counts[entry.id] ?? 1;
+        return (
+          <div key={entry.id} className={`vb-toast sev-${entry.severity}`} role="status">
+            <span className="ic"><ToastIcon sev={entry.severity} /></span>
+            <span className="body">{entry.text}</span>
+            {count > 1 && <span className="dup">×{count}</span>}
+            <button
+              className="dismiss"
+              onClick={() => dismiss(entry.id)}
+              aria-label="Dismiss"
+            >
+              <Icon name="x" size={11} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
 };
 
 // Legacy interface kept for pages that pass icon strings

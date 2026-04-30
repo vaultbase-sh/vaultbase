@@ -3,10 +3,10 @@ import { detectFormat, parseThumbSpec } from "../core/image.ts";
 
 describe("parseThumbSpec", () => {
   it.each([
-    ["100x100", { width: 100, height: 100 }],
-    ["1x1",     { width: 1,   height: 1   }],
-    ["64x96",   { width: 64,  height: 96  }],
-    ["4096x4096", { width: 4096, height: 4096 }],
+    ["100x100", { width: 100, height: 100, fit: "contain" as const }],
+    ["1x1",     { width: 1,   height: 1,   fit: "contain" as const }],
+    ["64x96",   { width: 64,  height: 96,  fit: "contain" as const }],
+    ["4096x4096", { width: 4096, height: 4096, fit: "contain" as const }],
   ])("accepts %s", (input, expected) => {
     expect(parseThumbSpec(input)).toEqual(expected);
   });

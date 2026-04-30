@@ -2,22 +2,39 @@ const BASE = "";
 
 const PUBLIC_PATHS = ["/api/admin/setup", "/api/admin/auth/login", "/api/auth/refresh"];
 
-function getToken() {
-  return localStorage.getItem("vaultbase_admin_token") ?? "";
+const TOKEN_STORAGE_KEY = "vaultbase_admin_token";
+
+/**
+ * Token stored in `sessionStorage`. Survives F5 refresh within the same tab
+ * but is cleared on tab close — a smaller XSS-persistence window than
+ * `localStorage`. The HttpOnly cookie set by the same login response is the
+ * cross-tab persistence layer; this storage is the fallback for environments
+ * where the cookie can't ride (Vite dev proxy stripping Set-Cookie, etc.).
+ */
+export function setMemoryToken(token: string | null): void {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch { /* private mode, full quota — ignore */ }
+}
+
+export function getMemoryToken(): string | null {
+  try { return sessionStorage.getItem(TOKEN_STORAGE_KEY); }
+  catch { return null; }
 }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const memToken = getMemoryToken();
+  if (memToken) headers.Authorization = `Bearer ${memToken}`;
   const res = await fetch(BASE + path, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getToken()}`,
-    },
+    credentials: "same-origin",
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  // Auto-redirect to login on 401 (except for explicitly public endpoints)
   if (res.status === 401 && !PUBLIC_PATHS.some((p) => path.startsWith(p))) {
-    localStorage.removeItem("vaultbase_admin_token");
+    setMemoryToken(null);
     if (!window.location.pathname.startsWith("/_/login") && !window.location.pathname.startsWith("/_/setup")) {
       window.location.href = "/_/login";
     }

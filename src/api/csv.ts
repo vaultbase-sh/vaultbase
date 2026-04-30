@@ -1,8 +1,8 @@
 import Elysia from "elysia";
 import * as jose from "jose";
-import { encodeCsv, parseCsvToObjects } from "../core/csv.ts";
-import { getCollection, parseFields } from "../core/collections.ts";
-import { createRecord, listRecords } from "../core/records.ts";
+import { encodeRow, parseCsvToObjects } from "../core/csv.ts";
+import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
+import { createRecord, listRecords, type RecordWithMeta } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
@@ -59,10 +59,76 @@ function decodeCell(raw: string, type: string): unknown {
   return raw;
 }
 
+/**
+ * Subset of FieldDef that only requires `name` and `type` — the export pipeline
+ * doesn't need (or want) the rest. Kept narrow so callers can pass either the
+ * full FieldDef[] or a hand-rolled shape from tests.
+ */
+export interface CsvColumn {
+  name: string;
+  type?: string;
+}
+
+/**
+ * Filter a collection's parsed fields down to the columns the CSV export
+ * surfaces. System / implicit / autodate / password fields are stripped; the
+ * remaining fields keep their original schema order.
+ *
+ * Single source of truth so the streaming and (test-only) buffered code paths
+ * agree on column derivation.
+ */
+export function exportColumnsForFields(fields: FieldDef[]): FieldDef[] {
+  return fields.filter(
+    (f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "password"
+  );
+}
+
+/** Header row layout: id, created, updated, then the user-defined columns. */
+export function exportHeaderRow(columns: CsvColumn[]): string[] {
+  return ["id", "created", "updated", ...columns.map((c) => c.name)];
+}
+
+/**
+ * Format a batch of records into 2D row-array form ready for CSV encoding.
+ * Object/array fields are JSON-stringified; null/undefined become "".
+ *
+ * Exported so the streaming export and any in-memory caller share identical
+ * row-formatting semantics — guarantees byte-for-byte equivalence with the
+ * pre-streaming implementation.
+ */
+export function formatRowsForCsv(records: RecordWithMeta[], columns: CsvColumn[]): unknown[][] {
+  const out: unknown[][] = [];
+  for (const r of records) {
+    const row: unknown[] = [r.id, r.created, r.updated];
+    for (const col of columns) {
+      const v = (r as unknown as Record<string, unknown>)[col.name];
+      if (v === null || v === undefined) {
+        row.push("");
+      } else if (Array.isArray(v) || (typeof v === "object" && v !== null)) {
+        row.push(JSON.stringify(v));
+      } else {
+        row.push(v);
+      }
+    }
+    out.push(row);
+  }
+  return out;
+}
+
 export function makeCsvPlugin(jwtSecret: string) {
   return new Elysia({ name: "csv" })
-    // Export all rows of a base collection as CSV.
+    // Export all rows of a base collection as CSV — streamed.
+    //
+    // Why streaming: at ~100k rows the buffered version (encodeCsv on the full
+    // row matrix) blows out memory. Here we page through `listRecords` and
+    // enqueue each page's CSV bytes as we go, so the response size is bounded
+    // by the page size, not the table size.
+    //
+    // Output is byte-identical to the previous buffered implementation:
+    //   header CRLF row1 CRLF row2 ... CRLF rowN     (no trailing CRLF)
     .get("/api/admin/export/:collection", async ({ params, request, set }) => {
+      // Atomic auth/rule check — runs synchronously before we hand back a Response
+      // so unauthorized callers get a plain JSON error, never a stream.
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
@@ -74,40 +140,78 @@ export function makeCsvPlugin(jwtSecret: string) {
         return { error: `Export only supported on base collections (got ${col.type})`, code: 422 };
       }
 
-      const fields = parseFields(col.fields).filter(
-        (f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "password"
-      );
-      const headers = ["id", "created", "updated", ...fields.map((f) => f.name)];
+      const fields = exportColumnsForFields(parseFields(col.fields));
+      const headerCols = exportHeaderRow(fields);
 
-      // Stream-friendly: page through results to handle large collections.
       const PAGE = 500;
-      const rows: unknown[][] = [];
+      const encoder = new TextEncoder();
+      let cancelled = false;
       let page = 1;
-      while (true) {
-        const result = await listRecords(col.name, { page, perPage: PAGE });
-        for (const r of result.data) {
-          rows.push([
-            r.id,
-            r.created,
-            r.updated,
-            ...fields.map((f) => {
-              const v = (r as unknown as Record<string, unknown>)[f.name];
-              if (v === null || v === undefined) return "";
-              if (Array.isArray(v) || (typeof v === "object" && v !== null)) {
-                return JSON.stringify(v);
-              }
-              return v;
-            }),
-          ]);
-        }
-        if (result.totalItems <= page * PAGE) break;
-        page++;
-      }
+      // Pre-fetched next page kept in flight so we can `enqueue` the previous
+      // batch and `await` the next one without serialising network/db latency
+      // and CSV formatting time.
+      let nextBatch: Promise<Awaited<ReturnType<typeof listRecords>>> | null = null;
 
-      const body = encodeCsv(headers, rows);
-      set.headers["Content-Type"] = "text/csv; charset=utf-8";
-      set.headers["Content-Disposition"] = `attachment; filename="${col.name}.csv"`;
-      return body;
+      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE });
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          // Header first — never delayed by a query. Writing it from start()
+          // means clients see the column row immediately, even on slow tables.
+          controller.enqueue(encoder.encode(encodeRow(headerCols)));
+          nextBatch = fetchPage(page);
+        },
+        async pull(controller) {
+          if (cancelled || !nextBatch) {
+            controller.close();
+            return;
+          }
+          let result;
+          try {
+            result = await nextBatch;
+          } catch (err) {
+            controller.error(err);
+            return;
+          }
+          if (cancelled) return; // client disconnected while we awaited
+
+          // Determine if this is the last page BEFORE enqueueing, so we can
+          // stop the next-page fetch from kicking off needlessly.
+          const isLast = result.totalItems <= page * PAGE;
+          if (!isLast) {
+            page++;
+            nextBatch = fetchPage(page);
+          } else {
+            nextBatch = null;
+          }
+
+          const rows = formatRowsForCsv(result.data, fields);
+          for (const row of rows) {
+            // Each row is prefixed with CRLF so the final byte is always the
+            // last row's last character — matching encodeCsv()'s no-trailing-
+            // newline contract.
+            controller.enqueue(encoder.encode("\r\n" + encodeRow(row)));
+          }
+
+          if (isLast) controller.close();
+        },
+        cancel() {
+          // Client disconnected mid-stream: stop paging. Any in-flight
+          // listRecords promise still resolves (it's a sync sqlite query
+          // wrapped in async), but the cancelled flag makes pull() bail
+          // before issuing further queries or enqueues.
+          cancelled = true;
+          nextBatch = null;
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${col.name}.csv"`,
+        },
+      });
     })
 
     // Import CSV rows into a base collection.

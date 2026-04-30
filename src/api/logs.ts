@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
+import { timeFor } from "../core/perf-metrics.ts";
 import {
   appendLogEntry,
   listLogDates,
@@ -20,6 +21,8 @@ export interface AuthLogContext {
   id: string;
   type: "user" | "admin";
   email?: string;
+  /** Admin id from the JWT's `impersonated_by` claim, if present. */
+  impersonated_by?: string;
 }
 
 export async function insertLog(
@@ -44,10 +47,15 @@ export async function insertLog(
     auth_id: auth?.id ?? null,
     auth_type: auth?.type ?? null,
     auth_email: auth?.email ?? null,
+    auth_impersonated_by: auth?.impersonated_by ?? null,
   };
   if (rules && rules.length > 0) entry.rules = rules;
+  // Recorded inside the request's perf timer at the call site below — keep
+  // this function pure so it stays callable from non-request paths.
   appendLogEntry(entry);
 }
+
+export type RuleOutcomeFilter = "all" | "any" | "allow" | "deny" | "filter";
 
 export interface ListLogsOptions {
   page: number;
@@ -57,6 +65,16 @@ export interface ListLogsOptions {
   includeAdmin: boolean;
   search?: string;
   minDuration?: number;
+  /**
+   * Filter by per-request rule outcome (records-API requests carry one or more
+   * `rules[]` evaluations on the log entry):
+   *   - "all"    → no filter (default)
+   *   - "any"    → only entries that have any rule eval at all
+   *   - "allow"  → at least one rule with outcome="allow"
+   *   - "deny"   → at least one rule with outcome="deny"
+   *   - "filter" → at least one rule with outcome="filter" (list_rule applied as SQL filter)
+   */
+  ruleOutcome?: RuleOutcomeFilter;
 }
 
 function matches(e: LogEntry, opts: ListLogsOptions): boolean {
@@ -77,6 +95,12 @@ function matches(e: LogEntry, opts: ListLogsOptions): boolean {
     if (!haystack.includes(q)) return false;
   }
   if (typeof opts.minDuration === "number" && opts.minDuration > 0 && e.duration_ms < opts.minDuration) return false;
+  if (opts.ruleOutcome && opts.ruleOutcome !== "all") {
+    const rules = e.rules ?? [];
+    if (rules.length === 0) return false;
+    if (opts.ruleOutcome === "any") return true;
+    if (!rules.some((r) => r.outcome === opts.ruleOutcome)) return false;
+  }
   return true;
 }
 
@@ -98,7 +122,7 @@ export async function listLogs(opts: ListLogsOptions) {
   };
 }
 
-async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLogContext | null> {
+export async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLogContext | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
   try {
@@ -110,6 +134,7 @@ async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLo
       type: aud as "user" | "admin",
     };
     if (typeof payload["email"] === "string") ctx.email = payload["email"];
+    if (typeof payload["impersonated_by"] === "string") ctx.impersonated_by = payload["impersonated_by"];
     return ctx;
   } catch {
     return null;
@@ -134,7 +159,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
-      void insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth, rules);
+      void timeFor(request, "log_write", () => insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth, rules));
     })
     .onError({ as: "global" }, async ({ request, error }) => {
       const path = new URL(request.url).pathname;
@@ -147,7 +172,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
-      void insertLog(request.method, path, status, ms, ip, auth, rules);
+      void timeFor(request, "log_write", () => insertLog(request.method, path, status, ms, ip, auth, rules));
     })
     .get(
       "/api/admin/logs",
@@ -172,6 +197,9 @@ export function makeLogsPlugin(jwtSecret: string) {
           minDuration,
         };
         if (query.search) opts.search = query.search;
+        if (query.ruleOutcome && ["all", "any", "allow", "deny", "filter"].includes(query.ruleOutcome)) {
+          opts.ruleOutcome = query.ruleOutcome as RuleOutcomeFilter;
+        }
         return listLogs(opts);
       },
       {
@@ -183,6 +211,7 @@ export function makeLogsPlugin(jwtSecret: string) {
           includeAdmin: t.Optional(t.String()),
           search: t.Optional(t.String()),
           minDuration: t.Optional(t.String()),
+          ruleOutcome: t.Optional(t.String()),
         }),
       }
     )

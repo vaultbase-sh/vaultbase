@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
@@ -160,6 +160,150 @@ function useRelationCache(fields: FieldDef[], enabled: boolean): RelationCache {
   return cache;
 }
 
+// ── File preview helpers ────────────────────────────────────────────────────
+
+/**
+ * In-memory cache of protected-file tokens keyed by filename. Tokens are
+ * minted lazily via `POST /api/files/:collection/:recordId/:field/:filename/token`
+ * and reused until they expire (~1h server-side). We refresh ~60s before
+ * expiry to dodge edge-of-window failures.
+ *
+ * Module-level so multiple FileFieldPreview instances on the same page (e.g.
+ * the records list cell + the open drawer) share one mint per filename.
+ */
+type FileToken = { token: string; expires_at: number };
+const fileTokenCache = new Map<string, FileToken>();
+const fileTokenInflight = new Map<string, Promise<FileToken | null>>();
+
+async function mintFileToken(
+  collectionName: string,
+  recordId: string,
+  field: string,
+  filename: string,
+): Promise<FileToken | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const cached = fileTokenCache.get(filename);
+  if (cached && cached.expires_at - 60 > now) return cached;
+  const existing = fileTokenInflight.get(filename);
+  if (existing) return existing;
+  const p = (async () => {
+    const res = await api.post<ApiResponse<FileToken>>(
+      `/api/files/${collectionName}/${recordId}/${field}/${filename}/token`,
+      {},
+    );
+    if (res.data) {
+      fileTokenCache.set(filename, res.data);
+      return res.data;
+    }
+    return null;
+  })().finally(() => fileTokenInflight.delete(filename));
+  fileTokenInflight.set(filename, p);
+  return p;
+}
+
+function isProtectedFileField(field: FieldDef): boolean {
+  return field.type === "file" && field.options?.["protected"] === true;
+}
+
+function filenamesFromValue(value: unknown): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+  if (typeof value === "string" && value.length > 0) return [value];
+  return [];
+}
+
+/** Heuristic: render as <img> if the extension looks like an image. */
+function looksImage(filename: string): boolean {
+  return /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i.test(filename);
+}
+
+/**
+ * Render a file value (single filename or array) as a small preview / download
+ * link. For protected fields, lazily mints a token and appends `?token=` to
+ * the URL. Tokens are cached per-filename (see `fileTokenCache` above) so this
+ * stays cheap across re-renders.
+ */
+function FileFieldPreview({
+  field,
+  value,
+  collectionName,
+  recordId,
+}: {
+  field: FieldDef;
+  value: unknown;
+  collectionName: string;
+  recordId: string;
+}) {
+  const filenames = useMemo(() => filenamesFromValue(value), [value]);
+  const protectedField = isProtectedFileField(field);
+  // Map of filename → token string (just the token, the URL is composed below)
+  const [tokens, setTokens] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!protectedField || filenames.length === 0 || !recordId) return;
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, string> = {};
+      for (const fn of filenames) {
+        const t = await mintFileToken(collectionName, recordId, field.name, fn);
+        if (t) next[fn] = t.token;
+      }
+      if (!cancelled && Object.keys(next).length > 0) {
+        setTokens((prev) => ({ ...prev, ...next }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [protectedField, filenames.join("|"), collectionName, recordId, field.name]);
+
+  if (filenames.length === 0) {
+    return <span className="muted" style={{ fontSize: 11 }}>—</span>;
+  }
+
+  function urlFor(fn: string): string {
+    const tok = tokens[fn];
+    return tok ? `/api/files/${fn}?token=${encodeURIComponent(tok)}` : `/api/files/${fn}`;
+  }
+
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      {filenames.map((fn) => {
+        const url = urlFor(fn);
+        const ready = !protectedField || !!tokens[fn];
+        if (looksImage(fn)) {
+          return ready ? (
+            <a key={fn} href={url} target="_blank" rel="noreferrer" title={fn}>
+              <img
+                src={url}
+                alt={fn}
+                style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, border: "0.5px solid var(--border)" }}
+              />
+            </a>
+          ) : (
+            <span
+              key={fn}
+              title={fn}
+              style={{ width: 36, height: 36, borderRadius: 4, border: "0.5px solid var(--border)", background: "rgba(255,255,255,0.04)" }}
+            />
+          );
+        }
+        return (
+          <a
+            key={fn}
+            href={ready ? url : undefined}
+            target="_blank"
+            rel="noreferrer"
+            className="mono"
+            style={{ fontSize: 11, color: ready ? "var(--text-secondary)" : "var(--text-muted)" }}
+            title={fn}
+          >
+            {fn.length > 20 ? `${fn.slice(0, 8)}…${fn.slice(-8)}` : fn}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Shared field input renderer ──────────────────────────────────────────────
 function FieldInput({
   field,
@@ -167,23 +311,40 @@ function FieldInput({
   onChange,
   readOnly,
   relationCache,
+  collectionName,
+  recordId,
 }: {
   field: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
   readOnly?: boolean;
   relationCache?: RelationCache;
+  /** Required for file-field token issuance; omitted in the New Record modal. */
+  collectionName?: string;
+  recordId?: string;
 }) {
   if (field.type === "bool") {
     return <Toggle on={!!value} onChange={onChange} />;
   }
   if (field.type === "file") {
+    const filenames = filenamesFromValue(value);
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <input className="input" value="—" disabled />
-        <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-          File upload available in v2
-        </span>
+      <div className="col" style={{ gap: 8 }}>
+        {filenames.length > 0 && collectionName && recordId ? (
+          <FileFieldPreview
+            field={field}
+            value={value}
+            collectionName={collectionName}
+            recordId={recordId}
+          />
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input className="input" value="—" disabled />
+            <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+              File upload available in v2
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -596,6 +757,8 @@ export default function Records() {
   const displayCols = userFields.length > 0
     ? userFields.slice(0, 5).map((f) => f.name)
     : [];
+  // Look up by column name so the table cell renderer can branch on type.
+  const fieldsByName = new Map<string, FieldDef>(userFields.map((f) => [f.name, f]));
 
   function cellValue(rec: RecordRow, col: string): string {
     const val = rec[col];
@@ -714,35 +877,27 @@ export default function Records() {
         </div>
 
         {selected.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "8px 14px",
-              background: "rgba(248,113,113,0.08)",
-              borderBottom: "0.5px solid rgba(248,113,113,0.25)",
-              fontSize: 12,
-              color: "var(--text-secondary)",
-            }}
-          >
-            <span>
-              <strong style={{ color: "var(--text-primary)" }}>{selected.length}</strong>{" "}
-              {collection?.type === "auth" ? "user" : "record"}{selected.length === 1 ? "" : "s"} selected
+          <div className="bulk-bar">
+            <span className="count">
+              <span className="num">{selected.length}</span> selected
             </span>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-ghost" onClick={() => setSelected([])} disabled={bulkDeleting}>
-                Clear
+            {collection?.type === "base" && (
+              <button className="btn btn-ghost" onClick={handleExport} disabled={bulkDeleting}>
+                <Icon name="download" size={11} /> Export
               </button>
-              <button
-                className="btn btn-danger"
-                onClick={handleBulkDelete}
-                disabled={bulkDeleting || collection?.type === "view"}
-              >
-                <Icon name="trash" size={12} />
-                {bulkDeleting ? "Deleting…" : `Delete ${selected.length}`}
-              </button>
-            </div>
+            )}
+            <button className="btn btn-ghost" onClick={() => setSelected([])} disabled={bulkDeleting}>
+              Clear
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || collection?.type === "view"}
+            >
+              <Icon name="trash" size={11} />
+              {bulkDeleting ? "Deleting…" : `Delete · ${selected.length}`}
+            </button>
+            <span className="meta">{total.toLocaleString()} total</span>
           </div>
         )}
 
@@ -756,11 +911,12 @@ export default function Records() {
           onPage={(e: DataTablePageEvent) => setPage(Math.floor(e.first / 30) + 1)}
           loading={loading}
           onRowClick={(e) => openRecord(e.data as RecordRow)}
-          // PrimeReact's selection types pick the wrong union member here based on
-          // the conditional selectionMode prop; runtime accepts the array form.
+          // Selection drives off the checkbox column only (selectionMode="checkbox"
+          // on the DataTable means row clicks open the drawer; ticking the
+          // checkbox manages bulk selection independently).
           selection={(collection?.type === "view" ? null : selected) as never}
           onSelectionChange={((e: { value: RecordRow[] }) => setSelected(e.value)) as never}
-          selectionMode={collection?.type === "view" ? null : "multiple"}
+          selectionMode={collection?.type === "view" ? null : "checkbox"}
           dataKey="id"
           emptyMessage={appliedFilter ? "No records match this filter." : "No records yet."}
           style={{ fontSize: 13 }}
@@ -779,18 +935,34 @@ export default function Records() {
               <span className="mono-cell muted">{String(r.id).slice(0, 12)}…</span>
             )}
           />
-          {displayCols.map((c) => (
-            <Column
-              key={c}
-              field={c}
-              header={c}
-              body={(r: RecordRow) => (
-                <span style={{ display: "block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {cellValue(r, c)}
-                </span>
-              )}
-            />
-          ))}
+          {displayCols.map((c) => {
+            const fdef = fieldsByName.get(c);
+            const isFile = fdef?.type === "file";
+            return (
+              <Column
+                key={c}
+                field={c}
+                header={c}
+                body={(r: RecordRow) => {
+                  if (isFile && collection && fdef) {
+                    return (
+                      <FileFieldPreview
+                        field={fdef}
+                        value={r[c]}
+                        collectionName={collection.name}
+                        recordId={String(r.id)}
+                      />
+                    );
+                  }
+                  return (
+                    <span style={{ display: "block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {cellValue(r, c)}
+                    </span>
+                  );
+                }}
+              />
+            );
+          })}
           {collection?.type === "auth" && (
             <Column
               field="status"
@@ -910,6 +1082,8 @@ export default function Records() {
                   }}
                   relationCache={editRelationCache}
                   readOnly={collection?.type === "view"}
+                  collectionName={collection?.name}
+                  recordId={String(openRec.id)}
                 />
                 {editErrors[f.name] && (
                   <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
