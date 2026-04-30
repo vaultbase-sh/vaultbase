@@ -20,6 +20,16 @@ export interface VerifiedAuth extends AuthContext {
 
 export const ISSUER = "vaultbase";
 
+/**
+ * Pinned argon2id parameters so a Bun upgrade cannot silently downgrade
+ * password hashing. Used by every code path that calls `Bun.password.hash`
+ * — see also `admins.ts` and `auth.ts`.
+ *
+ * memoryCost = 19456 (≈19 MiB) and timeCost = 2 are OWASP's 2024 baseline
+ * for argon2id.
+ */
+export const HASH_OPTS = { algorithm: "argon2id" as const, memoryCost: 19456, timeCost: 2 };
+
 const DUMMY_HASH =
   "$argon2id$v=19$m=19456,t=2,p=1$cnVzdHl0cnVzdHk$0000000000000000000000000000000000000000000";
 

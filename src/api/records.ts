@@ -1,6 +1,6 @@
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
 import type { AuthContext } from "../core/rules.ts";
+import { verifyAuthToken } from "../core/sec.ts";
 import { getCollection } from "../core/collections.ts";
 import {
   createRecord,
@@ -95,20 +95,14 @@ async function getAuthContext(
   return await timeFor(request, "auth_verify", async () => {
     const token = request.headers.get("authorization")?.replace("Bearer ", "");
     if (!token) return null;
-    const secret = new TextEncoder().encode(jwtSecret);
-    try {
-      const { payload } = await jose.jwtVerify(token, secret);
-      const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
-      if (aud !== "user" && aud !== "admin") return null;
-      const ctx: AuthContext = {
-        id: payload["id"] as string,
-        type: aud as "user" | "admin",
-      };
-      if (typeof payload["email"] === "string") ctx.email = payload["email"];
-      return ctx;
-    } catch {
-      return null;
-    }
+    // Centralized verifier — fixes N-1 admin-token-bypass. Accepts user or
+    // admin (records API serves both); checks signature, audience, expiry,
+    // issuer, jti revocation, and password_reset_at.
+    const ctx = await verifyAuthToken(token, jwtSecret);
+    if (!ctx || (ctx.type !== "user" && ctx.type !== "admin")) return null;
+    const out: AuthContext = { id: ctx.id, type: ctx.type };
+    if (ctx.email) out.email = ctx.email;
+    return out;
   });
 }
 
