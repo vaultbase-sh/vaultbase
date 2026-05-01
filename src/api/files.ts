@@ -1,10 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { existsSync, readdirSync, unlinkSync } from "fs";
 import { join, resolve, sep } from "path";
 import { getDb } from "../db/client.ts";
-import { files } from "../db/schema.ts";
-import { getCollection, parseFields } from "../core/collections.ts";
+import { auditLog, files, fileTokenUses } from "../db/schema.ts";
+import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
 import {
   detectFormat,
   generateThumbnail,
@@ -15,6 +15,7 @@ import {
 } from "../core/image.ts";
 import { getRecord } from "../core/records.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
+import type { RequestContextLike } from "../core/filter.ts";
 import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
@@ -23,6 +24,7 @@ import {
   isSafeToRenderInline,
   isValidStorageFilename,
   signAuthToken,
+  trustedClientIp,
   verifyAuthToken,
 } from "../core/sec.ts";
 
@@ -53,43 +55,204 @@ async function fileMetaOf(filename: string) {
   return rows[0] ?? null;
 }
 
-async function viewRuleAllows(
-  collectionId: string,
-  recordId: string,
-  auth: AuthContext | null
-): Promise<boolean> {
-  const col = await getCollection(collectionId);
-  if (!col) return false;
-  if (auth?.type === "admin") return true;
-  if (col.view_rule === "") return false;
-  if (col.view_rule === null) return true;
-  const record = await getRecord(col.name, recordId);
-  if (!record) return false;
-  return evaluateRule(col.view_rule, auth, record as unknown as Record<string, unknown>);
+/** Pull the peer-IP off the Bun.serve `server` object that Elysia exposes. */
+function peerIpOf(server: unknown, request: Request): string | null {
+  try {
+    const s = server as { requestIP?: (r: Request) => { address: string } | null };
+    return s?.requestIP?.(request)?.address ?? null;
+  } catch { return null; }
 }
 
-async function verifyFileToken(token: string, filename: string, jwtSecret: string): Promise<boolean> {
+/** Build the file-context object exposed to per-field rules. */
+function buildFileRequestContext(
+  request: Request,
+  ip: string,
+  meta: { mime_type: string; size: number; field_name: string },
+  collectionName: string,
+): RequestContextLike & { headers: Record<string, string> } {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of request.headers.entries()) {
+    const lower = k.toLowerCase();
+    if (lower === "authorization" || lower === "cookie" || lower === "set-cookie") continue;
+    headers[lower.replace(/-/g, "_")] = v;
+  }
+  // `@request.ip` and `@file.*` are read-only — surfaced via the `headers` map
+  // so the existing rule engine doesn't need a new operand kind. Rule authors
+  // write `@request.headers.x_vb_ip = '1.2.3.4'`-style — but for ergonomics we
+  // also expose them under conventional names.
+  headers["x_vb_ip"]            = ip;
+  headers["x_vb_file_field"]    = meta.field_name;
+  headers["x_vb_file_mime"]     = meta.mime_type;
+  headers["x_vb_file_size"]     = String(meta.size);
+  headers["x_vb_collection"]    = collectionName;
+  return {
+    method: request.method.toUpperCase(),
+    context: "protectedFile",
+    headers,
+    query: {},
+    body: null,
+    existing: null,
+  };
+}
+
+interface FileTokenClaims {
+  filename: string;
+  ip?: string;
+  uses?: number;
+  jti?: string;
+}
+
+/**
+ * Verify a file-audience JWT and return the relevant claims. Returns null on
+ * any verify failure (signature / audience / expiry / revocation).
+ */
+async function verifyFileTokenClaims(token: string, jwtSecret: string): Promise<FileTokenClaims | null> {
   const ctx = await verifyAuthToken(token, jwtSecret, {
     audience: "file",
     recheckPrincipal: false,
   });
-  if (!ctx) return false;
-  // Filename binding lives in the JWT payload; verifyAuthToken returns the
-  // common shape but we need the raw filename claim. Re-decode without verify
-  // (already verified above) is wasteful — instead the signer puts filename in
-  // the payload and we compare by re-decoding the JWT's middle segment.
+  if (!ctx) return null;
+  // verifyAuthToken returned ok — re-decode payload (no signature work) to
+  // pull the file-specific claims that the common return shape doesn't carry.
   try {
     const mid = token.split(".")[1] ?? "";
-    const json = JSON.parse(
-      new TextDecoder().decode(
-        Uint8Array.from(atob(mid.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(mid.length / 4) * 4, "=")),
-          (c) => c.charCodeAt(0))
-      )
-    );
-    return json.filename === filename;
+    const padded = mid.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(mid.length / 4) * 4, "=");
+    const json = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(atob(padded), (c) => c.charCodeAt(0))
+    )) as Record<string, unknown>;
+    const filename = typeof json["filename"] === "string" ? json["filename"] : null;
+    if (!filename) return null;
+    const out: FileTokenClaims = { filename };
+    if (typeof json["ip"]   === "string") out.ip   = json["ip"];
+    if (typeof json["uses"] === "number") out.uses = json["uses"];
+    if (typeof ctx.jti      === "string") out.jti  = ctx.jti;
+    return out;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Try to claim a one-time-use token. Returns true on first claim, false on
+ * replay (a row with the same `jti` already exists). Idempotent w.r.t. the
+ * same jti.
+ */
+async function claimOneTimeToken(jti: string, ip: string | null): Promise<boolean> {
+  try {
+    await getDb().insert(fileTokenUses).values({
+      jti,
+      used_at: Math.floor(Date.now() / 1000),
+      ...(ip ? { ip } : {}),
+    });
+    return true;
+  } catch {
+    return false; // primary-key conflict → replay
+  }
+}
+
+/** Prune file_token_uses rows older than 24h. Called from the periodic cleanup. */
+export async function pruneFileTokenUses(): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
+  const res = await getDb().delete(fileTokenUses).where(lt(fileTokenUses.used_at, cutoff));
+  return (res as unknown as { changes?: number }).changes ?? 0;
+}
+
+interface AccessOutcome {
+  allowed: boolean;
+  reason: string;
+  /** Field def for downstream audit / token mint. */
+  fieldDef: FieldDef | null;
+}
+
+/**
+ * Centralised access-decision for a file fetch / token mint. Combines the
+ * collection view_rule and the field-level viewRule (AND), then applies the
+ * field-level requireAuth gate. Admin always passes (handled by evaluateRule).
+ */
+async function evaluateFileAccess(
+  collectionId: string,
+  recordId: string,
+  fieldName: string,
+  auth: AuthContext | null,
+  reqCtx: RequestContextLike | null,
+): Promise<AccessOutcome> {
+  const col = await getCollection(collectionId);
+  if (!col) return { allowed: false, reason: "collection not found", fieldDef: null };
+
+  if (auth?.type === "admin") {
+    const fields = parseFields(col.fields);
+    return { allowed: true, reason: "admin bypass", fieldDef: fields.find((f) => f.name === fieldName) ?? null };
+  }
+
+  const fields = parseFields(col.fields);
+  const fieldDef = fields.find((f) => f.name === fieldName) ?? null;
+  const opts = fieldDef?.options ?? {};
+
+  // requireAuth gate — must run before any rule eval, since the rule engine
+  // treats `null` rules as public.
+  if (opts.requireAuth && !auth) return { allowed: false, reason: "auth required", fieldDef };
+
+  // Collection rule
+  if (col.view_rule === "") return { allowed: false, reason: "collection: admin only", fieldDef };
+  let record: Record<string, unknown> | null = null;
+  if (col.view_rule !== null) {
+    record = (await getRecord(col.name, recordId)) as Record<string, unknown> | null;
+    if (!record) return { allowed: false, reason: "record not found", fieldDef };
+    const ok = evaluateRule(col.view_rule, auth, record, reqCtx);
+    if (!ok) return { allowed: false, reason: "collection rule denied", fieldDef };
+  }
+
+  // Field rule
+  const fieldRule = opts.viewRule;
+  if (fieldRule === "") return { allowed: false, reason: "field: admin only", fieldDef };
+  if (typeof fieldRule === "string" && fieldRule !== "") {
+    if (record === null) {
+      record = (await getRecord(col.name, recordId)) as Record<string, unknown> | null;
+      if (!record) return { allowed: false, reason: "record not found", fieldDef };
+    }
+    const ok = evaluateRule(fieldRule, auth, record, reqCtx);
+    if (!ok) return { allowed: false, reason: "field rule denied", fieldDef };
+  }
+
+  return { allowed: true, reason: "rule passed", fieldDef };
+}
+
+/** Append a `files.download` row to the audit log. Best-effort — never throws. */
+async function emitDownloadAudit(opts: {
+  request: Request;
+  ip: string | null;
+  auth: AuthContext | null;
+  filename: string;
+  collection: string;
+  recordId: string;
+  field: string;
+  mime: string;
+  size: number;
+  via: "rule" | "token";
+}): Promise<void> {
+  try {
+    const url = new URL(opts.request.url);
+    await getDb().insert(auditLog).values({
+      id: crypto.randomUUID(),
+      actor_id: opts.auth?.id ?? null,
+      actor_email: (opts.auth as { email?: string } | null)?.email ?? null,
+      method: "GET",
+      path: url.pathname,
+      action: "files.download",
+      target: opts.filename,
+      status: 200,
+      ip: opts.ip,
+      summary: JSON.stringify({
+        collection: opts.collection,
+        record: opts.recordId,
+        field: opts.field,
+        mime: opts.mime,
+        size: opts.size,
+        via: opts.via,
+      }).slice(0, 1024),
+      at: Math.floor(Date.now() / 1000),
+    });
+  } catch { /* audit must never break a download */ }
 }
 
 function mimeAllowed(mime: string, patterns: string[]): boolean {
@@ -228,7 +391,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
     })
     .post(
       "/api/files/:collection/:recordId/:field/:filename/token",
-      async ({ params, request, set }) => {
+      async ({ params, request, server, set }) => {
         if (!isValidStorageFilename(params.filename)) {
           set.status = 400; return { error: "Invalid filename", code: 400 };
         }
@@ -253,26 +416,24 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
             eq(files.filename, params.filename)
           )
         ).limit(1);
-        if (fileRows.length === 0) {
+        const meta = fileRows[0];
+        if (!meta) {
           set.status = 404; return { error: "File not found", code: 404 };
         }
 
-        if (auth?.type !== "admin") {
-          if (col.view_rule === "") {
-            set.status = 403; return { error: "Forbidden", code: 403 };
-          }
-          if (col.view_rule !== null) {
-            const allowed = evaluateRule(
-              col.view_rule,
-              auth,
-              record as unknown as Record<string, unknown>,
-            );
-            if (!allowed) { set.status = 403; return { error: "Forbidden", code: 403 }; }
-          }
-        }
+        const peerIp = peerIpOf(server, request);
+        const ip = trustedClientIp(request, peerIp);
+        const reqCtx = buildFileRequestContext(request, ip, meta, col.name);
+        const decision = await evaluateFileAccess(col.id, params.recordId, params.field, auth, reqCtx);
+        if (!decision.allowed) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+
+        const opts = fieldDef.options ?? {};
+        const payload: Record<string, unknown> = { filename: params.filename };
+        if (opts.bindTokenIp)  payload["ip"]   = ip;
+        if (opts.oneTimeToken) payload["uses"] = 1;
 
         const { token, exp } = await signAuthToken({
-          payload: { filename: params.filename },
+          payload,
           audience: "file",
           expiresInSeconds: tokenWindowSeconds("file"),
           jwtSecret,
@@ -280,7 +441,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         return { data: { token, expires_at: exp } };
       }
     )
-    .get("/api/files/:filename", async ({ params, query, request, set }) => {
+    .get("/api/files/:filename", async ({ params, query, request, server, set }) => {
       if (!isValidStorageFilename(params.filename)) {
         set.status = 400;
         return { error: "Invalid filename", code: 400 };
@@ -291,37 +452,80 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }
 
       const meta = await fileMetaOf(params.filename);
-      // Always evaluate the parent record's view_rule (C-3 fix). Token gate
-      // remains for `protected` fields so off-app links (img/src in user mail
-      // etc.) still work for legitimate holders.
+      const peerIp = peerIpOf(server, request);
+      const clientIp = trustedClientIp(request, peerIp);
+      const auth = await getAuthContext(request, jwtSecret);
+
       let allowed = false;
-      if (meta) {
-        const tok = query.token;
-        if (tok && (await verifyFileToken(tok, params.filename, jwtSecret))) {
-          allowed = true;
-        } else {
-          const auth = await getAuthContext(request, jwtSecret);
-          allowed = await viewRuleAllows(meta.collection_id, meta.record_id, auth);
-        }
-      } else {
+      let via: "rule" | "token" = "rule";
+      let collectionName = "";
+      let fieldDefForAudit: FieldDef | null = null;
+
+      if (!meta) {
         // Orphan files (no row) — admin-only.
-        const auth = await getAuthContext(request, jwtSecret);
         allowed = auth?.type === "admin";
-      }
-      if (!allowed) {
-        // Check token gate as a last-resort path for protected legacy fields.
-        if (await isFileProtected(params.filename)) {
-          const tok = query.token;
-          if (!tok || !(await verifyFileToken(tok, params.filename, jwtSecret))) {
-            set.status = 401;
-            return { error: "Token required", code: 401 };
+      } else {
+        const col = await getCollection(meta.collection_id);
+        collectionName = col?.name ?? "";
+        if (col) {
+          const fields = parseFields(col.fields);
+          fieldDefForAudit = fields.find((f) => f.name === meta.field_name) ?? null;
+        }
+        const tok = query.token;
+        if (tok) {
+          // ── Token path ────────────────────────────────────────────────
+          const claims = await verifyFileTokenClaims(tok, jwtSecret);
+          if (claims && claims.filename === params.filename) {
+            // IP binding: token's ip claim must match the requesting client.
+            if (claims.ip !== undefined && claims.ip !== clientIp) {
+              set.status = 403;
+              return { error: "Token bound to a different IP", code: 403 };
+            }
+            // One-time use: insert-or-fail on the jti.
+            if (claims.uses === 1 && claims.jti) {
+              const ok = await claimOneTimeToken(claims.jti, clientIp);
+              if (!ok) {
+                set.status = 410;
+                return { error: "Token already used", code: 410 };
+              }
+            }
+            allowed = true;
+            via = "token";
           }
-          allowed = true;
+        }
+        if (!allowed) {
+          // ── Rule path ─────────────────────────────────────────────────
+          const reqCtx = buildFileRequestContext(request, clientIp, meta, collectionName);
+          const decision = await evaluateFileAccess(meta.collection_id, meta.record_id, meta.field_name, auth, reqCtx);
+          if (decision.fieldDef) fieldDefForAudit = decision.fieldDef;
+          allowed = decision.allowed;
         }
       }
+
       if (!allowed) {
+        // Legacy `protected: true` field with no token? 401 (the front-end
+        // knows to mint a token when it sees this code). Otherwise 403.
+        if (meta && (await isFileProtected(params.filename)) && !query.token) {
+          set.status = 401;
+          return { error: "Token required", code: 401 };
+        }
         set.status = 403;
         return { error: "Forbidden", code: 403 };
+      }
+
+      if (meta && fieldDefForAudit?.options?.auditDownloads) {
+        await emitDownloadAudit({
+          request,
+          ip: clientIp,
+          auth,
+          filename: params.filename,
+          collection: collectionName,
+          recordId: meta.record_id,
+          field: meta.field_name,
+          mime: meta.mime_type,
+          size: meta.size,
+          via,
+        });
       }
 
       const inlineSafe = meta ? isSafeToRenderInline(meta.mime_type) : false;
