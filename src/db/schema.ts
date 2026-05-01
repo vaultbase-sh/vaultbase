@@ -280,6 +280,28 @@ export const auditLog = sqliteTable("vaultbase_audit_log", {
   at: integer("at").notNull().default(sql`(unixepoch())`),
 });
 
+/**
+ * Feature flags. One row per flag key. `rules` and `variations` are JSON
+ * blobs evaluated by `core/flags.ts`. The `default_value` is also a JSON-
+ * encoded scalar so a single column carries bool/string/number/json types.
+ */
+export const featureFlags = sqliteTable("vaultbase_feature_flags", {
+  key: text("key").primaryKey(),
+  description: text("description").notNull().default(""),
+  /** "bool" | "string" | "number" | "json" */
+  type: text("type").notNull().default("bool"),
+  /** Master kill switch — when 0, evaluation always returns `default_value`. */
+  enabled: integer("enabled").notNull().default(1),
+  /** JSON-encoded scalar matching `type`. */
+  default_value: text("default_value").notNull().default("false"),
+  /** JSON: array of named variations for multivariate flags. */
+  variations: text("variations").notNull().default("[]"),
+  /** JSON: ordered array of evaluation rules. */
+  rules: text("rules").notNull().default("[]"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
 export type User = typeof users.$inferSelect;
