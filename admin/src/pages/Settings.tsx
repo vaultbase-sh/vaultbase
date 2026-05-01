@@ -25,7 +25,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 ];
 
 type SettingsTabId =
-  | "application" | "rate-limit" | "egress" | "cors"
+  | "application" | "rate-limit" | "egress" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
   | "storage" | "backup" | "migrations"
   | "metrics" | "updates" | "danger";
@@ -42,6 +42,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
   { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
   { id: "cors",        label: "CORS",          icon: "globe",  subtitle: "cross-origin allow-list for the HTTP API" },
+  { id: "security",    label: "Security",      icon: "shield", subtitle: "sessions · lockout · proxies · fingerprints" },
   { id: "smtp",        label: "SMTP / Email", icon: "scroll", subtitle: "outbound email server" },
   { id: "templates",   label: "Email templates", icon: "scroll", subtitle: "verify + reset emails" },
   { id: "auth",        label: "Auth features", icon: "key", subtitle: "OTP · MFA · anonymous · impersonation" },
@@ -82,6 +83,7 @@ export default function Settings() {
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
           {active === "cors" && <CorsSection />}
+          {active === "security" && <SecuritySection />}
           {active === "smtp" && <SmtpSection />}
           {active === "templates" && <EmailTemplatesSection />}
           {active === "auth" && (
@@ -488,6 +490,369 @@ function CorsSection() {
         <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
           {saving ? "Saving…" : "Save changes"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Security ────────────────────────────────────────────────────────────────
+interface AdminSession {
+  jti: string;
+  admin_id: string;
+  admin_email: string;
+  issued_at: number;
+  expires_at: number;
+  ip: string | null;
+  user_agent: string | null;
+  revoked: boolean;
+}
+interface Fingerprints {
+  jwt_secret_fingerprint: string;
+  encryption_key_fingerprint: string;
+  encryption_key_present: boolean;
+}
+interface HeadersPreview {
+  api: Record<string, string>;
+  ui: Record<string, string>;
+}
+
+function shortRel(unixSec: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSec;
+  if (diff < 0) return `in ${Math.abs(diff) < 3600 ? Math.ceil(Math.abs(diff)/60) + "m" : Math.ceil(Math.abs(diff)/3600) + "h"}`;
+  if (diff < 60)    return `${diff}s ago`;
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function SecuritySection() {
+  return (
+    <div className="col" style={{ gap: 24 }}>
+      <ActiveSessionsCard />
+      <BruteForceCard />
+      <TrustedProxiesCard />
+      <FingerprintsCard />
+      <HeadersPreviewCard />
+    </div>
+  );
+}
+
+function ActiveSessionsCard() {
+  const [sessions, setSessions] = useState<AdminSession[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  function load() {
+    setLoading(true);
+    api.get<ApiResponse<AdminSession[]>>("/api/admin/security/sessions?activeOnly=1").then((res) => {
+      if (res.data) setSessions(res.data);
+      setLoading(false);
+    });
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function revoke(jti: string) {
+    const ok = await confirm({ title: "Revoke session?", message: `Adds ${jti.slice(0, 8)}… to the revocation list immediately.`, confirmLabel: "Revoke", danger: true });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<{ revoked: string }>>(`/api/admin/security/sessions/${encodeURIComponent(jti)}`);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Session revoked");
+    load();
+  }
+
+  async function logoutAll() {
+    const ok = await confirm({ title: "Force-logout every admin?", message: "Every existing admin JWT is rejected immediately. You will be signed out — sign back in with your password.", confirmLabel: "Force logout all", danger: true });
+    if (!ok) return;
+    const res = await api.post<ApiResponse<{ count: number }>>("/api/admin/security/force-logout-all", {});
+    if (res.error) { toast(res.error, "info"); return; }
+    toast(`${res.data?.count ?? 0} admin(s) signed out — your session ends now`);
+    setTimeout(() => { window.location.href = "/_/login"; }, 600);
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>Active admin sessions</h3>
+          <span className="meta">{sessions.length} active · revoke individually or all at once</span>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="refresh" size={12} /> Refresh
+          </button>
+          <button className="btn" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} onClick={logoutAll}>
+            Force logout all
+          </button>
+        </div>
+      </div>
+      <div style={{ padding: "0 18px 18px" }}>
+        {sessions.length === 0 ? (
+          <div className="empty" style={{ padding: 24, textAlign: "center" }}>No active admin sessions.</div>
+        ) : (
+          <table className="vb-table" style={{ width: "100%", fontSize: 12 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)", borderBottom: "0.5px solid var(--border-default)" }}>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Admin</th>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Issued</th>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Expires</th>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>IP</th>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>User-Agent</th>
+                <th style={{ padding: "8px 10px", fontWeight: 500 }}>jti</th>
+                <th style={{ padding: "8px 10px", width: 80 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((s) => (
+                <tr key={s.jti} style={{ borderBottom: "0.5px solid rgba(255,255,255,0.04)", opacity: s.revoked ? 0.5 : 1 }}>
+                  <td style={{ padding: "8px 10px" }} className="mono">{s.admin_email}</td>
+                  <td style={{ padding: "8px 10px" }} className="mono muted">{shortRel(s.issued_at)}</td>
+                  <td style={{ padding: "8px 10px" }} className="mono muted">{shortRel(s.expires_at)}</td>
+                  <td style={{ padding: "8px 10px" }} className="mono muted">{s.ip ?? "—"}</td>
+                  <td style={{ padding: "8px 10px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} className="muted" title={s.user_agent ?? ""}>{s.user_agent ?? "—"}</td>
+                  <td style={{ padding: "8px 10px" }} className="mono muted">{s.jti.slice(0, 8)}…</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                    {s.revoked ? (
+                      <span className="muted" style={{ fontSize: 10 }}>revoked</span>
+                    ) : (
+                      <button className="btn btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => revoke(s.jti)}>Revoke</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BruteForceCard() {
+  const [enabled, setEnabled] = useState(false);
+  const [maxAttempts, setMaxAttempts] = useState("5");
+  const [duration, setDuration] = useState("900");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "0", 10);
+        setEnabled(m > 0);
+        setMaxAttempts(m > 0 ? String(m) : "5");
+        setDuration(res.data["auth.lockout.duration_seconds"] ?? "900");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "auth.lockout.max_attempts":     enabled ? maxAttempts.trim() || "0" : "0",
+      "auth.lockout.duration_seconds": duration.trim() || "900",
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Lockout policy saved");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>Brute-force lockout</h3>
+          <span className="meta">per-email + per-IP failed-login throttle</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
+            {enabled ? "Enabled" : "Off"}
+          </span>
+        </div>
+      </div>
+      <div className="settings-section-body" style={{ opacity: enabled ? 1 : 0.6 }}>
+        <div className="row" style={{ gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">Max failed attempts</label>
+            <input className="input mono" type="number" min={1} value={maxAttempts} onChange={(e) => setMaxAttempts(e.target.value)} disabled={!enabled || !loaded} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="label">Lockout duration (seconds)</label>
+            <input className="input mono" type="number" min={60} value={duration} onChange={(e) => setDuration(e.target.value)} disabled={!enabled || !loaded} />
+            <div className="help" style={{ fontSize: 11 }}>Default 900 (15 minutes). Min 60.</div>
+          </div>
+        </div>
+        <div className="help" style={{ marginTop: 12 }}>
+          Tracks both <code style={codeStyle}>email:&lt;addr&gt;</code> and <code style={codeStyle}>ip:&lt;addr&gt;</code> keys so a
+          spray attack across emails from one IP gets caught alongside a single-account attack.
+          Per-IP keying requires <code style={codeStyle}>VAULTBASE_TRUSTED_PROXIES</code> (or the proxies setting below) to
+          surface real client IPs through your reverse proxy.
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TrustedProxiesCard() {
+  const [value, setValue] = useState("");
+  const [envFallback, setEnvFallback] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        setValue(res.data["security.trusted_proxies"] ?? "");
+        setEnvFallback(res.data["security.trusted_proxies_env_view"] ?? "");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "security.trusted_proxies": value.trim(),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Trusted proxies saved");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Trusted proxies</h3>
+        <span className="meta">CIDRs allowed to set <code style={codeStyle}>X-Forwarded-For</code></span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Allowed proxy CIDRs (comma-separated)</label>
+          <div className="help">
+            Empty + no <code style={codeStyle}>VAULTBASE_TRUSTED_PROXIES</code> env → vaultbase ignores
+            <code style={codeStyle}>X-Forwarded-For</code> entirely (defensive default). Set this when your
+            reverse proxy / load balancer sits in front of vaultbase.
+          </div>
+        </div>
+        <input className="input mono" value={value} onChange={(e) => setValue(e.target.value)} placeholder="10.0.0.0/8,127.0.0.1/32" disabled={!loaded} />
+        {envFallback && !value.trim() && (
+          <div className="help" style={{ marginTop: 8 }}>
+            Currently effective via env: <code style={codeStyle}>{envFallback}</code>
+          </div>
+        )}
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FingerprintsCard() {
+  const [fp, setFp] = useState<Fingerprints | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.get<ApiResponse<Fingerprints>>("/api/admin/security/fingerprints").then((res) => {
+      if (res.data) setFp(res.data);
+      setLoading(false);
+    });
+  }, []);
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Secrets fingerprints</h3>
+        <span className="meta">read-only · SHA-256 first 8 bytes</span>
+      </div>
+      <div className="settings-section-body">
+        {loading ? (
+          <div className="muted" style={{ fontSize: 12 }}>loading…</div>
+        ) : !fp ? (
+          <div className="muted" style={{ fontSize: 12 }}>—</div>
+        ) : (
+          <>
+            <div className="row" style={{ gap: 16 }}>
+              <div style={{ flex: 1 }}>
+                <label className="label">JWT signing secret</label>
+                <div className="mono" style={{ fontSize: 13 }}>{fp.jwt_secret_fingerprint}</div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label className="label">AES encryption key</label>
+                <div className="mono" style={{ fontSize: 13, color: fp.encryption_key_present ? undefined : "var(--text-muted)" }}>
+                  {fp.encryption_key_present ? fp.encryption_key_fingerprint : "(not set — encrypted fields disabled)"}
+                </div>
+              </div>
+            </div>
+            {!fp.encryption_key_present && (
+              <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 4, background: "rgba(251,191,36,0.1)", color: "#fbbf24", fontSize: 12 }}>
+                <Icon name="alert" size={12} /> No <code style={codeStyle}>VAULTBASE_ENCRYPTION_KEY</code> set —
+                fields marked <code style={codeStyle}>encrypted</code> store plaintext.
+              </div>
+            )}
+            <div className="help" style={{ marginTop: 12 }}>
+              Compare these across hosts in a fleet to confirm they share the same secrets.
+              A mismatch means JWTs from one host won't verify on the other and encrypted
+              fields written on one will be unreadable on the other.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HeadersPreviewCard() {
+  const [preview, setPreview] = useState<HeadersPreview | null>(null);
+
+  useEffect(() => {
+    api.get<ApiResponse<HeadersPreview>>("/api/admin/security/headers-preview").then((res) => {
+      if (res.data) setPreview(res.data);
+    });
+  }, []);
+
+  function renderTable(headers: Record<string, string> | undefined) {
+    if (!headers) return <div className="muted" style={{ fontSize: 12 }}>—</div>;
+    const entries = Object.entries(headers);
+    if (entries.length === 0) return <div className="muted" style={{ fontSize: 12 }}>(no headers)</div>;
+    return (
+      <table style={{ width: "100%", fontSize: 11 }} className="mono">
+        <tbody>
+          {entries.map(([k, v]) => (
+            <tr key={k} style={{ borderBottom: "0.5px solid rgba(255,255,255,0.04)" }}>
+              <td style={{ padding: "5px 8px", color: "var(--accent-light)", whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
+              <td style={{ padding: "5px 8px", wordBreak: "break-all" }}>{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Security headers</h3>
+        <span className="meta">read-only · what vaultbase emits per response</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">API responses</label>
+        </div>
+        {renderTable(preview?.api)}
+        <div className="label-block" style={{ marginTop: 16 }}>
+          <label className="label">Admin UI / non-API responses</label>
+          <div className="help">CSP applies here only — the API surface returns JSON and doesn't need it.</div>
+        </div>
+        {renderTable(preview?.ui)}
       </div>
     </div>
   );
