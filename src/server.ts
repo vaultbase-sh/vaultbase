@@ -28,6 +28,7 @@ import { makeMetricsPlugin } from "./api/metrics.ts";
 import { makeAuditLogPlugin } from "./api/audit-log.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
+import { makeFlagsPlugin } from "./api/flags.ts";
 import { startScheduler } from "./core/jobs.ts";
 import { startQueueScheduler } from "./core/queues.ts";
 import { startUpdateCheckScheduler, getUpdateStatus, runUpdateCheck } from "./core/update-check.ts";
@@ -144,6 +145,7 @@ export function createServer(config: Config) {
     .use(makeAuditLogPlugin(config.jwtSecret))
     .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
     .use(makeThemePlugin())
+    .use(makeFlagsPlugin(config.jwtSecret))
     .use(makeCollectionsPlugin(config.jwtSecret))
     .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
     .use(makeAdminPlugin())

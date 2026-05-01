@@ -285,4 +285,18 @@ export async function runMigrations() {
   `);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_key ON vaultbase_login_failures(key, at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_at ON vaultbase_login_failures(at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_feature_flags (
+      key TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL DEFAULT 'bool',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_value TEXT NOT NULL DEFAULT 'false',
+      variations TEXT NOT NULL DEFAULT '[]',
+      rules TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
 }

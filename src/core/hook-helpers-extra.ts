@@ -775,6 +775,38 @@ function makeCron(): CronHelpers {
 
 // ── public factory ──────────────────────────────────────────────────────────
 
+export interface FlagsHelpers {
+  isEnabled(key: string, context?: Record<string, unknown>): Promise<boolean>;
+  getString(key: string, fallback: string, context?: Record<string, unknown>): Promise<string>;
+  getNumber(key: string, fallback: number, context?: Record<string, unknown>): Promise<number>;
+  getJson<T = unknown>(key: string, fallback: T, context?: Record<string, unknown>): Promise<T>;
+}
+
+function makeFlags(): FlagsHelpers {
+  return {
+    async isEnabled(key, context) {
+      const { evaluate } = await import("./flags.ts");
+      const r = await evaluate(key, context ?? {}, false);
+      return Boolean(r.value);
+    },
+    async getString(key, fallback, context) {
+      const { evaluate } = await import("./flags.ts");
+      const r = await evaluate(key, context ?? {}, fallback);
+      return typeof r.value === "string" ? r.value : fallback;
+    },
+    async getNumber(key, fallback, context) {
+      const { evaluate } = await import("./flags.ts");
+      const r = await evaluate(key, context ?? {}, fallback);
+      return typeof r.value === "number" ? r.value : fallback;
+    },
+    async getJson<T = unknown>(key: string, fallback: T, context?: Record<string, unknown>): Promise<T> {
+      const { evaluate } = await import("./flags.ts");
+      const r = await evaluate(key, context ?? {}, fallback as unknown as never);
+      return (r.value as T) ?? fallback;
+    },
+  };
+}
+
 export interface ExtraHookHelpers {
   security: SecurityHelpers;
   path: PathHelpers;
@@ -786,6 +818,7 @@ export interface ExtraHookHelpers {
   os: OsHelpers;
   mails: MailsHelpers;
   cron: CronHelpers;
+  flags: FlagsHelpers;
 }
 
 export function makeExtraHelpers(): ExtraHookHelpers {
@@ -800,5 +833,6 @@ export function makeExtraHelpers(): ExtraHookHelpers {
     os: makeOs(),
     mails: makeMails(),
     cron: makeCron(),
+    flags: makeFlags(),
   };
 }
