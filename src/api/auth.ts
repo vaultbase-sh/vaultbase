@@ -41,6 +41,21 @@ import {
 } from "../core/totp.ts";
 import { isAuthFeatureEnabled } from "../core/auth-features.ts";
 import { validatePassword } from "../core/password-policy.ts";
+import {
+  recordAdminSession,
+  recordLoginFailure,
+  clearLoginFailures,
+  isLockedOut,
+  getTrustedProxiesRaw,
+} from "../core/security.ts";
+
+/** Best-effort client IP for lockout keying. Honours trusted-proxies setting. */
+function clientIpForLockout(request: Request): string | null {
+  if (!getTrustedProxiesRaw()) return null;
+  const xff = request.headers.get("x-forwarded-for");
+  if (!xff) return null;
+  return (xff.split(",")[0] ?? "").trim() || null;
+}
 
 function getSecret(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);
@@ -295,23 +310,38 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post(
       "/api/admin/auth/login",
       async ({ body, request }) => {
+        const ip = clientIpForLockout(request);
+        // Lockout gate runs *before* password verify so a successful attempt
+        // by a different account from the same IP doesn't leak signal.
+        if (await isLockedOut({ email: body.email, ip })) {
+          return new Response(JSON.stringify({ error: "Too many failed attempts. Try again later.", code: 429 }), {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          });
+        }
         const db = getDb();
         const rows = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
         const a = rows[0];
         const hashToCheck = a?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
         if (!a || !valid) {
+          await recordLoginFailure({ email: body.email, ip });
           return new Response(JSON.stringify({ error: "Invalid credentials", code: 401 }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });
         }
+        await clearLoginFailures({ email: body.email, ip });
         const ttl = tokenWindowSeconds("admin");
-        const { token } = await signAuthToken({
+        const { token, jti, exp, iat } = await signAuthToken({
           payload: { id: a.id, email: a.email },
           audience: "admin",
           expiresInSeconds: ttl,
           jwtSecret,
+        });
+        await recordAdminSession({
+          jti, admin_id: a.id, admin_email: a.email,
+          issued_at: iat, expires_at: exp, request,
         });
         const isHttps = new URL(request.url).protocol === "https:";
         const secureFlag = isHttps ? " Secure;" : "";
