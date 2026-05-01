@@ -819,6 +819,20 @@ export interface ExtraHookHelpers {
   mails: MailsHelpers;
   cron: CronHelpers;
   flags: FlagsHelpers;
+  webhooks: WebhooksHelpers;
+}
+
+export interface WebhooksHelpers {
+  dispatch(event: string, data?: unknown): Promise<{ enqueued: number }>;
+}
+
+function makeWebhooks(): WebhooksHelpers {
+  return {
+    async dispatch(event, data) {
+      const { dispatchEvent } = await import("./webhooks.ts");
+      return dispatchEvent({ event, data });
+    },
+  };
 }
 
 export function makeExtraHelpers(): ExtraHookHelpers {
@@ -834,5 +848,6 @@ export function makeExtraHelpers(): ExtraHookHelpers {
     mails: makeMails(),
     cron: makeCron(),
     flags: makeFlags(),
+    webhooks: makeWebhooks(),
   };
 }

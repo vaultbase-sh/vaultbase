@@ -29,9 +29,11 @@ import { makeAuditLogPlugin } from "./api/audit-log.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
+import { makeWebhooksPlugin } from "./api/webhooks.ts";
 import { startScheduler } from "./core/jobs.ts";
 import { startQueueScheduler } from "./core/queues.ts";
 import { startUpdateCheckScheduler, getUpdateStatus, runUpdateCheck } from "./core/update-check.ts";
+import { startWebhookDispatcher } from "./core/webhooks.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 import {
   setWSAuth,
@@ -84,6 +86,7 @@ export function createServer(config: Config) {
   startScheduler();
   startQueueScheduler();
   startUpdateCheckScheduler();
+  startWebhookDispatcher();
   return new Elysia()
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
@@ -146,6 +149,7 @@ export function createServer(config: Config) {
     .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
     .use(makeThemePlugin())
     .use(makeFlagsPlugin(config.jwtSecret))
+    .use(makeWebhooksPlugin(config.jwtSecret))
     .use(makeCollectionsPlugin(config.jwtSecret))
     .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
     .use(makeAdminPlugin())
