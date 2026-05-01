@@ -307,6 +307,54 @@ export const featureFlags = sqliteTable("vaultbase_feature_flags", {
  * flags share a definition like "internal team" or "EU customers" without
  * duplicating conditions across rules.
  */
+/**
+ * Outbound webhooks — fire on record events + custom dispatch from hooks.
+ * One row per registered subscription. Deliveries live in
+ * `vaultbase_webhook_deliveries` for retry + audit.
+ */
+export const webhooks = sqliteTable("vaultbase_webhooks", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  url: text("url").notNull(),
+  /** JSON array of event patterns: "<collection>.<verb>" or "*" or "<collection>.*". */
+  events: text("events").notNull().default("[]"),
+  /** HMAC-SHA-256 signing key — sent in X-Vaultbase-Signature. */
+  secret: text("secret").notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  retry_max: integer("retry_max").notNull().default(3),
+  /** "exponential" (1s, 2s, 4s, …) or "fixed" (retry_delay_ms each time). */
+  retry_backoff: text("retry_backoff").notNull().default("exponential"),
+  retry_delay_ms: integer("retry_delay_ms").notNull().default(1000),
+  timeout_ms: integer("timeout_ms").notNull().default(30000),
+  /** JSON map of extra request headers (Authorization, X-API-Key, etc.). */
+  custom_headers: text("custom_headers").notNull().default("{}"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
+/**
+ * Append-only-ish delivery log. Rows progress pending → succeeded / failed
+ * → dead. The dispatcher claims next-due `pending` rows. Older entries
+ * can be GCed by hand when storage gets tight.
+ */
+export const webhookDeliveries = sqliteTable("vaultbase_webhook_deliveries", {
+  id: text("id").primaryKey(),
+  webhook_id: text("webhook_id").notNull(),
+  event: text("event").notNull(),
+  /** JSON-encoded full delivery payload (record, etc.). */
+  payload: text("payload").notNull(),
+  attempt: integer("attempt").notNull().default(1),
+  /** "pending" | "succeeded" | "failed" | "dead" */
+  status: text("status").notNull().default("pending"),
+  response_status: integer("response_status"),
+  response_body: text("response_body"),
+  error: text("error"),
+  /** Earliest time the delivery is allowed to fire (used for retry backoff). */
+  scheduled_at: integer("scheduled_at").notNull(),
+  delivered_at: integer("delivered_at"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+});
+
 export const flagSegments = sqliteTable("vaultbase_flag_segments", {
   name: text("name").primaryKey(),
   description: text("description").notNull().default(""),

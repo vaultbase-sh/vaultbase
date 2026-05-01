@@ -77,6 +77,7 @@ function makeCollectionLookup(): CollectionLookup {
 }
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
+import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
@@ -412,6 +413,7 @@ export async function createRecord(
     viewRule: col.view_rule,
     record: result as unknown as Record<string, unknown>,
   });
+  void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
   runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   return result;
 }
@@ -483,6 +485,7 @@ export async function updateRecord(
     viewRule: col.view_rule,
     record: result as unknown as Record<string, unknown>,
   });
+  void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
   runAfterHook(col, "afterUpdate", {
     record: result as unknown as Record<string, unknown>,
     existing: existing as unknown as Record<string, unknown>,
@@ -642,6 +645,7 @@ async function deleteRecordInternal(
     viewRule: col.view_rule,
     record: existing as unknown as Record<string, unknown>,
   });
+  void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });
 
   runAfterHook(col, "afterDelete", {
     record: {},
