@@ -32,6 +32,36 @@ export interface FieldOptions {
    */
   protected?: boolean;
   /**
+   * File-only. Per-field download rule, evaluated AND-combined with the parent
+   * collection's `view_rule`.
+   *   - `null`/undefined → inherit collection.view_rule (default; no change)
+   *   - `""`            → admin-only (override collection rule)
+   *   - any expression  → evaluated with the same engine as collection rules,
+   *                       with extra `@file.*` and `@request.ip` operands.
+   */
+  viewRule?: string | null;
+  /**
+   * File-only. When true, even fully-public collections require an
+   * authenticated principal to fetch the file. Combines AND with `viewRule`.
+   */
+  requireAuth?: boolean;
+  /**
+   * File-only. When true, the issued download token is single-use — the second
+   * request bearing the same JWT is rejected (HTTP 410 Gone).
+   */
+  oneTimeToken?: boolean;
+  /**
+   * File-only. When true, the download token's JWT carries the requesting
+   * client's IP. Subsequent fetches from a different IP are rejected.
+   * Incompatible with mobile-NAT users — opt-in.
+   */
+  bindTokenIp?: boolean;
+  /**
+   * File-only. When true, every successful download emits a `files.download`
+   * row to `vaultbase_audit_log` (filename + collection + record + actor).
+   */
+  auditDownloads?: boolean;
+  /**
    * Vector-only. Number of dimensions in the embedding (1-4096). All values
    * stored under a vector field must be numeric arrays of exactly this length;
    * shorter / longer arrays fail validation.
