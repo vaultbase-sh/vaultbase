@@ -41,8 +41,21 @@ vaultbase_data_test/
 .DS_Store
 Thumbs.db
 
-# Docs scratch
-docs/superpowers/plans/
+# Internal scratch: roadmap, BUILD_TODO, threat models, future-features, perf
+# baselines, superpowers plans/specs. All reside under vaultbase/docs and are
+# NOT for public consumption (the public docs site is a sibling repo).
+docs/
+
+# Internal security-audit working files (the published advisory lives in
+# SECURITY.md; these are pre-publication notes only).
+SECURITY-AUDIT-*.md
 
 # Local screenshots / scratch
 images-claude/
+
+# Shannon (Keygraph AI pentester) — local-only config + scan deliverables.
+# Config holds plaintext throwaway-dev credentials; never commit.
+.shannon/
+shannon.config.yaml
+shannon.yaml
+shannon.yml
