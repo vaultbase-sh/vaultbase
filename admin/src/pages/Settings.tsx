@@ -742,11 +742,7 @@ function UpdatesSection() {
         {status && (
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "1fr auto 1fr",
-              gap: 24,
-              alignItems: "center",
-              padding: "28px 24px",
+              padding: "20px 22px",
               borderRadius: 10,
               background: status.update_available
                 ? "linear-gradient(180deg, rgba(96,165,250,0.10), rgba(96,165,250,0.02))"
@@ -755,43 +751,63 @@ function UpdatesSection() {
               marginBottom: 20,
             }}
           >
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8 }}>
-                Installed
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
+                    Installed
+                  </div>
+                  <div className="mono" style={{ fontSize: 20, fontWeight: 600, lineHeight: 1.3 }}>
+                    v{status.current_version}
+                  </div>
+                </div>
+                <Icon
+                  name="arrowRight"
+                  size={16}
+                  style={{ color: status.update_available ? "var(--accent-light)" : "var(--text-muted)", flexShrink: 0 }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
+                    Latest
+                  </div>
+                  <div
+                    className="mono"
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 600,
+                      lineHeight: 1.3,
+                      color: status.update_available ? "var(--accent-light)" : undefined,
+                    }}
+                  >
+                    {status.latest_version ?? <span className="muted" style={{ fontSize: 14, fontWeight: 400 }}>—</span>}
+                  </div>
+                </div>
               </div>
-              <div className="mono" style={{ fontSize: 28, fontWeight: 600, lineHeight: 1 }}>
-                v{status.current_version}
-              </div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>this server</div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-              <Icon
-                name="arrowRight"
-                size={20}
-                style={{ color: status.update_available ? "var(--accent-light)" : "var(--text-muted)" }}
-              />
-              <span
-                className="mono"
-                style={{
-                  fontSize: 10,
-                  letterSpacing: "0.1em",
-                  color: status.update_available ? "var(--accent-light)" : "var(--text-muted)",
-                }}
-              >
-                {status.update_available ? "UPDATE" : status.latest_version ? "UP TO DATE" : "UNKNOWN"}
-              </span>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8 }}>
-                Latest on GitHub
-              </div>
-              <div className="mono" style={{ fontSize: 28, fontWeight: 600, lineHeight: 1, color: status.update_available ? "var(--accent-light)" : undefined }}>
-                {status.latest_version ?? <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}>—</span>}
-              </div>
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-                {status.checked_at
-                  ? `checked ${relativeShort(status.checked_at)} ago`
-                  : "never checked"}
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: "0.1em",
+                    padding: "3px 8px",
+                    borderRadius: 10,
+                    background: status.update_available
+                      ? "rgba(96,165,250,0.15)"
+                      : status.latest_version
+                        ? "rgba(74,222,128,0.12)"
+                        : "rgba(255,255,255,0.06)",
+                    color: status.update_available
+                      ? "var(--accent-light)"
+                      : status.latest_version
+                        ? "var(--success)"
+                        : "var(--text-muted)",
+                  }}
+                >
+                  {status.update_available ? "UPDATE AVAILABLE" : status.latest_version ? "UP TO DATE" : "NEVER CHECKED"}
+                </span>
+                <span className="muted" style={{ fontSize: 11 }}>
+                  {status.checked_at ? `checked ${relativeShort(status.checked_at)} ago` : "—"}
+                </span>
               </div>
             </div>
           </div>
