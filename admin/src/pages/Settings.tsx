@@ -24,7 +24,11 @@ const DEFAULT_RULES: RateLimitRule[] = [
   { label: "/api/*",   max: 300, windowMs: 10000, audience: "all" },
 ];
 
-type SettingsTabId = "application" | "rate-limit" | "egress" | "smtp" | "templates" | "auth" | "oauth2" | "storage" | "backup" | "migrations" | "danger";
+type SettingsTabId =
+  | "application" | "rate-limit" | "egress" | "cors"
+  | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
+  | "storage" | "backup" | "migrations"
+  | "metrics" | "updates" | "danger";
 
 interface SettingsTab {
   id: SettingsTabId;
@@ -37,13 +41,17 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
   { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
   { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
+  { id: "cors",        label: "CORS",          icon: "globe",  subtitle: "cross-origin allow-list for the HTTP API" },
   { id: "smtp",        label: "SMTP / Email", icon: "scroll", subtitle: "outbound email server" },
   { id: "templates",   label: "Email templates", icon: "scroll", subtitle: "verify + reset emails" },
   { id: "auth",        label: "Auth features", icon: "key", subtitle: "OTP · MFA · anonymous · impersonation" },
+  { id: "password-policy", label: "Password policy", icon: "lock", subtitle: "length · character classes · HIBP" },
   { id: "oauth2",      label: "OAuth2", icon: "shield", subtitle: "third-party sign-in providers" },
   { id: "storage",     label: "File storage", icon: "database", subtitle: "local FS · S3 · Cloudflare R2" },
   { id: "backup",      label: "Backup & restore", icon: "download", subtitle: "SQLite snapshot" },
   { id: "migrations",  label: "Migrations", icon: "layers", subtitle: "schema snapshot · environment sync" },
+  { id: "metrics",     label: "Health & metrics", icon: "activity", subtitle: "Prometheus exposition" },
+  { id: "updates",     label: "Updates",    icon: "refresh", subtitle: "GitHub release checker" },
   { id: "danger",      label: "Danger zone", icon: "alert", subtitle: "irreversible actions" },
 ];
 
@@ -73,6 +81,7 @@ export default function Settings() {
           {active === "application" && <ApplicationSection />}
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
+          {active === "cors" && <CorsSection />}
           {active === "smtp" && <SmtpSection />}
           {active === "templates" && <EmailTemplatesSection />}
           {active === "auth" && (
@@ -81,10 +90,13 @@ export default function Settings() {
               <SessionLifetimesSection />
             </>
           )}
+          {active === "password-policy" && <PasswordPolicySection />}
           {active === "oauth2" && <OAuth2Section />}
           {active === "storage" && <StorageSection />}
           {active === "backup" && <BackupSection />}
           {active === "migrations" && <MigrationsSection />}
+          {active === "metrics" && <MetricsSection />}
+          {active === "updates" && <UpdatesSection />}
           {active === "danger" && <DangerZone />}
         </div>
       </div>
@@ -374,6 +386,397 @@ function EgressSection() {
         </div>
       </div>
       <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── CORS ────────────────────────────────────────────────────────────────────
+function CorsSection() {
+  const [origins, setOrigins] = useState("");
+  const [methods, setMethods] = useState("");
+  const [headers, setHeaders] = useState("");
+  const [credentials, setCredentials] = useState(false);
+  const [maxAge, setMaxAge] = useState("600");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        setOrigins(res.data["cors.origins"] ?? "");
+        setMethods(res.data["cors.methods"] ?? "");
+        setHeaders(res.data["cors.headers"] ?? "");
+        setCredentials((res.data["cors.credentials"] ?? "0") === "1");
+        setMaxAge(res.data["cors.max_age"] ?? "600");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "cors.origins":     origins.trim(),
+      "cors.methods":     methods.trim(),
+      "cors.headers":     headers.trim(),
+      "cors.credentials": credentials ? "1" : "0",
+      "cors.max_age":     maxAge.trim() || "600",
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("CORS saved");
+  }
+
+  const wildcardWithCreds = credentials && origins.split(",").map((s) => s.trim()).includes("*");
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>CORS</h3>
+        <span className="meta">cross-origin allow-list for the HTTP API</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Allowed origins (comma-separated)</label>
+          <div className="help">
+            Empty blocks all cross-origin requests. <code style={codeStyle}>*</code> permits any origin
+            (incompatible with credentials — silently downgraded). Otherwise list each origin
+            verbatim, e.g. <code style={codeStyle}>https://app.example.com,https://admin.example.com</code>.
+          </div>
+        </div>
+        <textarea
+          className="input mono" rows={2} value={origins}
+          onChange={(e) => setOrigins(e.target.value)}
+          placeholder="(blank = block cross-origin)"
+          disabled={!loaded}
+          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+        />
+
+        <div className="row" style={{ gap: 16, marginTop: 16 }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">Allowed methods</label>
+            <input className="input mono" value={methods} onChange={(e) => setMethods(e.target.value)} placeholder="GET,POST,PUT,PATCH,DELETE,OPTIONS" disabled={!loaded} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="label">Allowed headers</label>
+            <input className="input mono" value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder="Authorization,Content-Type,If-Match,X-VB-Idempotency-Key" disabled={!loaded} />
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 16, marginTop: 16, alignItems: "center" }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">Preflight cache (seconds)</label>
+            <input className="input mono" type="number" min={0} value={maxAge} onChange={(e) => setMaxAge(e.target.value)} disabled={!loaded} />
+          </div>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, marginTop: 22 }}>
+            <Toggle on={credentials} onChange={setCredentials} />
+            <span style={{ fontSize: 12 }}>Allow credentials (cookies / Authorization)</span>
+          </div>
+        </div>
+        {wildcardWithCreds && (
+          <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12 }}>
+            <Icon name="alert" size={12} /> <code style={codeStyle}>*</code> origin + credentials is not
+            permitted by browsers. Vaultbase will echo the matched origin instead.
+          </div>
+        )}
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Password policy ─────────────────────────────────────────────────────────
+function PasswordPolicySection() {
+  const [minLen, setMinLen] = useState("12");
+  const [reqUpper, setReqUpper] = useState(false);
+  const [reqLower, setReqLower] = useState(false);
+  const [reqDigit, setReqDigit] = useState(false);
+  const [reqSymbol, setReqSymbol] = useState(false);
+  const [hibp, setHibp] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        setMinLen(res.data["password.min_length"] ?? "12");
+        setReqUpper((res.data["password.require_upper"] ?? "0") === "1");
+        setReqLower((res.data["password.require_lower"] ?? "0") === "1");
+        setReqDigit((res.data["password.require_digit"] ?? "0") === "1");
+        setReqSymbol((res.data["password.require_symbol"] ?? "0") === "1");
+        setHibp((res.data["password.hibp_check"] ?? "0") === "1");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    const n = parseInt(minLen, 10);
+    if (!Number.isFinite(n) || n < 8) { toast("Minimum length must be at least 8", "info"); return; }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "password.min_length":     String(n),
+      "password.require_upper":  reqUpper  ? "1" : "0",
+      "password.require_lower":  reqLower  ? "1" : "0",
+      "password.require_digit":  reqDigit  ? "1" : "0",
+      "password.require_symbol": reqSymbol ? "1" : "0",
+      "password.hibp_check":     hibp      ? "1" : "0",
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Password policy saved");
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Password policy</h3>
+        <span className="meta">applies to admin + auth-collection users</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Minimum length</label>
+          <div className="help">NIST 800-63B recommends at least 8 characters; OWASP recommends 12. Floor is 8.</div>
+        </div>
+        <input className="input mono" type="number" min={8} value={minLen} onChange={(e) => setMinLen(e.target.value)} disabled={!loaded} style={{ maxWidth: 120 }} />
+
+        <div className="label-block" style={{ marginTop: 16 }}>
+          <label className="label">Required character classes</label>
+          <div className="help">
+            Off by default — modern guidance favors length over character-class complexity.
+            Enable only if a compliance regime requires it.
+          </div>
+        </div>
+        {[
+          { key: "upper",  label: "Uppercase letter (A-Z)", on: reqUpper,  set: setReqUpper  },
+          { key: "lower",  label: "Lowercase letter (a-z)", on: reqLower,  set: setReqLower  },
+          { key: "digit",  label: "Digit (0-9)",            on: reqDigit,  set: setReqDigit  },
+          { key: "symbol", label: "Symbol (anything non-alphanumeric)", on: reqSymbol, set: setReqSymbol },
+        ].map((row) => (
+          <div key={row.key} className="row" style={{ gap: 10, alignItems: "center", marginTop: 8 }}>
+            <Toggle on={row.on} onChange={row.set} />
+            <span style={{ fontSize: 12 }}>{row.label}</span>
+          </div>
+        ))}
+
+        <div className="label-block" style={{ marginTop: 24 }}>
+          <label className="label">Have-I-Been-Pwned check</label>
+          <div className="help">
+            Reject passwords found in known breach corpora. Uses the
+            <code style={codeStyle}>api.pwnedpasswords.com</code> k-anonymity API —
+            only the first 5 SHA-1 characters leave the server. Fails open on network error
+            so a downed API doesn't lock signups.
+          </div>
+        </div>
+        <div className="row" style={{ gap: 10, alignItems: "center", marginTop: 8 }}>
+          <Toggle on={hibp} onChange={setHibp} />
+          <span style={{ fontSize: 12 }}>Block breached passwords</span>
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Health & metrics ────────────────────────────────────────────────────────
+function MetricsSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [token, setToken] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        setEnabled((res.data["metrics.enabled"] ?? "0") === "1");
+        setToken(res.data["metrics.token"] ?? "");
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "metrics.enabled": enabled ? "1" : "0",
+      "metrics.token":   token.trim(),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Metrics saved");
+  }
+
+  function regenerateToken() {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    setToken(hex);
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>Health &amp; metrics</h3>
+          <span className="meta">Prometheus exposition at <code style={codeStyle}>/api/metrics</code></span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
+            {enabled ? "Enabled" : "Off"}
+          </span>
+        </div>
+      </div>
+      <div className="settings-section-body">
+        <div className="label-block">
+          <label className="label">Bearer token (optional)</label>
+          <div className="help">
+            When set, scrapers must send <code style={codeStyle}>Authorization: Bearer &lt;token&gt;</code>.
+            Leave blank to expose <code style={codeStyle}>/api/metrics</code> publicly — only do this
+            if the endpoint is protected at the proxy layer.
+          </div>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <input className="input mono" value={token} onChange={(e) => setToken(e.target.value)} placeholder="(blank = no auth)" disabled={!loaded} style={{ flex: 1 }} />
+          <button className="btn btn-ghost" onClick={regenerateToken}>Generate</button>
+        </div>
+
+        <div className="help" style={{ marginTop: 16 }}>
+          Endpoint format: <code style={codeStyle}>text/plain; version=0.0.4</code> — the standard
+          Prometheus exposition. Exports request RPS, total counter, uptime, per-step latency
+          summary (p50/p90/p99/p99.9), and SQLite page/WAL gauges. Always available to admins as
+          JSON at <code style={codeStyle}>/_/metrics</code>.
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Update checker ──────────────────────────────────────────────────────────
+interface UpdateStatus {
+  current_version: string;
+  latest_version: string | null;
+  checked_at: number | null;
+  enabled: boolean;
+  update_available: boolean;
+  last_error: string | null;
+}
+
+function UpdatesSection() {
+  const [enabled, setEnabled] = useState(true);
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+
+  function loadStatus() {
+    return api.get<ApiResponse<UpdateStatus>>("/api/admin/update-status").then((res) => {
+      if (res.data) {
+        setStatus(res.data);
+        setEnabled(res.data.enabled);
+      }
+    });
+  }
+
+  useEffect(() => { loadStatus().finally(() => setLoaded(true)); }, []);
+
+  async function save() {
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+      "update_check.enabled": enabled ? "1" : "0",
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Update check saved");
+    await loadStatus();
+  }
+
+  async function checkNow() {
+    setChecking(true);
+    const res = await api.post<ApiResponse<UpdateStatus>>("/api/admin/update-status/check", {});
+    setChecking(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    if (res.data) setStatus(res.data);
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <h3>Updates</h3>
+          <span className="meta">polls GitHub for the latest release tag</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
+            {enabled ? "Auto-check on" : "Off"}
+          </span>
+        </div>
+      </div>
+      <div className="settings-section-body">
+        {status && (
+          <div className="row" style={{ gap: 16, marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label className="label">Current version</label>
+              <div className="mono" style={{ fontSize: 13 }}>v{status.current_version}</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label className="label">Latest on GitHub</label>
+              <div className="mono" style={{ fontSize: 13 }}>
+                {status.latest_version ?? <span className="muted">unknown — never checked</span>}
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label className="label">Last checked</label>
+              <div className="mono muted" style={{ fontSize: 12 }}>
+                {status.checked_at
+                  ? new Date(status.checked_at * 1000).toISOString()
+                  : "—"}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {status?.update_available && (
+          <div style={{ padding: "10px 12px", borderRadius: 6, background: "rgba(96,165,250,0.1)", color: "var(--accent-light)", fontSize: 12, marginBottom: 12 }}>
+            <Icon name="info" size={12} /> Update available: <code style={codeStyle}>{status.latest_version}</code>.
+            See <code style={codeStyle}>https://github.com/vaultbase-sh/vaultbase/releases/{status.latest_version}</code>.
+          </div>
+        )}
+
+        {status?.last_error && (
+          <div style={{ padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12, marginBottom: 12 }}>
+            <Icon name="alert" size={12} /> Last check failed: {status.last_error}
+          </div>
+        )}
+
+        <div className="help" style={{ marginTop: 8 }}>
+          Polls <code style={codeStyle}>api.github.com/repos/vaultbase-sh/vaultbase/releases/latest</code>
+          on boot (after a 30 s delay) and every 6 hours. Disable to silence the poller —
+          no banner / no network call. Vaultbase never auto-updates; this is purely a notification.
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "space-between" }}>
+        <button className="btn btn-ghost" onClick={checkNow} disabled={!loaded || checking || !enabled}>
+          <Icon name="refresh" size={12} /> {checking ? "Checking…" : "Check now"}
+        </button>
         <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
           {saving ? "Saving…" : "Save changes"}
         </button>

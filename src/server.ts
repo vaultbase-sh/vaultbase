@@ -3,6 +3,7 @@ import type { Config } from "./config.ts";
 import { securityHeaders, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
+import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
 import { setUploadDir } from "./core/storage.ts";
 import { makeAuthPlugin } from "./api/auth.ts";
 import { makeCollectionsPlugin } from "./api/collections.ts";
@@ -27,6 +28,7 @@ import { makeMetricsPlugin } from "./api/metrics.ts";
 import { makeAuditLogPlugin } from "./api/audit-log.ts";
 import { startScheduler } from "./core/jobs.ts";
 import { startQueueScheduler } from "./core/queues.ts";
+import { startUpdateCheckScheduler, getUpdateStatus, runUpdateCheck } from "./core/update-check.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 import {
   setWSAuth,
@@ -78,11 +80,17 @@ export function createServer(config: Config) {
   setUploadDir(config.uploadDir);
   startScheduler();
   startQueueScheduler();
+  startUpdateCheckScheduler();
   return new Elysia()
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
     .onRequest(({ request }) => {
       attachTimer(request, new RequestTimer());
+    })
+    // CORS preflight short-circuit — must run before any normal route.
+    .onRequest(({ request }) => {
+      const res = handleCorsPreflight(request);
+      if (res) return res;
     })
     // Attach security headers globally. CSP applies to non-API surface.
     .onAfterHandle(({ request, set }) => {
@@ -91,6 +99,8 @@ export function createServer(config: Config) {
       for (const [k, v] of Object.entries(headers)) {
         if (!set.headers[k]) set.headers[k] = v;
       }
+      // CORS response headers on every request — same envelope as security.
+      applyCorsHeaders(request, set as { headers: Record<string, string | undefined> });
 
       // ⚠ In-process gzip was removed in the perf sprint Phase 1. It blocked
       // the event loop on `Bun.gzipSync`, regressed RPS by ~14% under load,
