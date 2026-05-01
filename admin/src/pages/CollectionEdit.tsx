@@ -1032,6 +1032,80 @@ function FieldOptionsBody({
               onChange={(v) => updateSelOptions({ protected: v })}
             />
           </div>
+
+          {/* ── Rule-based file protection ─────────────────────────────── */}
+          <div style={{ marginTop: 4, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--vb-muted)", marginBottom: 8 }}>
+              Download protection
+            </div>
+          </div>
+          <div>
+            <label className="label">Download rule</label>
+            <textarea
+              className="input mono"
+              rows={3}
+              value={(sel.options?.["viewRule"] as string | undefined) ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                updateSelOptions({ viewRule: v === "" ? undefined : v });
+              }}
+              placeholder="@auth.id != '' && @auth.id = record.owner"
+              style={{ width: "100%", resize: "vertical", fontSize: 12 }}
+            />
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Per-field rule, AND-combined with the collection's view rule.
+              Empty = inherit collection rule. Extra context: <span className="mono">@request.headers.x_vb_ip</span>,
+              {" "}<span className="mono">x_vb_file_size</span>, <span className="mono">x_vb_file_mime</span>.
+            </div>
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>Require authentication</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Reject anonymous downloads even when the collection's view rule is public.
+              </div>
+            </div>
+            <Toggle
+              on={!!sel.options?.["requireAuth"]}
+              onChange={(v) => updateSelOptions({ requireAuth: v || undefined })}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>One-time download token</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Each token works for a single fetch. Replay returns <span className="mono">410 Gone</span>.
+              </div>
+            </div>
+            <Toggle
+              on={!!sel.options?.["oneTimeToken"]}
+              onChange={(v) => updateSelOptions({ oneTimeToken: v || undefined })}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>Bind token to IP</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Token rejects requests from a different IP. Incompatible with mobile NAT — opt-in.
+              </div>
+            </div>
+            <Toggle
+              on={!!sel.options?.["bindTokenIp"]}
+              onChange={(v) => updateSelOptions({ bindTokenIp: v || undefined })}
+            />
+          </div>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "10px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 7, gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 500 }}>Audit downloads</div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                Append a <span className="mono">files.download</span> row to the audit log per fetch.
+              </div>
+            </div>
+            <Toggle
+              on={!!sel.options?.["auditDownloads"]}
+              onChange={(v) => updateSelOptions({ auditDownloads: v || undefined })}
+            />
+          </div>
         </>
       )}
     </>

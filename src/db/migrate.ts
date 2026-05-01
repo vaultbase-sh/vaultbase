@@ -346,4 +346,13 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_file_token_uses (
+      jti TEXT PRIMARY KEY,
+      used_at INTEGER NOT NULL,
+      ip TEXT
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_file_token_uses_used_at ON vaultbase_file_token_uses(used_at)`);
 }
