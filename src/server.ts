@@ -8,7 +8,7 @@ import { setUploadDir } from "./core/storage.ts";
 import { makeAuthPlugin } from "./api/auth.ts";
 import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
-import { makeFilesPlugin } from "./api/files.ts";
+import { makeFilesPlugin, pruneFileTokenUses } from "./api/files.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
 import { makeAdminsPlugin } from "./api/admins.ts";
@@ -80,6 +80,18 @@ function isOriginAllowed(origin: string | null): boolean {
   return list.includes(origin) || list.includes("*");
 }
 
+/**
+ * Prune `vaultbase_file_token_uses` rows older than 24h once per hour. Runs
+ * once at boot (delayed) so a long-running process never accumulates more
+ * than ~1 day of replay-guard state, which is itself capped by the file-token
+ * window (default 1h) — so the table can't grow without bound.
+ */
+function startFileTokenUsesPrune(): void {
+  const HOUR_MS = 60 * 60 * 1000;
+  setTimeout(() => { void pruneFileTokenUses(); }, 60 * 1000).unref?.();
+  setInterval(() => { void pruneFileTokenUses(); }, HOUR_MS).unref?.();
+}
+
 export function createServer(config: Config) {
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
@@ -87,6 +99,7 @@ export function createServer(config: Config) {
   startQueueScheduler();
   startUpdateCheckScheduler();
   startWebhookDispatcher();
+  startFileTokenUsesPrune();
   return new Elysia()
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.

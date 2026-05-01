@@ -69,6 +69,18 @@ export const authTokens = sqliteTable("vaultbase_auth_tokens", {
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
+/**
+ * Single-use file download token replay guard. When a file field has
+ * `oneTimeToken: true`, the GET handler `INSERT OR IGNORE`s the token's `jti`
+ * — second use is detected by the conflict and rejected with HTTP 410. Rows
+ * older than 24h are pruned by the periodic cleanup task.
+ */
+export const fileTokenUses = sqliteTable("vaultbase_file_token_uses", {
+  jti: text("jti").primaryKey(),
+  used_at: integer("used_at").notNull(),
+  ip: text("ip"),
+});
+
 /** JWT revocation list. Tokens carrying a `jti` listed here are rejected. */
 export const tokenRevocations = sqliteTable("vaultbase_token_revocations", {
   jti: text("jti").primaryKey(),
