@@ -3,6 +3,7 @@ import { getDb } from "../db/client.ts";
 import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
+import { sanitizeHtml } from "./html-sanitize.ts";
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -58,6 +59,13 @@ export async function validateRecord(
 
     const err = validateValue(field, value);
     if (err) { errors[field.name] = err; continue; }
+
+    // Server-side HTML sanitization for `editor` fields. Defends against the
+    // Quill 2.0.3 XSS class (CVE-2025-15056) by stripping <script>, <iframe>,
+    // on* handlers, and javascript:/data: URLs before the value reaches storage.
+    if (field.type === "editor" && typeof value === "string" && value !== "") {
+      data[field.name] = sanitizeHtml(value);
+    }
 
     // Unique check (DB query)
     if (field.options?.unique) {

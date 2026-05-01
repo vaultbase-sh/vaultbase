@@ -14,7 +14,7 @@
     "cronstrue": "^3.14.0",
     "primeicons": "^7.0.0",
     "primereact": "^10.9.7",
-    "quill": "^2.0.3",
+    "quill": "2.0.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.6.0",
@@ -29,6 +29,7 @@
     "vite": "^6.3.4"
   },
   "overrides": {
-    "dompurify": "^3.4.2"
+    "dompurify": "^3.4.2",
+    "quill": "2.0.2"
   }
 }
