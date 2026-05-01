@@ -670,6 +670,14 @@ function MetricsSection() {
 }
 
 // ── Update checker ──────────────────────────────────────────────────────────
+function relativeShort(unixSec: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSec;
+  if (diff < 60)    return `${diff}s`;
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
+
 interface UpdateStatus {
   current_version: string;
   latest_version: string | null;
@@ -732,45 +740,101 @@ function UpdatesSection() {
       </div>
       <div className="settings-section-body">
         {status && (
-          <div className="row" style={{ gap: 16, marginBottom: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label className="label">Current version</label>
-              <div className="mono" style={{ fontSize: 13 }}>v{status.current_version}</div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <label className="label">Latest on GitHub</label>
-              <div className="mono" style={{ fontSize: 13 }}>
-                {status.latest_version ?? <span className="muted">unknown — never checked</span>}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto 1fr",
+              gap: 24,
+              alignItems: "center",
+              padding: "28px 24px",
+              borderRadius: 10,
+              background: status.update_available
+                ? "linear-gradient(180deg, rgba(96,165,250,0.10), rgba(96,165,250,0.02))"
+                : "rgba(255,255,255,0.02)",
+              border: `1px solid ${status.update_available ? "rgba(96,165,250,0.3)" : "var(--border-default)"}`,
+              marginBottom: 20,
+            }}
+          >
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8 }}>
+                Installed
               </div>
+              <div className="mono" style={{ fontSize: 28, fontWeight: 600, lineHeight: 1 }}>
+                v{status.current_version}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>this server</div>
             </div>
-            <div style={{ flex: 1 }}>
-              <label className="label">Last checked</label>
-              <div className="mono muted" style={{ fontSize: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <Icon
+                name="arrowRight"
+                size={20}
+                style={{ color: status.update_available ? "var(--accent-light)" : "var(--text-muted)" }}
+              />
+              <span
+                className="mono"
+                style={{
+                  fontSize: 10,
+                  letterSpacing: "0.1em",
+                  color: status.update_available ? "var(--accent-light)" : "var(--text-muted)",
+                }}
+              >
+                {status.update_available ? "UPDATE" : status.latest_version ? "UP TO DATE" : "UNKNOWN"}
+              </span>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8 }}>
+                Latest on GitHub
+              </div>
+              <div className="mono" style={{ fontSize: 28, fontWeight: 600, lineHeight: 1, color: status.update_available ? "var(--accent-light)" : undefined }}>
+                {status.latest_version ?? <span className="muted" style={{ fontSize: 16, fontWeight: 400 }}>—</span>}
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
                 {status.checked_at
-                  ? new Date(status.checked_at * 1000).toISOString()
-                  : "—"}
+                  ? `checked ${relativeShort(status.checked_at)} ago`
+                  : "never checked"}
               </div>
             </div>
           </div>
         )}
 
-        {status?.update_available && (
-          <div style={{ padding: "10px 12px", borderRadius: 6, background: "rgba(96,165,250,0.1)", color: "var(--accent-light)", fontSize: 12, marginBottom: 12 }}>
-            <Icon name="info" size={12} /> Update available: <code style={codeStyle}>{status.latest_version}</code>.
-            See <code style={codeStyle}>https://github.com/vaultbase-sh/vaultbase/releases/{status.latest_version}</code>.
-          </div>
+        {status?.update_available && status.latest_version && (
+          <a
+            href={`https://github.com/vaultbase-sh/vaultbase/releases/tag/${status.latest_version}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "14px 16px",
+              borderRadius: 8,
+              background: "rgba(96,165,250,0.08)",
+              border: "1px solid rgba(96,165,250,0.25)",
+              color: "var(--accent-light)",
+              fontSize: 13,
+              textDecoration: "none",
+              marginBottom: 20,
+            }}
+          >
+            <Icon name="download" size={14} />
+            <span style={{ flex: 1 }}>
+              View release notes for <code style={codeStyle}>{status.latest_version}</code> on GitHub
+            </span>
+            <Icon name="arrowRight" size={12} />
+          </a>
         )}
 
         {status?.last_error && (
-          <div style={{ padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12, marginBottom: 12 }}>
-            <Icon name="alert" size={12} /> Last check failed: {status.last_error}
+          <div style={{ padding: "12px 14px", borderRadius: 6, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12, marginBottom: 20, display: "flex", gap: 8, alignItems: "center" }}>
+            <Icon name="alert" size={14} />
+            <span>Last check failed: {status.last_error}</span>
           </div>
         )}
 
-        <div className="help" style={{ marginTop: 8 }}>
-          Polls <code style={codeStyle}>api.github.com/repos/vaultbase-sh/vaultbase/releases/latest</code>
-          on boot (after a 30 s delay) and every 6 hours. Disable to silence the poller —
-          no banner / no network call. Vaultbase never auto-updates; this is purely a notification.
+        <div className="help" style={{ lineHeight: 1.6 }}>
+          Polls <code style={codeStyle}>api.github.com/repos/vaultbase-sh/vaultbase/releases/latest</code>{" "}
+          on boot (after a 30 s delay) and every 6 hours. Disable to silence the poller — no banner,
+          no network call. Vaultbase never auto-updates; this is purely a notification.
         </div>
       </div>
       <div className="settings-section-foot" style={{ justifyContent: "space-between" }}>
