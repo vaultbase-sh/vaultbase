@@ -3,9 +3,7 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
 import { HASH_OPTS, verifyAuthToken } from "../core/sec.ts";
-
-/** Minimum admin password length — matches `PASSWORD_MIN_LENGTH` in auth.ts. */
-const ADMIN_PASSWORD_MIN_LENGTH = 12;
+import { validatePassword } from "../core/password-policy.ts";
 
 interface AdminClaims {
   id: string;
@@ -43,9 +41,9 @@ export function makeAdminsPlugin(jwtSecret: string) {
       async ({ request, body, set }) => {
         const me = await verifyAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        if (body.password.length < ADMIN_PASSWORD_MIN_LENGTH) {
-          set.status = 422;
-          return { error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        {
+          const pwErr = await validatePassword(body.password);
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const db = getDb();
         const existing = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
@@ -83,10 +81,8 @@ export function makeAdminsPlugin(jwtSecret: string) {
           update.email = body.email;
         }
         if (body.password !== undefined) {
-          if (body.password.length < ADMIN_PASSWORD_MIN_LENGTH) {
-            set.status = 422;
-            return { error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters`, code: 422 };
-          }
+          const pwErr = await validatePassword(body.password);
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
           update.password_hash = await Bun.password.hash(body.password, HASH_OPTS);
         }
         if (Object.keys(update).length === 0) {
