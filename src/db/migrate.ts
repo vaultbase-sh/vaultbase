@@ -261,4 +261,28 @@ export async function runMigrations() {
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_actor ON vaultbase_audit_log(actor_id, at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_at ON vaultbase_audit_log(at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_action ON vaultbase_audit_log(action, at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_admin_sessions (
+      jti TEXT PRIMARY KEY,
+      admin_id TEXT NOT NULL,
+      admin_email TEXT NOT NULL,
+      issued_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      ip TEXT,
+      user_agent TEXT
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_admin_sessions_admin ON vaultbase_admin_sessions(admin_id)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_admin_sessions_exp ON vaultbase_admin_sessions(expires_at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_login_failures (
+      id TEXT PRIMARY KEY,
+      key TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_key ON vaultbase_login_failures(key, at)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_at ON vaultbase_login_failures(at)`);
 }

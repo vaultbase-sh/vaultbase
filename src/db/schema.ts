@@ -76,6 +76,34 @@ export const tokenRevocations = sqliteTable("vaultbase_token_revocations", {
   revoked_at: integer("revoked_at").notNull().default(sql`(unixepoch())`),
 });
 
+/**
+ * Active admin sessions, written when a JWT is issued and trimmed when it
+ * expires. Drives the **Settings → Security → Sessions** view + per-jti
+ * revoke. Distinct from `vaultbase_token_revocations` (which only records
+ * negatives — this table records positives).
+ */
+export const adminSessions = sqliteTable("vaultbase_admin_sessions", {
+  jti: text("jti").primaryKey(),
+  admin_id: text("admin_id").notNull(),
+  admin_email: text("admin_email").notNull(),
+  issued_at: integer("issued_at").notNull(),
+  expires_at: integer("expires_at").notNull(),
+  /** Best-effort, derived from X-Forwarded-For only when peer is in TRUSTED_PROXIES. */
+  ip: text("ip"),
+  user_agent: text("user_agent"),
+});
+
+/**
+ * Failed login attempts — used by the brute-force lockout machinery. One row
+ * per attempt; trimmed when older than `auth.lockout.duration_seconds`.
+ */
+export const loginFailures = sqliteTable("vaultbase_login_failures", {
+  id: text("id").primaryKey(),
+  /** "user:<email>" or "admin:<email>" or "ip:<ip>". */
+  key: text("key").notNull(),
+  at: integer("at").notNull(),
+});
+
 /** HMAC-keyed lookup for MFA recovery codes (no per-attempt argon2 fan-out). */
 export const mfaRecoveryLookup = sqliteTable("vaultbase_mfa_recovery_lookup", {
   hmac: text("hmac").primaryKey(),
