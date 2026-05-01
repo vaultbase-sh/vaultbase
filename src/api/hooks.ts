@@ -14,7 +14,7 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 
 export function makeHooksPlugin(jwtSecret: string) {
   return new Elysia({ name: "hooks" })
-    .get("/api/admin/hooks", async ({ request, set }) => {
+    .get("/admin/hooks", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -23,7 +23,7 @@ export function makeHooksPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/hooks",
+      "/admin/hooks",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -59,7 +59,7 @@ export function makeHooksPlugin(jwtSecret: string) {
     )
 
     .patch(
-      "/api/admin/hooks/:id",
+      "/admin/hooks/:id",
       async ({ request, params, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -94,7 +94,7 @@ export function makeHooksPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/api/admin/hooks/:id", async ({ request, params, set }) => {
+    .delete("/admin/hooks/:id", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

@@ -129,7 +129,7 @@ describe("anonymous endpoint honors auth.anonymous.window_seconds", () => {
     await setupAuthCol();
     setSetting("auth.anonymous.enabled", "1");
     const app = makeAuthPlugin(SECRET);
-    const req = new Request("http://localhost/api/auth/users/anonymous", {
+    const req = new Request("http://localhost/auth/users/anonymous", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -152,7 +152,7 @@ describe("anonymous endpoint honors auth.anonymous.window_seconds", () => {
     setSetting("auth.anonymous.enabled", "1");
     setSetting("auth.anonymous.window_seconds", "3600"); // 1h
     const app = makeAuthPlugin(SECRET);
-    const req = new Request("http://localhost/api/auth/users/anonymous", {
+    const req = new Request("http://localhost/auth/users/anonymous", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -169,7 +169,7 @@ describe("anonymous endpoint honors auth.anonymous.window_seconds", () => {
     setSetting("auth.anonymous.enabled", "1");
     setSetting("auth.anonymous.window_seconds", "garbage");
     const app = makeAuthPlugin(SECRET);
-    const req = new Request("http://localhost/api/auth/users/anonymous", {
+    const req = new Request("http://localhost/auth/users/anonymous", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",

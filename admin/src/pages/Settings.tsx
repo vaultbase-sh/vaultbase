@@ -21,7 +21,7 @@ interface RateLimitRule {
 const DEFAULT_RULES: RateLimitRule[] = [
   { label: "*:auth",   max: 10,  windowMs: 3000,  audience: "all" },
   { label: "*:create", max: 60,  windowMs: 5000,  audience: "all" },
-  { label: "/api/*",   max: 300, windowMs: 10000, audience: "all" },
+  { label: "/api/v1/*",   max: 300, windowMs: 10000, audience: "all" },
 ];
 
 type SettingsTabId =
@@ -156,7 +156,7 @@ function RateLimitSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         if (res.data["rate_limit.enabled"] !== undefined) {
           setEnabled(res.data["rate_limit.enabled"] === "1" || res.data["rate_limit.enabled"] === "true");
@@ -187,7 +187,7 @@ function RateLimitSection() {
     setRules((prev) => prev.filter((_, i) => i !== idx));
   }
   function addRule() {
-    setRules((prev) => [...prev, { label: "/api/", max: 60, windowMs: 5000, audience: "all" }]);
+    setRules((prev) => [...prev, { label: "/api/v1/", max: 60, windowMs: 5000, audience: "all" }]);
   }
 
   async function handleSave() {
@@ -197,7 +197,7 @@ function RateLimitSection() {
       if (!Number.isFinite(r.windowMs) || r.windowMs < 1) { toast(`Invalid window for "${r.label}"`, "info"); return; }
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "rate_limit.enabled": enabled ? "1" : "0",
       "rate_limit.rules": JSON.stringify(rules),
     });
@@ -315,7 +315,7 @@ function EgressSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setDeny(res.data["hooks.http.deny"] ?? "");
         setAllow(res.data["hooks.http.allow"] ?? "");
@@ -326,7 +326,7 @@ function EgressSection() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "hooks.http.deny": deny.trim(),
       "hooks.http.allow": allow.trim(),
     });
@@ -427,7 +427,7 @@ function ThemeSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         const seed: Record<string, string> = {};
         for (const k of THEME_KNOBS) {
@@ -463,7 +463,7 @@ function ThemeSection() {
     setSaving(true);
     const patch: Record<string, string> = {};
     for (const k of THEME_KNOBS) patch[`theme.${k.key}`] = (values[k.key] ?? "").trim();
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", patch);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Theme saved — refresh to apply everywhere");
@@ -572,7 +572,7 @@ function CorsSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setOrigins(res.data["cors.origins"] ?? "");
         setMethods(res.data["cors.methods"] ?? "");
@@ -586,7 +586,7 @@ function CorsSection() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "cors.origins":     origins.trim(),
       "cors.methods":     methods.trim(),
       "cors.headers":     headers.trim(),
@@ -708,7 +708,7 @@ function ActiveSessionsCard() {
 
   function load() {
     setLoading(true);
-    api.get<ApiResponse<AdminSession[]>>("/api/admin/security/sessions?activeOnly=1").then((res) => {
+    api.get<ApiResponse<AdminSession[]>>("/api/v1/admin/security/sessions?activeOnly=1").then((res) => {
       if (res.data) setSessions(res.data);
       setLoading(false);
     });
@@ -719,7 +719,7 @@ function ActiveSessionsCard() {
   async function revoke(jti: string) {
     const ok = await confirm({ title: "Revoke session?", message: `Adds ${jti.slice(0, 8)}… to the revocation list immediately.`, confirmLabel: "Revoke", danger: true });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<{ revoked: string }>>(`/api/admin/security/sessions/${encodeURIComponent(jti)}`);
+    const res = await api.delete<ApiResponse<{ revoked: string }>>(`/api/v1/admin/security/sessions/${encodeURIComponent(jti)}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Session revoked");
     load();
@@ -728,7 +728,7 @@ function ActiveSessionsCard() {
   async function logoutAll() {
     const ok = await confirm({ title: "Force-logout every admin?", message: "Every existing admin JWT is rejected immediately. You will be signed out — sign back in with your password.", confirmLabel: "Force logout all", danger: true });
     if (!ok) return;
-    const res = await api.post<ApiResponse<{ count: number }>>("/api/admin/security/force-logout-all", {});
+    const res = await api.post<ApiResponse<{ count: number }>>("/api/v1/admin/security/force-logout-all", {});
     if (res.error) { toast(res.error, "info"); return; }
     toast(`${res.data?.count ?? 0} admin(s) signed out — your session ends now`);
     setTimeout(() => { window.location.href = "/_/login"; }, 600);
@@ -800,7 +800,7 @@ function BruteForceCard() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "0", 10);
         setEnabled(m > 0);
@@ -813,7 +813,7 @@ function BruteForceCard() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "auth.lockout.max_attempts":     enabled ? maxAttempts.trim() || "0" : "0",
       "auth.lockout.duration_seconds": duration.trim() || "900",
     });
@@ -871,7 +871,7 @@ function TrustedProxiesCard() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setValue(res.data["security.trusted_proxies"] ?? "");
         setEnvFallback(res.data["security.trusted_proxies_env_view"] ?? "");
@@ -882,7 +882,7 @@ function TrustedProxiesCard() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "security.trusted_proxies": value.trim(),
     });
     setSaving(false);
@@ -926,7 +926,7 @@ function FingerprintsCard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.get<ApiResponse<Fingerprints>>("/api/admin/security/fingerprints").then((res) => {
+    api.get<ApiResponse<Fingerprints>>("/api/v1/admin/security/fingerprints").then((res) => {
       if (res.data) setFp(res.data);
       setLoading(false);
     });
@@ -979,7 +979,7 @@ function HeadersPreviewCard() {
   const [preview, setPreview] = useState<HeadersPreview | null>(null);
 
   useEffect(() => {
-    api.get<ApiResponse<HeadersPreview>>("/api/admin/security/headers-preview").then((res) => {
+    api.get<ApiResponse<HeadersPreview>>("/api/v1/admin/security/headers-preview").then((res) => {
       if (res.data) setPreview(res.data);
     });
   }, []);
@@ -1035,7 +1035,7 @@ function PasswordPolicySection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setMinLen(res.data["password.min_length"] ?? "12");
         setReqUpper((res.data["password.require_upper"] ?? "0") === "1");
@@ -1052,7 +1052,7 @@ function PasswordPolicySection() {
     const n = parseInt(minLen, 10);
     if (!Number.isFinite(n) || n < 8) { toast("Minimum length must be at least 8", "info"); return; }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "password.min_length":     String(n),
       "password.require_upper":  reqUpper  ? "1" : "0",
       "password.require_lower":  reqLower  ? "1" : "0",
@@ -1128,7 +1128,7 @@ function MetricsSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setEnabled((res.data["metrics.enabled"] ?? "0") === "1");
         setToken(res.data["metrics.token"] ?? "");
@@ -1139,7 +1139,7 @@ function MetricsSection() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "metrics.enabled": enabled ? "1" : "0",
       "metrics.token":   token.trim(),
     });
@@ -1225,7 +1225,7 @@ function UpdatesSection() {
   const [checking, setChecking] = useState(false);
 
   function loadStatus() {
-    return api.get<ApiResponse<UpdateStatus>>("/api/admin/update-status").then((res) => {
+    return api.get<ApiResponse<UpdateStatus>>("/api/v1/admin/update-status").then((res) => {
       if (res.data) {
         setStatus(res.data);
         setEnabled(res.data.enabled);
@@ -1237,7 +1237,7 @@ function UpdatesSection() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "update_check.enabled": enabled ? "1" : "0",
     });
     setSaving(false);
@@ -1248,7 +1248,7 @@ function UpdatesSection() {
 
   async function checkNow() {
     setChecking(true);
-    const res = await api.post<ApiResponse<UpdateStatus>>("/api/admin/update-status/check", {});
+    const res = await api.post<ApiResponse<UpdateStatus>>("/api/v1/admin/update-status/check", {});
     setChecking(false);
     if (res.error) { toast(res.error, "info"); return; }
     if (res.data) setStatus(res.data);
@@ -1402,7 +1402,7 @@ function BackupSection() {
 
   function handleDownload() {
     const token = getMemoryToken();
-    fetch("/api/admin/backup", {
+    fetch("/api/v1/admin/backup", {
       credentials: "same-origin",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -1441,7 +1441,7 @@ function BackupSection() {
     fd.append("file", file);
     const token = getMemoryToken();
     try {
-      const res = await fetch("/api/admin/restore", {
+      const res = await fetch("/api/v1/admin/restore", {
         method: "POST",
         credentials: "same-origin",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -1521,7 +1521,7 @@ function SmtpSection() {
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         const s = res.data;
         setEnabled(s["smtp.enabled"] === "1" || s["smtp.enabled"] === "true");
@@ -1542,7 +1542,7 @@ function SmtpSection() {
       toast("Port must be 1–65535", "info"); return;
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "smtp.enabled": enabled ? "1" : "0",
       "smtp.host": host,
       "smtp.port": String(portNum),
@@ -1559,7 +1559,7 @@ function SmtpSection() {
   async function handleTest() {
     if (!testTo.trim()) { toast("Enter a recipient email", "info"); return; }
     setTesting(true);
-    const res = await api.post<ApiResponse<{ messageId: string }>>("/api/admin/settings/smtp/test", {
+    const res = await api.post<ApiResponse<{ messageId: string }>>("/api/v1/admin/settings/smtp/test", {
       to: testTo.trim(),
     });
     setTesting(false);
@@ -1707,7 +1707,7 @@ function EmailTemplatesSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         setAppUrl(res.data["app.url"] ?? "");
         setVerifySubject(res.data["email.verify.subject"]?.trim() || DEFAULT_VERIFY_SUBJECT);
@@ -1721,7 +1721,7 @@ function EmailTemplatesSection() {
 
   async function handleSave() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "app.url": appUrl.trim(),
       "email.verify.subject": verifySubject,
       "email.verify.body": verifyBody,
@@ -1868,7 +1868,7 @@ function AuthFeaturesSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) setConfig(res.data);
       setLoading(false);
     });
@@ -1889,7 +1889,7 @@ function AuthFeaturesSection() {
     for (const f of AUTH_FEATURES) {
       payload[`auth.${f.key}.enabled`] = isOn(f.key, f.defaultOn) ? "1" : "0";
     }
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", payload);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Auth features saved");
@@ -1985,7 +1985,7 @@ function SessionLifetimesSection() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         const next: Record<string, string> = {};
         for (const k of SESSION_KINDS) {
@@ -2020,7 +2020,7 @@ function SessionLifetimesSection() {
     for (const k of SESSION_KINDS) {
       payload[`auth.${k.kind}.window_seconds`] = String(parseInt(values[k.kind] ?? "0", 10));
     }
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", payload);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Session lifetimes saved");
@@ -2186,7 +2186,7 @@ function OAuth2Section() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) setConfig(res.data);
       setLoading(false);
     });
@@ -2226,7 +2226,7 @@ function OAuth2Section() {
         payload[f.key] = get(f.key);
       }
     }
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", payload);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("OAuth2 providers saved");
@@ -2431,7 +2431,7 @@ function MigrationsSection() {
 
   function handleDownload() {
     const token = getMemoryToken();
-    fetch("/api/admin/migrations/snapshot", {
+    fetch("/api/v1/admin/migrations/snapshot", {
       credentials: "same-origin",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -2480,7 +2480,7 @@ function MigrationsSection() {
     setResult(null);
     setDiffLoading(true);
     const res = await api.post<ApiResponse<MigrationsDiffResult>>(
-      "/api/admin/migrations/diff",
+      "/api/v1/admin/migrations/diff",
       { snapshot }
     );
     setDiffLoading(false);
@@ -2508,7 +2508,7 @@ function MigrationsSection() {
     setApplying(true);
     setResult(null);
     const res = await api.post<ApiResponse<MigrationsApplyResult>>(
-      "/api/admin/migrations/apply",
+      "/api/v1/admin/migrations/apply",
       { snapshot: pendingSnapshot, mode }
     );
     setApplying(false);
@@ -2790,7 +2790,7 @@ function StorageSection() {
   const [status, setStatus] = useState<{ driver: string; bucket?: string; endpoint?: string } | null>(null);
 
   useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
         const s = res.data;
         setDriver(s["storage.driver"] === "s3" ? "s3" : "local");
@@ -2804,7 +2804,7 @@ function StorageSection() {
       setLoading(false);
     });
     api.get<ApiResponse<{ driver: string; bucket?: string; endpoint?: string }>>(
-      "/api/admin/settings/storage/status"
+      "/api/v1/admin/settings/storage/status"
     ).then((res) => { if (res.data) setStatus(res.data); });
   }, []);
 
@@ -2824,7 +2824,7 @@ function StorageSection() {
       if (!secretAccessKey.trim()) { toast("Secret access key required", "info"); return; }
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "storage.driver": driver,
       "s3.endpoint": endpoint,
       "s3.bucket": bucket,
@@ -2837,7 +2837,7 @@ function StorageSection() {
     if (res.error) { toast(res.error, "info"); return; }
     toast("Storage settings saved");
     const s = await api.get<ApiResponse<{ driver: string; bucket?: string; endpoint?: string }>>(
-      "/api/admin/settings/storage/status"
+      "/api/v1/admin/settings/storage/status"
     );
     if (s.data) setStatus(s.data);
   }
@@ -2845,7 +2845,7 @@ function StorageSection() {
   async function handleTest() {
     setTesting(true);
     const res = await api.post<ApiResponse<{ ok: boolean; driver: string }>>(
-      "/api/admin/settings/storage/test",
+      "/api/v1/admin/settings/storage/test",
       {}
     );
     setTesting(false);

@@ -49,7 +49,7 @@ describe("GET /:collection/:id/history", () => {
     const r = await createRecord("posts", { title: "x" }, null);
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/history`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/history`, {
       headers: { Authorization: `Bearer ${adminTok}` },
     }));
     expect(res.status).toBe(404);
@@ -61,7 +61,7 @@ describe("GET /:collection/:id/history", () => {
     await updateRecord("posts", r.id, { title: "v2" }, null);
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/history`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/history`, {
       headers: { Authorization: `Bearer ${adminTok}` },
     }));
     expect(res.status).toBe(200);
@@ -80,7 +80,7 @@ describe("GET /:collection/:id/history", () => {
     await updateCollection(c.id, { history_enabled: 1 } as Parameters<typeof updateCollection>[1]);
     const r = await createRecord("posts", { title: "x" }, null);
     const app = makeRecordsPlugin(SECRET);
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/history`));
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/history`));
     expect(res.status).toBe(403);
   });
 });
@@ -95,7 +95,7 @@ describe("POST /:collection/:id/restore", () => {
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
 
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/restore?at=${t0}`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/restore?at=${t0}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${adminTok}` },
     }));
@@ -108,7 +108,7 @@ describe("POST /:collection/:id/restore", () => {
     await withHistory();
     const r = await createRecord("posts", { title: "v1" }, null);
     const app = makeRecordsPlugin(SECRET);
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
       method: "POST",
     }));
     expect(res.status).toBe(403);
@@ -119,7 +119,7 @@ describe("POST /:collection/:id/restore", () => {
     const r = await createRecord("posts", { title: "v1" }, null);
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/restore`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/restore`, {
       method: "POST",
       headers: { Authorization: `Bearer ${adminTok}` },
     }));
@@ -133,7 +133,7 @@ describe("POST /:collection/:id/restore", () => {
     await deleteRecord("posts", r.id, null);
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
-    const res = await app.handle(new Request(`http://localhost/api/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
+    const res = await app.handle(new Request(`http://localhost/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${adminTok}` },
     }));

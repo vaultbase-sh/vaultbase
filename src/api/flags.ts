@@ -41,13 +41,13 @@ async function requireAdmin(request: Request, jwtSecret: string): Promise<boolea
 export function makeFlagsPlugin(jwtSecret: string) {
   return new Elysia({ name: "flags" })
     // ── Admin CRUD ────────────────────────────────────────────────────────
-    .get("/api/admin/flags", async ({ request, set }) => {
+    .get("/admin/flags", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       return { data: await listFlags() };
     })
-    .get("/api/admin/flags/:key", async ({ request, params, set }) => {
+    .get("/admin/flags/:key", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -55,7 +55,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
       if (!flag) { set.status = 404; return { error: "Flag not found", code: 404 }; }
       return { data: flag };
     })
-    .post("/api/admin/flags", async ({ request, body, set }) => {
+    .post("/admin/flags", async ({ request, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -84,7 +84,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         rules: t.Optional(t.Array(t.Any())),
       }),
     })
-    .patch("/api/admin/flags/:key", async ({ request, params, body, set }) => {
+    .patch("/admin/flags/:key", async ({ request, params, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -112,7 +112,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         rules: t.Optional(t.Array(t.Any())),
       }),
     })
-    .delete("/api/admin/flags/:key", async ({ request, params, set }) => {
+    .delete("/admin/flags/:key", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -123,7 +123,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
     // Test-evaluate: takes an arbitrary context, returns the resolved value
     // plus the trace (matched rule id, reason). Drives the "test context"
     // panel in the admin Flag editor.
-    .post("/api/admin/flags/:key/evaluate", async ({ request, params, body, set }) => {
+    .post("/admin/flags/:key/evaluate", async ({ request, params, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -134,13 +134,13 @@ export function makeFlagsPlugin(jwtSecret: string) {
     })
 
     // ── Segments ─────────────────────────────────────────────────────────
-    .get("/api/admin/flag-segments", async ({ request, set }) => {
+    .get("/admin/flag-segments", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       return { data: await listSegments() };
     })
-    .get("/api/admin/flag-segments/:name", async ({ request, params, set }) => {
+    .get("/admin/flag-segments/:name", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -148,7 +148,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
       if (!seg) { set.status = 404; return { error: "Segment not found", code: 404 }; }
       return { data: seg };
     })
-    .post("/api/admin/flag-segments", async ({ request, body, set }) => {
+    .post("/admin/flag-segments", async ({ request, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -169,7 +169,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         conditions: t.Optional(t.Any()),
       }),
     })
-    .patch("/api/admin/flag-segments/:name", async ({ request, params, body, set }) => {
+    .patch("/admin/flag-segments/:name", async ({ request, params, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -189,7 +189,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         conditions: t.Optional(t.Any()),
       }),
     })
-    .delete("/api/admin/flag-segments/:name", async ({ request, params, set }) => {
+    .delete("/admin/flag-segments/:name", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -199,7 +199,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
     })
 
     // ── Public bulk eval ──────────────────────────────────────────────────
-    .post("/api/flags/evaluate", async ({ body }) => {
+    .post("/flags/evaluate", async ({ body }) => {
       const ctx = (body.context ?? {}) as Record<string, unknown>;
       if (Array.isArray(body.keys) && body.keys.length > 0) {
         const out: Record<string, FlagValue> = {};

@@ -30,7 +30,7 @@ function authReq(method: string, url: string, token: string | null, body?: unkno
 async function mintAnonymous(): Promise<{ token: string; id: string }> {
   await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
   const app = makeAuthPlugin(SECRET);
-  const res = await app.handle(authReq("POST", "/api/auth/users/anonymous", null));
+  const res = await app.handle(authReq("POST", "/auth/users/anonymous", null));
   expect(res.status).toBe(200);
   const body = await res.json() as { data: { token: string; record: { id: string } } };
   return { token: body.data.token, id: body.data.record.id };
@@ -40,7 +40,7 @@ describe("POST /api/auth/:collection/promote", () => {
   it("promotes anonymous → real account, mints a non-anonymous JWT", async () => {
     const { token, id } = await mintAnonymous();
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/api/auth/users/promote", token, {
+    const res = await app.handle(authReq("POST", "/auth/users/promote", token, {
       email: "real@test.local",
       password: "hunter2!!hunter2!!",
     }));
@@ -72,10 +72,10 @@ describe("POST /api/auth/:collection/promote", () => {
     });
 
     const app = makeAuthPlugin(SECRET);
-    const anonRes = await app.handle(authReq("POST", "/api/auth/users/anonymous", null));
+    const anonRes = await app.handle(authReq("POST", "/auth/users/anonymous", null));
     const anonBody = await anonRes.json() as { data: { token: string } };
 
-    const res = await app.handle(authReq("POST", "/api/auth/users/promote", anonBody.data.token, {
+    const res = await app.handle(authReq("POST", "/auth/users/promote", anonBody.data.token, {
       email: "taken@test.local",
       password: "hunter2!!hunter2!!",
     }));
@@ -93,7 +93,7 @@ describe("POST /api/auth/:collection/promote", () => {
       .setExpirationTime("1h")
       .sign(new TextEncoder().encode(SECRET));
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/api/auth/users/promote", token, {
+    const res = await app.handle(authReq("POST", "/auth/users/promote", token, {
       email: "x@test.local",
       password: "hunter2!!hunter2!!",
     }));
@@ -103,7 +103,7 @@ describe("POST /api/auth/:collection/promote", () => {
   it("rejects unauthenticated calls", async () => {
     await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/api/auth/users/promote", null, {
+    const res = await app.handle(authReq("POST", "/auth/users/promote", null, {
       email: "x@test.local",
       password: "hunter2!!hunter2!!",
     }));

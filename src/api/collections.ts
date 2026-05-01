@@ -25,17 +25,17 @@ function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 
 export function makeCollectionsPlugin(jwtSecret: string) {
   return new Elysia({ name: "collections" })
-    .get("/api/collections", async () => {
+    .get("/collections", async () => {
       const data = await listCollections();
       return { data };
     })
-    .get("/api/collections/:id", async ({ params, set }) => {
+    .get("/collections/:id", async ({ params, set }) => {
       const col = await getCollection(params.id);
       if (!col) { set.status = 404; return { error: "Not found", code: 404 }; }
       return { data: col };
     })
     .post(
-      "/api/collections",
+      "/collections",
       async ({ body, request, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 403;
@@ -100,7 +100,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       }
     )
     .patch(
-      "/api/collections/:id",
+      "/collections/:id",
       async ({ params, body, request, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 403;
@@ -155,7 +155,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     // Dry-run a view query: validate syntax + infer columns. Lets the admin UI
     // surface errors and refresh the field list without actually creating a view.
     .post(
-      "/api/admin/collections/preview-view",
+      "/admin/collections/preview-view",
       async ({ body, request, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 403;
@@ -176,7 +176,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     // Preview the first N rows a view query would return. Lets the admin UI
     // sanity-check a query before saving the collection — no view is created.
     .post(
-      "/api/admin/collections/preview-view-rows",
+      "/admin/collections/preview-view-rows",
       async ({ body, request, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 403;
@@ -193,7 +193,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       },
       { body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
     )
-    .delete("/api/collections/:id", async ({ params, request, set }) => {
+    .delete("/collections/:id", async ({ params, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };

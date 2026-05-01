@@ -7,6 +7,7 @@ import { ValidationError } from "../core/validate.ts";
 import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { normalizeApiPath } from "../core/api-paths.ts";
 
 interface BatchRequest {
   method: string;
@@ -46,7 +47,10 @@ function parseOp(method: string, urlStr: string): ParsedOp | { error: string } {
   } catch {
     return { error: `Invalid url: ${urlStr}` };
   }
-  const m = url.pathname.match(/^\/api\/([^/]+)(?:\/([^/]+))?\/?$/);
+  // Accept both versioned (`/api/v1/<collection>...`) and legacy
+  // (`/api/<collection>...`) op URLs in batch payloads.
+  const path = normalizeApiPath(url.pathname);
+  const m = path.match(/^\/api\/([^/]+)(?:\/([^/]+))?\/?$/);
   if (!m) return { error: `Unsupported url: ${urlStr}` };
   const [, collection, id] = m;
   if (!collection || ["admin", "auth", "files", "collections", "health", "batch", "custom"].includes(collection)) {
@@ -126,7 +130,7 @@ async function dispatchOp(
 
 export function makeBatchPlugin(jwtSecret: string) {
   return new Elysia({ name: "batch" }).post(
-    "/api/batch",
+    "/batch",
     async ({ request, body, set }) => {
       const auth = await extractAuth(request, jwtSecret);
       const requests = body.requests;

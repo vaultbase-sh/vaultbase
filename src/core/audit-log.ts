@@ -12,6 +12,7 @@
 import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { auditLog } from "../db/schema.ts";
+import { normalizeApiPath } from "./api-paths.ts";
 
 /**
  * Extract the client IP, honouring `x-forwarded-for` when the request
@@ -44,7 +45,9 @@ const SKIP_PATHS: ReadonlyArray<string | RegExp> = [
   /^\/api\/admin\/.*\/preview$/,
 ];
 
-function shouldAudit(method: string, path: string): boolean {
+function shouldAudit(method: string, rawPath: string): boolean {
+  // Normalise so `/api/v1/admin/...` is treated identically to `/api/admin/...`.
+  const path = normalizeApiPath(rawPath);
   if (!AUDITED_METHODS.has(method)) return false;
   if (!path.startsWith("/api/admin/")) return false;
   for (const p of SKIP_PATHS) {
@@ -61,7 +64,8 @@ function shouldAudit(method: string, path: string): boolean {
  * Map a path + method to a logical action label. Best-effort —
  * uncategorised paths fall back to the literal `<METHOD> <path>`.
  */
-function deriveAction(method: string, path: string): { action: string; target: string | null } {
+function deriveAction(method: string, rawPath: string): { action: string; target: string | null } {
+  const path = normalizeApiPath(rawPath);
   // /api/admin/<resource>/<id?>
   const m = /^\/api\/admin\/([a-z][a-z0-9_-]*)(?:\/([^/?]+))?(?:\/([^/?]+))?/.exec(path);
   if (!m) return { action: `${method} ${path}`, target: null };

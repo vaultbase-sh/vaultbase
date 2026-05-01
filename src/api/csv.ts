@@ -122,7 +122,7 @@ export function makeCsvPlugin(jwtSecret: string) {
     //
     // Output is byte-identical to the previous buffered implementation:
     //   header CRLF row1 CRLF row2 ... CRLF rowN     (no trailing CRLF)
-    .get("/api/admin/export/:collection", async ({ params, request, set }) => {
+    .get("/admin/export/:collection", async ({ params, request, set }) => {
       // Atomic auth/rule check — runs synchronously before we hand back a Response
       // so unauthorized callers get a plain JSON error, never a stream.
       if (!(await isAdmin(request, jwtSecret))) {
@@ -211,7 +211,7 @@ export function makeCsvPlugin(jwtSecret: string) {
     })
 
     // Import CSV rows into a base collection.
-    .post("/api/admin/import/:collection", async ({ params, request, set }) => {
+    .post("/admin/import/:collection", async ({ params, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };

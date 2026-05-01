@@ -22,7 +22,7 @@ function generateSecret(): string {
 
 export function makeWebhooksPlugin(jwtSecret: string) {
   return new Elysia({ name: "webhooks" })
-    .get("/api/admin/webhooks", async ({ request, set }) => {
+    .get("/admin/webhooks", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -30,7 +30,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       return { data: rows };
     })
 
-    .get("/api/admin/webhooks/:id", async ({ request, params, set }) => {
+    .get("/admin/webhooks/:id", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -39,7 +39,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       return { data: rows[0] };
     })
 
-    .post("/api/admin/webhooks", async ({ request, body, set }) => {
+    .post("/admin/webhooks", async ({ request, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -79,7 +79,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       }),
     })
 
-    .patch("/api/admin/webhooks/:id", async ({ request, params, body, set }) => {
+    .patch("/admin/webhooks/:id", async ({ request, params, body, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -116,7 +116,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       }),
     })
 
-    .delete("/api/admin/webhooks/:id", async ({ request, params, set }) => {
+    .delete("/admin/webhooks/:id", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -126,7 +126,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
 
     // Fire a test event so the operator can confirm wiring without
     // touching real records.
-    .post("/api/admin/webhooks/:id/test", async ({ request, params, set }) => {
+    .post("/admin/webhooks/:id/test", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -150,7 +150,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
     })
 
     // Delivery log — per-webhook recent deliveries.
-    .get("/api/admin/webhooks/:id/deliveries", async ({ request, params, query, set }) => {
+    .get("/admin/webhooks/:id/deliveries", async ({ request, params, query, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

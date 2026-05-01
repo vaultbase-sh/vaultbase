@@ -50,7 +50,7 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 export function makeSettingsPlugin(jwtSecret: string) {
   return new Elysia({ name: "settings" })
     // Read all settings
-    .get("/api/admin/settings", async ({ request, set }) => {
+    .get("/admin/settings", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -58,7 +58,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
     })
     // Update settings (partial — keys not in body are left alone)
     .patch(
-      "/api/admin/settings",
+      "/admin/settings",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -94,7 +94,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
     )
     // Send test email — verifies + delivers a one-line message
     .post(
-      "/api/admin/settings/smtp/test",
+      "/admin/settings/smtp/test",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -119,7 +119,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
       { body: t.Object({ to: t.String() }) }
     )
     // Storage round-trip test: write probe object → read back → delete
-    .post("/api/admin/settings/storage/test", async ({ request, set }) => {
+    .post("/admin/settings/storage/test", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -128,20 +128,20 @@ export function makeSettingsPlugin(jwtSecret: string) {
       return { data: result };
     })
     // Storage status — what driver is in use, plus relevant identifiers
-    .get("/api/admin/settings/storage/status", async ({ request, set }) => {
+    .get("/admin/settings/storage/status", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       return { data: getStorageStatus() };
     })
     // Update checker — current vs latest GitHub release.
-    .get("/api/admin/update-status", async ({ request, set }) => {
+    .get("/admin/update-status", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       return { data: getUpdateStatus() };
     })
-    .post("/api/admin/update-status/check", async ({ request, set }) => {
+    .post("/admin/update-status/check", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

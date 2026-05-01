@@ -255,13 +255,13 @@ async function issueOtpAndSend(
 
 export function makeAuthPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth" })
-    .get("/api/admin/setup/status", async () => {
+    .get("/admin/setup/status", async () => {
       const db = getDb();
       const existing = await db.select().from(admin).limit(1);
       return { data: { has_admin: existing.length > 0 } };
     })
     .post(
-      "/api/admin/setup",
+      "/admin/setup",
       async ({ body, request, set }) => {
         {
           const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
@@ -308,7 +308,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
     .post(
-      "/api/admin/auth/login",
+      "/admin/auth/login",
       async ({ body, request }) => {
         const ip = clientIpForLockout(request);
         // Lockout gate runs *before* password verify so a successful attempt
@@ -356,7 +356,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
-    .get("/api/admin/auth/me", async ({ request, set }) => {
+    .get("/admin/auth/me", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
@@ -364,7 +364,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       return { data: { id: ctx.id, email: ctx.email ?? "", aud: "admin", exp: ctx.exp } };
     })
     .post(
-      "/api/auth/:collection/register",
+      "/auth/:collection/register",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -426,7 +426,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
     )
     .post(
-      "/api/auth/:collection/login",
+      "/auth/:collection/login",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -466,7 +466,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // single-use recovery code) for a full JWT. Exactly one of `code` /
     // `recovery_code` must be supplied.
     .post(
-      "/api/auth/:collection/login/mfa",
+      "/auth/:collection/login/mfa",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -556,7 +556,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     // Mint 10 fresh recovery codes (replaces all existing). Returns plaintext.
     .post(
-      "/api/auth/:collection/totp/recovery/regenerate",
+      "/auth/:collection/totp/recovery/regenerate",
       async ({ params, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -583,7 +583,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // Counts of recovery codes (never plaintext). Used by the UI to nag users
     // to regenerate when they're running low.
     .get(
-      "/api/auth/:collection/totp/recovery/status",
+      "/auth/:collection/totp/recovery/status",
       async ({ params, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -608,7 +608,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         return { data: { total, remaining } };
       }
     )
-    .get("/api/auth/me", async ({ request, set }) => {
+    .get("/auth/me", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
@@ -617,7 +617,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     // ── Email verification ──────────────────────────────────────────────────
     // Authenticated user requests a fresh verification email for their address.
-    .post("/api/auth/:collection/request-verify", async ({ params, request, set }) => {
+    .post("/auth/:collection/request-verify", async ({ params, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -647,7 +647,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     // Anyone with a valid token can confirm their email.
     .post(
-      "/api/auth/:collection/verify-email",
+      "/auth/:collection/verify-email",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -668,7 +668,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // ── Password reset ──────────────────────────────────────────────────────
     // Always returns 200 to avoid leaking which emails are registered.
     .post(
-      "/api/auth/:collection/request-password-reset",
+      "/auth/:collection/request-password-reset",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -693,7 +693,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       { body: t.Object({ email: t.String() }) }
     )
     .post(
-      "/api/auth/:collection/confirm-password-reset",
+      "/auth/:collection/confirm-password-reset",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -720,7 +720,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // Always returns 200 (no enumeration). Issues both a long token (link) and
     // a 6-digit code; either can be used to authenticate.
     .post(
-      "/api/auth/:collection/otp/request",
+      "/auth/:collection/otp/request",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -747,7 +747,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     // Auth via OTP — accepts either the long token OR the short code.
     // Logout — revokes the bearer token's `jti` and clears any auth cookies.
-    .post("/api/auth/logout", async ({ request }) => {
+    .post("/auth/logout", async ({ request }) => {
       const { extractBearer, revokeToken } = await import("../core/sec.ts");
       const token = extractBearer(request);
       if (token) {
@@ -762,7 +762,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       return new Response(JSON.stringify({ data: { ok: true } }), { status: 200, headers });
     })
     .post(
-      "/api/auth/:collection/otp/auth",
+      "/auth/:collection/otp/auth",
       async ({ params, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -846,7 +846,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     // ── TOTP ────────────────────────────────────────────────────────────────
     // Step 1: generate a fresh secret + otpauth URL. Doesn't enable MFA yet.
-    .post("/api/auth/:collection/totp/setup", async ({ params, request, set }) => {
+    .post("/auth/:collection/totp/setup", async ({ params, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -877,7 +877,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     // Step 2: confirm by submitting a code from the authenticator app — flips totp_enabled.
     .post(
-      "/api/auth/:collection/totp/confirm",
+      "/auth/:collection/totp/confirm",
       async ({ params, request, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -908,7 +908,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     // Disable MFA. Requires the current code to prevent hijacked sessions from disabling it.
     .post(
-      "/api/auth/:collection/totp/disable",
+      "/auth/:collection/totp/disable",
       async ({ params, request, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -944,7 +944,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // ── Anonymous ──────────────────────────────────────────────────────────
     // Mints a guest user with a synthetic email. The returned JWT is a regular
     // user token — caller can later "promote" by setting email + password via PATCH.
-    .post("/api/auth/:collection/anonymous", async ({ params, set }) => {
+    .post("/auth/:collection/anonymous", async ({ params, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -978,7 +978,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // (non-anonymous) JWT. Validates email uniqueness and the collection's
     // schema (so a min-length on `email` still applies).
     .post(
-      "/api/auth/:collection/promote",
+      "/auth/:collection/promote",
       async ({ params, request, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -1064,7 +1064,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // ── Admin impersonation ────────────────────────────────────────────────
     // Admin mints a short-lived user JWT for support purposes. JWT carries
     // `impersonated_by` so audit logs can attribute actions to the admin.
-    .post("/api/admin/impersonate/:collection/:userId", async ({ params, request, set }) => {
+    .post("/admin/impersonate/:collection/:userId", async ({ params, request, set }) => {
       const adminToken = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!adminToken) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       let adminId: string;
@@ -1096,7 +1096,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     // ── OAuth2 ──────────────────────────────────────────────────────────────
     // List enabled providers for this collection (gated by collection.type='auth').
-    .get("/api/auth/:collection/oauth2/providers", async ({ params, set }) => {
+    .get("/auth/:collection/oauth2/providers", async ({ params, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1110,7 +1110,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     //    in `vaultbase_auth_tokens` keyed by `state` (purpose="oauth2_pkce"), and
     //    bakes the derived challenge into the URL. Useful for confidential web
     //    flows where the caller can't easily keep the verifier across the redirect.
-    .get("/api/auth/:collection/oauth2/authorize", async ({ params, query, set }) => {
+    .get("/auth/:collection/oauth2/authorize", async ({ params, query, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1188,7 +1188,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     //  2. Otherwise, if profile.emailVerified and email matches an existing user in
     //     this collection → create link, log in
     //  3. Otherwise, create a fresh user (random unguessable password) + link
-    .post("/api/auth/:collection/oauth2/exchange", async ({ params, body, set }) => {
+    .post("/auth/:collection/oauth2/exchange", async ({ params, body, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1337,7 +1337,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // email matched an existing account; this endpoint takes that token plus
     // proof-of-ownership (the user's password OR a valid user JWT for that
     // account) and performs the link.
-    .post("/api/auth/:collection/oauth2/merge-confirm", async ({ params, body, request, set }) => {
+    .post("/auth/:collection/oauth2/merge-confirm", async ({ params, body, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       const db = getDb();
@@ -1433,7 +1433,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // is present (any user has one — anonymous + oauth-only users still hold a
     // random one — so the heuristic falls back to "must have ≥1 other sign-in
     // path", i.e. another link OR a verified email + non-anonymous flag).
-    .delete("/api/auth/:collection/oauth2/:provider/unlink", async ({ params, request, set }) => {
+    .delete("/auth/:collection/oauth2/:provider/unlink", async ({ params, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1489,7 +1489,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       return { data: null };
     })
     // Token refresh — re-validates that the principal still exists.
-    .post("/api/auth/refresh", async ({ request, set }) => {
+    .post("/auth/refresh", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret);

@@ -62,7 +62,7 @@ async function userJwt(userId: string, collectionName: string): Promise<string> 
 
 function unlinkRequest(token: string, collectionName: string, provider: string): Request {
   return new Request(
-    `http://localhost/api/auth/${collectionName}/oauth2/${provider}/unlink`,
+    `http://localhost/auth/${collectionName}/oauth2/${provider}/unlink`,
     { method: "DELETE", headers: { authorization: `Bearer ${token}` } }
   );
 }

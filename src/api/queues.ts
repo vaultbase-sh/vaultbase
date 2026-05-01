@@ -31,7 +31,7 @@ function validateQueueName(q: string): string | null {
 export function makeQueuesPlugin(jwtSecret: string) {
   return new Elysia({ name: "queues" })
     // ── Workers CRUD ──────────────────────────────────────────────────────
-    .get("/api/admin/workers", async ({ request, set }) => {
+    .get("/admin/workers", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -40,7 +40,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/workers",
+      "/admin/workers",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -86,7 +86,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
     )
 
     .patch(
-      "/api/admin/workers/:id",
+      "/admin/workers/:id",
       async ({ request, params, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -130,7 +130,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/api/admin/workers/:id", async ({ request, params, set }) => {
+    .delete("/admin/workers/:id", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -141,7 +141,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
 
     // ── Jobs log + admin actions ──────────────────────────────────────────
     .get(
-      "/api/admin/queues/jobs",
+      "/admin/queues/jobs",
       async ({ request, query, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -170,7 +170,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
       }
     )
 
-    .post("/api/admin/queues/jobs/:id/retry", async ({ request, params, set }) => {
+    .post("/admin/queues/jobs/:id/retry", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -179,7 +179,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
       return { data: { ok: true } };
     })
 
-    .delete("/api/admin/queues/jobs/:id", async ({ request, params, set }) => {
+    .delete("/admin/queues/jobs/:id", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -188,7 +188,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
       return { data: null };
     })
 
-    .get("/api/admin/queues/stats", async ({ request, set }) => {
+    .get("/admin/queues/stats", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

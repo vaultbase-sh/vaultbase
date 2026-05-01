@@ -17,7 +17,7 @@ export const useCollections = create<CollectionsState>((set, get) => ({
     if (get().loading) return;
     if (get().loaded && !force) return;
     set({ loading: true });
-    const res = await api.get<ApiResponse<Collection[]>>("/api/collections");
+    const res = await api.get<ApiResponse<Collection[]>>("/api/v1/collections");
     set({
       list: res.data ?? [],
       loading: false,

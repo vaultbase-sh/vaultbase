@@ -127,14 +127,14 @@ function tokenReq(token: string | null, recId: string, filename: string, headers
   const h: Record<string, string> = { ...headers };
   if (token) h.authorization = `Bearer ${token}`;
   return new Request(
-    `http://localhost/api/files/notes/${recId}/attachment/${filename}/token`,
+    `http://localhost/files/notes/${recId}/attachment/${filename}/token`,
     { method: "POST", headers: h },
   );
 }
 
 function getReq(filename: string, query: Record<string, string> = {}, token: string | null = null, headers: Record<string, string> = {}): Request {
   const qs = new URLSearchParams(query).toString();
-  const url = `http://localhost/api/files/${filename}${qs ? `?${qs}` : ""}`;
+  const url = `http://localhost/files/${filename}${qs ? `?${qs}` : ""}`;
   const h: Record<string, string> = { ...headers };
   if (token) h.authorization = `Bearer ${token}`;
   return new Request(url, { method: "GET", headers: h });

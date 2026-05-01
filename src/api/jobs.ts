@@ -21,7 +21,7 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 
 export function makeJobsPlugin(jwtSecret: string) {
   return new Elysia({ name: "jobs" })
-    .get("/api/admin/jobs", async ({ request, set }) => {
+    .get("/admin/jobs", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -30,7 +30,7 @@ export function makeJobsPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/jobs",
+      "/admin/jobs",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -73,7 +73,7 @@ export function makeJobsPlugin(jwtSecret: string) {
     )
 
     .patch(
-      "/api/admin/jobs/:id",
+      "/admin/jobs/:id",
       async ({ request, params, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -112,7 +112,7 @@ export function makeJobsPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/api/admin/jobs/:id", async ({ request, params, set }) => {
+    .delete("/admin/jobs/:id", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -121,7 +121,7 @@ export function makeJobsPlugin(jwtSecret: string) {
       return { data: null };
     })
 
-    .post("/api/admin/jobs/:id/run", async ({ request, params, set }) => {
+    .post("/admin/jobs/:id/run", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

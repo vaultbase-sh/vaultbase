@@ -119,7 +119,7 @@ export default function CollectionEdit() {
     if (!viewQuery.trim()) { setViewError("Empty query"); return; }
     setValidating(true);
     const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
-      "/api/admin/collections/preview-view",
+      "/api/v1/admin/collections/preview-view",
       { view_query: viewQuery.trim() }
     );
     setValidating(false);
@@ -141,7 +141,7 @@ export default function CollectionEdit() {
     if (!viewQuery.trim()) { setViewError("Empty query"); return; }
     setPreviewing(true);
     const res = await api.post<ApiResponse<{ columns: string[]; rows: Array<Record<string, unknown>> }>>(
-      "/api/admin/collections/preview-view-rows",
+      "/api/v1/admin/collections/preview-view-rows",
       { view_query: viewQuery.trim(), limit: 5 }
     );
     setPreviewing(false);
@@ -156,13 +156,13 @@ export default function CollectionEdit() {
   }
 
   useEffect(() => {
-    api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
+    api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
       if (res.data) setAllCollections(res.data);
     });
   }, []);
 
   useEffect(() => {
-    api.get<ApiResponse<Collection>>(`/api/collections/${collId}`).then((res) => {
+    api.get<ApiResponse<Collection>>(`/api/v1/collections/${collId}`).then((res) => {
       if (!res.data) return;
       setCollection(res.data);
       setFields(parseFields(res.data.fields));
@@ -227,7 +227,7 @@ export default function CollectionEdit() {
         delete_rule: rules.delete || null,
       };
       if (!queryChanged) payload["fields"] = fields.filter((f) => !f.system);
-      const res = await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, payload);
+      const res = await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, payload);
       setSaving(false);
       if (res.error) { toast(res.error, "info"); return; }
       toast("Changes saved");
@@ -253,7 +253,7 @@ export default function CollectionEdit() {
       }
     }
     setSaving(true);
-    await api.patch<ApiResponse<Collection>>(`/api/collections/${collId}`, {
+    await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, {
       fields: userFields,
       list_rule: rules.list || null,
       view_rule: rules.view || null,
@@ -274,7 +274,7 @@ export default function CollectionEdit() {
       danger: true,
     });
     if (!ok) return;
-    await api.delete(`/api/collections/${collId}`);
+    await api.delete(`/api/v1/collections/${collId}`);
     toast(`Collection deleted`, "trash");
     navigate("/_/collections");
   }
@@ -1196,7 +1196,7 @@ function IndexesSection({
 
   async function load() {
     setLoading(true);
-    const res = await api.get<ApiResponse<IndexInfo[]>>(`/api/admin/collections/${collectionName}/indexes`);
+    const res = await api.get<ApiResponse<IndexInfo[]>>(`/api/v1/admin/collections/${collectionName}/indexes`);
     if (res.data) setIndexes(res.data);
     setLoading(false);
   }
@@ -1205,7 +1205,7 @@ function IndexesSection({
   async function handleAdd() {
     if (!newField) return;
     const res = await api.post<ApiResponse<IndexInfo>>(
-      `/api/admin/collections/${collectionName}/indexes`,
+      `/api/v1/admin/collections/${collectionName}/indexes`,
       { field: newField, unique: newUnique }
     );
     if (res.error) { toast(res.error, "info"); return; }
@@ -1223,7 +1223,7 @@ function IndexesSection({
     });
     if (!ok) return;
     const res = await api.delete<ApiResponse<null>>(
-      `/api/admin/collections/${collectionName}/indexes/${idx.name}`
+      `/api/v1/admin/collections/${collectionName}/indexes/${idx.name}`
     );
     if (res.error) { toast(res.error, "info"); return; }
     toast("Index dropped", "trash");

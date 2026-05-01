@@ -160,7 +160,7 @@ describe("nearVector list-API endpoint", () => {
   it("orders results by cosine similarity to ?nearVector", async () => {
     await seedFour();
     const app = makeRecordsPlugin(SECRET);
-    const url = new URL("http://localhost/api/docs");
+    const url = new URL("http://localhost/docs");
     url.searchParams.set("nearVector", "[1,0,0,0]");
     url.searchParams.set("nearVectorField", "embedding");
     url.searchParams.set("nearLimit", "3");
@@ -178,7 +178,7 @@ describe("nearVector list-API endpoint", () => {
   it("returns 422 when nearVectorField is not a vector field", async () => {
     await setupCollection();
     const app = makeRecordsPlugin(SECRET);
-    const url = new URL("http://localhost/api/docs");
+    const url = new URL("http://localhost/docs");
     url.searchParams.set("nearVector", "[1,0,0,0]");
     url.searchParams.set("nearVectorField", "title");
     const res = await app.handle(new Request(url.href));
@@ -188,7 +188,7 @@ describe("nearVector list-API endpoint", () => {
   it("returns 422 when nearVector length mismatches field dimensions", async () => {
     await setupCollection();
     const app = makeRecordsPlugin(SECRET);
-    const url = new URL("http://localhost/api/docs");
+    const url = new URL("http://localhost/docs");
     url.searchParams.set("nearVector", "[1,0,0]"); // 3 elements, field is 4-dim
     url.searchParams.set("nearVectorField", "embedding");
     const res = await app.handle(new Request(url.href));
@@ -198,7 +198,7 @@ describe("nearVector list-API endpoint", () => {
   it("respects nearMinScore filter", async () => {
     await seedFour();
     const app = makeRecordsPlugin(SECRET);
-    const url = new URL("http://localhost/api/docs");
+    const url = new URL("http://localhost/docs");
     url.searchParams.set("nearVector", "[1,0,0,0]");
     url.searchParams.set("nearVectorField", "embedding");
     url.searchParams.set("nearMinScore", "0.5");

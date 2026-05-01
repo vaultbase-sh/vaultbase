@@ -58,7 +58,7 @@ export default function NewCollectionModal({
     if (!viewQuery.trim()) { setViewError("Empty query"); return; }
     setValidating(true);
     const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
-      "/api/admin/collections/preview-view",
+      "/api/v1/admin/collections/preview-view",
       { view_query: viewQuery.trim() }
     );
     setValidating(false);
@@ -76,7 +76,7 @@ export default function NewCollectionModal({
       setLoading(false);
       setViewQuery("");
       // Fetch existing collections for relation autocomplete
-      api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
+      api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
         if (res.data) setAllCollections(res.data);
       });
     }
@@ -137,7 +137,7 @@ export default function NewCollectionModal({
       setError("");
       setLoading(true);
       // For view collections we let the backend infer fields from the SQL.
-      const res = await api.post<ApiResponse<Collection>>("/api/collections", {
+      const res = await api.post<ApiResponse<Collection>>("/api/v1/collections", {
         name: collName,
         type,
         view_query: viewQuery.trim(),
@@ -167,7 +167,7 @@ export default function NewCollectionModal({
     }
     setError("");
     setLoading(true);
-    const res = await api.post<ApiResponse<Collection>>("/api/collections", {
+    const res = await api.post<ApiResponse<Collection>>("/api/v1/collections", {
       name: collName,
       type,
       fields: userFields,

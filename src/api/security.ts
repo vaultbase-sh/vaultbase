@@ -19,7 +19,7 @@ async function requireAdmin(request: Request, jwtSecret: string): Promise<boolea
 
 export function makeSecurityPlugin(jwtSecret: string, encryptionKey: string | undefined) {
   return new Elysia({ name: "security" })
-    .get("/api/admin/security/sessions", async ({ request, query, set }) => {
+    .get("/admin/security/sessions", async ({ request, query, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -30,7 +30,7 @@ export function makeSecurityPlugin(jwtSecret: string, encryptionKey: string | un
       query: t.Object({ activeOnly: t.Optional(t.String()) }),
     })
 
-    .delete("/api/admin/security/sessions/:jti", async ({ request, params, set }) => {
+    .delete("/admin/security/sessions/:jti", async ({ request, params, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -38,7 +38,7 @@ export function makeSecurityPlugin(jwtSecret: string, encryptionKey: string | un
       return { data: { revoked: params.jti } };
     })
 
-    .post("/api/admin/security/force-logout-all", async ({ request, set }) => {
+    .post("/admin/security/force-logout-all", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -46,7 +46,7 @@ export function makeSecurityPlugin(jwtSecret: string, encryptionKey: string | un
       return { data: result };
     })
 
-    .get("/api/admin/security/fingerprints", async ({ request, set }) => {
+    .get("/admin/security/fingerprints", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -63,7 +63,7 @@ export function makeSecurityPlugin(jwtSecret: string, encryptionKey: string | un
       };
     })
 
-    .get("/api/admin/security/headers-preview", async ({ request, set }) => {
+    .get("/admin/security/headers-preview", async ({ request, set }) => {
       if (!(await requireAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

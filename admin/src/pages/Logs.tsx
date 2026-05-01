@@ -80,7 +80,7 @@ export default function Logs() {
     if (appliedSearch) params.set("search", appliedSearch);
     if (minDuration && parseInt(minDuration) > 0) params.set("minDuration", minDuration);
     if (ruleOutcomeFilter !== "all") params.set("ruleOutcome", ruleOutcomeFilter);
-    const res = await api.get<ListResponse<LogEntry>>(`/api/admin/logs?${params}`);
+    const res = await api.get<ListResponse<LogEntry>>(`/api/v1/admin/logs?${params}`);
     if (res.data) {
       setEntries(res.data);
       setTotal(res.totalItems);
@@ -454,7 +454,7 @@ function LogSearchPanel() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<{ data: LogFile[] }>("/api/admin/logs/files").then((res) => {
+    api.get<{ data: LogFile[] }>("/api/v1/admin/logs/files").then((res) => {
       if (res.data) setFiles(res.data);
     });
   }, []);
@@ -469,7 +469,7 @@ function LogSearchPanel() {
     };
     if (from) body.from = from;
     if (to) body.to = to;
-    const res = await api.post<SearchPayload>("/api/admin/logs/search", body);
+    const res = await api.post<SearchPayload>("/api/v1/admin/logs/search", body);
     setRunning(false);
     if (res.error) { setErr(res.error); return; }
     if (res.data) setResult(res.data);

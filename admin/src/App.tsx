@@ -56,7 +56,7 @@ function SetupRedirect({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    api.get<ApiResponse<{ has_admin: boolean }>>("/api/admin/setup/status")
+    api.get<ApiResponse<{ has_admin: boolean }>>("/api/v1/admin/setup/status")
       .then((res) => { if (!cancelled) setHasAdmin(res.data?.has_admin ?? true); })
       .catch(() => { if (!cancelled) setHasAdmin(true); });
     return () => { cancelled = true; };

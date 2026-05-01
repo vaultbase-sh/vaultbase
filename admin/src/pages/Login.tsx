@@ -15,7 +15,7 @@ export default function Login() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const res = await api.post<ApiResponse<{ token: string }>>("/api/admin/auth/login", {
+    const res = await api.post<ApiResponse<{ token: string }>>("/api/v1/admin/auth/login", {
       email,
       password,
     });

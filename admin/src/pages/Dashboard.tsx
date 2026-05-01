@@ -40,9 +40,9 @@ export default function Dashboard() {
 
   useEffect(() => {
     void Promise.all([
-      api.get<ApiResponse<Collection[]>>("/api/collections"),
-      api.get<ApiResponse<QueueStat[]>>("/api/admin/queues/stats"),
-      api.get<{ data: JobLogRow[] }>("/api/admin/queues/jobs?status=dead&perPage=5"),
+      api.get<ApiResponse<Collection[]>>("/api/v1/collections"),
+      api.get<ApiResponse<QueueStat[]>>("/api/v1/admin/queues/stats"),
+      api.get<{ data: JobLogRow[] }>("/api/v1/admin/queues/jobs?status=dead&perPage=5"),
     ]).then(([c, s, d]) => {
       if (c.data) setCollections(c.data);
       if (s.data) setStats(s.data);

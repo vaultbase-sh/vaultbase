@@ -22,7 +22,7 @@ export default function Superusers() {
 
   async function load() {
     setLoading(true);
-    const res = await api.get<ApiResponse<Admin[]>>("/api/admin/admins");
+    const res = await api.get<ApiResponse<Admin[]>>("/api/v1/admin/admins");
     if (res.data) setAdmins(res.data);
     setLoading(false);
   }
@@ -35,7 +35,7 @@ export default function Superusers() {
       danger: true,
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/admins/${a.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/admins/${a.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Superuser deleted", "trash");
     load();
@@ -154,7 +154,7 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
     if (!email.includes("@")) { setError("Invalid email"); return; }
     if (pw.length < 8) { setError("Password must be at least 8 characters"); return; }
     setError(""); setSaving(true);
-    const res = await api.post<ApiResponse<Admin>>("/api/admin/admins", { email, password: pw });
+    const res = await api.post<ApiResponse<Admin>>("/api/v1/admin/admins", { email, password: pw });
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onAdded(); onClose();
@@ -213,7 +213,7 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
     if (pw) body.password = pw;
     if (Object.keys(body).length === 0) { onClose(); return; }
     setError(""); setSaving(true);
-    const res = await api.patch<ApiResponse<Admin>>(`/api/admin/admins/${admin.id}`, body);
+    const res = await api.patch<ApiResponse<Admin>>(`/api/v1/admin/admins/${admin.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved(); onClose();

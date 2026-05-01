@@ -89,7 +89,7 @@ export default function Flags() {
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
-    api.get<ApiResponse<Flag[]>>("/api/admin/flags").then((res) => {
+    api.get<ApiResponse<Flag[]>>("/api/v1/admin/flags").then((res) => {
       if (res.data) setFlags(res.data);
     });
   }, []);
@@ -238,8 +238,8 @@ function FlagEditor({
       rules:         draft.rules,
     };
     const res = isNew
-      ? await api.post<ApiResponse<Flag>>("/api/admin/flags", { key: draft.key, ...body })
-      : await api.patch<ApiResponse<Flag>>(`/api/admin/flags/${encodeURIComponent(draft.key)}`, body);
+      ? await api.post<ApiResponse<Flag>>("/api/v1/admin/flags", { key: draft.key, ...body })
+      : await api.patch<ApiResponse<Flag>>(`/api/v1/admin/flags/${encodeURIComponent(draft.key)}`, body);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     if (res.data) { toast(isNew ? "Flag created" : "Flag saved"); onSaved(res.data); }
@@ -248,7 +248,7 @@ function FlagEditor({
   async function remove() {
     const ok = await confirm({ title: "Delete flag?", message: `Permanently remove "${draft.key}". Code paths reading this flag will fall back to their hardcoded defaults.`, danger: true, confirmLabel: "Delete" });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<{ deleted: string }>>(`/api/admin/flags/${encodeURIComponent(draft.key)}`);
+    const res = await api.delete<ApiResponse<{ deleted: string }>>(`/api/v1/admin/flags/${encodeURIComponent(draft.key)}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Flag deleted");
     onDeleted?.();
@@ -260,7 +260,7 @@ function FlagEditor({
     catch { toast("Test context: not valid JSON", "info"); return; }
     if (isNew) { toast("Save the flag first to evaluate", "info"); return; }
     const res = await api.post<ApiResponse<EvalResult>>(
-      `/api/admin/flags/${encodeURIComponent(draft.key)}/evaluate`,
+      `/api/v1/admin/flags/${encodeURIComponent(draft.key)}/evaluate`,
       { context: ctx },
     );
     if (res.error) { toast(res.error, "info"); return; }

@@ -22,7 +22,7 @@ export const useAuth = create<AuthState>((set) => ({
   expiresAt: null,
   loaded: false,
   load: async () => {
-    const res = await api.get<ApiResponse<MePayload>>("/api/admin/auth/me");
+    const res = await api.get<ApiResponse<MePayload>>("/api/v1/admin/auth/me");
     if (res.data?.id) {
       set({
         email: res.data.email ?? "",
@@ -39,7 +39,7 @@ export const useAuth = create<AuthState>((set) => ({
     await useAuth.getState().load();
   },
   signOut: async () => {
-    try { await api.post<ApiResponse<unknown>>("/api/auth/logout", {}); } catch { /* noop */ }
+    try { await api.post<ApiResponse<unknown>>("/api/v1/auth/logout", {}); } catch { /* noop */ }
     const { setMemoryToken } = await import("../api.ts");
     setMemoryToken(null);
     set({ email: "", expiresAt: null, isAuthed: false, loaded: true });

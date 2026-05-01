@@ -123,8 +123,8 @@ describe("via makeAuditLogPlugin (Elysia onAfterHandle)", () => {
     const token = await signAdmin();
     const app = makeAuditLogPlugin(SECRET)
       // mount a no-op admin endpoint so the request lands somewhere.
-      .post("/api/admin/things", () => ({ data: { ok: true } }));
-    const res = await app.handle(new Request("http://localhost/api/admin/things", {
+      .post("/api/v1/admin/things", () => ({ data: { ok: true } }));
+    const res = await app.handle(new Request("http://localhost/api/v1/admin/things", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }));
@@ -133,7 +133,7 @@ describe("via makeAuditLogPlugin (Elysia onAfterHandle)", () => {
     await new Promise((r) => setTimeout(r, 20));
     const list = await listAuditEntries();
     expect(list.totalItems).toBeGreaterThanOrEqual(1);
-    const entry = list.data.find((e) => e.path === "/api/admin/things");
+    const entry = list.data.find((e) => e.path === "/api/v1/admin/things");
     expect(entry).toBeTruthy();
     expect(entry?.action).toBe("things.create");
     expect(entry?.actor_id).toBe("admin-1");
