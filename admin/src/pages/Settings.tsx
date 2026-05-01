@@ -25,7 +25,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 ];
 
 type SettingsTabId =
-  | "application" | "rate-limit" | "egress" | "cors" | "security"
+  | "application" | "theme" | "rate-limit" | "egress" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
   | "storage" | "backup" | "migrations"
   | "metrics" | "updates" | "danger";
@@ -39,6 +39,7 @@ interface SettingsTab {
 
 const SETTINGS_TABS: SettingsTab[] = [
   { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
+  { id: "theme",       label: "Theme",       icon: "fill",     subtitle: "admin UI accent + surface colors" },
   { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
   { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
   { id: "cors",        label: "CORS",          icon: "globe",  subtitle: "cross-origin allow-list for the HTTP API" },
@@ -80,6 +81,7 @@ export default function Settings() {
         </aside>
         <div className="settings-content">
           {active === "application" && <ApplicationSection />}
+          {active === "theme" && <ThemeSection />}
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
           {active === "cors" && <CorsSection />}
@@ -388,6 +390,169 @@ function EgressSection() {
         </div>
       </div>
       <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Theme ───────────────────────────────────────────────────────────────────
+interface ThemeKnob { key: string; label: string; defaultValue: string; cssVar: string }
+
+const THEME_KNOBS: ThemeKnob[] = [
+  // Brand
+  { key: "accent",         label: "Primary accent",     defaultValue: "#3b82f6", cssVar: "--accent" },
+  { key: "accent_hover",   label: "Accent (hover)",     defaultValue: "#4a8ef7", cssVar: "--accent-hover" },
+  { key: "accent_light",   label: "Accent (light)",     defaultValue: "#60a5fa", cssVar: "--accent-light" },
+  // Surfaces
+  { key: "bg_app",         label: "Page background",    defaultValue: "#0e0f12", cssVar: "--bg-app" },
+  { key: "bg_sidebar",     label: "Sidebar background", defaultValue: "#131418", cssVar: "--bg-sidebar" },
+  { key: "bg_panel",       label: "Card background",    defaultValue: "#181a1f", cssVar: "--bg-panel" },
+  // Text
+  { key: "text_primary",   label: "Primary text",       defaultValue: "#e6e8ed", cssVar: "--text-primary" },
+  { key: "text_secondary", label: "Secondary text",     defaultValue: "#9aa0ac", cssVar: "--text-secondary" },
+  // Status
+  { key: "success",        label: "Success",            defaultValue: "#22c55e", cssVar: "--success" },
+  { key: "warning",        label: "Warning",            defaultValue: "#f59e0b", cssVar: "--warning" },
+  { key: "danger",         label: "Danger",             defaultValue: "#ef4444", cssVar: "--danger" },
+];
+
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+function ThemeSection() {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/admin/settings").then((res) => {
+      if (res.data) {
+        const seed: Record<string, string> = {};
+        for (const k of THEME_KNOBS) {
+          seed[k.key] = res.data[`theme.${k.key}`] ?? "";
+        }
+        setValues(seed);
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  function update(key: string, value: string) {
+    setValues((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function liveStyle(): React.CSSProperties {
+    const out: Record<string, string> = {};
+    for (const k of THEME_KNOBS) {
+      const v = (values[k.key] ?? "").trim();
+      if (v) out[k.cssVar] = v;
+    }
+    return out as React.CSSProperties;
+  }
+
+  async function save() {
+    for (const k of THEME_KNOBS) {
+      const v = (values[k.key] ?? "").trim();
+      if (v && !HEX_RE.test(v)) {
+        toast(`${k.label} must be a #RRGGBB / #RGB / #RRGGBBAA hex color`, "info");
+        return;
+      }
+    }
+    setSaving(true);
+    const patch: Record<string, string> = {};
+    for (const k of THEME_KNOBS) patch[`theme.${k.key}`] = (values[k.key] ?? "").trim();
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/admin/settings", patch);
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Theme saved — refresh to apply everywhere");
+    // Apply immediately to the live page so the change is visible without
+    // a full reload. Other tabs / pages pick it up on next mount.
+    const root = document.documentElement;
+    for (const k of THEME_KNOBS) {
+      const v = (values[k.key] ?? "").trim();
+      if (v) root.style.setProperty(k.cssVar, v);
+      else root.style.removeProperty(k.cssVar);
+    }
+  }
+
+  function reset() {
+    const next: Record<string, string> = {};
+    for (const k of THEME_KNOBS) next[k.key] = "";
+    setValues(next);
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Theme</h3>
+        <span className="meta">accent + surface + text colors · admin UI only</span>
+      </div>
+      <div className="settings-section-body">
+        <div className="help" style={{ marginBottom: 16 }}>
+          Hex colors: <code style={codeStyle}>#3b82f6</code>, <code style={codeStyle}>#fff</code>,
+          <code style={codeStyle}>#3b82f680</code> (alpha). Empty falls back to the built-in default.
+          Changes apply on next page load — and immediately to every other tab once you save.
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {THEME_KNOBS.map((k) => {
+            const v = values[k.key] ?? "";
+            const effective = v.trim() || k.defaultValue;
+            const isHex = HEX_RE.test(effective);
+            return (
+              <div key={k.key} className="row" style={{ gap: 10, alignItems: "center" }}>
+                <input
+                  type="color"
+                  value={isHex && effective.length === 7 ? effective : k.defaultValue}
+                  onChange={(e) => update(k.key, e.target.value)}
+                  disabled={!loaded}
+                  style={{ width: 36, height: 30, border: "0.5px solid var(--border-default)", borderRadius: 4, padding: 0, cursor: "pointer", background: "transparent" }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <label className="label" style={{ marginBottom: 2 }}>{k.label}</label>
+                  <input
+                    className="input mono"
+                    value={v}
+                    onChange={(e) => update(k.key, e.target.value)}
+                    placeholder={k.defaultValue}
+                    disabled={!loaded}
+                    style={{ fontSize: 12, padding: "4px 8px", height: 26 }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div
+          style={{
+            marginTop: 24,
+            padding: 16,
+            borderRadius: 8,
+            border: "0.5px solid var(--border-default)",
+            background: "var(--bg-panel)",
+            ...liveStyle(),
+          }}
+        >
+          <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+            Live preview
+          </div>
+          <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button className="btn btn-primary">Primary action</button>
+            <button className="btn btn-ghost">Secondary</button>
+            <span className="badge success">success</span>
+            <span className="badge warning">warning</span>
+            <span className="badge danger">danger</span>
+            <a href="#" onClick={(e) => e.preventDefault()} style={{ color: "var(--accent-light)" }}>An accent link</a>
+          </div>
+        </div>
+      </div>
+      <div className="settings-section-foot" style={{ justifyContent: "space-between" }}>
+        <button className="btn btn-ghost" onClick={reset} disabled={!loaded || saving}>
+          Reset to defaults
+        </button>
         <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
           {saving ? "Saving…" : "Save changes"}
         </button>

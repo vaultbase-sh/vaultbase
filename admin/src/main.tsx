@@ -6,6 +6,10 @@ import "primereact/resources/primereact.css";
 import "primeicons/primeicons.css";
 import "quill/dist/quill.snow.css";
 import App from "./App.tsx";
+import { applyThemeOverrides } from "./theme.ts";
+
+// Fire-and-forget. Login screen gets the operator's branding too.
+void applyThemeOverrides();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("No root element");
