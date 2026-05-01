@@ -18,7 +18,7 @@
  */
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
-import { featureFlags } from "../db/schema.ts";
+import { featureFlags, flagSegments } from "../db/schema.ts";
 
 export type FlagValue = boolean | string | number | Record<string, unknown> | unknown[] | null;
 
@@ -49,13 +49,27 @@ export interface Rule {
   rollout?: { value: number; sticky: string };
   /** Variation name (must exist in `variations`) — or a literal value when no variations defined. */
   variation: string;
+  /**
+   * Other flags that must already evaluate to a specific variation before
+   * this rule fires. Cycle-detected at evaluation time (max prereq depth = 8).
+   */
+  prerequisites?: Array<{ flag: string; variation: string }>;
 }
 
 export type Condition =
   | { all: Condition[] }
   | { any: Condition[] }
   | { not: Condition }
+  | { segment: string }
   | { attr: string; op: Operator; value: FlagValue };
+
+export interface SegmentDefinition {
+  name: string;
+  description: string;
+  conditions: Condition;
+  created_at: number;
+  updated_at: number;
+}
 
 export type Operator =
   | "eq" | "neq"
@@ -68,21 +82,31 @@ export type Operator =
 
 // ── Cache ───────────────────────────────────────────────────────────────────
 
-interface CacheEntry { flags: Map<string, FlagDefinition>; loaded_at: number }
+interface CacheEntry {
+  flags: Map<string, FlagDefinition>;
+  segments: Map<string, SegmentDefinition>;
+  loaded_at: number;
+}
 let cache: CacheEntry | null = null;
 const CACHE_TTL_MS = 5_000;
 
 export function invalidateFlagCache(): void { cache = null; }
 
-async function load(): Promise<Map<string, FlagDefinition>> {
+async function load(): Promise<CacheEntry> {
   const now = Date.now();
-  if (cache && now - cache.loaded_at < CACHE_TTL_MS) return cache.flags;
-  const rows = await getDb().select().from(featureFlags);
+  if (cache && now - cache.loaded_at < CACHE_TTL_MS) return cache;
+  const db = getDb();
+  const flagRows = await db.select().from(featureFlags);
+  const segRows = await db.select().from(flagSegments);
   const flags = new Map<string, FlagDefinition>();
-  for (const r of rows) flags.set(r.key, decodeFlag(r));
-  cache = { flags, loaded_at: now };
-  return flags;
+  for (const r of flagRows) flags.set(r.key, decodeFlag(r));
+  const segments = new Map<string, SegmentDefinition>();
+  for (const r of segRows) segments.set(r.name, decodeSegment(r));
+  cache = { flags, segments, loaded_at: now };
+  return cache;
 }
+
+async function loadFlags(): Promise<Map<string, FlagDefinition>> { return (await load()).flags; }
 
 // ── Decode / encode ─────────────────────────────────────────────────────────
 
@@ -96,6 +120,29 @@ interface DbRow {
   rules: string;
   created_at: number;
   updated_at: number;
+}
+
+interface SegmentRow {
+  name: string;
+  description: string;
+  conditions: string;
+  created_at: number;
+  updated_at: number;
+}
+
+function decodeSegment(r: SegmentRow): SegmentDefinition {
+  let conditions: Condition = { all: [] };
+  try {
+    const parsed = JSON.parse(r.conditions) as unknown;
+    if (parsed && typeof parsed === "object") conditions = parsed as Condition;
+  } catch { /* keep empty */ }
+  return {
+    name: r.name,
+    description: r.description,
+    conditions,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
 }
 
 function decodeFlag(r: DbRow): FlagDefinition {
@@ -118,11 +165,56 @@ function decodeFlag(r: DbRow): FlagDefinition {
 // ── CRUD ────────────────────────────────────────────────────────────────────
 
 export async function listFlags(): Promise<FlagDefinition[]> {
-  return Array.from((await load()).values()).sort((a, b) => a.key.localeCompare(b.key));
+  return Array.from((await loadFlags()).values()).sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export async function getFlag(key: string): Promise<FlagDefinition | null> {
-  return (await load()).get(key) ?? null;
+  return (await loadFlags()).get(key) ?? null;
+}
+
+export async function listSegments(): Promise<SegmentDefinition[]> {
+  return Array.from((await load()).segments.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getSegment(name: string): Promise<SegmentDefinition | null> {
+  return (await load()).segments.get(name) ?? null;
+}
+
+export interface UpsertSegmentInput {
+  name: string;
+  description?: string;
+  conditions?: Condition;
+}
+
+export async function upsertSegment(input: UpsertSegmentInput): Promise<SegmentDefinition> {
+  if (!/^[a-z][a-z0-9_.-]{0,63}$/i.test(input.name)) {
+    throw new Error("Invalid name: lowercase alphanumerics + . _ -, max 64");
+  }
+  const db = getDb();
+  const existing = await db.select().from(flagSegments).where(eq(flagSegments.name, input.name)).limit(1);
+  const now = Math.floor(Date.now() / 1000);
+  if (existing.length === 0) {
+    await db.insert(flagSegments).values({
+      name: input.name,
+      description: input.description ?? "",
+      conditions: JSON.stringify(input.conditions ?? { all: [] }),
+      created_at: now, updated_at: now,
+    });
+  } else {
+    const patch: Record<string, unknown> = { updated_at: now };
+    if (input.description !== undefined) patch["description"] = input.description;
+    if (input.conditions !== undefined)  patch["conditions"]  = JSON.stringify(input.conditions);
+    await db.update(flagSegments).set(patch).where(eq(flagSegments.name, input.name));
+  }
+  invalidateFlagCache();
+  const fresh = await getSegment(input.name);
+  if (!fresh) throw new Error("Segment missing after upsert");
+  return fresh;
+}
+
+export async function deleteSegment(name: string): Promise<void> {
+  await getDb().delete(flagSegments).where(eq(flagSegments.name, name));
+  invalidateFlagCache();
 }
 
 export interface UpsertInput {
@@ -186,18 +278,36 @@ export interface EvaluationResult {
   rule_id?: string;
 }
 
+const MAX_PREREQ_DEPTH = 8;
+
 export async function evaluate(
   key: string,
   context: EvaluationContext,
   fallback?: FlagValue,
+  _depth = 0,
 ): Promise<EvaluationResult> {
-  const flags = await load();
-  const flag = flags.get(key);
+  if (_depth > MAX_PREREQ_DEPTH) {
+    return { value: fallback ?? false, variation: null, reason: "no_match" };
+  }
+  const c = await load();
+  const flag = c.flags.get(key);
   if (!flag) return { value: fallback ?? false, variation: null, reason: "missing" };
   if (!flag.enabled) return { value: flag.default_value, variation: null, reason: "disabled" };
 
   for (const rule of flag.rules) {
-    if (rule.when && !matchCondition(rule.when, context)) continue;
+    // Prerequisites first — if any prereq fails, skip the rule.
+    if (rule.prerequisites && rule.prerequisites.length > 0) {
+      let ok = true;
+      for (const p of rule.prerequisites) {
+        const pr = await evaluate(p.flag, context, undefined, _depth + 1);
+        if (pr.variation !== p.variation && String(pr.value) !== p.variation) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+    }
+    if (rule.when && !matchCondition(rule.when, context, c.segments)) continue;
     if (rule.rollout) {
       const stickyValue = readAttr(context, rule.rollout.sticky);
       if (stickyValue == null) continue;
@@ -219,9 +329,9 @@ export async function evaluate(
 }
 
 export async function evaluateAll(context: EvaluationContext): Promise<Record<string, FlagValue>> {
-  const flags = await load();
+  const c = await load();
   const out: Record<string, FlagValue> = {};
-  for (const flag of flags.values()) {
+  for (const flag of c.flags.values()) {
     const r = await evaluate(flag.key, context);
     out[flag.key] = r.value;
   }
@@ -239,10 +349,16 @@ function resolveVariation(flag: FlagDefinition, name: string): FlagValue {
 
 // ── Condition matching ──────────────────────────────────────────────────────
 
-function matchCondition(c: Condition, ctx: EvaluationContext): boolean {
-  if ("all" in c) return c.all.every((sub) => matchCondition(sub, ctx));
-  if ("any" in c) return c.any.some((sub)  => matchCondition(sub, ctx));
-  if ("not" in c) return !matchCondition(c.not, ctx);
+function matchCondition(c: Condition, ctx: EvaluationContext, segments: Map<string, SegmentDefinition>, _depth = 0): boolean {
+  if (_depth > MAX_PREREQ_DEPTH) return false; // segment self-reference guard
+  if ("all" in c) return c.all.every((sub) => matchCondition(sub, ctx, segments, _depth + 1));
+  if ("any" in c) return c.any.some((sub)  => matchCondition(sub, ctx, segments, _depth + 1));
+  if ("not" in c) return !matchCondition(c.not, ctx, segments, _depth + 1);
+  if ("segment" in c) {
+    const seg = segments.get(c.segment);
+    if (!seg) return false;
+    return matchCondition(seg.conditions, ctx, segments, _depth + 1);
+  }
   return matchOp(c.attr, c.op, c.value, ctx);
 }
 

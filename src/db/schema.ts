@@ -302,6 +302,20 @@ export const featureFlags = sqliteTable("vaultbase_feature_flags", {
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
+/**
+ * Reusable named predicates referenced from flag rules. Lets multiple
+ * flags share a definition like "internal team" or "EU customers" without
+ * duplicating conditions across rules.
+ */
+export const flagSegments = sqliteTable("vaultbase_flag_segments", {
+  name: text("name").primaryKey(),
+  description: text("description").notNull().default(""),
+  /** JSON: same Condition tree as rule.when. */
+  conditions: text("conditions").notNull().default("{}"),
+  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+});
+
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
 export type User = typeof users.$inferSelect;
