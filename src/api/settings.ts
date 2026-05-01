@@ -5,6 +5,8 @@ import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
+import { invalidateCorsCache } from "../core/cors.ts";
+import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 
@@ -80,6 +82,12 @@ export function makeSettingsPlugin(jwtSecret: string) {
         invalidateStorageCache();
         clearThumbCache();
         invalidateEgressCache();
+        invalidateCorsCache();
+        // Re-arm the update-check scheduler if the toggle flipped.
+        if (Object.prototype.hasOwnProperty.call(body, "update_check.enabled")) {
+          if (String(body["update_check.enabled"]) === "1") startUpdateCheckScheduler();
+          else stopUpdateCheckScheduler();
+        }
         return { data: getAllSettings() };
       },
       { body: t.Record(t.String(), t.Any()) }
@@ -125,5 +133,19 @@ export function makeSettingsPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       return { data: getStorageStatus() };
+    })
+    // Update checker — current vs latest GitHub release.
+    .get("/api/admin/update-status", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      return { data: getUpdateStatus() };
+    })
+    .post("/api/admin/update-status/check", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      await runUpdateCheck();
+      return { data: getUpdateStatus() };
     });
 }

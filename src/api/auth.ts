@@ -40,6 +40,7 @@ import {
   verifyCode as verifyTotpCode,
 } from "../core/totp.ts";
 import { isAuthFeatureEnabled } from "../core/auth-features.ts";
+import { validatePassword } from "../core/password-policy.ts";
 
 function getSecret(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);
@@ -50,7 +51,6 @@ const OTP_TTL_SECONDS = 10 * 60;   // 10 minutes
 const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
 const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
 
-const PASSWORD_MIN_LENGTH = 12;
 async function hashPassword(plaintext: string): Promise<string> {
   return await Bun.password.hash(plaintext, HASH_OPTS);
 }
@@ -248,9 +248,9 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post(
       "/api/admin/setup",
       async ({ body, request, set }) => {
-        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
-          set.status = 422;
-          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        {
+          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         // Optional setup-key gate. When `VAULTBASE_SETUP_KEY` is set, the
         // request must carry it as `X-Setup-Key`. Closes the race where an
@@ -339,9 +339,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
-          set.status = 422;
-          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        {
+          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const db = getDb();
         const existing = await db.select().from(users).where(eq(users.email, body.email)).limit(1);
@@ -668,8 +668,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
-          set.status = 422; return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        {
+          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const db = getDb();
         const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1);
@@ -995,9 +996,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (dup.length > 0 && dup[0]!.id !== u.id) {
           set.status = 409; return { error: "Email already in use", code: 409 };
         }
-        if (typeof body.password !== "string" || body.password.length < PASSWORD_MIN_LENGTH) {
-          set.status = 422;
-          return { error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters`, code: 422 };
+        {
+          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const hash = await hashPassword(body.password);
         const now = Math.floor(Date.now() / 1000);
