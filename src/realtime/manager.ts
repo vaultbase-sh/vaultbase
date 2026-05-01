@@ -131,6 +131,23 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
   }
 }
 
+/**
+ * Fan out an arbitrary system message to subscribers of `topic`. Unlike
+ * `broadcast()`, this isn't tied to a record event — used for flag deltas,
+ * settings hot-reload notices, and similar admin signals. Topic naming
+ * convention: leading double underscore (e.g. `__flags`) so it can't
+ * collide with a user-defined collection.
+ */
+export function broadcastSystem(topic: string, message: object): void {
+  const set = subs.get(topic);
+  if (!set) return;
+  const payload = JSON.stringify(message);
+  for (const ws of set) {
+    try { ws.send(payload); }
+    catch { set.delete(ws); }
+  }
+}
+
 // ── SSE client registry ─────────────────────────────────────────────────────
 // SSE is one-directional (server → client). Subscriptions can't ride on the
 // same stream the way they do over WebSocket, so we mint a `clientId` per SSE
