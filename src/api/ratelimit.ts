@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import Elysia from "elysia";
 import { getDb } from "../db/client.ts";
 import { trustedClientIp } from "../core/sec.ts";
+import { normalizeApiPath } from "../core/api-paths.ts";
 
 /**
  * Per-IP, per-rule token-bucket rate limiter.
@@ -132,7 +133,9 @@ function ipFromRequest(request: Request, peerIp: string | null): string {
   return trustedClientIp(request, peerIp);
 }
 
-function detectAction(method: string, path: string): RuleAction | null {
+function detectAction(method: string, rawPath: string): RuleAction | null {
+  // Normalise so `/api/v1/auth/...` is treated the same as `/api/auth/...`.
+  const path = normalizeApiPath(rawPath);
   // Auth-shaped paths
   if (
     path.startsWith("/api/auth/") ||
@@ -215,7 +218,7 @@ setInterval(() => {
 
 export function makeRateLimitPlugin() {
   return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, ({ request, server, set }) => {
-    const path = new URL(request.url).pathname;
+    const path = normalizeApiPath(new URL(request.url).pathname);
     if (shouldSkip(path)) return;
     const cfg = loadConfig();
     if (!cfg.enabled || cfg.rules.length === 0) return;

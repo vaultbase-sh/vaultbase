@@ -119,7 +119,7 @@ function tokenReq(token: string | null, collection: string, recordId: string, fi
   const headers: Record<string, string> = {};
   if (token) headers.authorization = `Bearer ${token}`;
   return new Request(
-    `http://localhost/api/files/${collection}/${recordId}/${field}/${filename}/token`,
+    `http://localhost/files/${collection}/${recordId}/${field}/${filename}/token`,
     { method: "POST", headers },
   );
 }

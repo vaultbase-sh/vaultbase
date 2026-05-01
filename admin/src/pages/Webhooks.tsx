@@ -71,7 +71,7 @@ export default function Webhooks() {
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
-    api.get<ApiResponse<Webhook[]>>("/api/admin/webhooks").then((res) => {
+    api.get<ApiResponse<Webhook[]>>("/api/v1/admin/webhooks").then((res) => {
       if (res.data) setList(res.data);
     });
   }, []);
@@ -189,7 +189,7 @@ function Editor({
 
   const loadDeliveries = useCallback(() => {
     if (isNew || !draft.id) return;
-    api.get<ApiResponse<Delivery[]>>(`/api/admin/webhooks/${encodeURIComponent(draft.id)}/deliveries?limit=50`).then((res) => {
+    api.get<ApiResponse<Delivery[]>>(`/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}/deliveries?limit=50`).then((res) => {
       if (res.data) setDeliveries(res.data);
     });
   }, [isNew, draft.id]);
@@ -215,8 +215,8 @@ function Editor({
     };
     if (draft.secret) body.secret = draft.secret;
     const res = isNew
-      ? await api.post<ApiResponse<Webhook>>("/api/admin/webhooks", body)
-      : await api.patch<ApiResponse<Webhook>>(`/api/admin/webhooks/${encodeURIComponent(draft.id)}`, body);
+      ? await api.post<ApiResponse<Webhook>>("/api/v1/admin/webhooks", body)
+      : await api.patch<ApiResponse<Webhook>>(`/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}`, body);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     if (res.data) { toast(isNew ? "Webhook created" : "Webhook saved"); onSaved(res.data); }
@@ -225,7 +225,7 @@ function Editor({
   async function remove() {
     const ok = await confirm({ title: "Delete webhook?", message: `"${draft.name || draft.url}" will stop receiving events.`, danger: true, confirmLabel: "Delete" });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<{ deleted: string }>>(`/api/admin/webhooks/${encodeURIComponent(draft.id)}`);
+    const res = await api.delete<ApiResponse<{ deleted: string }>>(`/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Webhook deleted");
     onDeleted?.();
@@ -233,7 +233,7 @@ function Editor({
 
   async function fireTest() {
     if (isNew) { toast("Save first to fire a test", "info"); return; }
-    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/admin/webhooks/${encodeURIComponent(draft.id)}/test`, {});
+    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}/test`, {});
     if (res.error) { toast(res.error, "info"); return; }
     toast("Test event enqueued — refresh deliveries");
     setTimeout(loadDeliveries, 1500);

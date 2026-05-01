@@ -61,7 +61,7 @@ function indexName(collectionName: string, field: string, unique: boolean): stri
 export function makeIndexesPlugin(jwtSecret: string) {
   return new Elysia({ name: "indexes" })
     // List indexes for a collection
-    .get("/api/admin/collections/:name/indexes", async ({ request, params, set }) => {
+    .get("/admin/collections/:name/indexes", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -78,7 +78,7 @@ export function makeIndexesPlugin(jwtSecret: string) {
 
     // Create index
     .post(
-      "/api/admin/collections/:name/indexes",
+      "/admin/collections/:name/indexes",
       async ({ request, params, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -117,7 +117,7 @@ export function makeIndexesPlugin(jwtSecret: string) {
     )
 
     // Drop index
-    .delete("/api/admin/collections/:name/indexes/:indexName", async ({ request, params, set }) => {
+    .delete("/admin/collections/:name/indexes/:indexName", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

@@ -34,7 +34,7 @@ export default function Collections() {
       danger: true,
     });
     if (!ok) return;
-    await api.delete(`/api/collections/${id}`);
+    await api.delete(`/api/v1/collections/${id}`);
     toast(`Collection "${name}" deleted`, "trash");
     load();
   }

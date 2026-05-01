@@ -55,7 +55,7 @@ function shape(row: UserRow): Record<string, unknown> {
 
 export function makeAuthUsersPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth-users" })
-    .get("/api/admin/users/:collection", async ({ params, query, request, set }) => {
+    .get("/admin/users/:collection", async ({ params, query, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -92,7 +92,7 @@ export function makeAuthUsersPlugin(jwtSecret: string) {
       }),
     })
 
-    .patch("/api/admin/users/:collection/:id", async ({ params, body, request, set }) => {
+    .patch("/admin/users/:collection/:id", async ({ params, body, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -160,7 +160,7 @@ export function makeAuthUsersPlugin(jwtSecret: string) {
       }),
     })
 
-    .delete("/api/admin/users/:collection/:id", async ({ params, request, set }) => {
+    .delete("/admin/users/:collection/:id", async ({ params, request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

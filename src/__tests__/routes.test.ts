@@ -41,7 +41,7 @@ async function insertRoute(method: string, path: string, code: string, name = ""
 describe("custom routes dispatch", () => {
   it("matches exact path and returns body", async () => {
     await insertRoute("GET", "/hello", `return { data: "world" };`);
-    const req = new Request("http://localhost/api/custom/hello");
+    const req = new Request("http://localhost/custom/hello");
     const res = await dispatchCustomRoute(req, "/hello", "secret");
     expect(res).not.toBeNull();
     expect(res!.status).toBe(200);
@@ -50,7 +50,7 @@ describe("custom routes dispatch", () => {
 
   it("captures :param segments", async () => {
     await insertRoute("GET", "/users/:id", `return { data: { id: ctx.params.id } };`);
-    const req = new Request("http://localhost/api/custom/users/abc-123");
+    const req = new Request("http://localhost/custom/users/abc-123");
     const res = await dispatchCustomRoute(req, "/users/abc-123", "secret");
     expect(res).not.toBeNull();
     expect(res!.body).toEqual({ data: { id: "abc-123" } });
@@ -58,23 +58,23 @@ describe("custom routes dispatch", () => {
 
   it("returns null when no route matches", async () => {
     await insertRoute("GET", "/foo", `return { data: 1 };`);
-    const req = new Request("http://localhost/api/custom/bar");
+    const req = new Request("http://localhost/custom/bar");
     const res = await dispatchCustomRoute(req, "/bar", "secret");
     expect(res).toBeNull();
   });
 
   it("respects HTTP method", async () => {
     await insertRoute("POST", "/items", `return { data: "created" };`);
-    const reqGet = new Request("http://localhost/api/custom/items");
+    const reqGet = new Request("http://localhost/custom/items");
     expect(await dispatchCustomRoute(reqGet, "/items", "secret")).toBeNull();
-    const reqPost = new Request("http://localhost/api/custom/items", { method: "POST" });
+    const reqPost = new Request("http://localhost/custom/items", { method: "POST" });
     const res = await dispatchCustomRoute(reqPost, "/items", "secret");
     expect(res!.body).toEqual({ data: "created" });
   });
 
   it("exposes set.status to user code", async () => {
     await insertRoute("GET", "/teapot", `ctx.set.status = 418; return { error: "I'm a teapot" };`);
-    const req = new Request("http://localhost/api/custom/teapot");
+    const req = new Request("http://localhost/custom/teapot");
     const res = await dispatchCustomRoute(req, "/teapot", "secret");
     expect(res!.status).toBe(418);
   });

@@ -2,6 +2,7 @@ import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { isAdminApiPath } from "../core/api-paths.ts";
 import {
   appendLogEntry,
   listLogDates,
@@ -12,7 +13,7 @@ import {
 } from "../core/file-logger.ts";
 import { clearRequestContext, getRuleEvals } from "../core/request-context.ts";
 
-const SKIP_PREFIXES = ["/_/", "/api/admin/logs", "/realtime", "/api/health"];
+const SKIP_PREFIXES = ["/_/", "/admin/logs", "/realtime", "/health"];
 
 function shouldSkip(path: string): boolean {
   return SKIP_PREFIXES.some((p) => path.startsWith(p));
@@ -79,7 +80,7 @@ export interface ListLogsOptions {
 }
 
 function matches(e: LogEntry, opts: ListLogsOptions): boolean {
-  if (!opts.includeAdmin && e.path.startsWith("/api/admin/")) return false;
+  if (!opts.includeAdmin && isAdminApiPath(e.path)) return false;
   if (opts.method !== "all" && e.method !== opts.method) return false;
   if (opts.status === "2xx" && !(e.status >= 200 && e.status < 300)) return false;
   if (opts.status === "4xx" && !(e.status >= 400 && e.status < 500)) return false;
@@ -180,7 +181,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       void timeFor(request, "log_write", () => insertLog(request.method, path, status, ms, ip, auth, rules));
     })
     .get(
-      "/api/admin/logs",
+      "/admin/logs",
       async ({ request, query, set }) => {
         const token = request.headers.get("authorization")?.replace("Bearer ", "");
         if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
@@ -220,7 +221,7 @@ export function makeLogsPlugin(jwtSecret: string) {
         }),
       }
     )
-    .get("/api/admin/logs/files", async ({ request, set }) => {
+    .get("/admin/logs/files", async ({ request, set }) => {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       // Centralized verifier — fixes N-1 admin-token-bypass.
@@ -229,7 +230,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       return { data: listLogDates() };
     })
     .post(
-      "/api/admin/logs/search",
+      "/admin/logs/search",
       async ({ request, body, set }) => {
         const token = request.headers.get("authorization")?.replace("Bearer ", "");
         if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }

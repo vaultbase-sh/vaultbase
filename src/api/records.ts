@@ -109,7 +109,7 @@ async function getAuthContext(
 export function makeRecordsPlugin(jwtSecret: string) {
   return new Elysia({ name: "records" })
     .get(
-      "/api/:collection",
+      "/:collection",
       async ({ params, query, request, set }) => {
         const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -225,7 +225,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }),
       }
     )
-    .get("/api/:collection/:id", async ({ params, request, set }) => {
+    .get("/:collection/:id", async ({ params, request, set }) => {
       const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       const auth = await getAuthContext(request, jwtSecret);
@@ -246,7 +246,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       return { data: record };
     })
     .post(
-      "/api/:collection",
+      "/:collection",
       async ({ params, body, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -270,7 +270,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       { body: t.Any() }
     )
     .patch(
-      "/api/:collection/:id",
+      "/:collection/:id",
       async ({ params, body, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -302,7 +302,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       },
       { body: t.Any() }
     )
-    .delete("/api/:collection/:id", async ({ params, request, set }) => {
+    .delete("/:collection/:id", async ({ params, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       const auth = await getAuthContext(request, jwtSecret);
@@ -340,7 +340,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
     // if you can view the live record, you can read its history. Restore is
     // admin-only — restoring overwrites someone else's edit.
 
-    .get("/api/:collection/:id/history", async ({ params, query, request, set }) => {
+    .get("/:collection/:id/history", async ({ params, query, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.history_enabled !== 1) {
@@ -372,7 +372,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       return { data: out };
     })
 
-    .post("/api/:collection/:id/restore", async ({ params, query, request, set }) => {
+    .post("/:collection/:id/restore", async ({ params, query, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.history_enabled !== 1) {

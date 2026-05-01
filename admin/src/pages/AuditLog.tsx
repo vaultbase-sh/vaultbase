@@ -59,7 +59,7 @@ export default function AuditLog() {
       const t = Math.floor(new Date(to + "T23:59:59Z").getTime() / 1000);
       if (Number.isFinite(t)) params.set("to", String(t));
     }
-    const res = await api.get<{ data: ListResponse<AuditEntry> }>(`/api/admin/audit-log?${params}`);
+    const res = await api.get<{ data: ListResponse<AuditEntry> }>(`/api/v1/admin/audit-log?${params}`);
     if (res.data) {
       setEntries(res.data.data ?? []);
       setTotal(res.data.totalItems ?? 0);

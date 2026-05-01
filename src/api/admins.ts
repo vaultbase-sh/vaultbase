@@ -25,7 +25,7 @@ async function verifyAdmin(
 export function makeAdminsPlugin(jwtSecret: string) {
   return new Elysia({ name: "admins" })
     // List all admins
-    .get("/api/admin/admins", async ({ request, set }) => {
+    .get("/admin/admins", async ({ request, set }) => {
       const me = await verifyAdmin(request, jwtSecret);
       if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const db = getDb();
@@ -37,7 +37,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
 
     // Create new admin
     .post(
-      "/api/admin/admins",
+      "/admin/admins",
       async ({ request, body, set }) => {
         const me = await verifyAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
@@ -62,7 +62,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
 
     // Update admin (email and/or password)
     .patch(
-      "/api/admin/admins/:id",
+      "/admin/admins/:id",
       async ({ request, params, body, set }) => {
         const me = await verifyAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
@@ -100,7 +100,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
     )
 
     // Delete admin (cannot delete self, cannot delete last admin)
-    .delete("/api/admin/admins/:id", async ({ request, params, set }) => {
+    .delete("/admin/admins/:id", async ({ request, params, set }) => {
       const me = await verifyAdmin(request, jwtSecret);
       if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       if (me.id === params.id) {

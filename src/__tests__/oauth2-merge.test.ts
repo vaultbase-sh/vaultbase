@@ -77,7 +77,7 @@ async function signUserJwt(userId: string, email: string): Promise<string> {
 function confirmReq(token: string | null, body: Record<string, unknown>): Request {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
-  return new Request(`http://localhost/api/auth/users/oauth2/merge-confirm`, {
+  return new Request(`http://localhost/auth/users/oauth2/merge-confirm`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

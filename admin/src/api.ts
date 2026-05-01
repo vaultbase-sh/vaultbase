@@ -1,6 +1,6 @@
 const BASE = "";
 
-const PUBLIC_PATHS = ["/api/admin/setup", "/api/admin/auth/login", "/api/auth/refresh"];
+const PUBLIC_PATHS = ["/api/v1/admin/setup", "/api/v1/admin/auth/login", "/api/v1/auth/refresh"];
 
 const TOKEN_STORAGE_KEY = "vaultbase_admin_token";
 

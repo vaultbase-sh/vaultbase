@@ -34,7 +34,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
     });
     const app = makeAuthPlugin(SECRET);
     // 7-char email passes the email regex but fails min=8
-    const res = await app.handle(authReq("POST", "/api/auth/users/register", null, {
+    const res = await app.handle(authReq("POST", "/auth/users/register", null, {
       email: "a@b.com",
       password: "hunter2!!hunter2!!",
     }));
@@ -54,7 +54,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
       ]),
     });
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/api/auth/users/register", null, {
+    const res = await app.handle(authReq("POST", "/auth/users/register", null, {
       email: "alice@test.local",
       password: "hunter2!!hunter2!!",
     }));
@@ -73,7 +73,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
       ]),
     });
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/api/auth/users/register", null, {
+    const res = await app.handle(authReq("POST", "/auth/users/register", null, {
       email: "alice@test.local",
       password: "hunter2!!hunter2!!",
     }));
@@ -95,7 +95,7 @@ describe("logs.extractAuth propagates impersonated_by", () => {
       .setAudience("user")
       .setExpirationTime("1h")
       .sign(sec);
-    const req = new Request("http://localhost/api/anything", {
+    const req = new Request("http://localhost/anything", {
       headers: { authorization: `Bearer ${token}` },
     });
     const ctx = await extractAuth(req, sec);
@@ -114,7 +114,7 @@ describe("logs.extractAuth propagates impersonated_by", () => {
       .setAudience("user")
       .setExpirationTime("1h")
       .sign(sec);
-    const req = new Request("http://localhost/api/anything", {
+    const req = new Request("http://localhost/anything", {
       headers: { authorization: `Bearer ${token}` },
     });
     const ctx = await extractAuth(req, sec);

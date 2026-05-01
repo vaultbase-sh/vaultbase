@@ -287,7 +287,7 @@ function safeExt(originalName: string): string {
 
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
-    .post("/api/files/:collection/:recordId/:field", async ({ params, request, set }) => {
+    .post("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
       const auth = await getAuthContext(request, jwtSecret);
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
 
@@ -390,7 +390,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       return { data: uploaded };
     })
     .post(
-      "/api/files/:collection/:recordId/:field/:filename/token",
+      "/files/:collection/:recordId/:field/:filename/token",
       async ({ params, request, server, set }) => {
         if (!isValidStorageFilename(params.filename)) {
           set.status = 400; return { error: "Invalid filename", code: 400 };
@@ -441,7 +441,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         return { data: { token, expires_at: exp } };
       }
     )
-    .get("/api/files/:filename", async ({ params, query, request, server, set }) => {
+    .get("/files/:filename", async ({ params, query, request, server, set }) => {
       if (!isValidStorageFilename(params.filename)) {
         set.status = 400;
         return { error: "Invalid filename", code: 400 };
@@ -587,7 +587,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         token: t.Optional(t.String()),
       }),
     })
-    .delete("/api/files/:collection/:recordId/:field", async ({ params, request, set }) => {
+    .delete("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
       const auth = await getAuthContext(request, jwtSecret);
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const col = await getCollection(params.collection);
@@ -620,7 +620,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }
       return { data: { deleted: rows.length } };
     })
-    .delete("/api/files/:collection/:recordId/:field/:filename", async ({ params, request, set }) => {
+    .delete("/files/:collection/:recordId/:field/:filename", async ({ params, request, set }) => {
       const auth = await getAuthContext(request, jwtSecret);
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       if (!isValidStorageFilename(params.filename)) {

@@ -129,7 +129,7 @@ function AdminStep({ onDone }: { onDone: (email: string) => void }) {
     if (!valid) return;
     setError("");
     setLoading(true);
-    const res = await api.post<ApiResponse<{ id: string }>>("/api/admin/setup", {
+    const res = await api.post<ApiResponse<{ id: string }>>("/api/v1/admin/setup", {
       email,
       password: pw,
     });

@@ -220,8 +220,8 @@ function HooksTab() {
   async function load() {
     setLoading(true);
     const [h, c] = await Promise.all([
-      api.get<ApiResponse<Hook[]>>("/api/admin/hooks"),
-      api.get<ApiResponse<Collection[]>>("/api/collections"),
+      api.get<ApiResponse<Hook[]>>("/api/v1/admin/hooks"),
+      api.get<ApiResponse<Collection[]>>("/api/v1/collections"),
     ]);
     if (h.data) setHooks(h.data);
     if (c.data) setCollections(c.data);
@@ -230,7 +230,7 @@ function HooksTab() {
   useEffect(() => { load(); }, []);
 
   async function toggleEnabled(h: Hook) {
-    const res = await api.patch<ApiResponse<Hook>>(`/api/admin/hooks/${h.id}`, {
+    const res = await api.patch<ApiResponse<Hook>>(`/api/v1/admin/hooks/${h.id}`, {
       enabled: !h.enabled,
     });
     if (res.error) { toast(res.error, "info"); return; }
@@ -245,7 +245,7 @@ function HooksTab() {
       danger: true,
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/hooks/${h.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/hooks/${h.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Hook deleted", "trash");
     load();
@@ -417,8 +417,8 @@ function HookEditor({
     setError("");
     const body = { name: name.trim(), collection_name: collName, event, code, enabled };
     const res = isNew
-      ? await api.post<ApiResponse<Hook>>("/api/admin/hooks", body)
-      : await api.patch<ApiResponse<Hook>>(`/api/admin/hooks/${hook!.id}`, body);
+      ? await api.post<ApiResponse<Hook>>("/api/v1/admin/hooks", body)
+      : await api.patch<ApiResponse<Hook>>(`/api/v1/admin/hooks/${hook!.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -552,14 +552,14 @@ function RoutesTab() {
 
   async function load() {
     setLoading(true);
-    const r = await api.get<ApiResponse<CustomRoute[]>>("/api/admin/routes");
+    const r = await api.get<ApiResponse<CustomRoute[]>>("/api/v1/admin/routes");
     if (r.data) setRoutes(r.data);
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
 
   async function toggleEnabled(r: CustomRoute) {
-    const res = await api.patch<ApiResponse<CustomRoute>>(`/api/admin/routes/${r.id}`, {
+    const res = await api.patch<ApiResponse<CustomRoute>>(`/api/v1/admin/routes/${r.id}`, {
       enabled: !r.enabled,
     });
     if (res.error) { toast(res.error, "info"); return; }
@@ -574,7 +574,7 @@ function RoutesTab() {
       danger: true,
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/routes/${r.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/routes/${r.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Route deleted", "trash");
     load();
@@ -722,8 +722,8 @@ function RouteEditor({
     setError("");
     const body = { name: name.trim(), method, path, code, enabled };
     const res = isNew
-      ? await api.post<ApiResponse<CustomRoute>>("/api/admin/routes", body)
-      : await api.patch<ApiResponse<CustomRoute>>(`/api/admin/routes/${route!.id}`, body);
+      ? await api.post<ApiResponse<CustomRoute>>("/api/v1/admin/routes", body)
+      : await api.patch<ApiResponse<CustomRoute>>(`/api/v1/admin/routes/${route!.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -859,14 +859,14 @@ function JobsTab() {
 
   async function load() {
     setLoading(true);
-    const r = await api.get<ApiResponse<CronJob[]>>("/api/admin/jobs");
+    const r = await api.get<ApiResponse<CronJob[]>>("/api/v1/admin/jobs");
     if (r.data) setJobs(r.data);
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
 
   async function toggleEnabled(j: CronJob) {
-    const res = await api.patch<ApiResponse<CronJob>>(`/api/admin/jobs/${j.id}`, {
+    const res = await api.patch<ApiResponse<CronJob>>(`/api/v1/admin/jobs/${j.id}`, {
       enabled: !j.enabled,
     });
     if (res.error) { toast(res.error, "info"); return; }
@@ -881,14 +881,14 @@ function JobsTab() {
       danger: true,
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/jobs/${j.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/jobs/${j.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Job deleted", "trash");
     load();
   }
 
   async function handleRunNow(j: CronJob) {
-    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/admin/jobs/${j.id}/run`, {});
+    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/v1/admin/jobs/${j.id}/run`, {});
     if (res.error) { toast(`Run failed: ${res.error}`, "info"); return; }
     toast("Job ran", "check");
     load();
@@ -1081,8 +1081,8 @@ function JobEditor({
     const mode = modeKind === "worker" ? `worker:${modeQueue.trim()}` : "inline";
     const body = { name: name.trim(), cron: cron.trim(), code, enabled, mode };
     const res = isNew
-      ? await api.post<ApiResponse<CronJob>>("/api/admin/jobs", body)
-      : await api.patch<ApiResponse<CronJob>>(`/api/admin/jobs/${job!.id}`, body);
+      ? await api.post<ApiResponse<CronJob>>("/api/v1/admin/jobs", body)
+      : await api.patch<ApiResponse<CronJob>>(`/api/v1/admin/jobs/${job!.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -1278,8 +1278,8 @@ function WorkersTab() {
   async function load() {
     setLoading(true);
     const [w, s] = await Promise.all([
-      api.get<ApiResponse<Worker[]>>("/api/admin/workers"),
-      api.get<ApiResponse<QueueStat[]>>("/api/admin/queues/stats"),
+      api.get<ApiResponse<Worker[]>>("/api/v1/admin/workers"),
+      api.get<ApiResponse<QueueStat[]>>("/api/v1/admin/queues/stats"),
     ]);
     if (w.data) setWorkers(w.data);
     if (s.data) setStats(s.data);
@@ -1288,7 +1288,7 @@ function WorkersTab() {
   useEffect(() => { load(); }, []);
 
   async function toggleEnabled(w: Worker) {
-    const res = await api.patch<ApiResponse<Worker>>(`/api/admin/workers/${w.id}`, { enabled: !w.enabled });
+    const res = await api.patch<ApiResponse<Worker>>(`/api/v1/admin/workers/${w.id}`, { enabled: !w.enabled });
     if (res.error) { toast(res.error, "info"); return; }
     toast(`Worker ${w.enabled ? "disabled" : "enabled"}`);
     load();
@@ -1301,7 +1301,7 @@ function WorkersTab() {
       danger: true,
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/workers/${w.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/workers/${w.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Worker deleted", "trash");
     load();
@@ -1472,8 +1472,8 @@ function WorkerEditor({
       retry_delay_ms: retryDelayMs,
     };
     const res = isNew
-      ? await api.post<ApiResponse<Worker>>("/api/admin/workers", body)
-      : await api.patch<ApiResponse<Worker>>(`/api/admin/workers/${worker!.id}`, body);
+      ? await api.post<ApiResponse<Worker>>("/api/v1/admin/workers", body)
+      : await api.patch<ApiResponse<Worker>>(`/api/v1/admin/workers/${worker!.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -1638,8 +1638,8 @@ function JobsLogTab() {
     params.set("page", String(page));
     params.set("perPage", "50");
     const [j, s] = await Promise.all([
-      api.get<{ data: JobLogRow[] }>(`/api/admin/queues/jobs?${params.toString()}`),
-      api.get<ApiResponse<QueueStat[]>>("/api/admin/queues/stats"),
+      api.get<{ data: JobLogRow[] }>(`/api/v1/admin/queues/jobs?${params.toString()}`),
+      api.get<ApiResponse<QueueStat[]>>("/api/v1/admin/queues/stats"),
     ]);
     setRows(j.data ?? []);
     if (s.data) setStats(s.data);
@@ -1648,7 +1648,7 @@ function JobsLogTab() {
   useEffect(() => { void load(); }, [queueFilter, statusFilter, page]);
 
   async function handleRetry(j: JobLogRow) {
-    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/admin/queues/jobs/${j.id}/retry`, {});
+    const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/v1/admin/queues/jobs/${j.id}/retry`, {});
     if (res.error) { toast(res.error, "info"); return; }
     toast("Job re-queued", "check");
     load();
@@ -1662,7 +1662,7 @@ function JobsLogTab() {
       confirmLabel: "Discard",
     });
     if (!ok) return;
-    const res = await api.delete<ApiResponse<null>>(`/api/admin/queues/jobs/${j.id}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/queues/jobs/${j.id}`);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Job discarded", "trash");
     load();

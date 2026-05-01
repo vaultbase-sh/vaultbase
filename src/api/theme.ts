@@ -14,7 +14,7 @@ const THEME_PREFIX = "theme.";
 
 export function makeThemePlugin() {
   return new Elysia({ name: "theme" })
-    .get("/api/admin/theme", () => {
+    .get("/admin/theme", () => {
       const all = getAllSettings();
       const out: Record<string, string> = {};
       for (const [k, v] of Object.entries(all)) {

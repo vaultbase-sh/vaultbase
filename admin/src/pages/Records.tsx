@@ -56,7 +56,7 @@ function NewRecordModal({
       payload[k] = v;
     }
     const res = await api.post<ApiResponse<RecordRow>>(
-      `/api/${collectionName}`,
+      `/api/v1/${collectionName}`,
       payload
     );
     setSaving(false);
@@ -148,7 +148,7 @@ function useRelationCache(fields: FieldDef[], enabled: boolean): RelationCache {
     );
     for (const target of targets) {
       if (cache[target]) continue;
-      api.get<ListResponse<RecordRow>>(`/api/${target}?perPage=200`).then((res) => {
+      api.get<ListResponse<RecordRow>>(`/api/v1/${target}?perPage=200`).then((res) => {
         if (res.data) {
           const opts = res.data.map((r) => ({ value: String(r.id), label: recordLabel(r) }));
           setCache((prev) => ({ ...prev, [target]: opts }));
@@ -188,7 +188,7 @@ async function mintFileToken(
   if (existing) return existing;
   const p = (async () => {
     const res = await api.post<ApiResponse<FileToken>>(
-      `/api/files/${collectionName}/${recordId}/${field}/${filename}/token`,
+      `/api/v1/files/${collectionName}/${recordId}/${field}/${filename}/token`,
       {},
     );
     if (res.data) {
@@ -261,7 +261,7 @@ function FileFieldPreview({
 
   function urlFor(fn: string): string {
     const tok = tokens[fn];
-    return tok ? `/api/files/${fn}?token=${encodeURIComponent(tok)}` : `/api/files/${fn}`;
+    return tok ? `/api/v1/files/${fn}?token=${encodeURIComponent(tok)}` : `/api/v1/files/${fn}`;
   }
 
   return (
@@ -507,7 +507,7 @@ export default function Records() {
   const importInputRef = useRef<HTMLInputElement>(null);
 
   async function loadCollection() {
-    const res = await api.get<ApiResponse<Collection>>(`/api/collections/${collId}`);
+    const res = await api.get<ApiResponse<Collection>>(`/api/v1/collections/${collId}`);
     if (res.data) setCollection(res.data);
   }
 
@@ -520,8 +520,8 @@ export default function Records() {
       if (f) params.set("filter", f);
     }
     const url = collection.type === "auth"
-      ? `/api/admin/users/${collection.name}?${params}`
-      : `/api/${collection.name}?${params}`;
+      ? `/api/v1/admin/users/${collection.name}?${params}`
+      : `/api/v1/${collection.name}?${params}`;
     const res = await api.get<ListResponse<RecordRow>>(url);
     if (res.data) { setRecords(res.data); setTotal(res.totalItems); }
     setLoading(false);
@@ -561,7 +561,7 @@ export default function Records() {
       }
       if (Object.keys(dataObj).length > 0) payload["data"] = dataObj;
       const res = await api.patch<ApiResponse<RecordRow>>(
-        `/api/admin/users/${collection.name}/${String(openRec.id)}`,
+        `/api/v1/admin/users/${collection.name}/${String(openRec.id)}`,
         payload
       );
       setSaving(false);
@@ -582,7 +582,7 @@ export default function Records() {
       payload[k] = v;
     }
     const res = await api.patch<ApiResponse<RecordRow>>(
-      `/api/${collection.name}/${String(openRec.id)}`,
+      `/api/v1/${collection.name}/${String(openRec.id)}`,
       payload
     );
     setSaving(false);
@@ -605,8 +605,8 @@ export default function Records() {
     });
     if (!ok) return;
     const url = isAuth
-      ? `/api/admin/users/${collection.name}/${id}`
-      : `/api/${collection.name}/${id}`;
+      ? `/api/v1/admin/users/${collection.name}/${id}`
+      : `/api/v1/${collection.name}/${id}`;
     await api.delete(url);
     toast(isAuth ? "User deleted" : "Record deleted", "trash");
     setOpenRec(null);
@@ -630,7 +630,7 @@ export default function Records() {
     if (isAuth) {
       // No batch API for auth users — sequential per-id deletes.
       for (const id of ids) {
-        const res = await api.delete<ApiResponse<null>>(`/api/admin/users/${collection.name}/${id}`);
+        const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/users/${collection.name}/${id}`);
         if (res.error) failed++;
       }
     } else {
@@ -639,11 +639,11 @@ export default function Records() {
       for (let i = 0; i < ids.length; i += CHUNK) {
         const slice = ids.slice(i, i + CHUNK);
         const res = await api.post<{ data?: unknown[]; error?: string; code?: number }>(
-          "/api/batch",
+          "/api/v1/batch",
           {
             requests: slice.map((id) => ({
               method: "DELETE",
-              url: `/api/${collection.name}/${id}`,
+              url: `/api/v1/${collection.name}/${id}`,
             })),
           }
         );
@@ -671,7 +671,7 @@ export default function Records() {
   function handleExport() {
     if (!collection) return;
     const token = getMemoryToken();
-    fetch(`/api/admin/export/${collection.name}`, {
+    fetch(`/api/v1/admin/export/${collection.name}`, {
       credentials: "same-origin",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -699,7 +699,7 @@ export default function Records() {
       const token = getMemoryToken();
       const headers: Record<string, string> = { "Content-Type": "text/csv" };
       if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch(`/api/admin/import/${collection.name}`, {
+      const res = await fetch(`/api/v1/admin/import/${collection.name}`, {
         method: "POST",
         credentials: "same-origin",
         headers,
@@ -721,7 +721,7 @@ export default function Records() {
   async function handleImpersonate(id: string) {
     if (!collection) return;
     const res = await api.post<ApiResponse<{ token: string; record: { id: string; email: string } }>>(
-      `/api/admin/impersonate/${collection.name}/${id}`,
+      `/api/v1/admin/impersonate/${collection.name}/${id}`,
       {}
     );
     if (res.error) { toast(res.error, "info"); return; }
@@ -745,7 +745,7 @@ export default function Records() {
     });
     if (!ok) return;
     const res = await api.patch<ApiResponse<RecordRow>>(
-      `/api/admin/users/${collection.name}/${id}`,
+      `/api/v1/admin/users/${collection.name}/${id}`,
       { mfa_enabled: false }
     );
     if (res.error) { toast(res.error, "info"); return; }

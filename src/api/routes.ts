@@ -4,6 +4,7 @@ import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache } from "../core/routes.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { customInnerPath } from "../core/api-paths.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -26,8 +27,8 @@ function validatePath(path: string): string | null {
  */
 export async function tryDispatchCustom(request: Request, jwtSecret: string): Promise<Response | undefined> {
   const url = new URL(request.url);
-  if (!url.pathname.startsWith("/api/custom")) return undefined;
-  const inner = url.pathname.replace(/^\/api\/custom/, "") || "/";
+  const inner = customInnerPath(url.pathname);
+  if (inner === null) return undefined;
   try {
     const result = await dispatchCustomRoute(request, inner, jwtSecret);
     if (!result) {
@@ -51,7 +52,7 @@ export async function tryDispatchCustom(request: Request, jwtSecret: string): Pr
 
 export function makeRoutesPlugin(jwtSecret: string) {
   return new Elysia({ name: "routes" })
-    .get("/api/admin/routes", async ({ request, set }) => {
+    .get("/admin/routes", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
@@ -60,7 +61,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/routes",
+      "/admin/routes",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -99,7 +100,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
     )
 
     .patch(
-      "/api/admin/routes/:id",
+      "/admin/routes/:id",
       async ({ request, params, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
@@ -139,7 +140,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/api/admin/routes/:id", async ({ request, params, set }) => {
+    .delete("/admin/routes/:id", async ({ request, params, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }

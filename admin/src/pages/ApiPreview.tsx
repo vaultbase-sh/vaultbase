@@ -25,37 +25,37 @@ interface ResponseInfo {
 export default function ApiPreview() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [method, setMethod] = useState<Method>("GET");
-  const [path, setPath] = useState("/api/health");
+  const [path, setPath] = useState("/api/v1/health");
   const [body, setBody] = useState("");
   const [includeAuth, setIncludeAuth] = useState(true);
   const [response, setResponse] = useState<ResponseInfo | null>(null);
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    api.get<ApiResponse<Collection[]>>("/api/collections").then((res) => {
+    api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
       if (res.data) setCollections(res.data);
     });
   }, []);
 
   const presets = useMemo<Preset[]>(() => {
     const base: Preset[] = [
-      { label: "GET /api/health", method: "GET", path: "/api/health" },
-      { label: "GET /api/collections", method: "GET", path: "/api/collections" },
-      { label: "GET /api/admin/auth/me", method: "GET", path: "/api/admin/auth/me" },
-      { label: "GET /api/admin/admins", method: "GET", path: "/api/admin/admins" },
-      { label: "GET /api/admin/logs?perPage=10", method: "GET", path: "/api/admin/logs?perPage=10" },
+      { label: "GET /api/health", method: "GET", path: "/api/v1/health" },
+      { label: "GET /api/collections", method: "GET", path: "/api/v1/collections" },
+      { label: "GET /api/admin/auth/me", method: "GET", path: "/api/v1/admin/auth/me" },
+      { label: "GET /api/admin/admins", method: "GET", path: "/api/v1/admin/admins" },
+      { label: "GET /api/admin/logs?perPage=10", method: "GET", path: "/api/v1/admin/logs?perPage=10" },
     ];
     for (const c of collections) {
-      base.push({ label: `GET /api/${c.name}`, method: "GET", path: `/api/${c.name}?perPage=10` });
+      base.push({ label: `GET /api/v1/${c.name}`, method: "GET", path: `/api/v1/${c.name}?perPage=10` });
       const fields = parseFields(c.fields).filter((f) => !f.system && f.type !== "autodate");
       const sample: Record<string, unknown> = {};
       for (const f of fields.slice(0, 3)) {
         sample[f.name] = f.type === "number" ? 0 : f.type === "bool" ? false : "";
       }
       base.push({
-        label: `POST /api/${c.name}`,
+        label: `POST /api/v1/${c.name}`,
         method: "POST",
-        path: `/api/${c.name}`,
+        path: `/api/v1/${c.name}`,
         body: JSON.stringify(sample, null, 2),
       });
     }
@@ -247,7 +247,7 @@ export default function ApiPreview() {
               value={path}
               onChange={(e) => setPath(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") send(); }}
-              placeholder="/api/posts?perPage=10"
+              placeholder="/api/v1/posts?perPage=10"
             />
             <button
               className="btn btn-primary"

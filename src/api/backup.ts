@@ -17,7 +17,7 @@ const SQLITE_MAGIC = "SQLite format 3\0";
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
   return new Elysia({ name: "backup" })
     // Download SQLite snapshot
-    .get("/api/admin/backup", async ({ request, set }) => {
+    .get("/admin/backup", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
@@ -34,7 +34,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     })
 
     // Restore from uploaded SQLite file
-    .post("/api/admin/restore", async ({ request, set }) => {
+    .post("/admin/restore", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };

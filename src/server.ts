@@ -144,27 +144,33 @@ export function createServer(config: Config) {
     })
     .use(makeRateLimitPlugin())
     .use(makeLogsPlugin(config.jwtSecret))
-    .use(makeAuthPlugin(config.jwtSecret))
-    .use(makeAdminsPlugin(config.jwtSecret))
-    .use(makeAuthUsersPlugin(config.jwtSecret))
-    .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
-    .use(makeIndexesPlugin(config.jwtSecret))
-    .use(makeSettingsPlugin(config.jwtSecret))
-    .use(makeHooksPlugin(config.jwtSecret))
-    .use(makeRoutesPlugin(config.jwtSecret))
-    .use(makeJobsPlugin(config.jwtSecret))
-    .use(makeQueuesPlugin(config.jwtSecret))
-    .use(makeBatchPlugin(config.jwtSecret))
-    .use(makeCsvPlugin(config.jwtSecret))
-    .use(makeMigrationsPlugin(config.jwtSecret))
-    .use(makeMetricsPlugin(config.jwtSecret))
-    .use(makeAuditLogPlugin(config.jwtSecret))
-    .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
-    .use(makeThemePlugin())
-    .use(makeFlagsPlugin(config.jwtSecret))
-    .use(makeWebhooksPlugin(config.jwtSecret))
-    .use(makeCollectionsPlugin(config.jwtSecret))
-    .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
+    // ── Versioned API surface ───────────────────────────────────────────
+    // Every plugin route is declared without the `/api/...` prefix; the
+    // group below adds `/api/v1`. Future v2 lives in a sibling group.
+    .group("/api/v1", (app) => app
+      .use(makeAuthPlugin(config.jwtSecret))
+      .use(makeAdminsPlugin(config.jwtSecret))
+      .use(makeAuthUsersPlugin(config.jwtSecret))
+      .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
+      .use(makeIndexesPlugin(config.jwtSecret))
+      .use(makeSettingsPlugin(config.jwtSecret))
+      .use(makeHooksPlugin(config.jwtSecret))
+      .use(makeRoutesPlugin(config.jwtSecret))
+      .use(makeJobsPlugin(config.jwtSecret))
+      .use(makeQueuesPlugin(config.jwtSecret))
+      .use(makeBatchPlugin(config.jwtSecret))
+      .use(makeCsvPlugin(config.jwtSecret))
+      .use(makeMigrationsPlugin(config.jwtSecret))
+      .use(makeMetricsPlugin(config.jwtSecret))
+      .use(makeAuditLogPlugin(config.jwtSecret))
+      .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
+      .use(makeThemePlugin())
+      .use(makeFlagsPlugin(config.jwtSecret))
+      .use(makeWebhooksPlugin(config.jwtSecret))
+      .use(makeCollectionsPlugin(config.jwtSecret))
+      .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
+      .use(makeRecordsPlugin(config.jwtSecret))
+    )
     .use(makeAdminPlugin())
     .get("/api/health", () => ({ data: { status: "ok" } }))
     // Cluster health probe — admin proxies / load-balancers hit this. Worker
@@ -178,8 +184,8 @@ export function createServer(config: Config) {
       },
     }))
     // SSE fallback for clients that can't open WebSockets. Pairs with
-    // `POST /api/realtime` (below) for setting subscriptions.
-    .get("/api/realtime", ({ request, set }) => {
+    // `POST /api/v1/realtime` for setting subscriptions.
+    .get("/api/v1/realtime", ({ request, set }) => {
       const origin = request.headers.get("origin");
       if (!isOriginAllowed(origin)) {
         set.status = 403;
@@ -190,10 +196,10 @@ export function createServer(config: Config) {
       return response;
     })
     .post(
-      "/api/realtime",
+      "/api/v1/realtime",
       async ({ body, set }) => {
         const adapter = getSSEClient(body.clientId);
-        if (!adapter) { set.status = 404; return { error: "Unknown clientId — open GET /api/realtime first", code: 404 }; }
+        if (!adapter) { set.status = 404; return { error: "Unknown clientId — open GET /api/v1/realtime first", code: 404 }; }
         // Optional fresh auth (parallel to WS `{type:"auth"}`).
         if (body.token) {
           const auth = await verifyTokenForWS(body.token, config.jwtSecret);
@@ -213,11 +219,10 @@ export function createServer(config: Config) {
         }),
       }
     )
-    .delete("/api/realtime/:clientId", ({ params }) => {
+    .delete("/api/v1/realtime/:clientId", ({ params }) => {
       unregisterSSEClient(params.clientId);
       return { data: null };
     })
-    .use(makeRecordsPlugin(config.jwtSecret))
     .ws("/realtime", {
       async open(ws) {
         const req = (ws.data as { request?: Request } | undefined)?.request;

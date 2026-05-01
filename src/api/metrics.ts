@@ -58,7 +58,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
     })
     // Public Prometheus exposition. Off by default; enable via
     // `metrics.enabled` setting. Optional bearer auth via `metrics.token`.
-    .get("/api/metrics", ({ request, set }) => {
+    .get("/metrics", ({ request, set }) => {
       if (getSetting("metrics.enabled", "0") !== "1") {
         set.status = 404;
         return "";

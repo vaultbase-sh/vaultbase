@@ -1,6 +1,7 @@
 import Elysia, { t } from "elysia";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { isAdminApiPath } from "../core/api-paths.ts";
 
 async function getAdmin(request: Request, jwtSecret: string): Promise<{ id: string; email: string } | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -18,7 +19,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
     .onAfterHandle({ as: "global" }, async ({ request, set }) => {
       // No need to skip non-admin paths here — recordAuditEntry filters.
       const url = new URL(request.url);
-      if (!url.pathname.startsWith("/api/admin/")) return;
+      if (!isAdminApiPath(url.pathname)) return;
 
       const status = Number(set.status ?? 200);
       const actor = await getAdmin(request, jwtSecret);
@@ -29,7 +30,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
     })
     .onError({ as: "global" }, async ({ request, error }) => {
       const url = new URL(request.url);
-      if (!url.pathname.startsWith("/api/admin/")) return;
+      if (!isAdminApiPath(url.pathname)) return;
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
       const actor = await getAdmin(request, jwtSecret);
       void recordAuditEntry({ request, status, actor }).catch(() => { /* swallow */ });
@@ -37,7 +38,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
 
     // ── Read API ────────────────────────────────────────────────────────
     .get(
-      "/api/admin/audit-log",
+      "/admin/audit-log",
       async ({ request, query, set }) => {
         const me = await getAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }

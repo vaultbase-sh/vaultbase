@@ -57,7 +57,7 @@ async function signAdmin(): Promise<string> {
 }
 
 function exportReq(token: string, collection: string): Request {
-  return new Request(`http://localhost/api/admin/export/${collection}`, {
+  return new Request(`http://localhost/admin/export/${collection}`, {
     method: "GET",
     headers: { authorization: `Bearer ${token}` },
   });

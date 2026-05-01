@@ -30,7 +30,7 @@ export { computeSnapshotDiff };
 
 export function makeMigrationsPlugin(jwtSecret: string) {
   return new Elysia({ name: "migrations" })
-    .get("/api/admin/migrations/snapshot", async ({ request, set }) => {
+    .get("/admin/migrations/snapshot", async ({ request, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
@@ -60,7 +60,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
     })
 
     .post(
-      "/api/admin/migrations/diff",
+      "/admin/migrations/diff",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401;
@@ -90,7 +90,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
     )
 
     .post(
-      "/api/admin/migrations/apply",
+      "/admin/migrations/apply",
       async ({ request, body, set }) => {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401;
