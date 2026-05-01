@@ -123,8 +123,11 @@ export const Drawer: React.FC<{
             padding: "12px 20px",
             borderTop: "1px solid var(--border-subtle)",
             display: "flex",
+            flexWrap: "wrap",
+            rowGap: 8,
             gap: "var(--space-2)",
             justifyContent: "flex-end",
+            alignItems: "center",
             background: "var(--bg-app)",
             margin: "16px -20px -18px",
           }}
