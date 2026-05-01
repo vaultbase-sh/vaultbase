@@ -23,6 +23,7 @@ const Records = lazy(() => import("./pages/Records.tsx"));
 const CollectionEdit = lazy(() => import("./pages/CollectionEdit.tsx"));
 const HooksPage = lazy(() => import("./pages/Hooks.tsx"));
 const FlagsPage = lazy(() => import("./pages/Flags.tsx"));
+const WebhooksPage = lazy(() => import("./pages/Webhooks.tsx"));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthed = useAuth((s) => s.isAuthed);
@@ -131,6 +132,7 @@ export default function App() {
             <Route path="users" element={<Superusers />} />
             <Route path="hooks" element={<HooksPage />} />
             <Route path="flags" element={<FlagsPage />} />
+            <Route path="webhooks" element={<WebhooksPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
           <Route path="*" element={<Navigate to="/_/" replace />} />

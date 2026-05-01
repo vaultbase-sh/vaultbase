@@ -22,6 +22,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { to: "/_/hooks",        label: "Hooks",        icon: "webhook" },
       { to: "/_/flags",        label: "Feature flags", icon: "zap" },
+      { to: "/_/webhooks",     label: "Webhooks",     icon: "upload" },
     ],
   },
   {
@@ -46,7 +47,7 @@ export const Sidebar: React.FC = () => {
           <VaultbaseLogo size={22} />
         </span>
         <div className="sb-brand-name">vaultbase</div>
-        <div className="sb-brand-version mono">v0.4.0</div>
+        <div className="sb-brand-version mono">v0.5.0</div>
       </div>
       {SECTIONS.map((sec) => (
         <div className="sb-section" key={sec.label}>
