@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
-import { api, type ApiResponse, type Collection, parseFields } from "../api.ts";
+import { api, getMemoryToken, type ApiResponse, type Collection, parseFields } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -76,8 +76,9 @@ export default function ApiPreview() {
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (includeAuth) {
-      const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+      const token = getMemoryToken();
       if (token) headers["Authorization"] = `Bearer ${token}`;
+      // Cookie auth is the primary mechanism — added below via credentials.
     }
 
     let parsedBody: string | undefined;
@@ -98,7 +99,12 @@ export default function ApiPreview() {
     }
 
     try {
-      const res = await fetch(path, { method, headers, body: parsedBody });
+      const res = await fetch(path, {
+        method,
+        credentials: includeAuth ? "same-origin" : "omit",
+        headers,
+        body: parsedBody,
+      });
       const ms = Math.round(performance.now() - start);
       const text = await res.text();
       const respHeaders: Record<string, string> = {};

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Tag } from "primereact/tag";
-import { api, type ApiResponse } from "../api.ts";
+import { api, getMemoryToken, type ApiResponse } from "../api.ts";
 import { Topbar } from "../components/Shell.tsx";
 import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
@@ -1401,8 +1401,11 @@ function BackupSection() {
   const [restoring, setRestoring] = useState(false);
 
   function handleDownload() {
-    const token = localStorage.getItem("vaultbase_admin_token") ?? "";
-    fetch("/api/admin/backup", { headers: { Authorization: `Bearer ${token}` } })
+    const token = getMemoryToken();
+    fetch("/api/admin/backup", {
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`Failed: ${r.status}`);
         const cd = r.headers.get("content-disposition") ?? "";
@@ -1436,11 +1439,12 @@ function BackupSection() {
     setRestoring(true);
     const fd = new FormData();
     fd.append("file", file);
-    const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+    const token = getMemoryToken();
     try {
       const res = await fetch("/api/admin/restore", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: "same-origin",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: fd,
       });
       const json = await res.json();
@@ -2426,9 +2430,10 @@ function MigrationsSection() {
   const [diffLoading, setDiffLoading] = useState(false);
 
   function handleDownload() {
-    const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+    const token = getMemoryToken();
     fetch("/api/admin/migrations/snapshot", {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => {
         if (!r.ok) throw new Error(`Failed: ${r.status}`);

@@ -6,7 +6,7 @@ import { Dropdown } from "primereact/dropdown";
 import { MultiSelect } from "primereact/multiselect";
 import { Editor as QuillEditor } from "primereact/editor";
 import {
-  api, type ApiResponse, type Collection, type FieldDef, type ListResponse,
+  api, getMemoryToken, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
 } from "../api.ts";
 import { useNavigate, useParams } from "react-router-dom";
@@ -670,9 +670,10 @@ export default function Records() {
 
   function handleExport() {
     if (!collection) return;
-    const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+    const token = getMemoryToken();
     fetch(`/api/admin/export/${collection.name}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((r) => {
         if (!r.ok) throw new Error(`Failed: ${r.status}`);
@@ -695,10 +696,13 @@ export default function Records() {
     e.target.value = "";
     if (!file || !collection) return;
     file.text().then(async (text) => {
-      const token = localStorage.getItem("vaultbase_admin_token") ?? "";
+      const token = getMemoryToken();
+      const headers: Record<string, string> = { "Content-Type": "text/csv" };
+      if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(`/api/admin/import/${collection.name}`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/csv" },
+        credentials: "same-origin",
+        headers,
         body: text,
       });
       const j = (await res.json()) as { data?: { created: number; failed: number; total: number; errors: unknown[] }; error?: string };
