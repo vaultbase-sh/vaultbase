@@ -25,16 +25,29 @@ interface UserRow {
   updated_at: number;
 }
 
+/** Reserved keys derived from real columns — must not be shadowed by JSON `data`. */
+const RESERVED_USER_KEYS = new Set([
+  "id", "email", "verified", "mfa_enabled", "anonymous", "created", "updated",
+  // back-compat: legacy stored payloads sometimes carried these too
+  "email_verified", "totp_enabled", "is_anonymous",
+]);
+
 function shape(row: UserRow): Record<string, unknown> {
   let data: Record<string, unknown> = {};
   try { data = JSON.parse(row.data ?? "{}") as Record<string, unknown>; } catch { /* keep empty */ }
+  // Strip reserved keys from `data` so a legacy round-trip can't override
+  // the canonical column-derived values (the cause of the "MFA still showing
+  // active after disable" bug).
+  for (const k of RESERVED_USER_KEYS) {
+    if (k in data) delete data[k];
+  }
   return {
     id: row.id,
     email: row.email,
+    ...data,
     verified: row.email_verified === 1,
     mfa_enabled: row.totp_enabled === 1,
     anonymous: row.is_anonymous === 1,
-    ...data,
     created: row.created_at,
     updated: row.updated_at,
   };
@@ -122,7 +135,13 @@ export function makeAuthUsersPlugin(jwtSecret: string) {
         return { error: "Admins can only disable MFA; users enroll via /totp/setup", code: 422 };
       }
       if (body.data !== undefined && typeof body.data === "object" && body.data !== null) {
-        update["data"] = JSON.stringify(body.data);
+        // Strip reserved keys so a legacy/buggy client can't poison the JSON
+        // blob with values that shadow column-derived fields on read.
+        const cleaned: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(body.data as Record<string, unknown>)) {
+          if (!RESERVED_USER_KEYS.has(k)) cleaned[k] = v;
+        }
+        update["data"] = JSON.stringify(cleaned);
       }
       if (Object.keys(update).length === 0) {
         return { data: shape(u as UserRow) };
