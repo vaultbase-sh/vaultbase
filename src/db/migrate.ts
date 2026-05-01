@@ -287,6 +287,43 @@ export async function runMigrations() {
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_at ON vaultbase_login_failures(at)`);
 
   client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_webhooks (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL,
+      events TEXT NOT NULL DEFAULT '[]',
+      secret TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      retry_max INTEGER NOT NULL DEFAULT 3,
+      retry_backoff TEXT NOT NULL DEFAULT 'exponential',
+      retry_delay_ms INTEGER NOT NULL DEFAULT 1000,
+      timeout_ms INTEGER NOT NULL DEFAULT 30000,
+      custom_headers TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_webhook_deliveries (
+      id TEXT PRIMARY KEY,
+      webhook_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      response_status INTEGER,
+      response_body TEXT,
+      error TEXT,
+      scheduled_at INTEGER NOT NULL,
+      delivered_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_webhook_deliveries_status ON vaultbase_webhook_deliveries(status, scheduled_at)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_webhook_deliveries_webhook ON vaultbase_webhook_deliveries(webhook_id, created_at)`);
+
+  client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_flag_segments (
       name TEXT PRIMARY KEY,
       description TEXT NOT NULL DEFAULT '',

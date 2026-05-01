@@ -39,7 +39,7 @@ interface SettingsTab {
 
 const SETTINGS_TABS: SettingsTab[] = [
   { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
-  { id: "theme",       label: "Theme",       icon: "fill",     subtitle: "admin UI accent + surface colors" },
+  { id: "theme",       label: "Theme",       icon: "palette",  subtitle: "admin UI accent + surface colors" },
   { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
   { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
   { id: "cors",        label: "CORS",          icon: "globe",  subtitle: "cross-origin allow-list for the HTTP API" },
