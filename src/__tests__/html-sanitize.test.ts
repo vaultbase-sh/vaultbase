@@ -112,6 +112,38 @@ describe("sanitizeHtml — preserves Quill output shape", () => {
   });
 });
 
+describe("sanitizeHtml — entity-encoded scheme bypass", () => {
+  it("rejects javascript: encoded as hex numeric character refs", () => {
+    const out = sanitizeHtml(`<a href="&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;alert(1)">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+
+  it("rejects javascript: encoded as decimal numeric character refs", () => {
+    const out = sanitizeHtml(`<a href="&#106;avascript&#58;alert(1)">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+
+  it("rejects javascript: split by TAB character ref (browser URL-parser quirk)", () => {
+    const out = sanitizeHtml(`<a href="java&#9;script:alert(1)">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+
+  it("rejects javascript: split by named &Tab; entity", () => {
+    const out = sanitizeHtml(`<a href="java&Tab;script:alert(1)">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+
+  it("rejects javascript: split by zero-width space", () => {
+    const out = sanitizeHtml(`<a href="java​script:alert(1)">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+
+  it("rejects javascript: with leading/trailing whitespace", () => {
+    const out = sanitizeHtml(`<a href="   javascript:alert(1)   ">x</a>`);
+    expect(out).toBe(`<a>x</a>`);
+  });
+});
+
 describe("sanitizeHtml — edge cases", () => {
   it("returns empty for empty input", () => {
     expect(sanitizeHtml("")).toBe("");

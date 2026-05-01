@@ -151,9 +151,13 @@ export function sanitizeHtml(input: string): string {
         if (!allowedAttrs.has(lower)) continue;
         let v = value;
         if (URL_ATTRS.has(lower)) {
-          const trimmed = v.trim();
-          if (DENIED_SCHEMES.test(trimmed)) continue;
-          if (DENIED_DATA_SCHEME.test(trimmed) && !ALLOWED_DATA_IMAGE.test(trimmed)) continue;
+          // Browsers strip TAB / LF / CR from URL schemes before parsing
+          // (see WHATWG URL §basic-url-parse), so `java&#9;script:` resolves
+          // to `javascript:` at render time. Replicate that quirk here so
+          // the scheme check sees what the browser will see.
+          const normalized = stripUrlControlChars(v.trim());
+          if (DENIED_SCHEMES.test(normalized)) continue;
+          if (DENIED_DATA_SCHEME.test(normalized) && !ALLOWED_DATA_IMAGE.test(normalized)) continue;
         }
         attrStr += ` ${lower}="${escapeAttr(v)}"`;
       }
@@ -219,13 +223,54 @@ function parseAttrs(s: string): Array<[string, string]> {
   return out;
 }
 
+/**
+ * Decode the HTML character references a browser would decode while parsing
+ * an attribute value: a small set of named entities, hex numeric (`&#xHH;`),
+ * and decimal numeric (`&#NN;`). Must run **before** any URL-scheme check
+ * so that `&#x6A;avascript:` collapses to `javascript:` and is denied.
+ */
 function decodeEntities(s: string): string {
   return s
+    .replace(/&#x([0-9a-f]+);?/gi, (_, hex: string) => safeFromCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_, dec: string) => safeFromCode(parseInt(dec, 10)))
+    .replace(/&Tab;/gi, "\t")
+    .replace(/&NewLine;/gi, "\n")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
     .replace(/&#39;/g, "'");
+}
+
+function safeFromCode(n: number): string {
+  if (!Number.isFinite(n) || n < 0 || n > 0x10ffff) return "";
+  // Skip surrogates — they don't carry meaning on their own and are a known
+  // mojibake / smuggling vector.
+  if (n >= 0xd800 && n <= 0xdfff) return "";
+  return String.fromCodePoint(n);
+}
+
+/**
+ * Strip the bytes a browser ignores while extracting a URL scheme: TAB
+ * (U+0009), LF (U+000A), CR (U+000D), plus zero-width and bidi-override
+ * characters that some browsers also remove during URL parsing.
+ */
+const URL_STRIPPABLE_CODES = new Set<number>([
+  0x09, 0x0a, 0x0d,
+  0x200b, 0x200c, 0x200d,
+  0x2028, 0x2029,
+  0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+  0x2060, 0xfeff,
+]);
+function stripUrlControlChars(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    if (cp !== undefined && URL_STRIPPABLE_CODES.has(cp)) continue;
+    out += ch;
+  }
+  return out;
 }
 
 function escapeAttr(s: string): string {

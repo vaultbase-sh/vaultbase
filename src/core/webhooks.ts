@@ -157,10 +157,24 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
   const ts = String(Math.floor(Date.now() / 1000));
   const sig = await hmacSign(w.secret, `${ts}.${d.payload}`);
 
+  // Reserved-header denylist. Admin-supplied custom_headers cannot override
+  // the integrity headers, the SSRF-defining Host, or transport metadata.
+  // The match is case-insensitive — header names are normalized below.
+  const RESERVED_HEADERS = new Set([
+    "host", "content-length", "content-type", "user-agent",
+    "x-vaultbase-event", "x-vaultbase-delivery", "x-vaultbase-timestamp", "x-vaultbase-signature",
+    "authorization", "cookie", "set-cookie", "transfer-encoding",
+  ]);
   let extraHeaders: Record<string, string> = {};
   try {
     const parsed = JSON.parse(w.custom_headers) as unknown;
-    if (parsed && typeof parsed === "object") extraHeaders = parsed as Record<string, string>;
+    if (parsed && typeof parsed === "object") {
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v !== "string") continue;
+        if (RESERVED_HEADERS.has(k.toLowerCase())) continue;
+        extraHeaders[k] = v;
+      }
+    }
   } catch { /* empty */ }
 
   const headers: Record<string, string> = {
@@ -178,11 +192,27 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
   let res: Response | null = null;
   let err: Error | null = null;
   try {
-    res = await fetch(w.url, { method: "POST", body: d.payload, headers, signal: ac.signal });
+    // `redirect: "manual"` blocks redirect-following (SSRF defense). The
+    // egress filter validated the original URL only; following 3xx into
+    // RFC1918 / metadata addresses would bypass the guard. A receiver that
+    // legitimately redirects must publish the final URL up front.
+    res = await fetch(w.url, {
+      method: "POST",
+      body: d.payload,
+      headers,
+      signal: ac.signal,
+      redirect: "manual",
+    });
   } catch (e) {
     err = e instanceof Error ? e : new Error(String(e));
   } finally {
     clearTimeout(timer);
+  }
+
+  // Treat 3xx as failure — see redirect: "manual" comment above.
+  if (res && res.status >= 300 && res.status < 400) {
+    err = new Error(`refusing redirect: ${res.status} -> ${res.headers.get("location") ?? "(no Location)"}`);
+    res = null;
   }
 
   const finishedAt = Math.floor(Date.now() / 1000);
@@ -217,9 +247,12 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
     return;
   }
 
-  // Retry: bump attempt + reschedule.
+  // Retry: bump attempt + reschedule. Cap exponential backoff at 1 day so
+  // pathological retry_delay_ms × 2^attempt combinations don't park
+  // deliveries in the queue for years.
+  const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
   const delayMs = w.retry_backoff === "exponential"
-    ? w.retry_delay_ms * 2 ** (d.attempt - 1)
+    ? Math.min(w.retry_delay_ms * 2 ** (d.attempt - 1), MAX_BACKOFF_MS)
     : w.retry_delay_ms;
   const nextAttempt = d.attempt + 1;
   await db.update(webhookDeliveries)
