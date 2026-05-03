@@ -5,6 +5,7 @@ import "primereact/resources/themes/lara-dark-cyan/theme.css";
 import "primereact/resources/primereact.css";
 import "primeicons/primeicons.css";
 import "quill/dist/quill.snow.css";
+import "leaflet/dist/leaflet.css";
 import App from "./App.tsx";
 import { applyThemeOverrides } from "./theme.ts";
 

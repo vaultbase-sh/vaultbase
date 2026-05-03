@@ -16,6 +16,114 @@ import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 import Icon from "../components/Icon.tsx";
 
+// ── GeoPoint map picker (Leaflet + OpenStreetMap) ──────────────────────────
+//
+// Lazy-loads Leaflet so the bundle's first-page payload doesn't carry it for
+// pages that never see geoPoint fields. CSS is shipped at boot via
+// `main.tsx` so the imported library renders correctly the first time.
+//
+// Controls:
+//   - Click anywhere on the map → place marker + emit (lat, lng)
+//   - Drag the marker → emit (lat, lng) on dragend
+//   - External lat/lng prop change → re-position marker, recenter on big jump
+
+function GeoPointMap({
+  lat, lng, onChange, readOnly,
+}: {
+  lat?: number;
+  lng?: number;
+  onChange: (lat: number, lng: number) => void;
+  readOnly?: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Use `any` here so we don't hard-import the Leaflet types at top-level
+  // — the lazy `import()` keeps the actual module out of the entry chunk.
+  const mapRef = useRef<unknown>(null);
+  const markerRef = useRef<unknown>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let cancelled = false;
+    let cleanupFn: (() => void) | null = null;
+
+    void (async () => {
+      const L = await import("leaflet");
+      if (cancelled || !containerRef.current) return;
+
+      // Vite/Rollup mangles Leaflet's relative URLs to its default-marker
+      // sprite. Pin the icon to the unpkg copy of the same files so the
+      // marker renders without extra build config.
+      const Icon = L.Icon as unknown as { Default: { mergeOptions: (o: Record<string, string>) => void } };
+      Icon.Default.mergeOptions({
+        iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+        iconUrl:       "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+        shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+      });
+
+      const hasCoords = typeof lat === "number" && typeof lng === "number";
+      const initLat = hasCoords ? lat! : 0;
+      const initLng = hasCoords ? lng! : 0;
+      const initZoom = hasCoords ? 13 : 2;
+
+      const map = L.map(containerRef.current).setView([initLat, initLng], initZoom);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }).addTo(map);
+
+      const marker = L.marker([initLat, initLng], { draggable: !readOnly }).addTo(map);
+      mapRef.current = map;
+      markerRef.current = marker;
+
+      if (!readOnly) {
+        map.on("click", (e: { latlng: { lat: number; lng: number } }) => {
+          marker.setLatLng(e.latlng);
+          onChangeRef.current(e.latlng.lat, e.latlng.lng);
+        });
+        marker.on("dragend", () => {
+          const ll = marker.getLatLng();
+          onChangeRef.current(ll.lat, ll.lng);
+        });
+      }
+
+      cleanupFn = () => { map.remove(); };
+    })();
+
+    return () => {
+      cancelled = true;
+      if (cleanupFn) cleanupFn();
+      mapRef.current = null;
+      markerRef.current = null;
+    };
+  }, []);
+
+  // External lat/lng change → reposition + recenter if jumping far.
+  useEffect(() => {
+    const m = markerRef.current as { setLatLng: (ll: [number, number]) => void } | null;
+    const map = mapRef.current as { setView: (ll: [number, number], z: number) => void; getZoom: () => number } | null;
+    if (!m || !map) return;
+    if (typeof lat !== "number" || typeof lng !== "number") return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    m.setLatLng([lat, lng]);
+    if (map.getZoom() < 5) map.setView([lat, lng], 13);
+  }, [lat, lng]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        height: 240,
+        borderRadius: 6,
+        border: "1px solid var(--border-default)",
+        overflow: "hidden",
+        background: "var(--bg-input)",
+      }}
+    />
+  );
+}
+
 // ── New Record Modal ────────────────────────────────────────────────────────
 function NewRecordModal({
   open,
@@ -451,25 +559,35 @@ function FieldInput({
   }
   if (field.type === "geoPoint") {
     const v = (value && typeof value === "object" ? value : {}) as { lat?: number; lng?: number };
+    const setLat = (lat: number) => onChange({ lat, lng: v.lng ?? 0 });
+    const setLng = (lng: number) => onChange({ lat: v.lat ?? 0, lng });
     return (
-      <div className="row" style={{ gap: 8 }}>
-        <input
-          className="input mono"
-          type="number"
-          step="any"
-          value={typeof v.lat === "number" ? String(v.lat) : ""}
-          onChange={(e) => onChange({ lat: e.target.valueAsNumber, lng: v.lng ?? 0 })}
+      <div className="col" style={{ gap: 8 }}>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            className="input mono"
+            type="number"
+            step="any"
+            value={typeof v.lat === "number" ? String(v.lat) : ""}
+            onChange={(e) => setLat(e.target.valueAsNumber)}
+            readOnly={readOnly}
+            placeholder="lat"
+          />
+          <input
+            className="input mono"
+            type="number"
+            step="any"
+            value={typeof v.lng === "number" ? String(v.lng) : ""}
+            onChange={(e) => setLng(e.target.valueAsNumber)}
+            readOnly={readOnly}
+            placeholder="lng"
+          />
+        </div>
+        <GeoPointMap
+          lat={typeof v.lat === "number" && Number.isFinite(v.lat) ? v.lat : undefined}
+          lng={typeof v.lng === "number" && Number.isFinite(v.lng) ? v.lng : undefined}
           readOnly={readOnly}
-          placeholder="lat"
-        />
-        <input
-          className="input mono"
-          type="number"
-          step="any"
-          value={typeof v.lng === "number" ? String(v.lng) : ""}
-          onChange={(e) => onChange({ lat: v.lat ?? 0, lng: e.target.valueAsNumber })}
-          readOnly={readOnly}
-          placeholder="lng"
+          onChange={(lat, lng) => onChange({ lat, lng })}
         />
       </div>
     );
@@ -768,6 +886,15 @@ export default function Records() {
     const val = rec[col];
     if (val === null || val === undefined) return "—";
     if (typeof val === "boolean") return val ? "true" : "false";
+    const f = fieldsByName.get(col);
+    if (f?.type === "geoPoint" && val && typeof val === "object") {
+      const o = val as { lat?: unknown; lng?: unknown };
+      if (typeof o.lat === "number" && typeof o.lng === "number" &&
+          Number.isFinite(o.lat) && Number.isFinite(o.lng)) {
+        return `${o.lat.toFixed(4)}, ${o.lng.toFixed(4)}`;
+      }
+      return "—";
+    }
     return String(val);
   }
 
@@ -942,6 +1069,7 @@ export default function Records() {
           {displayCols.map((c) => {
             const fdef = fieldsByName.get(c);
             const isFile = fdef?.type === "file";
+            const isGeo = fdef?.type === "geoPoint";
             return (
               <Column
                 key={c}
@@ -956,6 +1084,16 @@ export default function Records() {
                         collectionName={collection.name}
                         recordId={String(r.id)}
                       />
+                    );
+                  }
+                  if (isGeo) {
+                    const text = cellValue(r, c);
+                    if (text === "—") return <span className="muted">—</span>;
+                    return (
+                      <span className="row mono-cell" style={{ gap: 4, alignItems: "center", color: "var(--type-geopoint)" }}>
+                        <Icon name="mapPin" size={11} />
+                        <span>{text}</span>
+                      </span>
                     );
                   }
                   return (
