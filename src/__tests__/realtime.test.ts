@@ -4,10 +4,16 @@ import { subscribe, unsubscribe, disconnectAll, broadcast, normalizeTopic, _rese
 interface MockWS {
   sent: string[];
   send(data: string): void;
+  data: { connId: string };
 }
 
+let _mockId = 0;
 function mockWs(): MockWS {
-  const ws: MockWS = { sent: [], send(data) { this.sent.push(data); } };
+  const ws: MockWS = {
+    sent: [],
+    send(data) { this.sent.push(data); },
+    data: { connId: `mock-${++_mockId}` },
+  };
   return ws;
 }
 
@@ -51,6 +57,7 @@ describe("RealtimeManager", () => {
     const dead: MockWS = {
       sent: [],
       send() { throw new Error("WebSocket is closed"); },
+      data: { connId: `dead-${++_mockId}` },
     };
     subscribe(dead, ["posts"]);
     expect(() =>
@@ -169,5 +176,86 @@ describe("RealtimeManager", () => {
     subscribe(ws, ["posts"]);
     const removed = unsubscribe(ws, ["posts.*", "users.*"]);
     expect(removed).toEqual(["posts"]);
+  });
+
+  // ── Event-typed topics ────────────────────────────────────────────────
+
+  it("posts.create only fires on create events, not update/delete", () => {
+    const ws = mockWs();
+    subscribe(ws, ["posts.create"]);
+    broadcast("posts", { type: "create", collection: "posts", record: { id: "1", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
+    broadcast("posts", { type: "update", collection: "posts", record: { id: "1", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
+    broadcast("posts", { type: "delete", collection: "posts", id: "1" });
+    expect(ws.sent).toHaveLength(1);
+    expect(JSON.parse(ws.sent[0]!).type).toBe("create");
+  });
+
+  it("posts.update + posts.delete topics filter independently", () => {
+    const upd = mockWs();
+    const del = mockWs();
+    subscribe(upd, ["posts.update"]);
+    subscribe(del, ["posts.delete"]);
+    broadcast("posts", { type: "create", collection: "posts", record: { id: "1", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
+    broadcast("posts", { type: "update", collection: "posts", record: { id: "1", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
+    broadcast("posts", { type: "delete", collection: "posts", id: "1" });
+    expect(upd.sent).toHaveLength(1);
+    expect(del.sent).toHaveLength(1);
+    expect(JSON.parse(upd.sent[0]!).type).toBe("update");
+    expect(JSON.parse(del.sent[0]!).type).toBe("delete");
+  });
+
+  it("*.create catches creates from every collection", () => {
+    const ws = mockWs();
+    subscribe(ws, ["*.create"]);
+    broadcast("posts",  { type: "create", collection: "posts",  record: { id: "1", collectionId: "c", collectionName: "posts",  created: 0, updated: 0 } });
+    broadcast("orders", { type: "create", collection: "orders", record: { id: "2", collectionId: "c", collectionName: "orders", created: 0, updated: 0 } });
+    broadcast("posts",  { type: "delete", collection: "posts",  id: "3" });
+    expect(ws.sent).toHaveLength(2);
+  });
+
+  it("collection-level + event-typed sub on same connection still receives once per event", () => {
+    const ws = mockWs();
+    subscribe(ws, ["posts", "posts.create"]);
+    broadcast("posts", { type: "create", collection: "posts", record: { id: "1", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
+    expect(ws.sent).toHaveLength(1);
+  });
+
+  it("normalizeTopic preserves event-typed canonical forms", () => {
+    expect(normalizeTopic("posts.create")).toBe("posts.create");
+    expect(normalizeTopic("posts.update")).toBe("posts.update");
+    expect(normalizeTopic("posts.delete")).toBe("posts.delete");
+    expect(normalizeTopic("*.create")).toBe("*.create");
+    // Unknown event suffix kept verbatim — won't match any broadcast,
+    // but doesn't surprise legacy callers either.
+    expect(normalizeTopic("posts.foobar")).toBe("posts.foobar");
+  });
+
+  // ── Bun/Elysia wrapper-identity quirk ──────────────────────────────────
+  // Bun hands `open(ws)` and `message(ws, ...)` different wrapper objects
+  // backing the same socket. The manager keys by `ws.data.connId`, so
+  // wrapper identity doesn't matter — both wrappers carry the same connId
+  // via Bun's persistent `data` slot. Reproduce here with two distinct
+  // mock objects that share a connId, the way Elysia + Bun appear to
+  // present them to handlers.
+  it("subscribe + unsubscribe work across distinct wrappers sharing connId", () => {
+    const sharedId = "conn-A";
+    const wsAtOpen: MockWS = {
+      sent: [], send(d) { this.sent.push(d); },
+      data: { connId: sharedId },
+    };
+    const wsAtMessage: MockWS = {
+      sent: [], send(d) { this.sent.push(d); },
+      data: { connId: sharedId },
+    };
+
+    subscribe(wsAtOpen, ["posts"]);
+    // Unsubscribe via the second wrapper — must still find + delete the sub.
+    const removed = unsubscribe(wsAtMessage, ["posts"]);
+    expect(removed).toEqual(["posts"]);
+
+    // After unsubscribe, broadcasts must not deliver to either wrapper.
+    broadcast("posts", { type: "delete", collection: "posts", id: "x" });
+    expect(wsAtOpen.sent).toHaveLength(0);
+    expect(wsAtMessage.sent).toHaveLength(0);
   });
 });

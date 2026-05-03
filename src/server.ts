@@ -48,6 +48,7 @@ import {
   subscribe,
   unsubscribe,
   disconnectAll,
+  listSubsFor,
   getSSEClient,
   setSSESubscriptions,
   unregisterSSEClient,
@@ -56,7 +57,7 @@ import {
 import { openSSEStream } from "./realtime/sse.ts";
 
 interface ClientMessage {
-  type: "subscribe" | "unsubscribe" | "auth";
+  type: "subscribe" | "unsubscribe" | "auth" | "list-subs";
   /** Preferred field name. */
   topics?: string[];
   /** Backwards-compat alias for topics. */
@@ -286,6 +287,17 @@ export function createServer(config: Config) {
             return;
           }
         }
+        // Mint a stable per-connection id and stash it in Bun's persistent
+        // `ws.data` slot. The realtime manager keys subscriptions by this
+        // id, not by the `ws` object reference — Bun/Elysia hands different
+        // wrappers to `open` vs `message`, so identity-based keying drops
+        // unsubscribe + disconnectAll on the floor.
+        const wsAny = ws as unknown as { data: { connId?: string } | undefined };
+        if (!wsAny.data || typeof wsAny.data !== "object") {
+          (wsAny as { data: object }).data = { connId: crypto.randomUUID() };
+        } else {
+          wsAny.data.connId = crypto.randomUUID();
+        }
         // Auth via {type:"auth", token} message. Tokens in the URL query are
         // no longer accepted (logs/Referer leak risk).
         ws.send(JSON.stringify({ type: "connected" }));
@@ -302,6 +314,13 @@ export function createServer(config: Config) {
           if (typeof msg.token !== "string") return;
           const auth = await verifyTokenForWS(msg.token, config.jwtSecret);
           setWSAuth(ws, auth);
+          return;
+        }
+        // Debug introspection: tell the client which topics THIS connection
+        // is subscribed to. Useful when unsubscribe returns an empty array
+        // and the client wants to confirm what's actually attached.
+        if (msg.type === "list-subs") {
+          ws.send(JSON.stringify({ type: "subs", topics: listSubsFor(ws) }));
           return;
         }
         const topics = msg.topics ?? msg.collections;

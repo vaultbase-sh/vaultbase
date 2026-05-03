@@ -4,4 +4,4 @@
  *
  * Bump in lockstep with `package.json` version + the git tag.
  */
-export const VAULTBASE_VERSION = "0.10.1";
+export const VAULTBASE_VERSION = "0.10.2";

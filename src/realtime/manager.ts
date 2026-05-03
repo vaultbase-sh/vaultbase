@@ -43,36 +43,57 @@ const WILDCARD = "*";
  *   - "<collection>"          → all events for the collection
  *   - "<collection>/<id>"     → events for one specific record
  *   - "*"                     → every event everywhere
+ *
+ * Storage is keyed by **connection id** (string), not by `WSLike` object
+ * identity. Bun/Elysia can hand you a different wrapper per handler call
+ * (one for `open`, another for `message`); using `===` for membership
+ * misbehaves — subscribe stored wrapper A, unsubscribe looked up wrapper B,
+ * cross-call mutation silently dropped. The id is minted at connect time
+ * and stashed in Bun's persistent `ws.data` slot.
+ *
+ * The inner Map maps connId → adapter so broadcast can still call .send()
+ * via the wrapper that's currently live. Whichever wrapper subscribed last
+ * "wins" — the most recent send target is what fires.
  */
-const subs = new Map<string, Set<WSLike>>();
-const wsAuth = new WeakMap<WSLike, WSAuth>();
+const subs = new Map<string, Map<string, WSLike>>();
+const wsAuth = new Map<string, WSAuth>();
+
+/** Pull the persistent connection id off `ws.data` (set by the WS open handler). */
+function connId(ws: WSLike): string {
+  const id = (ws as unknown as { data?: { connId?: string } }).data?.connId;
+  if (typeof id !== "string") throw new Error("realtime: ws.data.connId missing — open handler must mint one");
+  return id;
+}
 
 export function setWSAuth(ws: WSLike, auth: WSAuth | null): void {
-  if (auth) wsAuth.set(ws, auth);
-  else wsAuth.delete(ws);
+  const id = connId(ws);
+  if (auth) wsAuth.set(id, auth);
+  else wsAuth.delete(id);
 }
 
 export function getWSAuth(ws: WSLike): WSAuth | undefined {
-  return wsAuth.get(ws);
+  return wsAuth.get(connId(ws));
 }
 
 /**
  * Canonicalise a topic string. The internal store keys are:
  *
- *   <collection>            collection-level
- *   <collection>/<id>       single-record
- *   *                       global wildcard
+ *   <collection>                 every event for the collection
+ *   <collection>/<id>            events for one specific record
+ *   <collection>.<event-type>    only that event-type (create / update / delete)
+ *   *                            every event everywhere
+ *   *.<event-type>               that event-type globally
  *
- * For ergonomic + PB-compat reasons we accept these synonyms:
+ * Ergonomic synonyms we collapse:
  *
- *   <collection>.*          → <collection>     (dotted-wildcard)
- *   <collection>/*          → <collection>     (slashed-wildcard)
- *   <collection>            → <collection>     (no-op)
+ *   <collection>.*  → <collection>     (dotted-wildcard)
+ *   <collection>/*  → <collection>     (slashed-wildcard)
  *
- * Returns the canonical form, or `null` if the topic is empty/malformed.
- * Symmetric — used by both subscribe + unsubscribe so the two halves
- * always agree on the storage key.
+ * Symmetric — applied by both subscribe + unsubscribe so the two halves
+ * always agree on the storage key. Returns `null` on empty input.
  */
+const EVENT_KINDS = new Set(["create", "update", "delete"]);
+
 export function normalizeTopic(raw: string): string | null {
   if (typeof raw !== "string") return null;
   const t = raw.trim();
@@ -80,36 +101,58 @@ export function normalizeTopic(raw: string): string | null {
   if (t === "*") return "*";
   if (t.endsWith(".*")) return t.slice(0, -2) || null;
   if (t.endsWith("/*")) return t.slice(0, -2) || null;
+  // `<base>.<event-type>` — keep verbatim only when the suffix is a
+  // known event kind. Anything else stays as-is for legacy callers.
+  const dot = t.lastIndexOf(".");
+  if (dot > 0) {
+    const suffix = t.slice(dot + 1);
+    if (EVENT_KINDS.has(suffix)) return t; // canonical event-typed form
+  }
   return t;
 }
 
 export function subscribe(ws: WSLike, topics: string[]): string[] {
+  const id = connId(ws);
   const accepted: string[] = [];
   for (const raw of topics) {
     const t = normalizeTopic(raw);
     if (!t) continue;
-    if (!subs.has(t)) subs.set(t, new Set());
-    subs.get(t)!.add(ws);
+    let inner = subs.get(t);
+    if (!inner) { inner = new Map(); subs.set(t, inner); }
+    inner.set(id, ws);
     accepted.push(t);
   }
   return accepted;
 }
 
 export function unsubscribe(ws: WSLike, topics: string[]): string[] {
+  const id = connId(ws);
   const removed: string[] = [];
   for (const raw of topics) {
     const t = normalizeTopic(raw);
     if (!t) continue;
-    if (subs.get(t)?.delete(ws)) removed.push(t);
+    if (subs.get(t)?.delete(id)) removed.push(t);
   }
   return removed;
 }
 
-export function disconnectAll(ws: WSLike): void {
-  for (const set of subs.values()) {
-    set.delete(ws);
+/** Every topic this WS is currently subscribed to. Cheap introspection for debugging. */
+export function listSubsFor(ws: WSLike): string[] {
+  const id = connId(ws);
+  const out: string[] = [];
+  for (const [topic, inner] of subs.entries()) {
+    if (inner.has(id)) out.push(topic);
   }
-  wsAuth.delete(ws);
+  out.sort();
+  return out;
+}
+
+export function disconnectAll(ws: WSLike): void {
+  const id = connId(ws);
+  for (const inner of subs.values()) {
+    inner.delete(id);
+  }
+  wsAuth.delete(id);
 }
 
 /**
@@ -118,9 +161,9 @@ export function disconnectAll(ws: WSLike): void {
  * supplied, everyone passes (back-compat). When supplied, behavior matches
  * the records HTTP `view_rule` semantics.
  */
-function shouldSendTo(ws: WSLike, opts?: BroadcastOpts): boolean {
+function shouldSendTo(id: string, opts?: BroadcastOpts): boolean {
   if (!opts || opts.viewRule === undefined) return true;
-  const auth = wsAuth.get(ws);
+  const auth = wsAuth.get(id);
   if (auth?.type === "admin") return true;
   const rule = opts.viewRule;
   if (rule === null) return true;       // public
@@ -133,34 +176,39 @@ function shouldSendTo(ws: WSLike, opts?: BroadcastOpts): boolean {
 
 /**
  * Send to subscribers of `<collection>`, `<collection>/<id>` (when the event has
- * a record id), and the wildcard `*` topic — fans out with per-ws dedup. When
+ * a record id), and the wildcard `*` topic — fans out with per-id dedup. When
  * the caller passes `opts.viewRule` (and `opts.record` for the eval target),
  * each subscriber's auth is checked against the rule and non-matching connections
  * are skipped silently.
  */
 export function broadcast(collection: string, event: RealtimeEvent, opts?: BroadcastOpts): void {
-  const targets: (string | undefined)[] = [collection, WILDCARD];
+  const targets: (string | undefined)[] = [
+    collection,                          // collection-level
+    WILDCARD,                            // global
+    `${collection}.${event.type}`,       // event-typed per collection
+    `${WILDCARD}.${event.type}`,         // event-typed global
+  ];
   if (event.type === "create" || event.type === "update") {
     targets.push(`${collection}/${event.record.id}`);
   } else if (event.type === "delete") {
     targets.push(`${collection}/${event.id}`);
   }
   const payload = JSON.stringify(event);
-  // Dedup: a ws subscribed to both "posts" and "*" should still receive the
-  // event once. WeakSet doesn't support iteration, so use a regular Set.
-  const sent = new Set<WSLike>();
+  // Dedup: a connection subscribed to both "posts" and "*" should still receive
+  // the event once.
+  const sent = new Set<string>();
   for (const topic of targets) {
     if (!topic) continue;
-    const set = subs.get(topic);
-    if (!set) continue;
-    for (const ws of set) {
-      if (sent.has(ws)) continue;
-      sent.add(ws);
-      if (!shouldSendTo(ws, opts)) continue;
+    const inner = subs.get(topic);
+    if (!inner) continue;
+    for (const [id, ws] of inner) {
+      if (sent.has(id)) continue;
+      sent.add(id);
+      if (!shouldSendTo(id, opts)) continue;
       try {
         ws.send(payload);
       } catch {
-        set.delete(ws);
+        inner.delete(id);
       }
     }
   }
@@ -174,12 +222,12 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
  * collide with a user-defined collection.
  */
 export function broadcastSystem(topic: string, message: object): void {
-  const set = subs.get(topic);
-  if (!set) return;
+  const inner = subs.get(topic);
+  if (!inner) return;
   const payload = JSON.stringify(message);
-  for (const ws of set) {
+  for (const [id, ws] of inner) {
     try { ws.send(payload); }
-    catch { set.delete(ws); }
+    catch { inner.delete(id); }
   }
 }
 
@@ -193,6 +241,12 @@ export function broadcastSystem(topic: string, message: object): void {
 const sseClients = new Map<string, WSLike>();
 
 export function registerSSEClient(clientId: string, adapter: WSLike): void {
+  // Mirror the WS contract: every adapter must carry a stable `data.connId`
+  // so subscribe / unsubscribe / disconnectAll have a real key. SSE adapters
+  // typically don't carry `data`, so we attach it here.
+  const a = adapter as unknown as { data?: { connId?: string } };
+  if (!a.data || typeof a.data !== "object") a.data = { connId: clientId };
+  else if (typeof a.data.connId !== "string") a.data.connId = clientId;
   sseClients.set(clientId, adapter);
 }
 
@@ -212,8 +266,9 @@ export function unregisterSSEClient(clientId: string): void {
 export function setSSESubscriptions(clientId: string, topics: string[]): boolean {
   const adapter = sseClients.get(clientId);
   if (!adapter) return false;
+  const id = connId(adapter);
   // Remove from every topic, then re-add the new set.
-  for (const set of subs.values()) set.delete(adapter);
+  for (const inner of subs.values()) inner.delete(id);
   subscribe(adapter, topics);
   return true;
 }

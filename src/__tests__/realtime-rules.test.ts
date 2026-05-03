@@ -4,10 +4,16 @@ import { subscribe, broadcast, setWSAuth, _reset } from "../realtime/manager.ts"
 interface MockWS {
   sent: string[];
   send(data: string): void;
+  data: { connId: string };
 }
 
+let _mockId = 0;
 function mockWs(): MockWS {
-  return { sent: [], send(data) { this.sent.push(data); } };
+  return {
+    sent: [],
+    send(data) { this.sent.push(data); },
+    data: { connId: `rules-${++_mockId}` },
+  };
 }
 
 function rec(extra: Record<string, unknown> = {}): { record: Parameters<typeof broadcast>[1] extends infer E ? (E extends { record: infer R } ? R : never) : never; raw: Record<string, unknown> } {
