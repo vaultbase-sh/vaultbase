@@ -7,12 +7,14 @@ import { useAuth } from "../stores/auth.ts";
 interface NavItem { to: string; label: string; icon: string; end?: boolean }
 interface NavSection { label: string; items: NavItem[] }
 
+// Sidebar groupings — semantic, not feature-alphabetical. Per the
+// Notifications redesign handoff (vaultbase/project/shell.jsx).
 const SECTIONS: NavSection[] = [
   {
     label: "Data",
     items: [
-      { to: "/_/",             label: "Dashboard",    icon: "table", end: true },
-      { to: "/_/collections",  label: "Collections",  icon: "database" },
+      { to: "/_/",             label: "Dashboard",    icon: "grid", end: true },
+      { to: "/_/collections",  label: "Collections",  icon: "stack" },
       { to: "/_/logs",         label: "Logs",         icon: "scroll" },
       { to: "/_/api-preview",  label: "API preview",  icon: "play" },
     ],
@@ -20,16 +22,16 @@ const SECTIONS: NavSection[] = [
   {
     label: "Logic",
     items: [
-      { to: "/_/hooks",        label: "Hooks",        icon: "webhook" },
-      { to: "/_/flags",        label: "Feature flags", icon: "zap" },
-      { to: "/_/webhooks",     label: "Webhooks",     icon: "upload" },
+      { to: "/_/hooks",        label: "Hooks",        icon: "zap" },
+      { to: "/_/flags",        label: "Feature flags", icon: "flag" },
+      { to: "/_/webhooks",     label: "Webhooks",     icon: "arrowUp" },
     ],
   },
   {
     label: "System",
     items: [
       { to: "/_/users",        label: "Superusers",   icon: "users" },
-      { to: "/_/audit-log",    label: "Audit log",    icon: "shield" },
+      { to: "/_/audit-log",    label: "Audit log",    icon: "scroll" },
       { to: "/_/settings",     label: "Settings",     icon: "settings" },
     ],
   },
@@ -38,13 +40,16 @@ const SECTIONS: NavSection[] = [
 export const Sidebar: React.FC = () => {
   const adminEmail = useAuth((s) => s.email);
   const navigate = useNavigate();
-  const initials = adminEmail ? adminEmail[0]!.toUpperCase() : "A";
+  const initial = adminEmail ? adminEmail[0]!.toLowerCase() : "a";
+  const truncatedEmail = adminEmail && adminEmail.length > 22
+    ? adminEmail.slice(0, 19) + "…"
+    : adminEmail ?? "";
 
   return (
     <aside className="sidebar">
       <div className="sb-brand">
         <span className="sb-brand-mark">
-          <VaultbaseLogo size={22} />
+          <VaultbaseLogo size={20} />
         </span>
         <div className="sb-brand-name">vaultbase</div>
         <div className="sb-brand-version mono">v0.9.0</div>
@@ -62,7 +67,7 @@ export const Sidebar: React.FC = () => {
                     `sb-nav-item${isActive ? " active" : ""}`
                   }
                 >
-                  <Icon name={item.icon} size={15} />
+                  <Icon name={item.icon} size={13} />
                   <span>{item.label}</span>
                 </NavLink>
               </li>
@@ -71,13 +76,16 @@ export const Sidebar: React.FC = () => {
         </div>
       ))}
       <div className="sb-bottom">
-        <div className="sb-admin-pill" onClick={() => navigate("/_/settings")}>
-          <div className="sb-admin-avatar">{initials}</div>
+        <div
+          className="sb-admin-pill"
+          onClick={() => navigate("/_/settings")}
+          title={adminEmail ?? ""}
+        >
+          <div className="sb-admin-avatar">{initial}</div>
           <div className="sb-admin-meta">
-            <div className="sb-admin-name">{adminEmail}</div>
+            <div className="sb-admin-name">{truncatedEmail}</div>
             <div className="sb-admin-role mono">superuser</div>
           </div>
-          <Icon name="logout" size={13} style={{ color: "rgba(255,255,255,0.35)" }} />
         </div>
       </div>
     </aside>

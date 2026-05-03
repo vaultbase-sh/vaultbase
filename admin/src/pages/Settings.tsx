@@ -33,52 +33,80 @@ type SettingsTabId =
 interface SettingsTab {
   id: SettingsTabId;
   label: string;
-  icon: string;
   subtitle: string;
 }
 
-const SETTINGS_TABS: SettingsTab[] = [
-  { id: "application", label: "Application", icon: "settings", subtitle: "runtime configuration" },
-  { id: "theme",       label: "Theme",       icon: "palette",  subtitle: "admin UI accent + surface colors" },
-  { id: "rate-limit",  label: "Rate limiting", icon: "shield", subtitle: "per-IP token bucket" },
-  { id: "egress",      label: "Hook egress",   icon: "globe",  subtitle: "outbound HTTP allow / deny CIDRs" },
-  { id: "cors",        label: "CORS",          icon: "globe",  subtitle: "cross-origin allow-list for the HTTP API" },
-  { id: "security",    label: "Security",      icon: "shield", subtitle: "sessions · lockout · proxies · fingerprints" },
-  { id: "smtp",        label: "SMTP / Email", icon: "scroll", subtitle: "outbound email server" },
-  { id: "templates",   label: "Email templates", icon: "scroll", subtitle: "verify + reset emails" },
-  { id: "auth",        label: "Auth features", icon: "key", subtitle: "OTP · MFA · anonymous · impersonation" },
-  { id: "password-policy", label: "Password policy", icon: "lock", subtitle: "length · character classes · HIBP" },
-  { id: "oauth2",      label: "OAuth2", icon: "shield", subtitle: "third-party sign-in providers" },
-  { id: "storage",     label: "File storage", icon: "database", subtitle: "local FS · S3 · Cloudflare R2" },
-  { id: "backup",      label: "Backup & restore", icon: "download", subtitle: "SQLite snapshot" },
-  { id: "migrations",  label: "Migrations", icon: "layers", subtitle: "schema snapshot · environment sync" },
-  { id: "notifications", label: "Notifications", icon: "bell", subtitle: "OneSignal · FCM push providers" },
-  { id: "metrics",     label: "Health & metrics", icon: "activity", subtitle: "Prometheus exposition" },
-  { id: "updates",     label: "Updates",    icon: "refresh", subtitle: "GitHub release checker" },
-  { id: "danger",      label: "Danger zone", icon: "alert", subtitle: "irreversible actions" },
+interface SettingsGroup {
+  /** Empty string = no group label (used for the trailing Danger zone). */
+  group: string;
+  items: SettingsTab[];
+}
+
+// Semantic grouping per the redesign handoff (vaultbase/project/shell.jsx).
+const SETTINGS_GROUPS: SettingsGroup[] = [
+  { group: "General", items: [
+    { id: "application", label: "Application", subtitle: "runtime configuration" },
+    { id: "theme",       label: "Theme",       subtitle: "admin UI accent + surface colors" },
+    { id: "updates",     label: "Updates",     subtitle: "GitHub release checker" },
+  ]},
+  { group: "Traffic", items: [
+    { id: "rate-limit",  label: "Rate limiting", subtitle: "per-IP token bucket" },
+    { id: "egress",      label: "Hook egress",   subtitle: "outbound HTTP allow / deny CIDRs" },
+    { id: "cors",        label: "CORS",          subtitle: "cross-origin allow-list for the HTTP API" },
+  ]},
+  { group: "Identity", items: [
+    { id: "security",        label: "Security",        subtitle: "sessions · lockout · proxies · fingerprints" },
+    { id: "auth",            label: "Auth features",   subtitle: "OTP · MFA · anonymous · impersonation" },
+    { id: "password-policy", label: "Password policy", subtitle: "length · character classes · HIBP" },
+    { id: "oauth2",          label: "OAuth2",          subtitle: "third-party sign-in providers" },
+  ]},
+  { group: "Comms", items: [
+    { id: "smtp",          label: "SMTP / Email",    subtitle: "outbound email server" },
+    { id: "templates",     label: "Email templates", subtitle: "verify + reset emails" },
+    { id: "notifications", label: "Notifications",   subtitle: "OneSignal · FCM push providers" },
+  ]},
+  { group: "Infrastructure", items: [
+    { id: "storage",    label: "File storage",     subtitle: "local FS · S3 · Cloudflare R2" },
+    { id: "backup",     label: "Backup & restore", subtitle: "SQLite snapshot" },
+    { id: "migrations", label: "Migrations",       subtitle: "schema snapshot · environment sync" },
+    { id: "metrics",    label: "Health & metrics", subtitle: "Prometheus exposition" },
+  ]},
+  { group: "", items: [
+    { id: "danger", label: "Danger zone", subtitle: "irreversible actions" },
+  ]},
 ];
+
+const SETTINGS_TABS: SettingsTab[] = SETTINGS_GROUPS.flatMap((g) => g.items);
 
 export default function Settings() {
   const [active, setActive] = useState<SettingsTabId>("application");
-  const activeTab = SETTINGS_TABS.find((t) => t.id === active) ?? SETTINGS_TABS[0];
+  const activeTab = SETTINGS_TABS.find((t) => t.id === active) ?? SETTINGS_TABS[0]!;
 
   return (
     <>
       <Topbar title="Settings" subtitle={activeTab.subtitle} />
       <div className="app-body settings-layout">
         <aside className="settings-nav">
-          <ul className="settings-nav-list">
-            {SETTINGS_TABS.map((t) => (
-              <li
-                key={t.id}
-                className={`settings-nav-item ${active === t.id ? "active" : ""} ${t.id === "danger" ? "danger" : ""}`}
-                onClick={() => setActive(t.id)}
-              >
-                <Icon name={t.icon} size={14} />
-                <span>{t.label}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="settings-nav-heading">Settings</div>
+          {SETTINGS_GROUPS.map((g, gi) => (
+            <div className="settings-nav-group" key={gi}>
+              {g.group && (
+                <div className="settings-nav-group-title">{g.group}</div>
+              )}
+              <ul className="settings-nav-list">
+                {g.items.map((t) => (
+                  <li
+                    key={t.id}
+                    className={`settings-nav-item ${active === t.id ? "active" : ""} ${t.id === "danger" ? "danger" : ""}`}
+                    onClick={() => setActive(t.id)}
+                  >
+                    {active === t.id && <span className="settings-nav-bar" />}
+                    <span>{t.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </aside>
         <div className="settings-content">
           {active === "application" && <ApplicationSection />}
@@ -405,9 +433,9 @@ interface ThemeKnob { key: string; label: string; defaultValue: string; cssVar: 
 
 const THEME_KNOBS: ThemeKnob[] = [
   // Brand
-  { key: "accent",         label: "Primary accent",     defaultValue: "#3b82f6", cssVar: "--accent" },
-  { key: "accent_hover",   label: "Accent (hover)",     defaultValue: "#4a8ef7", cssVar: "--accent-hover" },
-  { key: "accent_light",   label: "Accent (light)",     defaultValue: "#60a5fa", cssVar: "--accent-light" },
+  { key: "accent",         label: "Primary accent",     defaultValue: "#e85a4f", cssVar: "--accent" },
+  { key: "accent_hover",   label: "Accent (hover)",     defaultValue: "#f06f64", cssVar: "--accent-hover" },
+  { key: "accent_light",   label: "Accent (light)",     defaultValue: "#f5807a", cssVar: "--accent-light" },
   // Surfaces
   { key: "bg_app",         label: "Page background",    defaultValue: "#0e0f12", cssVar: "--bg-app" },
   { key: "bg_sidebar",     label: "Sidebar background", defaultValue: "#131418", cssVar: "--bg-sidebar" },
@@ -493,8 +521,8 @@ function ThemeSection() {
       </div>
       <div className="settings-section-body">
         <div className="help" style={{ marginBottom: 16 }}>
-          Hex colors: <code style={codeStyle}>#3b82f6</code>, <code style={codeStyle}>#fff</code>,
-          <code style={codeStyle}>#3b82f680</code> (alpha). Empty falls back to the built-in default.
+          Hex colors: <code style={codeStyle}>#e85a4f</code>, <code style={codeStyle}>#fff</code>,
+          <code style={codeStyle}>#e85a4f80</code> (alpha). Empty falls back to the built-in default.
           Changes apply on next page load — and immediately to every other tab once you save.
         </div>
 
@@ -2988,7 +3016,12 @@ function StorageSection() {
   );
 }
 
-// ── Notifications (push providers) ───────────────────────────────────────────
+// ── Notifications (push providers) — V1 Refined per design handoff ──────────
+//
+// Layout: PageHeader (breadcrumb · title · paragraph · live-count pill) →
+// channel tabs (Push / Inbox / Devices) → provider rows (collapsed
+// status-first summary, expanded form + inline test). Visual language follows
+// the --vb-* token block defined in globals.css.
 
 interface NotificationProvidersResponse {
   onesignal: {
@@ -3004,6 +3037,200 @@ interface NotificationProvidersResponse {
     service_account_client_email: string | null;
   };
 }
+
+type ChannelTab = "push" | "inbox" | "devices";
+type ProviderId = "onesignal" | "fcm";
+
+type Tone = "neutral" | "success" | "warning" | "danger" | "accent";
+
+const VB_TONE_BG: Record<Tone, string> = {
+  neutral: "rgba(255,255,255,0.06)",
+  success: "var(--vb-status-success-bg)",
+  warning: "var(--vb-status-warning-bg)",
+  danger:  "var(--vb-status-danger-bg)",
+  accent:  "var(--vb-accent-soft)",
+};
+const VB_TONE_FG: Record<Tone, string> = {
+  neutral: "rgba(231,229,225,0.7)",
+  success: "var(--vb-status-success)",
+  warning: "var(--vb-status-warning)",
+  danger:  "var(--vb-status-danger)",
+  accent:  "var(--vb-accent)",
+};
+
+const VbPill: React.FC<{ tone?: Tone; children: React.ReactNode; dot?: boolean }> = ({ tone = "neutral", children, dot }) => (
+  <span style={{
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "2px 7px",
+    borderRadius: 4,
+    fontSize: 10.5,
+    fontWeight: 600,
+    letterSpacing: 0.2,
+    background: VB_TONE_BG[tone],
+    color: VB_TONE_FG[tone],
+    fontFamily: "var(--font-mono)",
+    textTransform: "lowercase",
+  }}>
+    {dot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: VB_TONE_FG[tone] }} />}
+    {children}
+  </span>
+);
+
+const VbCode: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <code style={{
+    fontFamily: "var(--font-mono)",
+    fontSize: "0.86em",
+    padding: "1px 5px",
+    borderRadius: 4,
+    background: "var(--vb-code-bg)",
+    color: "var(--vb-code-fg)",
+    whiteSpace: "nowrap",
+  }}>{children}</code>
+);
+
+interface ProviderState {
+  id: ProviderId;
+  configured: boolean;
+  enabled: boolean;
+  expanded: boolean;
+}
+
+const VbStatusDot: React.FC<{ state: ProviderState }> = ({ state }) => {
+  let tone: "success" | "warning" | "neutral" = "neutral";
+  let label = "not configured";
+  if (state.configured && state.enabled) { tone = "success"; label = "live"; }
+  else if (state.configured && !state.enabled) { tone = "warning"; label = "paused"; }
+  const color = tone === "success" ? "var(--vb-status-success)"
+    : tone === "warning" ? "var(--vb-status-warning)"
+    : "rgba(255,255,255,0.18)";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: "50%",
+        background: color,
+        boxShadow: tone === "success" ? "0 0 0 3px rgba(98,204,156,0.16)" : "none",
+      }} />
+      <span style={{
+        fontSize: 11, fontWeight: 600, letterSpacing: 0.3,
+        color: tone === "neutral" ? "var(--vb-fg-3)" : color,
+        fontFamily: "var(--font-mono)",
+      }}>{label}</span>
+    </span>
+  );
+};
+
+const VbStat: React.FC<{ label: string; value: React.ReactNode; tone?: "danger" | null }> = ({ label, value, tone }) => (
+  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.2 }}>
+    <span style={{
+      fontSize: 12, fontWeight: 600,
+      color: tone === "danger" ? "var(--vb-status-danger)" : "var(--vb-fg)",
+      fontFamily: "var(--font-mono)",
+      fontVariantNumeric: "tabular-nums",
+    }}>{value}</span>
+    <span style={{
+      fontSize: 9.5, color: "var(--vb-fg-3)",
+      textTransform: "uppercase", letterSpacing: 0.6,
+    }}>{label}</span>
+  </div>
+);
+
+const VbBtn: React.FC<{
+  kind?: "primary" | "ghost" | "soft";
+  size?: "sm" | "md";
+  icon?: string;
+  disabled?: boolean;
+  onClick?: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+  type?: "button" | "submit";
+}> = ({ kind = "primary", size = "md", icon, disabled, onClick, children, type = "button" }) => {
+  const sizes = size === "sm" ? { h: 26, px: 10, fs: 11.5 } : { h: 30, px: 12, fs: 12.5 };
+  const styles: Record<string, React.CSSProperties> = {
+    primary: { background: "var(--vb-accent)", color: "#fff", border: "1px solid transparent" },
+    ghost:   { background: "transparent", color: "var(--vb-fg-2)", border: "1px solid var(--vb-border-2)" },
+    soft:    { background: "var(--vb-bg-3)", color: "var(--vb-fg)", border: "1px solid transparent" },
+  };
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...styles[kind],
+        height: sizes.h,
+        padding: `0 ${sizes.px}px`,
+        borderRadius: 5,
+        fontSize: sizes.fs,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        cursor: disabled ? "default" : "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        opacity: disabled ? 0.5 : 1,
+        transition: "background 120ms",
+      }}
+    >
+      {icon && <Icon name={icon} size={12} />}
+      {children}
+    </button>
+  );
+};
+
+const VbInput: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean }> = ({ mono, style, ...rest }) => (
+  <input
+    {...rest}
+    style={{
+      width: "100%",
+      height: 32,
+      padding: "0 10px",
+      background: "var(--vb-bg-3)",
+      border: "1px solid var(--vb-border-2)",
+      borderRadius: 5,
+      color: "var(--vb-fg)",
+      fontFamily: mono ? "var(--font-mono)" : "inherit",
+      fontSize: mono ? 12 : 12.5,
+      outline: "none",
+      ...(style ?? {}),
+    }}
+    onFocus={(e) => {
+      e.currentTarget.style.borderColor = "var(--vb-accent)";
+      e.currentTarget.style.background = "var(--vb-bg-2)";
+      rest.onFocus?.(e);
+    }}
+    onBlur={(e) => {
+      e.currentTarget.style.borderColor = "var(--vb-border-2)";
+      e.currentTarget.style.background = "var(--vb-bg-3)";
+      rest.onBlur?.(e);
+    }}
+  />
+);
+
+const VbField: React.FC<{
+  label: string;
+  hint?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ label, hint, right, children }) => (
+  <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+      <span style={{
+        fontSize: 10.5,
+        fontWeight: 600,
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        color: "var(--vb-fg-2)",
+        fontFamily: "var(--font-mono)",
+      }}>{label}</span>
+      {right}
+    </div>
+    {hint && (
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{hint}</div>
+    )}
+    {children}
+  </label>
+);
 
 function NotificationsSection() {
   const [cfg, setCfg] = useState<NotificationProvidersResponse | null>(null);
@@ -3027,10 +3254,18 @@ function NotificationsSection() {
   const [fcmSaving, setFcmSaving] = useState(false);
   const [fcmTesting, setFcmTesting] = useState(false);
 
-  // ── Send-test dialog
-  const [testUserId, setTestUserId] = useState("");
-  const [testProvider, setTestProvider] = useState<"all" | "onesignal" | "fcm">("all");
-  const [testSending, setTestSending] = useState(false);
+  // ── Channel + per-row UI state
+  const [channel, setChannel] = useState<ChannelTab>("push");
+  const [expanded, setExpanded] = useState<Record<ProviderId, boolean>>({
+    onesignal: true,   // default expanded since most operators start here
+    fcm: false,
+  });
+
+  // ── Per-provider inline test
+  const [osTestUid, setOsTestUid] = useState("");
+  const [fcmTestUid, setFcmTestUid] = useState("");
+  const [osTestSending, setOsTestSending] = useState(false);
+  const [fcmTestSending, setFcmTestSending] = useState(false);
 
   function refresh(): Promise<void> {
     return api
@@ -3118,271 +3353,591 @@ function NotificationsSection() {
     toast("FCM connection ✓ (OAuth token minted)", "check");
   }
 
-  async function handleSendTest(): Promise<void> {
-    if (!testUserId.trim()) { toast("Enter a user id", "info"); return; }
-    setTestSending(true);
-    const body: Record<string, unknown> = { userId: testUserId.trim() };
-    if (testProvider !== "all") body.providers = [testProvider];
+  async function handleSendTest(provider: ProviderId, uid: string): Promise<void> {
+    if (!uid.trim()) { toast("Enter a user id", "info"); return; }
+    const setSending = provider === "onesignal" ? setOsTestSending : setFcmTestSending;
+    setSending(true);
     const res = await api.post<ApiResponse<{ inboxRowId: string | null; enqueued: { provider: string; jobId: string; deduped: boolean }[] }>>(
       "/api/v1/admin/notifications/test",
-      body,
+      { userId: uid.trim(), providers: [provider] },
     );
-    setTestSending(false);
+    setSending(false);
     if (res.error) { toast(res.error, "info"); return; }
     const enq = res.data?.enqueued ?? [];
-    if (enq.length === 0) {
-      toast("No enabled providers to send to", "info");
-    } else {
-      toast(`Test enqueued to: ${enq.map((j) => j.provider).join(", ")}`, "check");
-    }
+    if (enq.length === 0) toast("Provider isn't enabled — nothing to send", "info");
+    else toast(`Test enqueued via ${provider}`, "check");
+  }
+
+  // ── Computed
+  const onesignalState: ProviderState = {
+    id: "onesignal",
+    configured: !!cfg?.onesignal.api_key_set && !!cfg?.onesignal.app_id,
+    enabled: osEnabled && !!cfg?.onesignal.api_key_set && !!cfg?.onesignal.app_id,
+    expanded: expanded.onesignal,
+  };
+  const fcmState: ProviderState = {
+    id: "fcm",
+    configured: !!cfg?.fcm.service_account_set,
+    enabled: fcmEnabled && !!cfg?.fcm.service_account_set,
+    expanded: expanded.fcm,
+  };
+  const liveCount = [onesignalState, fcmState].filter((s) => s.enabled && s.configured).length;
+  const configuredCount = [onesignalState, fcmState].filter((s) => s.configured).length;
+
+  function toggleExpand(id: ProviderId): void {
+    setExpanded((e) => ({ ...e, [id]: !e[id] }));
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Notifications</h3>
-        <span className="meta">push providers · in-app inbox · device registry</span>
+    <div className="vb-notifications">
+      {/* ── Page header ───────────────────────────────────────────────── */}
+      <header style={{
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 16,
+        paddingBottom: 18,
+        borderBottom: "1px solid var(--vb-border)",
+      }}>
+        <div>
+          <div style={{
+            fontSize: 11.5,
+            color: "var(--vb-fg-3)",
+            fontFamily: "var(--font-mono)",
+            marginBottom: 6,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}>
+            <span>Settings</span>
+            <span style={{ opacity: 0.5 }}>/</span>
+            <span style={{ color: "var(--vb-fg-2)" }}>Notifications</span>
+          </div>
+          <h1 style={{
+            margin: 0,
+            fontSize: 22,
+            fontWeight: 600,
+            color: "var(--vb-fg)",
+            letterSpacing: -0.2,
+            lineHeight: 1.2,
+          }}>Notifications</h1>
+          <div style={{
+            marginTop: 6,
+            fontSize: 12.5,
+            color: "var(--vb-fg-2)",
+            maxWidth: 620,
+            lineHeight: 1.5,
+          }}>
+            Trigger code is provider-agnostic — call <VbCode>helpers.notify(userId, payload)</VbCode> from a hook and
+            Vaultbase fans out to every enabled provider via the <VbCode>_notify</VbCode> queue.
+          </div>
+        </div>
+        <VbPill tone={liveCount > 0 ? "success" : "neutral"} dot>
+          {liveCount > 0 ? `${liveCount} live` : "no providers live"}
+        </VbPill>
+      </header>
+
+      {/* ── Channel tabs ──────────────────────────────────────────────── */}
+      <div style={{
+        display: "flex",
+        gap: 0,
+        borderBottom: "1px solid var(--vb-border)",
+        marginBottom: 20,
+      }}>
+        {([
+          { id: "push" as const,    label: "Push providers",  count: configuredCount, icon: "bell"  },
+          { id: "inbox" as const,   label: "In-app inbox",    count: 1,              icon: "inbox" },
+          { id: "devices" as const, label: "Device registry", count: "—",            icon: "phone" },
+        ]).map((t) => {
+          const active = channel === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setChannel(t.id)}
+              style={{
+                appearance: "none",
+                border: 0,
+                background: "transparent",
+                padding: "12px 14px",
+                fontFamily: "inherit",
+                fontSize: 12.5,
+                fontWeight: active ? 600 : 500,
+                color: active ? "var(--vb-fg)" : "var(--vb-fg-2)",
+                borderBottom: `2px solid ${active ? "var(--vb-accent)" : "transparent"}`,
+                marginBottom: -1,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                cursor: "pointer",
+              }}
+            >
+              <Icon name={t.icon} size={13} />
+              {t.label}
+              <span style={{
+                fontSize: 10.5,
+                padding: "1px 5px",
+                borderRadius: 3,
+                background: "var(--vb-bg-3)",
+                color: "var(--vb-fg-3)",
+                fontFamily: "var(--font-mono)",
+              }}>{t.count}</span>
+            </button>
+          );
+        })}
       </div>
 
-      <div className="settings-section-body" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        <div className="help" style={{ marginBottom: 4 }}>
-          Operators enable any combination of providers. Trigger code is provider-agnostic — call{" "}
-          <code style={codeStyle}>helpers.notify(userId, payload)</code> from a hook and Vaultbase fans out to every
-          enabled provider via the <code style={codeStyle}>_notify</code> queue. The first time you enable a provider
-          here, the <code style={codeStyle}>notifications</code> and <code style={codeStyle}>device_tokens</code>{" "}
-          system collections are created automatically.
-        </div>
-
-        {/* ── OneSignal card ───────────────────────────────────────────── */}
-        <div style={cardStyle}>
-          <div style={cardHeaderStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <strong style={{ fontSize: 14 }}>OneSignal</strong>
-              <span className="meta" style={{ fontSize: 11 }}>external_id-based · server-side fan-out</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Toggle on={osEnabled} onChange={(v) => { setOsEnabled(v); setOsDirty(true); }} />
-              <span style={{ fontSize: 12, color: osEnabled ? "var(--success)" : "var(--text-muted)" }}>
-                {osEnabled ? "Enabled" : "Disabled"}
+      {/* ── Tab body ─────────────────────────────────────────────────── */}
+      {channel === "push" && (
+        <>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 12,
+          }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Providers</h2>
+              <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+                {liveCount} of 2 sending · enable any combination
               </span>
             </div>
+            <VbBtn kind="ghost" size="sm" icon="plus" disabled>Add provider</VbBtn>
           </div>
 
-          <div style={{ opacity: osEnabled ? 1 : 0.6, display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className="label-block">
-              <label className="label">App ID</label>
-              <div className="help">From OneSignal dashboard → Settings → Keys &amp; IDs</div>
-            </div>
-            <input
-              className="input mono"
-              value={osAppId}
-              onChange={(e) => { setOsAppId(e.target.value); setOsDirty(true); }}
-              placeholder="4572b496-4fdc-..."
-              disabled={!osEnabled || loading}
-            />
-
-            <div className="label-block">
-              <label className="label">REST API Key</label>
-              <div className="help">
-                Server-side key — never ship to clients. Existing key is preserved when this field is empty.{" "}
-                {cfg?.onesignal.api_key_set ? <Tag value="set" severity="success" style={{ fontSize: 10 }} /> : <Tag value="not set" severity="warning" style={{ fontSize: 10 }} />}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <input
-                className="input mono"
-                type={osShowKey ? "text" : "password"}
-                value={osApiKey}
-                onChange={(e) => { setOsApiKey(e.target.value); setOsDirty(true); }}
-                placeholder={cfg?.onesignal.api_key_set ? "•••••••••••••••• (leave blank to keep)" : "paste REST API Key"}
-                disabled={!osEnabled || loading}
-                style={{ flex: 1 }}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* ── OneSignal row ────────────────────────────────────── */}
+            <ProviderRow
+              state={onesignalState}
+              name="OneSignal"
+              tagline="external_id-based · server-side fan-out"
+              onToggleExpand={() => toggleExpand("onesignal")}
+              onToggleEnable={(v) => { setOsEnabled(v); setOsDirty(true); }}
+              onTestConnection={() => { void handleTestOneSignal(); }}
+              testing={osTesting}
+              loading={loading}
+            >
+              <OneSignalFields
+                cfg={cfg}
+                appId={osAppId}
+                apiKey={osApiKey}
+                showKey={osShowKey}
+                dirty={osDirty}
+                saving={osSaving}
+                loading={loading}
+                onAppId={(v) => { setOsAppId(v); setOsDirty(true); }}
+                onApiKey={(v) => { setOsApiKey(v); setOsDirty(true); }}
+                onToggleShowKey={() => setOsShowKey((v) => !v)}
+                onSave={() => { void handleSaveOneSignal(); }}
+                onReset={() => { void refresh(); }}
+                testUid={osTestUid}
+                onTestUid={setOsTestUid}
+                onSendTest={() => { void handleSendTest("onesignal", osTestUid); }}
+                testSending={osTestSending}
+                testEnabled={onesignalState.enabled}
               />
-              <button
-                className="btn"
-                onClick={() => setOsShowKey((v) => !v)}
-                disabled={!osApiKey}
-                title={osShowKey ? "Hide" : "Show"}
-              >
-                <Icon name="eye" size={14} />
-              </button>
-            </div>
-          </div>
+            </ProviderRow>
 
-          <div style={cardFooterStyle}>
-            <button
-              className="btn"
-              onClick={() => { void handleTestOneSignal(); }}
-              disabled={loading || osTesting || !cfg?.onesignal.api_key_set}
+            {/* ── FCM row ─────────────────────────────────────────── */}
+            <ProviderRow
+              state={fcmState}
+              name="Firebase Cloud Messaging"
+              tagline="per-token · OAuth2 service account"
+              onToggleExpand={() => toggleExpand("fcm")}
+              onToggleEnable={(v) => { setFcmEnabled(v); setFcmDirty(true); }}
+              onTestConnection={() => { void handleTestFcm(); }}
+              testing={fcmTesting}
+              loading={loading}
             >
-              {osTesting ? "Testing…" : "Test connection"}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => { void handleSaveOneSignal(); }}
-              disabled={loading || osSaving || !osDirty}
-            >
-              {osSaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-
-        {/* ── FCM card ─────────────────────────────────────────────────── */}
-        <div style={cardStyle}>
-          <div style={cardHeaderStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <strong style={{ fontSize: 14 }}>Firebase Cloud Messaging</strong>
-              <span className="meta" style={{ fontSize: 11 }}>per-token · OAuth2 service account</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Toggle on={fcmEnabled} onChange={(v) => { setFcmEnabled(v); setFcmDirty(true); }} />
-              <span style={{ fontSize: 12, color: fcmEnabled ? "var(--success)" : "var(--text-muted)" }}>
-                {fcmEnabled ? "Enabled" : "Disabled"}
-              </span>
-            </div>
+              <FCMFields
+                cfg={cfg}
+                projectId={fcmProjectId}
+                serviceAccount={fcmServiceAccount}
+                showSa={fcmShowSa}
+                dirty={fcmDirty}
+                saving={fcmSaving}
+                loading={loading}
+                onProjectId={(v) => { setFcmProjectId(v); setFcmDirty(true); }}
+                onServiceAccount={(v) => { setFcmServiceAccount(v); setFcmDirty(true); setFcmShowSa(true); }}
+                onToggleShowSa={() => setFcmShowSa((v) => !v)}
+                onSave={() => { void handleSaveFcm(); }}
+                onReset={() => { void refresh(); }}
+                testUid={fcmTestUid}
+                onTestUid={setFcmTestUid}
+                onSendTest={() => { void handleSendTest("fcm", fcmTestUid); }}
+                testSending={fcmTestSending}
+                testEnabled={fcmState.enabled}
+              />
+            </ProviderRow>
           </div>
 
-          <div style={{ opacity: fcmEnabled ? 1 : 0.6, display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className="label-block">
-              <label className="label">Project ID</label>
-              <div className="help">Defaults to <code style={codeStyle}>project_id</code> from the service account if blank</div>
-            </div>
-            <input
-              className="input mono"
-              value={fcmProjectId}
-              onChange={(e) => { setFcmProjectId(e.target.value); setFcmDirty(true); }}
-              placeholder="my-app-prod"
-              disabled={!fcmEnabled || loading}
-            />
+          <SystemCollectionsHint />
+        </>
+      )}
 
-            <div className="label-block">
-              <label className="label">Service Account JSON</label>
-              <div className="help">
-                Paste contents of <code style={codeStyle}>service-account.json</code> (Firebase console → Project
-                Settings → Service Accounts → Generate new private key).{" "}
-                {cfg?.fcm.service_account_set ? (
-                  <>
-                    <Tag value="uploaded" severity="success" style={{ fontSize: 10 }} />{" "}
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                      ({cfg.fcm.service_account_bytes} bytes
-                      {cfg.fcm.service_account_client_email ? ` · ${cfg.fcm.service_account_client_email}` : ""})
-                    </span>
-                  </>
-                ) : (
-                  <Tag value="not set" severity="warning" style={{ fontSize: 10 }} />
-                )}
-              </div>
-            </div>
-            <textarea
-              className="input mono"
-              value={fcmShowSa ? fcmServiceAccount : (fcmServiceAccount ? "•••• JSON loaded ••••" : "")}
-              onChange={(e) => { setFcmServiceAccount(e.target.value); setFcmDirty(true); setFcmShowSa(true); }}
-              placeholder={cfg?.fcm.service_account_set
-                ? '{"type":"service_account",...}  (leave blank to keep existing)'
-                : 'paste full {"type":"service_account",...} JSON'}
-              disabled={!fcmEnabled || loading}
-              rows={6}
-              style={{ fontSize: 11, lineHeight: 1.4 }}
-            />
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <button
-                className="btn"
-                onClick={() => setFcmShowSa((v) => !v)}
-                disabled={!fcmServiceAccount}
-                style={{ fontSize: 11, padding: "4px 8px" }}
-              >
-                <Icon name="eye" size={12} /> {fcmShowSa ? "Mask" : "Show"} pasted JSON
-              </button>
-              <span className="help" style={{ fontSize: 11 }}>
-                Stored encrypted at rest when <code style={codeStyle}>VAULTBASE_ENCRYPTION_KEY</code> is set.
-              </span>
-            </div>
-          </div>
-
-          <div style={cardFooterStyle}>
-            <button
-              className="btn"
-              onClick={() => { void handleTestFcm(); }}
-              disabled={loading || fcmTesting || !cfg?.fcm.service_account_set}
-            >
-              {fcmTesting ? "Minting OAuth token…" : "Test connection"}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => { void handleSaveFcm(); }}
-              disabled={loading || fcmSaving || !fcmDirty}
-            >
-              {fcmSaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-
-        {/* ── Send test notification ───────────────────────────────────── */}
-        <div style={cardStyle}>
-          <div style={cardHeaderStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <strong style={{ fontSize: 14 }}>Send test notification</strong>
-              <span className="meta" style={{ fontSize: 11 }}>real send, not a connection probe</span>
-            </div>
-          </div>
-          <div className="help" style={{ marginBottom: 8 }}>
-            Sends a notification with title{" "}
-            <code style={codeStyle}>"Vaultbase test"</code> to the given user. For OneSignal, the user's client must
-            have called <code style={codeStyle}>OneSignal.login(userId)</code> first; for FCM, the user must have at
-            least one row in <code style={codeStyle}>device_tokens</code>.
-          </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              className="input mono"
-              value={testUserId}
-              onChange={(e) => setTestUserId(e.target.value)}
-              placeholder="user id (vaultbase)"
-              style={{ flex: "1 1 280px", minWidth: 200 }}
-            />
-            <Dropdown
-              value={testProvider}
-              options={[
-                { label: "All enabled", value: "all" },
-                { label: "OneSignal only", value: "onesignal" },
-                { label: "FCM only", value: "fcm" },
-              ]}
-              onChange={(e) => setTestProvider(e.value)}
-              style={{ minWidth: 160 }}
-            />
-            <button
-              className="btn btn-primary"
-              onClick={() => { void handleSendTest(); }}
-              disabled={testSending || !testUserId.trim()}
-            >
-              {testSending ? "Sending…" : "Send"}
-            </button>
-          </div>
-        </div>
-      </div>
+      {channel === "inbox" && <ComingSoon label="In-app inbox" />}
+      {channel === "devices" && <ComingSoon label="Device registry" />}
     </div>
   );
 }
 
-const cardStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 14,
-  display: "flex",
-  flexDirection: "column",
-  gap: 10,
-  background: "rgba(255,255,255,0.015)",
-};
-const cardHeaderStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-};
-const cardFooterStyle: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "flex-end",
-  gap: 8,
-  marginTop: 4,
-};
+// ── Provider row + expanded forms ────────────────────────────────────────────
+
+const ProviderRow: React.FC<{
+  state: ProviderState;
+  name: string;
+  tagline: string;
+  onToggleExpand: () => void;
+  onToggleEnable: (v: boolean) => void;
+  onTestConnection: () => void;
+  testing: boolean;
+  loading: boolean;
+  children: React.ReactNode;
+}> = ({ state, name, tagline, onToggleExpand, onToggleEnable, onTestConnection, testing, loading, children }) => (
+  <div style={{
+    background: "var(--vb-bg-2)",
+    border: "1px solid var(--vb-border)",
+    borderRadius: 8,
+    overflow: "hidden",
+  }}>
+    {/* Summary row — always visible */}
+    <div
+      onClick={onToggleExpand}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "20px 1fr auto auto auto",
+        alignItems: "center",
+        gap: 14,
+        padding: "12px 14px",
+        cursor: "pointer",
+      }}
+    >
+      <Icon name={state.expanded ? "chevronDown" : "chevronRight"} size={12} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>{name}</span>
+          <VbStatusDot state={state} />
+        </div>
+        <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{tagline}</span>
+      </div>
+
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 18,
+        fontSize: 11,
+        color: "var(--vb-fg-3)",
+        fontFamily: "var(--font-mono)",
+      }}>
+        {state.configured ? (
+          // Stats are placeholders until a delivery-aggregation endpoint lands.
+          // The slots stay so the visual rhythm matches the design.
+          <>
+            <VbStat label="24h" value="—" />
+            <VbStat label="errors" value="—" />
+            <VbStat label="last" value="—" />
+          </>
+        ) : (
+          <span style={{ color: "var(--vb-fg-3)", fontStyle: "italic" }}>
+            add credentials to enable
+          </span>
+        )}
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()}>
+        <VbBtn
+          kind="ghost"
+          size="sm"
+          icon="send"
+          onClick={onTestConnection}
+          disabled={loading || testing || !state.configured}
+        >
+          {testing ? "Testing…" : "Test"}
+        </VbBtn>
+      </div>
+
+      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", alignItems: "center" }}>
+        <Toggle on={state.enabled} onChange={onToggleEnable} />
+      </div>
+    </div>
+
+    {state.expanded && (
+      <div style={{
+        borderTop: "1px solid var(--vb-border)",
+        padding: "16px 14px 14px 48px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        background: "var(--vb-bg-1)",
+      }}>
+        {children}
+      </div>
+    )}
+  </div>
+);
+
+const OneSignalFields: React.FC<{
+  cfg: NotificationProvidersResponse | null;
+  appId: string;
+  apiKey: string;
+  showKey: boolean;
+  dirty: boolean;
+  saving: boolean;
+  loading: boolean;
+  onAppId: (v: string) => void;
+  onApiKey: (v: string) => void;
+  onToggleShowKey: () => void;
+  onSave: () => void;
+  onReset: () => void;
+  testUid: string;
+  onTestUid: (v: string) => void;
+  onSendTest: () => void;
+  testSending: boolean;
+  testEnabled: boolean;
+}> = (p) => (
+  <>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <VbField
+        label="App ID"
+        hint={<>From OneSignal dashboard → Settings → Keys &amp; IDs</>}
+      >
+        <VbInput mono value={p.appId} onChange={(e) => p.onAppId(e.target.value)} placeholder="4572b496-4fdc-..." disabled={p.loading} />
+      </VbField>
+      <VbField
+        label="REST API key"
+        hint="Server-side key — never ship to clients"
+        right={p.cfg?.onesignal.api_key_set
+          ? <VbPill tone="success" dot>set</VbPill>
+          : <VbPill tone="warning" dot>not set</VbPill>}
+      >
+        <div style={{ position: "relative" }}>
+          <VbInput
+            mono
+            type={p.showKey ? "text" : "password"}
+            value={p.apiKey}
+            onChange={(e) => p.onApiKey(e.target.value)}
+            placeholder={p.cfg?.onesignal.api_key_set ? "•••••••••• (leave blank to keep)" : "paste REST API key"}
+            disabled={p.loading}
+            style={{ paddingRight: 32 }}
+          />
+          <button
+            type="button"
+            onClick={p.onToggleShowKey}
+            disabled={!p.apiKey}
+            style={{
+              position: "absolute",
+              right: 6,
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "transparent",
+              border: 0,
+              color: "var(--vb-fg-3)",
+              cursor: p.apiKey ? "pointer" : "default",
+              padding: 4,
+            }}
+            title={p.showKey ? "Hide" : "Show"}
+          >
+            <Icon name="eye" size={13} />
+          </button>
+        </div>
+      </VbField>
+    </div>
+    <InlineTestSend
+      providerName="OneSignal"
+      uid={p.testUid}
+      onUid={p.onTestUid}
+      onSend={p.onSendTest}
+      sending={p.testSending}
+      disabled={!p.testEnabled}
+    />
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+      <VbBtn kind="ghost" size="sm" onClick={p.onReset} disabled={p.loading || !p.dirty}>Reset</VbBtn>
+      <VbBtn kind="primary" size="sm" onClick={p.onSave} disabled={p.loading || p.saving || !p.dirty}>
+        {p.saving ? "Saving…" : "Save changes"}
+      </VbBtn>
+    </div>
+  </>
+);
+
+const FCMFields: React.FC<{
+  cfg: NotificationProvidersResponse | null;
+  projectId: string;
+  serviceAccount: string;
+  showSa: boolean;
+  dirty: boolean;
+  saving: boolean;
+  loading: boolean;
+  onProjectId: (v: string) => void;
+  onServiceAccount: (v: string) => void;
+  onToggleShowSa: () => void;
+  onSave: () => void;
+  onReset: () => void;
+  testUid: string;
+  onTestUid: (v: string) => void;
+  onSendTest: () => void;
+  testSending: boolean;
+  testEnabled: boolean;
+}> = (p) => (
+  <>
+    <VbField
+      label="Project ID"
+      hint={<>Defaults to <VbCode>project_id</VbCode> from the service account if blank</>}
+    >
+      <VbInput mono value={p.projectId} onChange={(e) => p.onProjectId(e.target.value)} placeholder="my-app-prod" disabled={p.loading} />
+    </VbField>
+    <VbField
+      label="Service account JSON"
+      hint={<>Paste contents of <VbCode>service-account.json</VbCode> · Firebase console → Project Settings → Service Accounts → Generate new private key</>}
+      right={p.cfg?.fcm.service_account_set
+        ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <VbPill tone="success" dot>uploaded</VbPill>
+            {p.cfg.fcm.service_account_client_email && (
+              <span style={{ fontSize: 10.5, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+                {p.cfg.fcm.service_account_client_email}
+              </span>
+            )}
+          </span>
+        )
+        : <VbPill tone="warning" dot>not set</VbPill>}
+    >
+      <textarea
+        value={p.showSa ? p.serviceAccount : (p.serviceAccount ? "•••• JSON loaded ••••" : "")}
+        onChange={(e) => p.onServiceAccount(e.target.value)}
+        placeholder={p.cfg?.fcm.service_account_set
+          ? '{"type":"service_account",...}  (leave blank to keep existing)'
+          : 'paste full {"type":"service_account",...} JSON'}
+        disabled={p.loading}
+        rows={6}
+        style={{
+          width: "100%",
+          minHeight: 86,
+          background: "var(--vb-bg-3)",
+          border: "1px solid var(--vb-border-2)",
+          borderRadius: 5,
+          color: "var(--vb-fg)",
+          fontFamily: "var(--font-mono)",
+          fontSize: 11.5,
+          lineHeight: 1.4,
+          padding: "8px 10px",
+          outline: "none",
+          resize: "vertical",
+        }}
+      />
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginTop: 4,
+        fontSize: 11,
+        color: "var(--vb-fg-3)",
+        gap: 12,
+      }}>
+        <button
+          type="button"
+          onClick={p.onToggleShowSa}
+          disabled={!p.serviceAccount}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            background: "transparent",
+            border: 0,
+            color: "var(--vb-fg-3)",
+            cursor: p.serviceAccount ? "pointer" : "default",
+            padding: 0,
+            fontSize: 11,
+          }}
+        >
+          <Icon name="eye" size={12} /> {p.showSa ? "Mask" : "Show"} pasted JSON
+        </button>
+        <span>Stored encrypted at rest when <VbCode>VAULTBASE_ENCRYPTION_KEY</VbCode> is set.</span>
+      </div>
+    </VbField>
+    <InlineTestSend
+      providerName="FCM"
+      uid={p.testUid}
+      onUid={p.onTestUid}
+      onSend={p.onSendTest}
+      sending={p.testSending}
+      disabled={!p.testEnabled}
+    />
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+      <VbBtn kind="ghost" size="sm" onClick={p.onReset} disabled={p.loading || !p.dirty}>Reset</VbBtn>
+      <VbBtn kind="primary" size="sm" onClick={p.onSave} disabled={p.loading || p.saving || !p.dirty}>
+        {p.saving ? "Saving…" : "Save changes"}
+      </VbBtn>
+    </div>
+  </>
+);
+
+const InlineTestSend: React.FC<{
+  providerName: string;
+  uid: string;
+  onUid: (v: string) => void;
+  onSend: () => void;
+  sending: boolean;
+  disabled: boolean;
+}> = ({ providerName, uid, onUid, onSend, sending, disabled }) => (
+  <div style={{
+    borderTop: "1px dashed var(--vb-border-2)",
+    paddingTop: 12,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+    opacity: disabled ? 0.5 : 1,
+  }}>
+    <Icon name="send" size={13} />
+    <span style={{ fontSize: 12, color: "var(--vb-fg-2)", whiteSpace: "nowrap" }}>
+      Send <VbCode>"Vaultbase test"</VbCode> via {providerName} to
+    </span>
+    <VbInput
+      mono
+      placeholder="user id (vaultbase)"
+      value={uid}
+      onChange={(e) => onUid(e.target.value)}
+      style={{ height: 28, flex: "1 1 200px", minWidth: 160 }}
+      disabled={disabled}
+    />
+    <VbBtn kind="soft" size="sm" disabled={disabled || sending || !uid.trim()} onClick={onSend}>
+      {sending ? "Sending…" : "Send"}
+    </VbBtn>
+  </div>
+);
+
+const SystemCollectionsHint: React.FC = () => (
+  <div style={{
+    marginTop: 16,
+    padding: "12px 14px",
+    background: "var(--vb-bg-1)",
+    border: "1px dashed var(--vb-border-2)",
+    borderRadius: 6,
+    fontSize: 11.5,
+    color: "var(--vb-fg-2)",
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  }}>
+    <Icon name="sparkle" size={13} />
+    <span>
+      The first time you enable a provider, the <VbCode>notifications</VbCode> and <VbCode>device_tokens</VbCode>{" "}
+      system collections are created automatically.
+    </span>
+  </div>
+);
+
+const ComingSoon: React.FC<{ label: string }> = ({ label }) => (
+  <div style={{
+    padding: "60px 24px",
+    textAlign: "center",
+    color: "var(--vb-fg-3)",
+    fontSize: 13,
+  }}>
+    <div style={{ fontSize: 14, color: "var(--vb-fg-2)", marginBottom: 4 }}>{label}</div>
+    placeholder content for this tab
+  </div>
+);
 
 // ── Danger zone ──────────────────────────────────────────────────────────────
 function DangerZone() {
