@@ -47,6 +47,12 @@ export function initDb(url: string): DB {
     // and checkpoints during quieter periods. Doesn't disable autocheckpoint
     // entirely — unbounded WAL is worse than periodic stalls.
     _client.exec("PRAGMA wal_autocheckpoint = 10000;");
+    // Cap the WAL file at 64 MB on disk. Without this, a sustained-write
+    // workload can balloon the WAL to gigabytes before the next checkpoint
+    // truncates it, eating disk on small VPS boxes. The limit is advisory
+    // (SQLite shrinks the file on the next checkpoint) — it never blocks
+    // a write or causes corruption.
+    _client.exec("PRAGMA journal_size_limit = 67108864;");
   }
   // 32 MB page cache (negative = KiB, so -32000 ≈ 32 MB).
   _client.exec("PRAGMA cache_size = -32000;");
@@ -54,6 +60,11 @@ export function initDb(url: string): DB {
   _client.exec("PRAGMA temp_store = MEMORY;");
   // Per-connection statement timeout to bound pathological queries.
   _client.exec("PRAGMA busy_timeout = 5000;");
+  // Improve PRAGMA optimize's plan quality without making it slow at boot.
+  // Default analysis sample size is 100 rows per index; 400 gives noticeably
+  // better stats on tables with skewed distributions (audit log, log files,
+  // record_history) without crossing into seconds-of-boot cost.
+  try { _client.exec("PRAGMA analysis_limit = 400;"); } catch { /* noop */ }
   try { _client.exec("PRAGMA optimize;"); } catch { /* noop */ }
 
   _db = drizzle(_client, { schema });
