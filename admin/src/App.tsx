@@ -24,6 +24,9 @@ const CollectionEdit = lazy(() => import("./pages/CollectionEdit.tsx"));
 const HooksPage = lazy(() => import("./pages/Hooks.tsx"));
 const FlagsPage = lazy(() => import("./pages/Flags.tsx"));
 const WebhooksPage = lazy(() => import("./pages/Webhooks.tsx"));
+const ApiTokensPage = lazy(() => import("./pages/ApiTokens.tsx"));
+const McpPage = lazy(() => import("./pages/Mcp.tsx"));
+const SqlPage = lazy(() => import("./pages/Sql.tsx"));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthed = useAuth((s) => s.isAuthed);
@@ -133,6 +136,9 @@ export default function App() {
             <Route path="hooks" element={<HooksPage />} />
             <Route path="flags" element={<FlagsPage />} />
             <Route path="webhooks" element={<WebhooksPage />} />
+            <Route path="api-tokens" element={<ApiTokensPage />} />
+            <Route path="mcp" element={<McpPage />} />
+            <Route path="sql" element={<SqlPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
           <Route path="*" element={<Navigate to="/_/" replace />} />

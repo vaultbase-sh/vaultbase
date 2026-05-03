@@ -432,29 +432,206 @@ declare const ctx: RouteContext;
 `;
 }
 
-// ── SQL completion provider ─────────────────────────────────────────────────
+// ── SQL completion + hover providers ────────────────────────────────────────
+
+import { analyzeContext, buildAliasMap } from "../../../src/sql/sql-context.ts";
+import { meaningful, tokenize } from "../../../src/sql/sql-tokenizer.ts";
+import { SQL_FUNCTIONS, type SqlFunction } from "../../../src/sql/sql-functions.ts";
+import { SQL_KEYWORDS, SQL_SNIPPETS } from "../../../src/sql/sql-keywords.ts";
+
+export interface SqlColumn {
+  name: string;
+  /** SQLite affinity / declared type (e.g. "TEXT", "INTEGER"). */
+  type?: string;
+  /** True when NOT NULL. */
+  notnull?: boolean;
+  /** True when this column participates in the primary key. */
+  pk?: boolean;
+  /** True when at least one index covers this column. */
+  indexed?: boolean;
+  /** Default value SQL fragment (or null for none). */
+  dflt?: string | null;
+}
+
+export interface SqlSchemaIndex {
+  name: string;
+  cols: string[];
+  unique?: boolean;
+  partial?: boolean;
+}
+
+export interface SqlSchemaForeignKey {
+  col: string;
+  refTable: string;
+  refCol: string;
+}
 
 export interface SqlSchemaTable {
   /** Real table/view name (e.g. "vb_posts"). */
   name: string;
+  /** What kind of object this is. */
+  type?: "table" | "view";
+  /** Source category — drives icon + hover-label tone. */
+  kind?: "collection" | "system" | "user" | "sqlite";
   /** User-facing collection name shown in completion details. */
   collectionName?: string;
-  columns: string[];
+  /** Accepts simple string list (legacy) OR rich SqlColumn list. */
+  columns: ReadonlyArray<string | SqlColumn>;
+  indexes?: SqlSchemaIndex[];
+  foreignKeys?: SqlSchemaForeignKey[];
+  rowCount?: number;
 }
 
 export interface SqlSchema {
   tables: SqlSchemaTable[];
 }
 
-let sqlProviderDisposable: monaco.IDisposable | null = null;
-let activeSchema: SqlSchema = { tables: [] };
+interface NormalisedTable {
+  name: string;
+  type: "table" | "view";
+  kind: "collection" | "system" | "user" | "sqlite";
+  collectionName?: string;
+  columns: SqlColumn[];
+  indexes: SqlSchemaIndex[];
+  foreignKeys: SqlSchemaForeignKey[];
+  rowCount?: number;
+}
+
+let sqlCompletionDisposable: monaco.IDisposable | null = null;
+let sqlHoverDisposable: monaco.IDisposable | null = null;
+let activeTables: NormalisedTable[] = [];
+
+function normaliseTable(t: SqlSchemaTable): NormalisedTable {
+  const cols: SqlColumn[] = t.columns.map((c) => typeof c === "string" ? { name: c } : c);
+  const out: NormalisedTable = {
+    name: t.name,
+    type: t.type ?? "table",
+    kind: t.kind ?? (t.collectionName ? "collection" : "user"),
+    columns: cols,
+    indexes: t.indexes ?? [],
+    foreignKeys: t.foreignKeys ?? [],
+  };
+  if (t.collectionName !== undefined) out.collectionName = t.collectionName;
+  if (t.rowCount !== undefined) out.rowCount = t.rowCount;
+  return out;
+}
+
+function findTable(ref: string): NormalisedTable | null {
+  const lower = ref.toLowerCase();
+  // Exact name match first, then collection name, then vb_<collection>.
+  return activeTables.find((t) => t.name.toLowerCase() === lower) ??
+         activeTables.find((t) => (t.collectionName ?? "").toLowerCase() === lower) ??
+         activeTables.find((t) => `vb_${(t.collectionName ?? "").toLowerCase()}` === lower) ??
+         null;
+}
+
+function tableIcon(kind: NormalisedTable["kind"]): monaco.languages.CompletionItemKind {
+  if (kind === "collection") return monaco.languages.CompletionItemKind.Class;
+  if (kind === "system" || kind === "sqlite") return monaco.languages.CompletionItemKind.Module;
+  return monaco.languages.CompletionItemKind.Struct;
+}
+
+function columnDetail(t: NormalisedTable, col: SqlColumn): string {
+  const parts: string[] = [`${t.name}.${col.name}`];
+  const tags: string[] = [];
+  if (col.type) tags.push(col.type);
+  if (col.pk) tags.push("PK");
+  if (col.notnull && !col.pk) tags.push("NOT NULL");
+  if (col.indexed && !col.pk) tags.push("indexed");
+  if (tags.length) parts.push(tags.join(" "));
+  return parts.join("  ·  ");
+}
+
+function tableDetail(t: NormalisedTable): string {
+  const tags: string[] = [t.type];
+  if (t.kind === "collection") tags.push("collection");
+  else if (t.kind === "system") tags.push("vaultbase");
+  else if (t.kind === "sqlite") tags.push("sqlite");
+  if (typeof t.rowCount === "number") tags.push(`${t.rowCount} rows`);
+  return tags.join(" · ");
+}
+
+function tableHoverMd(t: NormalisedTable): string {
+  const lines: string[] = [];
+  const tags: string[] = [t.type];
+  if (t.kind === "collection" && t.collectionName) tags.push(`collection \`${t.collectionName}\``);
+  else if (t.kind === "system") tags.push("vaultbase system");
+  else if (t.kind === "sqlite") tags.push("sqlite internal");
+  lines.push(`**${t.name}** — ${tags.join(" · ")}`);
+  if (typeof t.rowCount === "number") lines.push(`\n${t.rowCount} row${t.rowCount === 1 ? "" : "s"}\n`);
+  if (t.columns.length > 0) {
+    lines.push("");
+    lines.push("| Column | Type | |");
+    lines.push("|---|---|---|");
+    for (const c of t.columns) {
+      const tags: string[] = [];
+      if (c.pk) tags.push("PK");
+      if (c.notnull && !c.pk) tags.push("NOT NULL");
+      if (c.indexed && !c.pk) tags.push("indexed");
+      lines.push(`| \`${c.name}\` | ${c.type ?? ""} | ${tags.join(" · ")} |`);
+    }
+  }
+  if (t.foreignKeys.length > 0) {
+    lines.push("");
+    lines.push("**Foreign keys**");
+    for (const fk of t.foreignKeys) {
+      lines.push(`- \`${fk.col}\` → \`${fk.refTable}.${fk.refCol}\``);
+    }
+  }
+  if (t.indexes.length > 0) {
+    lines.push("");
+    lines.push("**Indexes**");
+    for (const i of t.indexes) {
+      lines.push(`- \`${i.name}\`(${i.cols.join(", ")})${i.unique ? " · unique" : ""}${i.partial ? " · partial" : ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function columnHoverMd(t: NormalisedTable, c: SqlColumn): string {
+  const tags: string[] = [];
+  if (c.pk) tags.push("PRIMARY KEY");
+  if (c.notnull && !c.pk) tags.push("NOT NULL");
+  if (c.indexed && !c.pk) tags.push("indexed");
+  if (c.dflt !== null && c.dflt !== undefined) tags.push(`default ${c.dflt}`);
+  const fk = t.foreignKeys.find((f) => f.col === c.name);
+  if (fk) tags.push(`FK → \`${fk.refTable}.${fk.refCol}\``);
+  return [
+    `**${t.name}.${c.name}** — \`${c.type ?? "ANY"}\``,
+    "",
+    tags.length ? tags.map((s) => `- ${s}`).join("\n") : "_no extra metadata_",
+    "",
+    `Part of \`${t.name}\` ${t.kind === "collection" ? `(collection: \`${t.collectionName ?? ""}\`)` : ""}`,
+  ].join("\n");
+}
+
+function functionHoverMd(fn: SqlFunction): string {
+  return [
+    `**${fn.name}** — \`${fn.signature}\``,
+    "",
+    fn.description,
+    "",
+    `_${fn.category}${fn.returns ? ` · returns ${fn.returns}` : ""}_`,
+  ].join("\n");
+}
 
 function setSqlSchema(schema: SqlSchema): void {
-  activeSchema = schema;
-  if (sqlProviderDisposable) return; // provider closes over `activeSchema` so just bump it
-  sqlProviderDisposable = monaco.languages.registerCompletionItemProvider("sql", {
-    triggerCharacters: [".", " "],
+  activeTables = schema.tables.map(normaliseTable);
+  if (sqlCompletionDisposable) return; // providers close over activeTables; nothing to re-bind
+
+  sqlCompletionDisposable = monaco.languages.registerCompletionItemProvider("sql", {
+    triggerCharacters: [".", " ", "(", ","],
     provideCompletionItems(model, position) {
+      const offset = model.getOffsetAt(position);
+      const src = model.getValue();
+      const tokens = meaningful(tokenize(src));
+      const { context, prefix, prefixStart } = analyzeContext({ src, offset, tokens });
+      const aliases = buildAliasMap(src, tokens);
+
+      // Suppress completions inside string literals — analyzeContext doesn't
+      // strip them but we can quickly check token type at offset.
+      // (cheap heuristic; not perfect)
+
       const word = model.getWordUntilPosition(position);
       const range = {
         startLineNumber: position.lineNumber,
@@ -462,58 +639,248 @@ function setSqlSchema(schema: SqlSchema): void {
         startColumn: word.startColumn,
         endColumn: word.endColumn,
       };
+      void prefix; void prefixStart; // Monaco filters on its own
 
-      // Look at what's immediately before the cursor (without the current word) to detect `<table>.`
-      const linePrefix = model.getValueInRange({
-        startLineNumber: position.lineNumber,
-        startColumn: 1,
-        endLineNumber: position.lineNumber,
-        endColumn: word.startColumn,
-      });
-      const dotMatch = linePrefix.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*$/);
-      if (dotMatch) {
-        const ref = dotMatch[1]!;
-        // Match by table name OR collection name OR vb_<collection>.
-        const t = activeSchema.tables.find(
-          (t) => t.name === ref || t.collectionName === ref || `vb_${t.collectionName}` === ref
-        );
-        if (t) {
-          return {
-            suggestions: t.columns.map((c) => ({
-              label: c,
-              kind: monaco.languages.CompletionItemKind.Field,
-              insertText: c,
-              range,
-              detail: `column · ${t.collectionName ?? t.name}`,
-            })),
-          };
-        }
-        return { suggestions: [] };
-      }
-
-      // Otherwise: suggest table names (both vb_* and bare) plus columns from any table.
       const suggestions: monaco.languages.CompletionItem[] = [];
-      for (const t of activeSchema.tables) {
+
+      const pushTable = (t: NormalisedTable, sortPrefix: string) => {
         suggestions.push({
-          label: t.name,
-          kind: monaco.languages.CompletionItemKind.Class,
+          label: { label: t.name, description: tableDetail(t) },
+          kind: tableIcon(t.kind),
           insertText: t.name,
           range,
-          detail: `table${t.collectionName ? ` · ${t.collectionName}` : ""}`,
+          detail: tableDetail(t),
+          documentation: { value: tableHoverMd(t), isTrusted: false },
+          sortText: `${sortPrefix}${t.name}`,
         });
-        for (const c of t.columns) {
+      };
+
+      const pushColumn = (t: NormalisedTable, c: SqlColumn, sortPrefix: string) => {
+        suggestions.push({
+          label: { label: c.name, description: columnDetail(t, c) },
+          kind: monaco.languages.CompletionItemKind.Field,
+          insertText: c.name,
+          range,
+          detail: columnDetail(t, c),
+          documentation: { value: columnHoverMd(t, c), isTrusted: false },
+          sortText: `${sortPrefix}${c.name}`,
+        });
+      };
+
+      const pushFunctions = (sortPrefix: string) => {
+        for (const fn of SQL_FUNCTIONS) {
           suggestions.push({
-            label: { label: c, description: t.collectionName ?? t.name },
-            kind: monaco.languages.CompletionItemKind.Field,
-            insertText: c,
+            label: { label: fn.name, description: fn.signature },
+            kind: monaco.languages.CompletionItemKind.Function,
+            insertText: `${fn.name}($1)`,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
             range,
-            detail: `${t.collectionName ?? t.name}.${c}`,
+            detail: `${fn.signature}${fn.returns ? ` → ${fn.returns}` : ""}`,
+            documentation: { value: functionHoverMd(fn), isTrusted: false },
+            sortText: `${sortPrefix}${fn.name}`,
           });
         }
+      };
+
+      const pushKeywords = (sortPrefix: string) => {
+        for (const kw of SQL_KEYWORDS) {
+          suggestions.push({
+            label: kw,
+            kind: monaco.languages.CompletionItemKind.Keyword,
+            insertText: kw,
+            range,
+            sortText: `${sortPrefix}${kw}`,
+          });
+        }
+      };
+
+      const pushSnippets = (sortPrefix: string) => {
+        for (const sn of SQL_SNIPPETS) {
+          suggestions.push({
+            label: { label: sn.label, description: sn.detail },
+            kind: monaco.languages.CompletionItemKind.Snippet,
+            insertText: sn.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range,
+            detail: sn.detail,
+            documentation: sn.documentation,
+            sortText: `${sortPrefix}${sn.label}`,
+          });
+        }
+      };
+
+      // Tables currently in scope — those referenced by FROM/JOIN/etc.
+      const inScope = new Set<NormalisedTable>();
+      for (const ref of aliases.values()) {
+        const t = findTable(ref);
+        if (t) inScope.add(t);
       }
-      return { suggestions };
+
+      switch (context.kind) {
+        case "afterDot": {
+          const realName = aliases.get(context.base) ?? context.base;
+          const t = findTable(realName);
+          if (!t) return { suggestions: [] };
+          for (const c of t.columns) pushColumn(t, c, "0");
+          return { suggestions };
+        }
+
+        case "expectTable": {
+          for (const t of activeTables) {
+            // Order: collection → user → system → sqlite
+            const order = t.kind === "collection" ? "0" : t.kind === "user" ? "1" : t.kind === "system" ? "2" : "3";
+            pushTable(t, order);
+          }
+          // CTE names (WITH …) are alias-style — useful too.
+          for (const a of aliases.keys()) {
+            if (!findTable(a)) {
+              suggestions.push({
+                label: { label: a, description: "alias" },
+                kind: monaco.languages.CompletionItemKind.Reference,
+                insertText: a,
+                range,
+                detail: "alias",
+                sortText: `0_${a}`,
+              });
+            }
+          }
+          return { suggestions };
+        }
+
+        case "expectColumn": {
+          // Columns of every in-scope table; collisions rendered as
+          // `alias.col` so the user can disambiguate.
+          if (inScope.size === 0) {
+            // No FROM yet — fall back to all columns. Useful for ad-hoc
+            // exploration when the user starts typing column names first.
+            for (const t of activeTables) {
+              for (const c of t.columns) pushColumn(t, c, "1");
+            }
+          } else {
+            const seen = new Map<string, NormalisedTable[]>();
+            for (const t of inScope) {
+              for (const c of t.columns) {
+                const arr = seen.get(c.name) ?? [];
+                arr.push(t);
+                seen.set(c.name, arr);
+              }
+            }
+            for (const t of inScope) {
+              for (const c of t.columns) {
+                const dupes = seen.get(c.name);
+                if (dupes && dupes.length > 1) {
+                  // Disambiguate: insert as `<alias>.<col>` if user has an alias
+                  // for this table; otherwise full table name.
+                  let alias = t.name;
+                  for (const [a, target] of aliases) {
+                    if (target === t.name && a !== t.name) { alias = a; break; }
+                  }
+                  suggestions.push({
+                    label: { label: c.name, description: `${alias}.${c.name} (${c.type ?? ""})` },
+                    kind: monaco.languages.CompletionItemKind.Field,
+                    insertText: `${alias}.${c.name}`,
+                    range,
+                    detail: columnDetail(t, c),
+                    documentation: { value: columnHoverMd(t, c), isTrusted: false },
+                    sortText: `0_${alias}.${c.name}`,
+                  });
+                } else {
+                  pushColumn(t, c, "0");
+                }
+              }
+            }
+          }
+          pushFunctions("3");
+          pushKeywords("4");
+          return { suggestions };
+        }
+
+        case "expectAny":
+        default: {
+          // Broad set — tables, keywords, functions, snippets.
+          for (const t of activeTables) {
+            const order = t.kind === "collection" ? "0" : t.kind === "user" ? "1" : t.kind === "system" ? "3" : "4";
+            pushTable(t, order);
+          }
+          pushKeywords("2");
+          pushFunctions("5");
+          pushSnippets("0_");
+          return { suggestions };
+        }
+      }
     },
   });
+
+  sqlHoverDisposable = monaco.languages.registerHoverProvider("sql", {
+    provideHover(model, position) {
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const offset = model.getOffsetAt({ lineNumber: position.lineNumber, column: word.startColumn });
+      const src = model.getValue();
+      const tokens = meaningful(tokenize(src));
+      const aliases = buildAliasMap(src, tokens);
+
+      // Quoted-ident case: peek char right before the word, may be `.`
+      const before = position.column > 1
+        ? model.getValueInRange({
+            startLineNumber: position.lineNumber, startColumn: 1,
+            endLineNumber: position.lineNumber, endColumn: word.startColumn,
+          })
+        : "";
+      const dotMatch = before.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/);
+      void offset; // analyzeContext not called for hover; we only need word + dot
+
+      // <table|alias>.<column>
+      if (dotMatch) {
+        const baseRaw = dotMatch[1]!;
+        const realName = aliases.get(baseRaw) ?? baseRaw;
+        const t = findTable(realName);
+        if (t) {
+          const col = t.columns.find((c) => c.name.toLowerCase() === word.word.toLowerCase());
+          if (col) {
+            return {
+              range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+              contents: [{ value: columnHoverMd(t, col) }],
+            };
+          }
+        }
+      }
+
+      // Bare identifier — try table, then column-from-any-in-scope table, then function.
+      const directTable = findTable(word.word);
+      if (directTable) {
+        return {
+          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+          contents: [{ value: tableHoverMd(directTable) }],
+        };
+      }
+      // Column lookup across in-scope tables.
+      const inScope = new Set<NormalisedTable>();
+      for (const ref of aliases.values()) {
+        const t = findTable(ref);
+        if (t) inScope.add(t);
+      }
+      for (const t of inScope) {
+        const col = t.columns.find((c) => c.name.toLowerCase() === word.word.toLowerCase());
+        if (col) {
+          return {
+            range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+            contents: [{ value: columnHoverMd(t, col) }],
+          };
+        }
+      }
+      // Function?
+      const fn = SQL_FUNCTIONS.find((f) => f.name.toLowerCase() === word.word.toLowerCase());
+      if (fn) {
+        return {
+          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+          contents: [{ value: functionHoverMd(fn) }],
+        };
+      }
+      return null;
+    },
+  });
+  void sqlHoverDisposable;
 }
 
 // ── Component ──────────────────────────────────────────────────────────────

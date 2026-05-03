@@ -5,6 +5,7 @@ import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
 import { setUploadDir } from "./core/storage.ts";
+import { setSandboxDir, pruneStaleSandboxes } from "./core/sql-sandbox.ts";
 import { makeAuthPlugin } from "./api/auth.ts";
 import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
@@ -26,6 +27,11 @@ import { makeCsvPlugin } from "./api/csv.ts";
 import { makeMigrationsPlugin } from "./api/migrations.ts";
 import { makeMetricsPlugin } from "./api/metrics.ts";
 import { makeAuditLogPlugin } from "./api/audit-log.ts";
+import { makeApiTokensPlugin } from "./api/api-tokens.ts";
+import { makeMcpPlugin } from "./api/mcp.ts";
+import { makeMcpAdminPlugin } from "./api/mcp-admin.ts";
+import { makeSqlPlugin } from "./api/sql.ts";
+import { startApiTokenUsageFlusher, recordApiTokenUsage, pruneExpiredApiTokens } from "./core/api-tokens.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
@@ -97,6 +103,7 @@ function startFileTokenUsesPrune(): void {
 export function createServer(config: Config) {
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
+  setSandboxDir(`${config.dataDir}/sandboxes`);
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
@@ -106,6 +113,14 @@ export function createServer(config: Config) {
   startUpdateCheckScheduler();
   startWebhookDispatcher();
   startFileTokenUsesPrune();
+  startApiTokenUsageFlusher();
+  // Prune expired/long-revoked API token rows once a day.
+  setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
+  setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
+  // Sweep idle SQL sandboxes hourly. They're per-admin, so a forgotten
+  // tab snapshots the DB and never resets — the prune keeps disk usage
+  // bounded.
+  setInterval(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000).unref?.();
   return new Elysia()
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
@@ -149,6 +164,32 @@ export function createServer(config: Config) {
       if (res) return res;
     })
     .use(makeRateLimitPlugin())
+    // ── API-token usage telemetry ────────────────────────────────────
+    // Fires AFTER the handler so we don't add latency to the hot path.
+    // Records last_used_at + IP + UA for any request that arrived
+    // bearing a vbat_-prefixed token. Pure observability — failures
+    // never block a request.
+    .onAfterHandle({ as: "global" }, ({ request }) => {
+      const auth = request.headers.get("authorization") ?? "";
+      const m = /^Bearer\s+vbat_([A-Za-z0-9._\-]+)/i.exec(auth);
+      if (!m) return;
+      // Decode the JWT payload (no signature verify — that already
+      // happened on the request path; we only need the jti for keying).
+      const jwt = m[1] ?? "";
+      const mid = jwt.split(".")[1] ?? "";
+      let jti = "";
+      try {
+        const padded = mid.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(mid.length / 4) * 4, "=");
+        const json = JSON.parse(new TextDecoder().decode(
+          Uint8Array.from(atob(padded), (c) => c.charCodeAt(0))
+        )) as Record<string, unknown>;
+        if (typeof json.jti === "string") jti = json.jti;
+      } catch { /* malformed — skip */ }
+      if (!jti) return;
+      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+      const ua = request.headers.get("user-agent");
+      recordApiTokenUsage(jti, ip, ua);
+    })
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the
     // group below adds `/api/v1`. Future v2 lives in a sibling group.
@@ -169,6 +210,10 @@ export function createServer(config: Config) {
       .use(makeMigrationsPlugin(config.jwtSecret))
       .use(makeMetricsPlugin(config.jwtSecret))
       .use(makeAuditLogPlugin(config.jwtSecret))
+      .use(makeApiTokensPlugin(config.jwtSecret))
+      .use(makeMcpPlugin(config.jwtSecret))
+      .use(makeMcpAdminPlugin(config.jwtSecret))
+      .use(makeSqlPlugin(config.jwtSecret, config.dbPath))
       .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
       .use(makeThemePlugin())
       .use(makeFlagsPlugin(config.jwtSecret))

@@ -81,6 +81,66 @@ export const fileTokenUses = sqliteTable("vaultbase_file_token_uses", {
   ip: text("ip"),
 });
 
+/**
+ * Long-lived API tokens (Sanctum-style personal-access tokens).
+ *
+ * One row per minted token. The token's JWT carries `audience: "api"` and
+ * its `jti` matches `id` here, so verification = signature check + jti
+ * lookup against this table. Setting `revoked_at` AND inserting the jti
+ * into `vaultbase_token_revocations` (existing) makes the verifier reject
+ * future use cleanly.
+ *
+ * The plaintext token value is NEVER stored — only the metadata. The
+ * mint endpoint returns the token to the caller exactly once.
+ */
+export const apiTokens = sqliteTable("vaultbase_api_tokens", {
+  /** JWT jti — also the API-tokens primary key. */
+  id: text("id").primaryKey(),
+  /** Human-readable name shown in admin UI ("CI bot", "Claude Desktop"). */
+  name: text("name").notNull(),
+  /** JSON array of scope strings: ["read", "write", "admin", "mcp:read", …]. */
+  scopes: text("scopes").notNull().default("[]"),
+  /** Admin id who minted the token; preserved if admin row is later deleted. */
+  created_by: text("created_by").notNull(),
+  /** Email of the creating admin at mint time. */
+  created_by_email: text("created_by_email").notNull(),
+  created_at: integer("created_at").notNull(),
+  /** Unix-seconds; verifier rejects after this. The JWT exp matches. */
+  expires_at: integer("expires_at").notNull(),
+  /** Set on revoke; verifier short-circuits when present. */
+  revoked_at: integer("revoked_at"),
+  /** Most recent successful use — populated by an in-memory flusher. */
+  last_used_at: integer("last_used_at"),
+  last_used_ip: text("last_used_ip"),
+  last_used_ua: text("last_used_ua"),
+  /** Total successful authenticated requests this token has served. */
+  use_count: integer("use_count").notNull().default(0),
+});
+
+/**
+ * Saved SQL queries — the admin's "SQL runner" workspace. Per-admin
+ * (private), no shared queries in v1. Populated via /admin/sql/queries.
+ */
+export const sqlQueries = sqliteTable("vaultbase_sql_queries", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  sql: text("sql").notNull(),
+  description: text("description"),
+  /** Owner admin id; non-FK so admin deletion preserves history. */
+  owner_admin_id: text("owner_admin_id").notNull(),
+  owner_admin_email: text("owner_admin_email").notNull(),
+  created_at: integer("created_at").notNull(),
+  updated_at: integer("updated_at").notNull(),
+  /** Unix-seconds of last successful run. */
+  last_run_at: integer("last_run_at"),
+  /** Wall-clock duration of last run in ms. */
+  last_run_ms: integer("last_run_ms"),
+  /** Row count returned by last run (capped at MAX_SQL_RESULT_ROWS). */
+  last_row_count: integer("last_row_count"),
+  /** Last error message, if the last run failed. Cleared on success. */
+  last_error: text("last_error"),
+});
+
 /** JWT revocation list. Tokens carrying a `jti` listed here are rejected. */
 export const tokenRevocations = sqliteTable("vaultbase_token_revocations", {
   jti: text("jti").primaryKey(),

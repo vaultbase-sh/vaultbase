@@ -17,6 +17,7 @@ const SECTIONS: NavSection[] = [
       { to: "/_/collections",  label: "Collections",  icon: "stack" },
       { to: "/_/logs",         label: "Logs",         icon: "scroll" },
       { to: "/_/api-preview",  label: "API preview",  icon: "play" },
+      { to: "/_/sql",          label: "SQL",          icon: "database" },
     ],
   },
   {
@@ -25,6 +26,8 @@ const SECTIONS: NavSection[] = [
       { to: "/_/hooks",        label: "Hooks",        icon: "zap" },
       { to: "/_/flags",        label: "Feature flags", icon: "flag" },
       { to: "/_/webhooks",     label: "Webhooks",     icon: "arrowUp" },
+      { to: "/_/api-tokens",   label: "API tokens",   icon: "key" },
+      { to: "/_/mcp",          label: "MCP",          icon: "zap" },
     ],
   },
   {

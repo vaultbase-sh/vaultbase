@@ -1,7 +1,7 @@
 import * as jose from "jose";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
-import { admin, tokenRevocations, users } from "../db/schema.ts";
+import { admin, apiTokens, tokenRevocations, users } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 
 /**
@@ -16,6 +16,19 @@ export interface VerifiedAuth extends AuthContext {
   jti?: string;
   exp?: number;
   iat?: number;
+  /**
+   * Scopes carried by an API-token-backed request. Empty / undefined for
+   * direct user / admin JWT auth — those have full audience-scope access.
+   * Endpoint-level guards check this via `core/api-tokens.hasScope()`.
+   */
+  scopes?: string[];
+  /** Display name of the API token, when authenticated via one. */
+  tokenName?: string;
+  /**
+   * True when this auth came from an API token rather than a user-/admin-
+   * initiated session. Used for audit-log labelling + scope enforcement.
+   */
+  viaApiToken?: boolean;
 }
 
 export const ISSUER = "vaultbase";
@@ -57,7 +70,7 @@ async function isRevoked(jti: string): Promise<boolean> {
 }
 
 interface VerifyOpts {
-  audience?: "user" | "admin" | "file" | undefined;
+  audience?: "user" | "admin" | "file" | "api" | undefined;
   /** Re-confirm the user/admin row still exists. Defaults to true. */
   recheckPrincipal?: boolean;
 }
@@ -74,10 +87,49 @@ export async function verifyAuthToken(
     const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), verifyOpts);
 
     const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
-    if (aud !== "user" && aud !== "admin" && aud !== "file") return null;
+    if (aud !== "user" && aud !== "admin" && aud !== "file" && aud !== "api") return null;
     if (opts.audience && aud !== opts.audience) return null;
 
     if (typeof payload.jti === "string" && (await isRevoked(payload.jti))) return null;
+
+    if (aud === "api") {
+      // API tokens map to the admin who minted them. Scopes are pulled
+      // from the DB row so a token's effective permissions can be tightened
+      // post-mint without re-issuing — the JWT's claims are advisory.
+      if (typeof payload.jti !== "string") return null;
+      const rows = await getDb().select().from(apiTokens).where(eq(apiTokens.id, payload.jti)).limit(1);
+      const tok = rows[0];
+      if (!tok || tok.revoked_at != null) return null;
+      let scopes: string[] = [];
+      try {
+        const p = JSON.parse(tok.scopes);
+        if (Array.isArray(p)) scopes = p.filter((s): s is string => typeof s === "string");
+      } catch { /* malformed — empty */ }
+      // The principal is the minting admin; rule engine + admin endpoints
+      // see them as that admin. Scope middleware further restricts what
+      // the token may DO across the surface that the admin could.
+      const ctx: VerifiedAuth = {
+        id: tok.created_by,
+        type: "admin",
+        email: tok.created_by_email,
+        jti: payload.jti,
+        scopes,
+        tokenName: tok.name,
+        viaApiToken: true,
+      };
+      if (typeof payload.exp === "number") ctx.exp = payload.exp;
+      if (typeof payload.iat === "number") ctx.iat = payload.iat;
+      // recheckPrincipal still verifies the admin row exists / wasn't force-
+      // logged-out before mint — a leaked token still goes invalid when the
+      // minting admin's password is reset.
+      if (recheck) {
+        const aRows = await getDb().select().from(admin).where(eq(admin.id, tok.created_by)).limit(1);
+        const a = aRows[0];
+        if (!a) return null;
+        if (typeof ctx.iat === "number" && a.password_reset_at > ctx.iat) return null;
+      }
+      return ctx;
+    }
 
     if (aud === "file") {
       // File tokens carry no principal — caller validates filename binding.
@@ -121,7 +173,7 @@ export async function verifyAuthToken(
 /** Mint a fresh signed JWT with `iss`, `jti`, and standard claims wired in. */
 export async function signAuthToken(opts: {
   payload: jose.JWTPayload;
-  audience: "user" | "admin" | "file";
+  audience: "user" | "admin" | "file" | "api";
   expiresInSeconds: number;
   jwtSecret: string;
 }): Promise<{ token: string; jti: string; exp: number; iat: number }> {
@@ -238,10 +290,18 @@ export async function hmacRecoveryCode(code: string, jwtSecret: string): Promise
  * Extract a bearer token from `Authorization: Bearer …` OR the
  * `vaultbase_admin_token` / `vaultbase_user_token` cookie. Cookie path lets
  * the admin SPA migrate off `localStorage` without changing every API call.
+ *
+ * Also strips the `vbat_` API-token prefix when present so downstream
+ * callers always see a raw JWT — the prefix is purely for log-scanner /
+ * secret-scanning detection on the wire.
  */
 export function extractBearer(request: Request): string | null {
   const h = request.headers.get("authorization");
-  if (h) return h.replace(/^Bearer\s+/i, "").trim() || null;
+  if (h) {
+    const raw = h.replace(/^Bearer\s+/i, "").trim();
+    if (!raw) return null;
+    return raw.startsWith("vbat_") ? raw.slice(5) : raw;
+  }
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(";")) {

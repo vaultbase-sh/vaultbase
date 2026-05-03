@@ -167,6 +167,36 @@ async function main() {
     return;
   }
 
+  // `vaultbase mcp` — Model Context Protocol server over stdio.
+  // Boots a registry of vaultbase tools, gated by the API token's scopes,
+  // and serves JSON-RPC 2.0 to AI agents (Claude Desktop, Cursor, etc.)
+  // until stdin closes.
+  if (process.argv[2] === "mcp") {
+    const config = await loadConfig();
+    const { runMcpCli } = await import("./scripts/mcp.ts");
+    try {
+      await runMcpCli(process.argv.slice(3), config.dbPath, config.jwtSecret, config.logsDir, config.uploadDir);
+      process.exit(0);
+    } catch (e) {
+      process.stderr.write(`vaultbase mcp: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(2);
+    }
+  }
+
+  // `vaultbase token <subcmd>` — local API-token management. Reads + writes
+  // the DB directly, bypassing HTTP. Skips server boot.
+  if (process.argv[2] === "token") {
+    const config = await loadConfig();
+    const { runTokenCli } = await import("./scripts/token.ts");
+    try {
+      await runTokenCli(process.argv.slice(3), config.dbPath, config.jwtSecret);
+      process.exit(0);
+    } catch (e) {
+      process.stderr.write(`vaultbase token: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(2);
+    }
+  }
+
   // `vaultbase update` — self-update. Pulls the latest signed release for
   // the running platform, verifies SHA-256 + cosign sig, atomically
   // replaces the binary. Skips server boot.

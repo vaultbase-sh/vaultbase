@@ -355,4 +355,41 @@ export async function runMigrations() {
     )
   `);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_file_token_uses_used_at ON vaultbase_file_token_uses(used_at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_api_tokens (
+      id               TEXT PRIMARY KEY,
+      name             TEXT NOT NULL,
+      scopes           TEXT NOT NULL DEFAULT '[]',
+      created_by       TEXT NOT NULL,
+      created_by_email TEXT NOT NULL,
+      created_at       INTEGER NOT NULL,
+      expires_at       INTEGER NOT NULL,
+      revoked_at       INTEGER,
+      last_used_at     INTEGER,
+      last_used_ip     TEXT,
+      last_used_ua     TEXT,
+      use_count        INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_api_tokens_created_by ON vaultbase_api_tokens(created_by)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_api_tokens_expires ON vaultbase_api_tokens(expires_at)`);
+
+  client.exec(`
+    CREATE TABLE IF NOT EXISTS vaultbase_sql_queries (
+      id                 TEXT PRIMARY KEY,
+      name               TEXT NOT NULL,
+      sql                TEXT NOT NULL,
+      description        TEXT,
+      owner_admin_id     TEXT NOT NULL,
+      owner_admin_email  TEXT NOT NULL,
+      created_at         INTEGER NOT NULL,
+      updated_at         INTEGER NOT NULL,
+      last_run_at        INTEGER,
+      last_run_ms        INTEGER,
+      last_row_count     INTEGER,
+      last_error         TEXT
+    )
+  `);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_sql_queries_owner ON vaultbase_sql_queries(owner_admin_id, updated_at DESC)`);
 }
