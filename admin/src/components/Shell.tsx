@@ -52,7 +52,7 @@ export const Sidebar: React.FC = () => {
           <VaultbaseLogo size={20} />
         </span>
         <div className="sb-brand-name">vaultbase</div>
-        <div className="sb-brand-version mono">v0.9.0</div>
+        <div className="sb-brand-version mono">v0.9.1</div>
       </div>
       {SECTIONS.map((sec) => (
         <div className="sb-section" key={sec.label}>
