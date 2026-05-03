@@ -164,7 +164,7 @@ function useRelationCache(fields: FieldDef[], enabled: boolean): RelationCache {
 
 /**
  * In-memory cache of protected-file tokens keyed by filename. Tokens are
- * minted lazily via `POST /api/files/:collection/:recordId/:field/:filename/token`
+ * minted lazily via `POST /api/v1/files/:collection/:recordId/:field/:filename/token`
  * and reused until they expire (~1h server-side). We refresh ~60s before
  * expiry to dodge edge-of-window failures.
  *
@@ -826,7 +826,7 @@ export default function Records() {
               onClick={() => setShowNew(true)}
               disabled={!collection || collection.type === "auth" || collection.type === "view"}
               title={
-                collection?.type === "auth" ? "Users register via POST /api/auth/<collection>/register"
+                collection?.type === "auth" ? "Users register via POST /api/v1/auth/<collection>/register"
                 : collection?.type === "view" ? "View collections are read-only"
                 : undefined
               }

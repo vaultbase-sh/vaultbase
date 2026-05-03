@@ -1024,7 +1024,7 @@ function FieldOptionsBody({
               <div style={{ fontSize: 13, fontWeight: 500 }}>Protected</div>
               <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
                 Public GETs return 401. Issue a 1h access token via{" "}
-                <span className="mono">POST /api/files/.../token</span>, then pass <span className="mono">?token=</span>.
+                <span className="mono">POST /api/v1/files/.../token</span>, then pass <span className="mono">?token=</span>.
               </div>
             </div>
             <Toggle

@@ -412,7 +412,7 @@ interface RouteContext {
   req: Request;
   /** HTTP method (GET, POST, …) */
   method: string;
-  /** Inner path (after the /api/custom prefix) */
+  /** Inner path (after the /api/v1/custom prefix) */
   path: string;
   /** Path params from :name segments */
   params: Record<string, string>;

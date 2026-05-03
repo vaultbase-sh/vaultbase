@@ -151,7 +151,7 @@ export function broadcastSystem(topic: string, message: object): void {
 // ── SSE client registry ─────────────────────────────────────────────────────
 // SSE is one-directional (server → client). Subscriptions can't ride on the
 // same stream the way they do over WebSocket, so we mint a `clientId` per SSE
-// connection and let clients pair it with `POST /api/realtime` to set their
+// connection and let clients pair it with `POST /api/v1/realtime` to set their
 // topic list. Same `WSLike` interface backs both transports — broadcast logic
 // doesn't need to know which one a subscriber is on.
 

@@ -1160,7 +1160,7 @@ function MetricsSection() {
       <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h3>Health &amp; metrics</h3>
-          <span className="meta">Prometheus exposition at <code style={codeStyle}>/api/metrics</code></span>
+          <span className="meta">Prometheus exposition at <code style={codeStyle}>/api/v1/metrics</code></span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
@@ -1174,7 +1174,7 @@ function MetricsSection() {
           <label className="label">Bearer token (optional)</label>
           <div className="help">
             When set, scrapers must send <code style={codeStyle}>Authorization: Bearer &lt;token&gt;</code>.
-            Leave blank to expose <code style={codeStyle}>/api/metrics</code> publicly — only do this
+            Leave blank to expose <code style={codeStyle}>/api/v1/metrics</code> publicly — only do this
             if the endpoint is protected at the proxy layer.
           </div>
         </div>
@@ -1760,7 +1760,7 @@ function EmailTemplatesSection() {
         <div className="label-block span2">
           <label className="label">Verification email</label>
           <div className="help">
-            Sent on registration and via <code style={codeStyle}>POST /api/auth/:collection/request-verify</code>.
+            Sent on registration and via <code style={codeStyle}>POST /api/v1/auth/:collection/request-verify</code>.
             Variables: <code style={codeStyle}>{`{{email}}`}</code> <code style={codeStyle}>{`{{token}}`}</code> <code style={codeStyle}>{`{{link}}`}</code> <code style={codeStyle}>{`{{appUrl}}`}</code> <code style={codeStyle}>{`{{collection}}`}</code>
           </div>
         </div>
@@ -1792,7 +1792,7 @@ function EmailTemplatesSection() {
         <div className="label-block span2">
           <label className="label">Password reset email</label>
           <div className="help">
-            Sent via <code style={codeStyle}>POST /api/auth/:collection/request-password-reset</code>. Same variables as above.
+            Sent via <code style={codeStyle}>POST /api/v1/auth/:collection/request-password-reset</code>. Same variables as above.
           </div>
         </div>
         <div className="label-block">
@@ -1840,25 +1840,25 @@ const AUTH_FEATURES: AuthFeatureRow[] = [
     key: "otp",
     label: "OTP / magic link",
     defaultOn: false,
-    description: <>Passwordless sign-in via email — both a 6-digit code and a magic link. Requires SMTP. Endpoints: <code style={codeStyle}>POST /api/auth/&lt;col&gt;/otp/&#123;request,auth&#125;</code>.</>,
+    description: <>Passwordless sign-in via email — both a 6-digit code and a magic link. Requires SMTP. Endpoints: <code style={codeStyle}>POST /api/v1/auth/&lt;col&gt;/otp/&#123;request,auth&#125;</code>.</>,
   },
   {
     key: "mfa",
     label: "MFA / TOTP (2FA)",
     defaultOn: true,
-    description: <>RFC 6238 TOTP with authenticator apps. Disabling blocks new enrollment but lets existing users still sign in and disable their own MFA. Endpoints: <code style={codeStyle}>POST /api/auth/&lt;col&gt;/totp/&#123;setup,confirm,disable&#125;</code>.</>,
+    description: <>RFC 6238 TOTP with authenticator apps. Disabling blocks new enrollment but lets existing users still sign in and disable their own MFA. Endpoints: <code style={codeStyle}>POST /api/v1/auth/&lt;col&gt;/totp/&#123;setup,confirm,disable&#125;</code>.</>,
   },
   {
     key: "anonymous",
     label: "Anonymous sign-in",
     defaultOn: false,
-    description: <>Mints a guest user with no email/password — useful for guest carts or onboarding before signup. Sessions live 30 days. Endpoint: <code style={codeStyle}>POST /api/auth/&lt;col&gt;/anonymous</code>.</>,
+    description: <>Mints a guest user with no email/password — useful for guest carts or onboarding before signup. Sessions live 30 days. Endpoint: <code style={codeStyle}>POST /api/v1/auth/&lt;col&gt;/anonymous</code>.</>,
   },
   {
     key: "impersonation",
     label: "Admin impersonation",
     defaultOn: true,
-    description: <>Admin mints a 1-hour user JWT for support purposes. JWT carries <code style={codeStyle}>impersonated_by</code> for audit. Endpoint: <code style={codeStyle}>POST /api/admin/impersonate/&lt;col&gt;/&lt;userId&gt;</code>.</>,
+    description: <>Admin mints a 1-hour user JWT for support purposes. JWT carries <code style={codeStyle}>impersonated_by</code> for audit. Endpoint: <code style={codeStyle}>POST /api/v1/admin/impersonate/&lt;col&gt;/&lt;userId&gt;</code>.</>,
   },
 ];
 
@@ -1956,12 +1956,12 @@ interface SessionKindRow {
 }
 
 const SESSION_KINDS: SessionKindRow[] = [
-  { kind: "anonymous",   label: "Anonymous", description: "Guest sessions minted by POST /api/auth/:collection/anonymous.",            defaultSeconds: 30 * 24 * 3600 },
+  { kind: "anonymous",   label: "Anonymous", description: "Guest sessions minted by POST /api/v1/auth/:collection/anonymous.",            defaultSeconds: 30 * 24 * 3600 },
   { kind: "user",        label: "User",      description: "Standard user JWTs (login, register, OAuth2, magic link).",                  defaultSeconds:  7 * 24 * 3600 },
-  { kind: "admin",       label: "Admin",     description: "Admin JWTs minted by POST /api/admin/auth/login.",                            defaultSeconds:  7 * 24 * 3600 },
+  { kind: "admin",       label: "Admin",     description: "Admin JWTs minted by POST /api/v1/admin/auth/login.",                            defaultSeconds:  7 * 24 * 3600 },
   { kind: "impersonate", label: "Impersonate", description: "JWTs issued by admin impersonation. Keep short — these escalate access.",  defaultSeconds:       3600 },
   { kind: "refresh",     label: "Refresh",   description: "Window applied when /refresh re-mints a token. Acts as the sliding ratchet.", defaultSeconds:  7 * 24 * 3600 },
-  { kind: "file",        label: "File access", description: "Protected-file URLs minted via POST /api/files/.../token.",                defaultSeconds:       3600 },
+  { kind: "file",        label: "File access", description: "Protected-file URLs minted via POST /api/v1/files/.../token.",                defaultSeconds:       3600 },
 ];
 
 function fmtDuration(seconds: number): string {
@@ -2244,9 +2244,9 @@ function OAuth2Section() {
       <div className="settings-section-body" style={{ gridTemplateColumns: "1fr", padding: "10px 14px" }}>
         <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
           Enable a provider to expose it via{" "}
-          <code style={codeStyle}>GET /api/auth/&lt;collection&gt;/oauth2/providers</code>
+          <code style={codeStyle}>GET /api/v1/auth/&lt;collection&gt;/oauth2/providers</code>
           {" · "}your app drives the popup + state, then POSTs the code to{" "}
-          <code style={codeStyle}>/api/auth/&lt;collection&gt;/oauth2/exchange</code>.
+          <code style={codeStyle}>/api/v1/auth/&lt;collection&gt;/oauth2/exchange</code>.
         </div>
 
         {OAUTH_PROVIDERS.map((p) => {

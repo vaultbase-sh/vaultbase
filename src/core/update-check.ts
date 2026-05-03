@@ -1,6 +1,6 @@
 /**
  * Polls GitHub for the latest release tag and caches the result in
- * `vaultbase_settings`. The admin UI reads `/api/admin/update-status` to
+ * `vaultbase_settings`. The admin UI reads `/api/v1/admin/update-status` to
  * surface a banner when a new version is available.
  *
  * Settings keys written:

@@ -28,7 +28,7 @@ async function extractAuth(request: Request, jwtSecret: string): Promise<AuthCon
 }
 
 /**
- * User-defined HTTP routes. Mounted under `/api/custom/<user-path>`.
+ * User-defined HTTP routes. Mounted under `/api/v1/custom/<user-path>`.
  * Each route compiles to an AsyncFunction(ctx) that runs in the request path.
  */
 
@@ -188,7 +188,7 @@ export async function dispatchCustomRoute(
 
   const started = Date.now();
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const fullPath = "/api/custom" + innerPath;
+  const fullPath = "/api/v1/custom" + innerPath;
   try {
     const result = await match.route.fn(ctx);
     void insertLog(request.method, fullPath, set.status, Date.now() - started, ip,

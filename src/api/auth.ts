@@ -1284,7 +1284,7 @@ export function makeAuthPlugin(jwtSecret: string) {
               email: profile.email,
               provider: body.provider,
               message:
-                "An account with this email already exists. Confirm with your existing password (or a valid user token) at POST /api/auth/:collection/oauth2/merge-confirm to link this provider.",
+                "An account with this email already exists. Confirm with your existing password (or a valid user token) at POST /api/v1/auth/:collection/oauth2/merge-confirm to link this provider.",
             },
           };
         }

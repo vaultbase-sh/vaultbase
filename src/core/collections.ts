@@ -27,7 +27,7 @@ export interface FieldOptions {
    */
   cascade?: "setNull" | "cascade" | "restrict";
   /**
-   * File-only. When true, GET /api/files/:filename requires a `?token=`
+   * File-only. When true, GET /api/v1/files/:filename requires a `?token=`
    * query param signed by an admin via POST .../token.
    */
   protected?: boolean;

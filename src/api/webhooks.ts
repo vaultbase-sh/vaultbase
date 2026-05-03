@@ -1,5 +1,5 @@
 /**
- * /api/admin/webhooks/* — admin CRUD + delivery log + manual test fire.
+ * /api/v1/admin/webhooks/* — admin CRUD + delivery log + manual test fire.
  */
 import Elysia, { t } from "elysia";
 import { and, desc, eq, gte } from "drizzle-orm";

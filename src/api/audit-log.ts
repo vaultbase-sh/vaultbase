@@ -14,7 +14,7 @@ async function getAdmin(request: Request, jwtSecret: string): Promise<{ id: stri
 export function makeAuditLogPlugin(jwtSecret: string) {
   return new Elysia({ name: "audit-log" })
     // ── Globally-scoped onAfterHandle: capture every state-changing
-    //    /api/admin/* request. Only writes on AUDITED_METHODS — read GETs
+    //    /api/v1/admin/* request. Only writes on AUDITED_METHODS — read GETs
     //    are skipped inside recordAuditEntry.
     .onAfterHandle({ as: "global" }, async ({ request, set }) => {
       // No need to skip non-admin paths here — recordAuditEntry filters.

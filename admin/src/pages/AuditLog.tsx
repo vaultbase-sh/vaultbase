@@ -157,7 +157,7 @@ export default function AuditLog() {
           onRowClick={(e) => setOpen(e.data as AuditEntry)}
           selection={open}
           dataKey="id"
-          emptyMessage="No audit entries yet. State-changing /api/admin/* requests show up here."
+          emptyMessage="No audit entries yet. State-changing /api/v1/admin/* requests show up here."
           style={{ fontSize: 13 }}
         >
           <Column

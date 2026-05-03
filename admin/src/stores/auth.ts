@@ -8,7 +8,7 @@ interface AuthState {
   loaded: boolean;
   /** Pull auth state from the server (cookie-based). */
   load: () => Promise<void>;
-  /** Called after a successful POST /api/admin/auth/login. */
+  /** Called after a successful POST /api/v1/admin/auth/login. */
   signIn: (_token?: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;

@@ -6,7 +6,7 @@ import { registerSSEClient, unregisterSSEClient, type WSLike } from "./manager.t
  * logic of the WebSocket endpoint by wrapping a `ReadableStream` controller in
  * the same `WSLike` interface the manager already speaks.
  *
- * Pairs with `POST /api/realtime` to set the per-client topic list — see
+ * Pairs with `POST /api/v1/realtime` to set the per-client topic list — see
  * `setSSESubscriptions` in `manager.ts`.
  */
 
@@ -68,7 +68,7 @@ export function openSSEStream(): SSEHandle {
       registerSSEClient(clientId, adapter);
 
       // Initial frame carries the clientId so the caller can address it via
-      // POST /api/realtime { clientId, topics: [...] }.
+      // POST /api/v1/realtime { clientId, topics: [...] }.
       const greeting = JSON.stringify({ type: "connected", clientId });
       c.enqueue(formatEvent("connect", greeting));
 

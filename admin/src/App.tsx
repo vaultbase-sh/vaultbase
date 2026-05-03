@@ -45,7 +45,7 @@ function RequireUnauth({ children }: { children: React.ReactNode }) {
  * Boot-time check: probe whether any admin exists. Runs once at app mount.
  *   - No admin yet  → force redirect to /_/setup (any other route bounces).
  *   - Admin exists  → /_/setup is closed; bounce to /_/login (or /_/ if authed).
- * Status endpoint is read-only (`GET /api/admin/setup/status`) so the probe
+ * Status endpoint is read-only (`GET /api/v1/admin/setup/status`) so the probe
  * doesn't write to logs or trip rate limits.
  */
 function SetupRedirect({ children }: { children: React.ReactNode }) {

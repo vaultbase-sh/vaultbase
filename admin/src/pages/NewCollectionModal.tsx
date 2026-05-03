@@ -243,7 +243,7 @@ export default function NewCollectionModal({
             ))}
           </div>
           <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            {type === "auth" && <>Email + password sign-up via <span className="mono">/api/auth/{collName || "name"}/register</span>. Field names <span className="mono">email</span>, <span className="mono">password</span>, <span className="mono">verified</span> are managed by the implicit auth schema and cannot be redefined.</>}
+            {type === "auth" && <>Email + password sign-up via <span className="mono">/api/v1/auth/{collName || "name"}/register</span>. Field names <span className="mono">email</span>, <span className="mono">password</span>, <span className="mono">verified</span> are managed by the implicit auth schema and cannot be redefined.</>}
             {type === "view" && <>Read-only collection backed by a SQL <span className="mono">SELECT</span>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>}
             {type === "base" && <>Standard records collection. CRUD via <span className="mono">/api/{collName || "name"}</span>.</>}
           </div>

@@ -1,5 +1,5 @@
 /**
- * /api/admin/security/* — backs the **Settings → Security** tab.
+ * /api/v1/admin/security/* — backs the **Settings → Security** tab.
  */
 import Elysia, { t } from "elysia";
 import { verifyAuthToken } from "../core/sec.ts";

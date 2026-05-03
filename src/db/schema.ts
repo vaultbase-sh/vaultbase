@@ -262,7 +262,7 @@ export const settings = sqliteTable("vaultbase_settings", {
 
 /**
  * Append-only audit log of state-changing admin API calls. One row per
- * mutating request to /api/admin/* — captures who did what, when, and a
+ * mutating request to /api/v1/admin/* — captures who did what, when, and a
  * minimal summary. Never UPDATEd, never DELETEd through application code.
  *
  * Compliance value: SOC 2-curious shops typically need a "who did what"
@@ -277,7 +277,7 @@ export const auditLog = sqliteTable("vaultbase_audit_log", {
   actor_email: text("actor_email"),
   /** HTTP method on the admin endpoint. */
   method: text("method").notNull(),
-  /** URL path (without query string) — e.g. "/api/admin/collections". */
+  /** URL path (without query string) — e.g. "/api/v1/admin/collections". */
   path: text("path").notNull(),
   /** Logical action label, e.g. "collection.create" / "settings.update". */
   action: text("action").notNull(),

@@ -5,7 +5,7 @@
  *
  * Public on purpose: theme is presentation-only. Stored in `vaultbase_settings`
  * under `theme.<var>` keys; missing = use SPA default. Saving lives behind
- * admin auth via the regular `PATCH /api/admin/settings`.
+ * admin auth via the regular `PATCH /api/v1/admin/settings`.
  */
 import Elysia from "elysia";
 import { getAllSettings } from "./settings.ts";

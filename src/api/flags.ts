@@ -2,16 +2,16 @@
  * Feature flags API.
  *
  * Admin (auth required, `audience: "admin"`):
- *   GET    /api/admin/flags                — list all
- *   GET    /api/admin/flags/:key           — read one
- *   POST   /api/admin/flags                — create
- *   PATCH  /api/admin/flags/:key           — update
- *   DELETE /api/admin/flags/:key           — delete
- *   POST   /api/admin/flags/:key/evaluate  — admin "test context" preview
+ *   GET    /api/v1/admin/flags                — list all
+ *   GET    /api/v1/admin/flags/:key           — read one
+ *   POST   /api/v1/admin/flags                — create
+ *   PATCH  /api/v1/admin/flags/:key           — update
+ *   DELETE /api/v1/admin/flags/:key           — delete
+ *   POST   /api/v1/admin/flags/:key/evaluate  — admin "test context" preview
  *
  * Public (auth optional — but evaluation context typically carries the
  * caller's user info):
- *   POST /api/flags/evaluate    body: { context, keys?: string[] }
+ *   POST /api/v1/flags/evaluate    body: { context, keys?: string[] }
  *      → returns { data: { <key>: <value>, ... } }
  *      Returns ALL flags when `keys` is omitted; otherwise only those.
  *      Bulk-eval is the recommended client-SDK path: one round trip,

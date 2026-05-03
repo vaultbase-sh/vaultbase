@@ -129,7 +129,7 @@ const ROUTE_METHODS = ["GET", "POST", "PATCH", "PUT", "DELETE"] as const;
 const ROUTE_TEMPLATE = `// Available context:
 //   ctx.req         — raw Request
 //   ctx.method      — "GET" | "POST" | …
-//   ctx.path        — inner path after /api/custom
+//   ctx.path        — inner path after /api/v1/custom
 //   ctx.params      — { id: "..." } from :name segments
 //   ctx.query       — query string params
 //   ctx.body        — parsed JSON body (or text/null)
@@ -570,7 +570,7 @@ function RoutesTab() {
   async function handleDelete(r: CustomRoute) {
     const ok = await confirm({
       title: "Delete custom route",
-      message: `Delete the route ${r.method} /api/custom${r.path}?`,
+      message: `Delete the route ${r.method} /api/v1/custom${r.path}?`,
       danger: true,
     });
     if (!ok) return;
@@ -593,7 +593,7 @@ function RoutesTab() {
             <div className="empty">Loading…</div>
           ) : routes.length === 0 ? (
             <div className="empty">
-              No custom routes. Routes mount under <code style={{ fontFamily: "var(--font-mono)" }}>/api/custom/&lt;your-path&gt;</code>.
+              No custom routes. Routes mount under <code style={{ fontFamily: "var(--font-mono)" }}>/api/v1/custom/&lt;your-path&gt;</code>.
             </div>
           ) : (
             <table className="table">
@@ -621,7 +621,7 @@ function RoutesTab() {
                       <span className={`badge method-${r.method.toLowerCase()}`}>{r.method}</span>
                     </td>
                     <td className="mono-cell" onClick={() => setEditing(r)} style={{ cursor: "pointer" }}>
-                      <span style={{ color: "var(--text-muted)" }}>/api/custom</span>
+                      <span style={{ color: "var(--text-muted)" }}>/api/v1/custom</span>
                       <span style={{ color: "var(--accent-light)" }}>{r.path}</span>
                     </td>
                     <td
@@ -788,7 +788,7 @@ function RouteEditor({
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 240 }}>
             <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Path <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(mounts under /api/custom)</span>
+              Path <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(mounts under /api/v1/custom)</span>
             </span>
             <input
               className="input mono"
@@ -828,7 +828,7 @@ function RouteEditor({
           <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
             <span>Type <span className="mono">ctx.</span> for autocomplete</span>
             <span>·</span>
-            <span>Mounts at <span className="mono" style={{ color: "var(--accent-light)" }}>{method} /api/custom{path}</span></span>
+            <span>Mounts at <span className="mono" style={{ color: "var(--accent-light)" }}>{method} /api/v1/custom{path}</span></span>
             <span>·</span>
             <span>Throw or call <span className="mono">ctx.helpers.abort(msg)</span> → 422</span>
           </div>
