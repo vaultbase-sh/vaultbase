@@ -143,11 +143,11 @@ export function createServer(config: Config) {
       if (res) return res;
     })
     .use(makeRateLimitPlugin())
-    .use(makeLogsPlugin(config.jwtSecret))
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the
     // group below adds `/api/v1`. Future v2 lives in a sibling group.
     .group("/api/v1", (app) => app
+      .use(makeLogsPlugin(config.jwtSecret))
       .use(makeAuthPlugin(config.jwtSecret))
       .use(makeAdminsPlugin(config.jwtSecret))
       .use(makeAuthUsersPlugin(config.jwtSecret))
