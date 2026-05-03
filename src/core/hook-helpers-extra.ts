@@ -24,17 +24,40 @@ export interface SecurityHelpers {
   randomString(byteLen: number, alphabet?: "hex" | "base64url"): string;
   /** Random byte buffer. */
   randomBytes(len: number): Uint8Array;
-  /** Sign a JWT (HS256). `expiresIn` accepts seconds or a string like "1h", "7d". */
+  /**
+   * Sign a JWT. `expiresIn` accepts seconds or a string like "1h", "7d".
+   *
+   * - `HS256` (default): `secret` is a shared secret string.
+   * - `RS256` / `ES256`: `secret` is a PKCS#8 private key PEM
+   *   (`-----BEGIN PRIVATE KEY-----…`). Required for FCM v1 OAuth bearer
+   *   JWTs (RS256), Apple `client_secret` minting (ES256), VAPID for web
+   *   push (ES256), and APNs token-based provider auth (ES256).
+   */
   jwtSign(
     payload: Record<string, unknown>,
     secret: string,
-    opts?: { expiresIn?: number | string; issuer?: string; audience?: string }
+    opts?: {
+      algorithm?: "HS256" | "RS256" | "ES256";
+      expiresIn?: number | string;
+      issuer?: string;
+      audience?: string;
+    }
   ): Promise<string>;
-  /** Verify a JWT (HS256). Throws on invalid/expired/bad-signature. */
+  /**
+   * Verify a JWT. Throws on invalid/expired/bad-signature.
+   *
+   * - `HS256` (default): `secret` is the same shared secret used to sign.
+   * - `RS256` / `ES256`: `secret` is the corresponding SPKI public key PEM
+   *   (`-----BEGIN PUBLIC KEY-----…`).
+   */
   jwtVerify(
     token: string,
     secret: string,
-    opts?: { issuer?: string; audience?: string }
+    opts?: {
+      algorithm?: "HS256" | "RS256" | "ES256";
+      issuer?: string;
+      audience?: string;
+    }
   ): Promise<Record<string, unknown>>;
   /** Encrypt with the server-configured AES-GCM key (uses VAULTBASE_ENCRYPTION_KEY). */
   aesEncrypt(plaintext: string): Promise<string>;
@@ -101,22 +124,30 @@ function makeSecurity(): SecurityHelpers {
       return crypto.getRandomValues(new Uint8Array(len));
     },
     async jwtSign(payload, secret, opts = {}) {
-      const key = new TextEncoder().encode(secret);
-      let builder = new jose.SignJWT(payload).setProtectedHeader({ alg: "HS256" }).setIssuedAt();
+      const alg = opts.algorithm ?? "HS256";
+      const signKey: Uint8Array | jose.KeyLike =
+        alg === "HS256"
+          ? new TextEncoder().encode(secret)
+          : await jose.importPKCS8(secret, alg);
+      let builder = new jose.SignJWT(payload).setProtectedHeader({ alg }).setIssuedAt();
       if (opts.expiresIn !== undefined) {
         const exp = Math.floor(Date.now() / 1000) + parseDuration(opts.expiresIn);
         builder = builder.setExpirationTime(exp);
       }
       if (opts.issuer) builder = builder.setIssuer(opts.issuer);
       if (opts.audience) builder = builder.setAudience(opts.audience);
-      return builder.sign(key);
+      return builder.sign(signKey);
     },
     async jwtVerify(token, secret, opts = {}) {
-      const key = new TextEncoder().encode(secret);
-      const verifyOpts: jose.JWTVerifyOptions = { algorithms: ["HS256"] };
+      const alg = opts.algorithm ?? "HS256";
+      const verifyKey: Uint8Array | jose.KeyLike =
+        alg === "HS256"
+          ? new TextEncoder().encode(secret)
+          : await jose.importSPKI(secret, alg);
+      const verifyOpts: jose.JWTVerifyOptions = { algorithms: [alg] };
       if (opts.issuer) verifyOpts.issuer = opts.issuer;
       if (opts.audience) verifyOpts.audience = opts.audience;
-      const { payload } = await jose.jwtVerify(token, key, verifyOpts);
+      const { payload } = await jose.jwtVerify(token, verifyKey, verifyOpts);
       return payload as Record<string, unknown>;
     },
     async aesEncrypt(plaintext) {

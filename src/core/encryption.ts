@@ -10,10 +10,15 @@
  * the key = permanent loss of encrypted data.
  */
 
+import { createCipheriv, createDecipheriv, randomBytes as nodeRandomBytes } from "node:crypto";
+
 const PREFIX = "vbenc:1:";
+const TAG_BYTES = 16;
 
 let cachedKey: CryptoKey | null = null;
 let cachedRawKey: string | null = null;
+let cachedRawBytes: Uint8Array | null = null;
+let cachedRawForBytes: string | null = null;
 
 function decodeKey(raw: string): Uint8Array {
   // Try base64 (most common form)
@@ -88,4 +93,49 @@ export async function decryptValue(stored: string): Promise<string> {
     ct as unknown as ArrayBuffer
   );
   return new TextDecoder().decode(pt);
+}
+
+/**
+ * Synchronous variants — same `vbenc:1:<iv>:<ct>` wire format as
+ * {@link encryptValue} / {@link decryptValue}, implemented via `node:crypto`
+ * so callers on hot, fully-sync paths (settings reads called from inside
+ * Elysia plugin factories, CORS resolution, etc.) don't have to await.
+ *
+ * Values produced by either form decrypt with either form — backups +
+ * restores stay symmetric and you can mix sync/async at will.
+ */
+function getRawKeyBytes(): Uint8Array {
+  const raw = process.env["VAULTBASE_ENCRYPTION_KEY"] ?? "";
+  if (!raw) throw new Error("VAULTBASE_ENCRYPTION_KEY env var not set — required for encryption");
+  if (cachedRawBytes && cachedRawForBytes === raw) return cachedRawBytes;
+  cachedRawBytes = decodeKey(raw);
+  cachedRawForBytes = raw;
+  return cachedRawBytes;
+}
+
+export function encryptValueSync(plaintext: string): string {
+  const key = getRawKeyBytes();
+  const iv = nodeRandomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const ctTag = Buffer.concat([ct, tag]);
+  return PREFIX + toBase64(new Uint8Array(iv)) + ":" + toBase64(new Uint8Array(ctTag));
+}
+
+export function decryptValueSync(stored: string): string {
+  if (!stored.startsWith(PREFIX)) return stored;
+  const rest = stored.slice(PREFIX.length);
+  const [ivB64, ctB64] = rest.split(":");
+  if (!ivB64 || !ctB64) throw new Error("Malformed encrypted value");
+  const key = getRawKeyBytes();
+  const iv = fromBase64(ivB64);
+  const ctTag = fromBase64(ctB64);
+  if (ctTag.length < TAG_BYTES) throw new Error("Encrypted value too short");
+  const ct = ctTag.subarray(0, ctTag.length - TAG_BYTES);
+  const tag = ctTag.subarray(ctTag.length - TAG_BYTES);
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return pt.toString("utf8");
 }

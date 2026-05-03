@@ -27,7 +27,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 type SettingsTabId =
   | "application" | "theme" | "rate-limit" | "egress" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
-  | "storage" | "backup" | "migrations"
+  | "storage" | "backup" | "migrations" | "notifications"
   | "metrics" | "updates" | "danger";
 
 interface SettingsTab {
@@ -52,6 +52,7 @@ const SETTINGS_TABS: SettingsTab[] = [
   { id: "storage",     label: "File storage", icon: "database", subtitle: "local FS · S3 · Cloudflare R2" },
   { id: "backup",      label: "Backup & restore", icon: "download", subtitle: "SQLite snapshot" },
   { id: "migrations",  label: "Migrations", icon: "layers", subtitle: "schema snapshot · environment sync" },
+  { id: "notifications", label: "Notifications", icon: "bell", subtitle: "OneSignal · FCM push providers" },
   { id: "metrics",     label: "Health & metrics", icon: "activity", subtitle: "Prometheus exposition" },
   { id: "updates",     label: "Updates",    icon: "refresh", subtitle: "GitHub release checker" },
   { id: "danger",      label: "Danger zone", icon: "alert", subtitle: "irreversible actions" },
@@ -99,6 +100,7 @@ export default function Settings() {
           {active === "storage" && <StorageSection />}
           {active === "backup" && <BackupSection />}
           {active === "migrations" && <MigrationsSection />}
+          {active === "notifications" && <NotificationsSection />}
           {active === "metrics" && <MetricsSection />}
           {active === "updates" && <UpdatesSection />}
           {active === "danger" && <DangerZone />}
@@ -2985,6 +2987,402 @@ function StorageSection() {
     </div>
   );
 }
+
+// ── Notifications (push providers) ───────────────────────────────────────────
+
+interface NotificationProvidersResponse {
+  onesignal: {
+    enabled: boolean;
+    app_id: string;
+    api_key_set: boolean;
+  };
+  fcm: {
+    enabled: boolean;
+    project_id: string;
+    service_account_set: boolean;
+    service_account_bytes: number;
+    service_account_client_email: string | null;
+  };
+}
+
+function NotificationsSection() {
+  const [cfg, setCfg] = useState<NotificationProvidersResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // ── OneSignal local form state
+  const [osEnabled, setOsEnabled] = useState(false);
+  const [osAppId, setOsAppId] = useState("");
+  const [osApiKey, setOsApiKey] = useState("");
+  const [osShowKey, setOsShowKey] = useState(false);
+  const [osDirty, setOsDirty] = useState(false);
+  const [osSaving, setOsSaving] = useState(false);
+  const [osTesting, setOsTesting] = useState(false);
+
+  // ── FCM local form state
+  const [fcmEnabled, setFcmEnabled] = useState(false);
+  const [fcmProjectId, setFcmProjectId] = useState("");
+  const [fcmServiceAccount, setFcmServiceAccount] = useState("");
+  const [fcmShowSa, setFcmShowSa] = useState(false);
+  const [fcmDirty, setFcmDirty] = useState(false);
+  const [fcmSaving, setFcmSaving] = useState(false);
+  const [fcmTesting, setFcmTesting] = useState(false);
+
+  // ── Send-test dialog
+  const [testUserId, setTestUserId] = useState("");
+  const [testProvider, setTestProvider] = useState<"all" | "onesignal" | "fcm">("all");
+  const [testSending, setTestSending] = useState(false);
+
+  function refresh(): Promise<void> {
+    return api
+      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers")
+      .then((res) => {
+        if (res.data) {
+          setCfg(res.data);
+          setOsEnabled(res.data.onesignal.enabled);
+          setOsAppId(res.data.onesignal.app_id);
+          setFcmEnabled(res.data.fcm.enabled);
+          setFcmProjectId(res.data.fcm.project_id);
+          // Don't pre-fill secrets (they're masked server-side anyway).
+          setOsApiKey("");
+          setFcmServiceAccount("");
+          setOsDirty(false);
+          setFcmDirty(false);
+        }
+        setLoading(false);
+      });
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  async function handleSaveOneSignal(): Promise<void> {
+    setOsSaving(true);
+    const body: Record<string, unknown> = {
+      enabled: osEnabled,
+      app_id: osAppId,
+    };
+    if (osApiKey) body.api_key = osApiKey;  // only patch when user typed a new value
+    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
+      "/api/v1/admin/notifications/providers/onesignal",
+      body,
+    );
+    setOsSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    if (res.bootstrap?.created?.length) {
+      toast(`OneSignal saved · bootstrapped collections: ${res.bootstrap.created.join(", ")}`, "check");
+    } else {
+      toast("OneSignal settings saved", "check");
+    }
+    await refresh();
+  }
+
+  async function handleTestOneSignal(): Promise<void> {
+    setOsTesting(true);
+    const res = await api.post<ApiResponse<{ ok: boolean; detail: string }>>(
+      "/api/v1/admin/notifications/providers/onesignal/test-connection",
+      {},
+    );
+    setOsTesting(false);
+    if (res.error) { toast(`Test failed: ${res.error}`, "info"); return; }
+    toast("OneSignal connection ✓", "check");
+  }
+
+  async function handleSaveFcm(): Promise<void> {
+    setFcmSaving(true);
+    const body: Record<string, unknown> = {
+      enabled: fcmEnabled,
+      project_id: fcmProjectId,
+    };
+    if (fcmServiceAccount) body.service_account = fcmServiceAccount;
+    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
+      "/api/v1/admin/notifications/providers/fcm",
+      body,
+    );
+    setFcmSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    if (res.bootstrap?.created?.length) {
+      toast(`FCM saved · bootstrapped collections: ${res.bootstrap.created.join(", ")}`, "check");
+    } else {
+      toast("FCM settings saved", "check");
+    }
+    await refresh();
+  }
+
+  async function handleTestFcm(): Promise<void> {
+    setFcmTesting(true);
+    const res = await api.post<ApiResponse<{ ok: boolean; detail: string }>>(
+      "/api/v1/admin/notifications/providers/fcm/test-connection",
+      {},
+    );
+    setFcmTesting(false);
+    if (res.error) { toast(`Test failed: ${res.error}`, "info"); return; }
+    toast("FCM connection ✓ (OAuth token minted)", "check");
+  }
+
+  async function handleSendTest(): Promise<void> {
+    if (!testUserId.trim()) { toast("Enter a user id", "info"); return; }
+    setTestSending(true);
+    const body: Record<string, unknown> = { userId: testUserId.trim() };
+    if (testProvider !== "all") body.providers = [testProvider];
+    const res = await api.post<ApiResponse<{ inboxRowId: string | null; enqueued: { provider: string; jobId: string; deduped: boolean }[] }>>(
+      "/api/v1/admin/notifications/test",
+      body,
+    );
+    setTestSending(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    const enq = res.data?.enqueued ?? [];
+    if (enq.length === 0) {
+      toast("No enabled providers to send to", "info");
+    } else {
+      toast(`Test enqueued to: ${enq.map((j) => j.provider).join(", ")}`, "check");
+    }
+  }
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-head">
+        <h3>Notifications</h3>
+        <span className="meta">push providers · in-app inbox · device registry</span>
+      </div>
+
+      <div className="settings-section-body" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        <div className="help" style={{ marginBottom: 4 }}>
+          Operators enable any combination of providers. Trigger code is provider-agnostic — call{" "}
+          <code style={codeStyle}>helpers.notify(userId, payload)</code> from a hook and Vaultbase fans out to every
+          enabled provider via the <code style={codeStyle}>_notify</code> queue. The first time you enable a provider
+          here, the <code style={codeStyle}>notifications</code> and <code style={codeStyle}>device_tokens</code>{" "}
+          system collections are created automatically.
+        </div>
+
+        {/* ── OneSignal card ───────────────────────────────────────────── */}
+        <div style={cardStyle}>
+          <div style={cardHeaderStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <strong style={{ fontSize: 14 }}>OneSignal</strong>
+              <span className="meta" style={{ fontSize: 11 }}>external_id-based · server-side fan-out</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Toggle on={osEnabled} onChange={(v) => { setOsEnabled(v); setOsDirty(true); }} />
+              <span style={{ fontSize: 12, color: osEnabled ? "var(--success)" : "var(--text-muted)" }}>
+                {osEnabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ opacity: osEnabled ? 1 : 0.6, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="label-block">
+              <label className="label">App ID</label>
+              <div className="help">From OneSignal dashboard → Settings → Keys &amp; IDs</div>
+            </div>
+            <input
+              className="input mono"
+              value={osAppId}
+              onChange={(e) => { setOsAppId(e.target.value); setOsDirty(true); }}
+              placeholder="4572b496-4fdc-..."
+              disabled={!osEnabled || loading}
+            />
+
+            <div className="label-block">
+              <label className="label">REST API Key</label>
+              <div className="help">
+                Server-side key — never ship to clients. Existing key is preserved when this field is empty.{" "}
+                {cfg?.onesignal.api_key_set ? <Tag value="set" severity="success" style={{ fontSize: 10 }} /> : <Tag value="not set" severity="warning" style={{ fontSize: 10 }} />}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                className="input mono"
+                type={osShowKey ? "text" : "password"}
+                value={osApiKey}
+                onChange={(e) => { setOsApiKey(e.target.value); setOsDirty(true); }}
+                placeholder={cfg?.onesignal.api_key_set ? "•••••••••••••••• (leave blank to keep)" : "paste REST API Key"}
+                disabled={!osEnabled || loading}
+                style={{ flex: 1 }}
+              />
+              <button
+                className="btn"
+                onClick={() => setOsShowKey((v) => !v)}
+                disabled={!osApiKey}
+                title={osShowKey ? "Hide" : "Show"}
+              >
+                <Icon name="eye" size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div style={cardFooterStyle}>
+            <button
+              className="btn"
+              onClick={() => { void handleTestOneSignal(); }}
+              disabled={loading || osTesting || !cfg?.onesignal.api_key_set}
+            >
+              {osTesting ? "Testing…" : "Test connection"}
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { void handleSaveOneSignal(); }}
+              disabled={loading || osSaving || !osDirty}
+            >
+              {osSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+
+        {/* ── FCM card ─────────────────────────────────────────────────── */}
+        <div style={cardStyle}>
+          <div style={cardHeaderStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <strong style={{ fontSize: 14 }}>Firebase Cloud Messaging</strong>
+              <span className="meta" style={{ fontSize: 11 }}>per-token · OAuth2 service account</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Toggle on={fcmEnabled} onChange={(v) => { setFcmEnabled(v); setFcmDirty(true); }} />
+              <span style={{ fontSize: 12, color: fcmEnabled ? "var(--success)" : "var(--text-muted)" }}>
+                {fcmEnabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ opacity: fcmEnabled ? 1 : 0.6, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="label-block">
+              <label className="label">Project ID</label>
+              <div className="help">Defaults to <code style={codeStyle}>project_id</code> from the service account if blank</div>
+            </div>
+            <input
+              className="input mono"
+              value={fcmProjectId}
+              onChange={(e) => { setFcmProjectId(e.target.value); setFcmDirty(true); }}
+              placeholder="my-app-prod"
+              disabled={!fcmEnabled || loading}
+            />
+
+            <div className="label-block">
+              <label className="label">Service Account JSON</label>
+              <div className="help">
+                Paste contents of <code style={codeStyle}>service-account.json</code> (Firebase console → Project
+                Settings → Service Accounts → Generate new private key).{" "}
+                {cfg?.fcm.service_account_set ? (
+                  <>
+                    <Tag value="uploaded" severity="success" style={{ fontSize: 10 }} />{" "}
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      ({cfg.fcm.service_account_bytes} bytes
+                      {cfg.fcm.service_account_client_email ? ` · ${cfg.fcm.service_account_client_email}` : ""})
+                    </span>
+                  </>
+                ) : (
+                  <Tag value="not set" severity="warning" style={{ fontSize: 10 }} />
+                )}
+              </div>
+            </div>
+            <textarea
+              className="input mono"
+              value={fcmShowSa ? fcmServiceAccount : (fcmServiceAccount ? "•••• JSON loaded ••••" : "")}
+              onChange={(e) => { setFcmServiceAccount(e.target.value); setFcmDirty(true); setFcmShowSa(true); }}
+              placeholder={cfg?.fcm.service_account_set
+                ? '{"type":"service_account",...}  (leave blank to keep existing)'
+                : 'paste full {"type":"service_account",...} JSON'}
+              disabled={!fcmEnabled || loading}
+              rows={6}
+              style={{ fontSize: 11, lineHeight: 1.4 }}
+            />
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                className="btn"
+                onClick={() => setFcmShowSa((v) => !v)}
+                disabled={!fcmServiceAccount}
+                style={{ fontSize: 11, padding: "4px 8px" }}
+              >
+                <Icon name="eye" size={12} /> {fcmShowSa ? "Mask" : "Show"} pasted JSON
+              </button>
+              <span className="help" style={{ fontSize: 11 }}>
+                Stored encrypted at rest when <code style={codeStyle}>VAULTBASE_ENCRYPTION_KEY</code> is set.
+              </span>
+            </div>
+          </div>
+
+          <div style={cardFooterStyle}>
+            <button
+              className="btn"
+              onClick={() => { void handleTestFcm(); }}
+              disabled={loading || fcmTesting || !cfg?.fcm.service_account_set}
+            >
+              {fcmTesting ? "Minting OAuth token…" : "Test connection"}
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => { void handleSaveFcm(); }}
+              disabled={loading || fcmSaving || !fcmDirty}
+            >
+              {fcmSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+
+        {/* ── Send test notification ───────────────────────────────────── */}
+        <div style={cardStyle}>
+          <div style={cardHeaderStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <strong style={{ fontSize: 14 }}>Send test notification</strong>
+              <span className="meta" style={{ fontSize: 11 }}>real send, not a connection probe</span>
+            </div>
+          </div>
+          <div className="help" style={{ marginBottom: 8 }}>
+            Sends a notification with title{" "}
+            <code style={codeStyle}>"Vaultbase test"</code> to the given user. For OneSignal, the user's client must
+            have called <code style={codeStyle}>OneSignal.login(userId)</code> first; for FCM, the user must have at
+            least one row in <code style={codeStyle}>device_tokens</code>.
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              className="input mono"
+              value={testUserId}
+              onChange={(e) => setTestUserId(e.target.value)}
+              placeholder="user id (vaultbase)"
+              style={{ flex: "1 1 280px", minWidth: 200 }}
+            />
+            <Dropdown
+              value={testProvider}
+              options={[
+                { label: "All enabled", value: "all" },
+                { label: "OneSignal only", value: "onesignal" },
+                { label: "FCM only", value: "fcm" },
+              ]}
+              onChange={(e) => setTestProvider(e.value)}
+              style={{ minWidth: 160 }}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={() => { void handleSendTest(); }}
+              disabled={testSending || !testUserId.trim()}
+            >
+              {testSending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const cardStyle: React.CSSProperties = {
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: 14,
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  background: "rgba(255,255,255,0.015)",
+};
+const cardHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+};
+const cardFooterStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  gap: 8,
+  marginTop: 4,
+};
 
 // ── Danger zone ──────────────────────────────────────────────────────────────
 function DangerZone() {

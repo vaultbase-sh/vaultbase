@@ -96,6 +96,29 @@ export interface HookHelpers extends ExtraHookHelpers {
       retryDelayMs?: number;
     }
   ): Promise<{ jobId: string; deduped: boolean }>;
+  /**
+   * Push notification + in-app inbox shorthand. Inserts one row in
+   * `vb_notifications` (drives realtime + the in-app inbox UI) and enqueues
+   * one `_notify` queue job per enabled provider (OneSignal, FCM). The
+   * trigger code is provider-agnostic — operators flip providers in
+   * Settings, not in hook code.
+   *
+   * No-ops gracefully when notifications haven't been bootstrapped: the
+   * inbox insert is skipped (table missing) and the push fan-out is empty
+   * (no enabled providers). Returns whatever was actually dispatched.
+   */
+  notify(
+    userId: string,
+    payload: { title: string; body: string; data?: Record<string, unknown> },
+    opts?: {
+      providers?: ("onesignal" | "fcm")[];
+      inbox?: boolean;
+      push?: boolean;
+    }
+  ): Promise<{
+    inboxRowId: string | null;
+    enqueued: { provider: "onesignal" | "fcm"; jobId: string; deduped: boolean }[];
+  }>;
 }
 
 interface HookRow {
@@ -293,6 +316,11 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
       // Lazy-import to break the queues → hooks → queues cycle.
       const { enqueue } = await import("./queues.ts");
       return enqueue(queue, payload, opts);
+    },
+    async notify(userId, payload, opts = {}) {
+      // Lazy-import: notifications.ts imports queues.ts which imports hooks.ts.
+      const { dispatchNotification } = await import("./notifications.ts");
+      return dispatchNotification(userId, payload, opts);
     },
     recordRule(opts: HookRecordRuleOpts): void {
       // Prefer an explicitly-provided Request, then fall back to the

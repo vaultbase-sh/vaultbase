@@ -30,10 +30,12 @@ import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
 import { makeWebhooksPlugin } from "./api/webhooks.ts";
+import { makeNotificationsPlugin } from "./api/notifications.ts";
 import { startScheduler } from "./core/jobs.ts";
 import { startQueueScheduler } from "./core/queues.ts";
 import { startUpdateCheckScheduler, getUpdateStatus, runUpdateCheck } from "./core/update-check.ts";
 import { startWebhookDispatcher } from "./core/webhooks.ts";
+import { registerNotificationsWorker } from "./core/notifications.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 import {
   setWSAuth,
@@ -95,6 +97,10 @@ function startFileTokenUsesPrune(): void {
 export function createServer(config: Config) {
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
+  // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
+  // so the first scheduler tick finds it. Idempotent on re-call (cluster
+  // workers each call createServer).
+  registerNotificationsWorker();
   startScheduler();
   startQueueScheduler();
   startUpdateCheckScheduler();
@@ -167,6 +173,7 @@ export function createServer(config: Config) {
       .use(makeThemePlugin())
       .use(makeFlagsPlugin(config.jwtSecret))
       .use(makeWebhooksPlugin(config.jwtSecret))
+      .use(makeNotificationsPlugin(config.jwtSecret))
       .use(makeCollectionsPlugin(config.jwtSecret))
       .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
       .use(makeRecordsPlugin(config.jwtSecret))

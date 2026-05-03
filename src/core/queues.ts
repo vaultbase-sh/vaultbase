@@ -66,6 +66,48 @@ interface CompiledWorker {
 const compiledCache = new Map<string, CompiledWorker>(); // worker id → compiled
 let cacheLoaded = false;
 
+/**
+ * Built-in workers — registered in-source rather than via an admin-edited
+ * `vaultbase_workers` row. Used by core features (e.g. notifications) that
+ * need the queue's retry/backoff/dead-letter machinery without making the
+ * operator paste boilerplate JS into the admin UI on every install.
+ *
+ * Precedence: any user-defined worker for the same queue wins (so an admin
+ * can override a built-in by creating their own row), which is intentional
+ * — built-ins are the default, not a constraint.
+ */
+export interface BuiltinWorkerSpec {
+  queue: string;
+  /** Display label used in job-log "worker" column. Default `_builtin:<queue>`. */
+  name?: string;
+  concurrency?: number;
+  retry_max?: number;
+  retry_backoff?: RetryBackoff;
+  retry_delay_ms?: number;
+  fn: (ctx: JobContext) => Promise<unknown>;
+}
+
+const builtinWorkers = new Map<string, CompiledWorker>(); // queue → compiled
+
+export function registerBuiltinWorker(spec: BuiltinWorkerSpec): void {
+  const id = `_builtin:${spec.queue}`;
+  builtinWorkers.set(spec.queue, {
+    id,
+    name: spec.name ?? id,
+    queue: spec.queue,
+    concurrency: Math.max(1, spec.concurrency ?? 1),
+    retry_max: Math.max(0, spec.retry_max ?? 5),
+    retry_backoff: spec.retry_backoff === "fixed" ? "fixed" : "exponential",
+    retry_delay_ms: Math.max(50, spec.retry_delay_ms ?? 2000),
+    fn: spec.fn,
+  });
+}
+
+/** Test-only: drop all built-in worker registrations. */
+export function _resetBuiltinWorkers(): void {
+  builtinWorkers.clear();
+}
+
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
   ...args: string[]
 ) => (ctx: JobContext) => Promise<unknown>;
@@ -179,13 +221,17 @@ export function stopQueueScheduler(): void {
 
 async function tick(): Promise<void> {
   const compiled = await loadWorkers();
-  if (compiled.length === 0) return;
 
   // Group workers by queue, picking a single worker per queue per tick to
   // avoid two workers grabbing the same job. (Multiple workers per queue is
   // a future addition; for now the first one wins.)
   const byQueue = new Map<string, CompiledWorker>();
+  // User-defined workers first — they take precedence over builtins.
   for (const w of compiled) if (!byQueue.has(w.queue)) byQueue.set(w.queue, w);
+  // Builtins fill in any queues the user hasn't claimed.
+  for (const [queue, w] of builtinWorkers) if (!byQueue.has(queue)) byQueue.set(queue, w);
+
+  if (byQueue.size === 0) return;
 
   for (const [queue, worker] of byQueue) {
     const current = inFlight.get(worker.id) ?? 0;
