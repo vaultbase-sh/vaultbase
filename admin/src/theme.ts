@@ -1,5 +1,5 @@
 /**
- * Theme override loader. Hits the public `/api/admin/theme` endpoint at
+ * Theme override loader. Hits the public `/api/v1/admin/theme` endpoint at
  * boot, then injects a `<style id="vb-theme">` block that overrides any
  * supported CSS custom property at the `:root` level.
  *
@@ -47,7 +47,7 @@ export function applyTheme(overrides: Record<string, string>): void {
 
 export async function applyThemeOverrides(): Promise<void> {
   try {
-    const res = await fetch("/api/admin/theme", { credentials: "same-origin" });
+    const res = await fetch("/api/v1/admin/theme", { credentials: "same-origin" });
     if (!res.ok) return;
     const body = await res.json() as { data?: Record<string, string> };
     if (body.data) applyTheme(body.data);
