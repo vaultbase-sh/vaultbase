@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse, type Collection } from "../api.ts";
-import { Topbar, PageHeader } from "../components/Shell.tsx";
+import { VbBtn, VbEmptyState, VbPageHeader, VbPill, BigStat } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
 
 interface QueueStat {
@@ -32,6 +32,12 @@ function relTime(sec: number | null): string {
   return `${Math.floor(d / 86400)}d ago`;
 }
 
+const COLL_TYPE_TONE: Record<string, "neutral" | "accent" | "warning"> = {
+  base: "neutral",
+  auth: "accent",
+  view: "warning",
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -59,187 +65,269 @@ export default function Dashboard() {
 
   return (
     <>
-      <Topbar crumbs={[{ label: "Dashboard" }]} />
+      <VbPageHeader
+        breadcrumb={["Dashboard"]}
+        title="Dashboard"
+        sub="At-a-glance health of the running instance — collections, queues, recent activity."
+        right={
+          <VbPill tone={broken ? "danger" : "success"} dot>
+            {broken ? `${totalDead} dead jobs` : "all systems nominal"}
+          </VbPill>
+        }
+      />
       <div className="app-body">
-        <PageHeader
-          title="Dashboard"
-          subtitle={broken ? `${totalDead} dead jobs` : "All systems nominal"}
-        />
-
         {broken && (
-          <div className="cal dn" style={{ marginBottom: 20 }}>
-            <Icon name="alert" size={14} />
-            <div>
-              <strong>{totalDead} jobs in dead-letter.</strong>{" "}
-              Inspect and retry from{" "}
-              <a onClick={() => navigate("/_/hooks")} style={{ color: "var(--accent-light)", cursor: "pointer" }}>
-                Hooks → Jobs log
-              </a>.
-            </div>
-          </div>
+          <DashAlert onClick={() => navigate("/_/hooks")}>
+            <strong>{totalDead} jobs in dead-letter.</strong>{" "}
+            Inspect and retry from <span style={{ color: "var(--vb-accent)" }}>Hooks → Jobs log</span>.
+          </DashAlert>
         )}
 
-        <div className="dash-stats">
-          <div className="stat-tile">
-            <div className="lbl">Collections</div>
-            <div className="val">{collections.length}</div>
-            <div className="delta" style={{ color: "var(--text-tertiary)" }}>
-              {collections.filter((c) => c.type === "auth").length} auth ·{" "}
-              {collections.filter((c) => c.type === "view").length} view
-            </div>
-          </div>
-          <div className="stat-tile">
-            <div className="lbl">Queued</div>
-            <div className="val" style={{ color: totalQueued > 0 ? "var(--accent-light)" : "var(--text-primary)" }}>
-              {totalQueued}
-            </div>
-            <div className="delta" style={{ color: "var(--text-tertiary)" }}>
-              {totalRunning} running
-            </div>
-          </div>
-          <div className="stat-tile">
-            <div className="lbl">Succeeded</div>
-            <div className="val">{totalSucceeded.toLocaleString()}</div>
-            <div className="delta up">all-time</div>
-          </div>
-          <div className="stat-tile">
-            <div className="lbl">Dead-letter</div>
-            <div className="val" style={{ color: totalDead > 0 ? "#ff7b7b" : "var(--text-primary)" }}>
-              {totalDead}
-            </div>
-            <div className={`delta ${totalDead > 0 ? "down" : ""}`}>
-              {totalDead > 0 ? "needs attention" : "clean"}
-            </div>
-          </div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 12,
+          marginBottom: 20,
+          border: "1px solid var(--vb-border)",
+          borderRadius: 8,
+          overflow: "hidden",
+        }}>
+          <BigStat
+            label="Collections"
+            value={collections.length}
+          />
+          <BigStat
+            label="Queued"
+            value={totalQueued}
+          />
+          <BigStat
+            label="Succeeded"
+            value={totalSucceeded.toLocaleString()}
+          />
+          <BigStat
+            label="Dead-letter"
+            value={totalDead}
+            tone={totalDead > 0 ? "danger" : null}
+          />
         </div>
 
-        <div className="dash-grid">
-          <div className="editor-card">
-            <div className="editor-card-head">
-              <h3>Recent dead jobs</h3>
-              <span className="meta">{deadJobs.length} of last {deadJobs.length}</span>
-            </div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
+          gap: 16,
+          marginBottom: 16,
+        }}>
+          <DashCard title="Recent dead jobs" meta={`${deadJobs.length} of last ${deadJobs.length}`}>
             {deadJobs.length === 0 ? (
-              <div className="empty-state">
-                <div className="ic"><Icon name="check" size={20} /></div>
-                <h4>No dead jobs</h4>
-                <p>Background workers haven't blown up. Tick.</p>
-              </div>
+              <VbEmptyState icon="check" title="No dead jobs" body="Background workers haven't blown up. Tick." />
             ) : (
               <div>
-                {deadJobs.map((j) => (
+                {deadJobs.map((j, i) => (
                   <div
                     key={j.id}
+                    onClick={() => navigate("/_/hooks")}
                     style={{
-                      padding: "10px 14px",
-                      borderBottom: "1px solid var(--border-subtle)",
+                      padding: "12px 16px",
+                      borderBottom: i === deadJobs.length - 1 ? "none" : "1px solid var(--vb-border)",
                       display: "flex",
-                      gap: 10,
+                      gap: 12,
                       alignItems: "flex-start",
                       cursor: "pointer",
+                      transition: "background 100ms",
                     }}
-                    onClick={() => navigate("/_/hooks")}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--vb-bg-3)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
                   >
-                    <span className="badge danger" style={{ fontSize: 10.5 }}>dead</span>
+                    <VbPill tone="danger" dot>dead</VbPill>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="mono" style={{ fontSize: 12, color: "var(--text-primary)" }}>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--vb-fg)" }}>
                         {j.queue} · {j.id.slice(0, 12)}…
                       </div>
-                      <div className="muted mono" style={{ fontSize: 11, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11,
+                        color: "var(--vb-fg-3)",
+                        marginTop: 2,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}>
                         {j.error?.split("\n")[0] ?? "—"}
                       </div>
                     </div>
-                    <span className="muted mono" style={{ fontSize: 11 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>
                       {relTime(j.finished_at ?? j.enqueued_at)}
                     </span>
                   </div>
                 ))}
               </div>
             )}
-          </div>
+          </DashCard>
 
-          <div className="editor-card">
-            <div className="editor-card-head">
-              <h3>Per-queue backlog</h3>
-              <span className="meta">{stats.length} {stats.length === 1 ? "queue" : "queues"}</span>
-            </div>
+          <DashCard title="Per-queue backlog" meta={`${stats.length} ${stats.length === 1 ? "queue" : "queues"}`}>
             {stats.length === 0 ? (
-              <div className="empty-state">
-                <div className="ic"><Icon name="zap" size={20} /></div>
-                <h4>No workers configured</h4>
-                <p>
-                  Workers process jobs from named queues. Define one in{" "}
-                  <span className="mono">Hooks → Workers</span>.
-                </p>
-                <div className="row">
-                  <button className="btn btn-primary" onClick={() => navigate("/_/hooks")}>
-                    Open Hooks
-                  </button>
-                </div>
-              </div>
+              <VbEmptyState
+                icon="zap"
+                title="No workers configured"
+                body={<>Workers process jobs from named queues. Define one in <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>Hooks → Workers</span>.</>}
+                actions={<VbBtn kind="primary" size="sm" icon="zap" onClick={() => navigate("/_/hooks")}>Open Hooks</VbBtn>}
+              />
             ) : (
               <div>
-                {stats.map((s) => (
+                {stats.map((s, i) => (
                   <div
                     key={s.queue}
                     style={{
-                      padding: "10px 14px",
-                      borderBottom: "1px solid var(--border-subtle)",
+                      padding: "12px 16px",
+                      borderBottom: i === stats.length - 1 ? "none" : "1px solid var(--vb-border)",
                       display: "flex",
-                      gap: 12,
+                      gap: 14,
                       alignItems: "center",
                     }}
                   >
-                    <span className="mono" style={{ fontSize: 12.5, color: "var(--text-primary)", minWidth: 100 }}>
-                      {s.queue}
-                    </span>
-                    <span style={{ display: "inline-flex", gap: 12, fontFamily: "var(--font-mono)", fontSize: 11, flex: 1 }}>
-                      <span style={{ color: "var(--accent-light)" }}>{s.queued}q</span>
-                      <span style={{ color: "var(--warning)" }}>{s.running}r</span>
-                      <span style={{ color: "#4ade80" }}>{s.succeeded}✓</span>
-                      <span style={{ color: "#ff7b7b" }}>{s.dead}☠</span>
+                    <span style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12.5,
+                      color: "var(--vb-fg)",
+                      minWidth: 100,
+                    }}>{s.queue}</span>
+                    <span style={{
+                      display: "inline-flex",
+                      gap: 14,
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11.5,
+                      flex: 1,
+                    }}>
+                      <span style={{ color: "var(--vb-accent)" }}>{s.queued}q</span>
+                      <span style={{ color: "var(--vb-status-warning)" }}>{s.running}r</span>
+                      <span style={{ color: "var(--vb-status-success)" }}>{s.succeeded}✓</span>
+                      <span style={{ color: "var(--vb-status-danger)" }}>{s.dead}☠</span>
                     </span>
                   </div>
                 ))}
               </div>
             )}
-          </div>
+          </DashCard>
         </div>
 
-        <div className="editor-card" style={{ marginTop: 20 }}>
-          <div className="editor-card-head">
-            <h3>Top collections</h3>
-            <span className="meta">{collections.length} total</span>
-          </div>
+        <DashCard title="Top collections" meta={`${collections.length} total`}>
           {collections.length === 0 ? (
-            <div className="empty-state">
-              <div className="ic"><Icon name="database" size={20} /></div>
-              <h4>No collections yet</h4>
-              <p>Create your first collection to start modeling data.</p>
-              <div className="row">
-                <button className="btn btn-primary" onClick={() => navigate("/_/collections")}>
-                  Open Collections
-                </button>
-              </div>
-            </div>
+            <VbEmptyState
+              icon="database"
+              title="No collections yet"
+              body="Create your first collection to start modeling data."
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => navigate("/_/collections")}>Open Collections</VbBtn>}
+            />
           ) : (
-            <div className="dash-coll-grid">
-              {collections.slice(0, 8).map((c) => (
-                <a
-                  key={c.id}
-                  onClick={() => navigate(`/_/collections/${c.id}/records`)}
-                  className="dash-coll"
-                >
-                  <span className="mono name">{c.name}</span>
-                  <span className={`badge ${c.type ?? "base"}`} style={{ fontSize: 10.5 }}>
-                    {c.type ?? "base"}
-                  </span>
-                </a>
-              ))}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+              gap: 8,
+              padding: 12,
+            }}>
+              {collections.slice(0, 8).map((c) => {
+                const t = c.type ?? "base";
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => navigate(`/_/collections/${c.id}/records`)}
+                    style={{
+                      appearance: "none",
+                      background: "var(--vb-bg-3)",
+                      border: "1px solid var(--vb-border)",
+                      borderRadius: 6,
+                      padding: "10px 12px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      cursor: "pointer",
+                      transition: "background 100ms",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--vb-bg-4)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--vb-bg-3)"; }}
+                  >
+                    <span style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12.5,
+                      color: "var(--vb-fg)",
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      textAlign: "left",
+                    }}>{c.name}</span>
+                    <VbPill tone={COLL_TYPE_TONE[t] ?? "neutral"}>{t}</VbPill>
+                  </button>
+                );
+              })}
             </div>
           )}
-        </div>
+        </DashCard>
       </div>
     </>
+  );
+}
+
+function DashAlert({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: "flex",
+        gap: 12,
+        alignItems: "flex-start",
+        padding: "12px 16px",
+        borderRadius: 8,
+        background: "var(--vb-status-danger-bg)",
+        border: "1px solid rgba(232,90,79,0.3)",
+        color: "var(--vb-fg)",
+        marginBottom: 20,
+        fontSize: 12.5,
+        cursor: onClick ? "pointer" : "default",
+      }}
+    >
+      <Icon name="alert" size={14} />
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function DashCard({ title, meta, children }: { title: string; meta?: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: "var(--vb-bg-2)",
+      border: "1px solid var(--vb-border)",
+      borderRadius: 8,
+      overflow: "hidden",
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "12px 16px",
+        borderBottom: "1px solid var(--vb-border)",
+        background: "var(--vb-bg-1)",
+      }}>
+        <h3 style={{
+          margin: 0,
+          fontSize: 12.5,
+          fontWeight: 600,
+          color: "var(--vb-fg)",
+          letterSpacing: 0.2,
+        }}>{title}</h3>
+        {meta && (
+          <span style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            color: "var(--vb-fg-3)",
+          }}>{meta}</span>
+        )}
+      </div>
+      <div style={{ flex: 1 }}>{children}</div>
+    </div>
   );
 }

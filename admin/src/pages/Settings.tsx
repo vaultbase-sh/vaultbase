@@ -2,13 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Tag } from "primereact/tag";
 import { api, getMemoryToken, type ApiResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
 import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import ProviderLogo from "../components/ProviderLogo.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 import { useAuth } from "../stores/auth.ts";
+import {
+  VbBtn,
+  VbCode,
+  VbField,
+  VbInput,
+  VbPageHeader,
+  VbPill,
+  VbStat,
+  VbStatusDot,
+} from "../components/Vb.tsx";
 
 type RuleAudience = "all" | "guest" | "auth";
 interface RateLimitRule {
@@ -78,14 +87,124 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
 
 const SETTINGS_TABS: SettingsTab[] = SETTINGS_GROUPS.flatMap((g) => g.items);
 
+/**
+ * Wraps a Settings section with the design's in-body page header
+ * (breadcrumb · h1 · sub · optional right-slot). Replaces the legacy
+ * `.settings-section / .settings-section-head / -body / -foot` chrome.
+ */
+const SectionShell: React.FC<{
+  id: SettingsTabId;
+  /** Override the auto-derived sub from SETTINGS_GROUPS. */
+  sub?: React.ReactNode;
+  /** Right-aligned header slot (status pill, enable toggle, etc.). */
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ id, sub, right, children }) => {
+  const tab = SETTINGS_TABS.find((t) => t.id === id);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <VbPageHeader
+        breadcrumb={["Settings", tab?.label ?? id]}
+        title={tab?.label ?? id}
+        sub={sub ?? tab?.subtitle}
+        right={right}
+      />
+      <div style={{
+        padding: "20px 28px 32px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 24,
+        minWidth: 0,
+      }}>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Card-style container used by sub-sections inside a SectionShell. Keeps the
+ * card's title bar visually distinct from the page-level VbPageHeader and
+ * still uses the design tokens.
+ */
+const SubCard: React.FC<{
+  title: React.ReactNode;
+  meta?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ title, meta, right, children }) => (
+  <div style={{
+    background: "var(--vb-bg-2)",
+    border: "1px solid var(--vb-border)",
+    borderRadius: 8,
+    overflow: "hidden",
+  }}>
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "12px 14px",
+      borderBottom: "1px solid var(--vb-border)",
+      background: "var(--vb-bg-1)",
+      gap: 12,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</span>
+        {meta && (
+          <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{meta}</span>
+        )}
+      </div>
+      {right && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>}
+    </div>
+    <div style={{ padding: "14px" }}>{children}</div>
+  </div>
+);
+
+/**
+ * Right-aligned save/reset footer pair used by every editable section.
+ * Sits at the bottom of the SectionShell body.
+ */
+const SaveBar: React.FC<{
+  saving?: boolean;
+  dirty?: boolean;
+  onSave: () => void;
+  onReset?: () => void;
+  saveLabel?: string;
+}> = ({ saving, dirty = true, onSave, onReset, saveLabel = "Save changes" }) => (
+  <div style={{
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+    paddingTop: 4,
+    borderTop: "1px solid var(--vb-border)",
+    marginTop: 4,
+  }}>
+    {onReset && (
+      <VbBtn kind="ghost" size="sm" onClick={onReset} disabled={saving || !dirty}>
+        Reset
+      </VbBtn>
+    )}
+    <VbBtn
+      kind="primary"
+      size="sm"
+      icon="check"
+      onClick={onSave}
+      disabled={saving || !dirty}
+    >
+      {saving ? "Saving…" : saveLabel}
+    </VbBtn>
+  </div>
+);
+
 export default function Settings() {
   const [active, setActive] = useState<SettingsTabId>("application");
-  const activeTab = SETTINGS_TABS.find((t) => t.id === active) ?? SETTINGS_TABS[0]!;
+  // activeTab still drives the (unused for now) page title; sections render
+  // their own VbPageHeader so we no longer surface a global topbar.
+  void SETTINGS_TABS.find((t) => t.id === active);
 
   return (
     <>
-      <Topbar title="Settings" subtitle={activeTab.subtitle} />
-      <div className="app-body settings-layout">
+      <div className="app-body settings-layout" style={{ paddingTop: 0 }}>
         <aside className="settings-nav">
           <div className="settings-nav-heading">Settings</div>
           {SETTINGS_GROUPS.map((g, gi) => (
@@ -141,34 +260,23 @@ export default function Settings() {
 // ── Application config ───────────────────────────────────────────────────────
 function ApplicationSection() {
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Application</h3>
-        <span className="meta">runtime configuration</span>
+    <SectionShell id="application">
+      <VbField label="Port" hint={<>Set via <VbCode>VAULTBASE_PORT</VbCode></>}>
+        <VbInput mono defaultValue="8091" disabled />
+      </VbField>
+      <VbField label="Data directory" hint={<>Set via <VbCode>VAULTBASE_DATA_DIR</VbCode></>}>
+        <VbInput mono defaultValue="./vaultbase_data" disabled />
+      </VbField>
+      <VbField label="JWT secret" hint={<>Auto-generated. Stored in <VbCode>data_dir/.secret</VbCode></>}>
+        <VbInput mono value="••••••••••••••••••••••••••••••••" disabled />
+      </VbField>
+      <div style={{
+        fontSize: 11, color: "var(--vb-fg-3)", paddingTop: 4,
+        borderTop: "1px solid var(--vb-border)",
+      }}>
+        Runtime config is set via environment variables.
       </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Port</label>
-          <div className="help">Set via <code style={codeStyle}>VAULTBASE_PORT</code></div>
-        </div>
-        <input className="input mono" defaultValue="8091" disabled />
-        <div className="label-block">
-          <label className="label">Data directory</label>
-          <div className="help">Set via <code style={codeStyle}>VAULTBASE_DATA_DIR</code></div>
-        </div>
-        <input className="input mono" defaultValue="./vaultbase_data" disabled />
-        <div className="label-block">
-          <label className="label">JWT secret</label>
-          <div className="help">Auto-generated. Stored in <code style={codeStyle}>data_dir/.secret</code></div>
-        </div>
-        <input className="input mono" value="••••••••••••••••••••••••••••••••" disabled />
-      </div>
-      <div className="settings-section-foot">
-        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-          Runtime config is set via environment variables
-        </span>
-      </div>
-    </div>
+    </SectionShell>
   );
 }
 
@@ -237,91 +345,94 @@ function RateLimitSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Rate limiting</h3>
-          <span className="meta">per-IP, per-rule token bucket</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <SectionShell
+      id="rate-limit"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
-            {enabled ? "Enabled" : "Bypass"}
-          </span>
-        </div>
-      </div>
-
-      <div style={{ padding: "16px 18px" }}>
-        <div className="rl-table" style={{ opacity: enabled ? 1 : 0.5 }}>
-          <div className="rl-row rl-head">
-            <div>Rule label</div>
-            <div>Max requests<br/><span className="rl-sub">(per IP)</span></div>
-            <div>Interval<br/><span className="rl-sub">(in seconds)</span></div>
-            <div>Targeted users</div>
-            <div></div>
-          </div>
-          {rules.map((r, i) => (
-            <div className="rl-row" key={i}>
-              <input
-                className="input mono"
-                value={r.label}
-                onChange={(e) => updateRule(i, { label: e.target.value })}
-                placeholder="*:auth"
-                disabled={!enabled || loading}
-              />
-              <input
-                className="input mono"
-                type="number"
-                min={1}
-                value={r.max}
-                onChange={(e) => updateRule(i, { max: parseInt(e.target.value) || 0 })}
-                disabled={!enabled || loading}
-              />
-              <input
-                className="input mono"
-                type="number"
-                min={1}
-                value={Math.round(r.windowMs / 1000)}
-                onChange={(e) => updateRule(i, { windowMs: (parseInt(e.target.value) || 0) * 1000 })}
-                disabled={!enabled || loading}
-              />
-              <Dropdown
-                value={r.audience}
-                options={AUDIENCE_OPTIONS}
-                onChange={(e) => updateRule(i, { audience: e.value as RuleAudience })}
-                disabled={!enabled || loading}
-              />
-              <button
-                className="btn-icon danger"
-                onClick={() => removeRule(i)}
-                disabled={!enabled || loading}
-                title="Remove rule"
-              >
-                <Icon name="x" size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14 }}>
-          <button className="btn btn-ghost" onClick={addRule} disabled={!enabled || loading}>
-            <Icon name="plus" size={12} /> Add rate limit rule
-          </button>
-          <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
-            Label = <code style={codeStyle}>{`<path>[:<action>]`}</code> · path: exact, prefix*, or *
-          </span>
-        </div>
-      </div>
-
-      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-          Actions: <code style={codeStyle}>auth</code> <code style={codeStyle}>create</code> <code style={codeStyle}>list</code> <code style={codeStyle}>view</code> <code style={codeStyle}>update</code> <code style={codeStyle}>delete</code>
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+          }}>{enabled ? "enabled" : "bypass"}</span>
         </span>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
+      }
+    >
+      <div style={{ opacity: enabled ? 1 : 0.5, display: "flex", flexDirection: "column", gap: 0,
+        background: "var(--vb-bg-2)",
+        border: "1px solid var(--vb-border)",
+        borderRadius: 8, overflow: "hidden",
+      }}>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "1.4fr 110px 110px 110px 28px",
+          gap: 10, padding: "9px 14px", alignItems: "center",
+          background: "var(--vb-bg-1)",
+          borderBottom: "1px solid var(--vb-border)",
+          fontSize: 10.5, fontWeight: 600, letterSpacing: 1.2,
+          textTransform: "uppercase", color: "var(--vb-fg-3)",
+          fontFamily: "var(--font-mono)",
+        }}>
+          <span>Rule label</span>
+          <span>Max / IP</span>
+          <span>Interval (s)</span>
+          <span>Audience</span>
+          <span />
+        </div>
+        {rules.map((r, i) => (
+          <div key={i} style={{
+            display: "grid",
+            gridTemplateColumns: "1.4fr 110px 110px 110px 28px",
+            gap: 10, padding: "9px 14px", alignItems: "center",
+            borderBottom: i === rules.length - 1 ? "none" : "1px solid var(--vb-border)",
+          }}>
+            <VbInput mono value={r.label} placeholder="*:auth"
+              onChange={(e) => updateRule(i, { label: e.target.value })}
+              disabled={!enabled || loading} />
+            <VbInput mono type="number" min={1} value={r.max}
+              onChange={(e) => updateRule(i, { max: parseInt(e.target.value) || 0 })}
+              disabled={!enabled || loading} />
+            <VbInput mono type="number" min={1} value={Math.round(r.windowMs / 1000)}
+              onChange={(e) => updateRule(i, { windowMs: (parseInt(e.target.value) || 0) * 1000 })}
+              disabled={!enabled || loading} />
+            <Dropdown
+              value={r.audience}
+              options={AUDIENCE_OPTIONS}
+              onChange={(e) => updateRule(i, { audience: e.value as RuleAudience })}
+              disabled={!enabled || loading}
+              style={{ height: 32, fontSize: 12 }}
+            />
+            <button
+              onClick={() => removeRule(i)}
+              disabled={!enabled || loading}
+              title="Remove rule"
+              style={{
+                appearance: "none", border: 0, background: "transparent",
+                color: "var(--vb-status-danger)", cursor: "pointer", padding: 4,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        ))}
       </div>
-    </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <VbBtn kind="ghost" size="sm" icon="plus" onClick={addRule} disabled={!enabled || loading}>
+          Add rate limit rule
+        </VbBtn>
+        <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontStyle: "italic" }}>
+          Label = <VbCode>{`<path>[:<action>]`}</VbCode> · path: exact, prefix*, or *
+        </span>
+      </div>
+
+      <div style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+        Actions: <VbCode>auth</VbCode> <VbCode>create</VbCode> <VbCode>list</VbCode>{" "}
+        <VbCode>view</VbCode> <VbCode>update</VbCode> <VbCode>delete</VbCode>
+      </div>
+
+      <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
+    </SectionShell>
   );
 }
 
@@ -368,63 +479,77 @@ function EgressSection() {
   const off = deny.trim().toLowerCase() === "off";
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Hook egress (SSRF guard)</h3>
-        <span className="meta">filters <code style={codeStyle}>helpers.http(...)</code> outbound calls</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Deny CIDRs (comma-separated)</label>
-          <div className="help">
-            Default deny when blank: <span className="mono" style={{ fontSize: 11 }}>{DEFAULT_DENY_HUMAN}</span>.
-            Set <code style={codeStyle}>off</code> to disable filtering entirely (NOT recommended for public deployments).
-          </div>
-        </div>
+    <SectionShell
+      id="egress"
+      sub={<>Filters <VbCode>helpers.http(...)</VbCode> outbound calls.</>}
+    >
+      <VbField
+        label="Deny CIDRs (comma-separated)"
+        hint={
+          <>
+            Default deny when blank:{" "}
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{DEFAULT_DENY_HUMAN}</span>.
+            Set <VbCode>off</VbCode> to disable filtering entirely (NOT recommended for public
+            deployments).
+          </>
+        }
+      >
         <textarea
-          className="input mono"
-          rows={3}
-          value={deny}
-          onChange={(e) => setDeny(e.target.value)}
-          placeholder="(blank = use default deny)"
-          disabled={!loaded}
-          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+          rows={3} value={deny} onChange={(e) => setDeny(e.target.value)}
+          placeholder="(blank = use default deny)" disabled={!loaded}
+          style={{
+            width: "100%", padding: "8px 10px",
+            background: "var(--vb-bg-3)", border: "1px solid var(--vb-border-2)",
+            borderRadius: 5, color: "var(--vb-fg)",
+            fontFamily: "var(--font-mono)", fontSize: 12,
+            outline: "none", resize: "vertical",
+          }}
         />
-        {off && (
-          <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12 }}>
-            <Icon name="alert" size={12} /> Egress filtering is OFF — hooks can reach any IP including private RFC1918 ranges.
-          </div>
-        )}
+      </VbField>
 
-        <div className="label-block" style={{ marginTop: 16 }}>
-          <label className="label">Allow CIDRs (comma-separated)</label>
-          <div className="help">
-            Punches a hole in deny — e.g. <code style={codeStyle}>10.5.0.0/16</code> to permit one internal subnet
-            without disabling the rest of the deny list. Empty by default.
-          </div>
+      {off && (
+        <div style={{
+          padding: "8px 10px", borderRadius: 5,
+          background: "var(--vb-status-danger-bg)",
+          color: "var(--vb-status-danger)",
+          fontSize: 12, display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <Icon name="alert" size={13} />
+          Egress filtering is OFF — hooks can reach any IP including private RFC1918 ranges.
         </div>
+      )}
+
+      <VbField
+        label="Allow CIDRs (comma-separated)"
+        hint={
+          <>
+            Punches a hole in deny — e.g. <VbCode>10.5.0.0/16</VbCode> to permit one internal
+            subnet without disabling the rest of the deny list. Empty by default.
+          </>
+        }
+      >
         <textarea
-          className="input mono"
-          rows={2}
-          value={allow}
-          onChange={(e) => setAllow(e.target.value)}
-          placeholder="(blank = no allow exceptions)"
-          disabled={!loaded}
-          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+          rows={2} value={allow} onChange={(e) => setAllow(e.target.value)}
+          placeholder="(blank = no allow exceptions)" disabled={!loaded}
+          style={{
+            width: "100%", padding: "8px 10px",
+            background: "var(--vb-bg-3)", border: "1px solid var(--vb-border-2)",
+            borderRadius: 5, color: "var(--vb-fg)",
+            fontFamily: "var(--font-mono)", fontSize: 12,
+            outline: "none", resize: "vertical",
+          }}
         />
+      </VbField>
 
-        <div className="help" style={{ marginTop: 12 }}>
-          <strong>Known limitation:</strong> filtering happens after DNS resolution; a malicious DNS server can
-          still race-rebind a host between resolution and connect. Defense-in-depth alongside an operator-level
-          firewall (iptables / VPC NACL) is recommended.
-        </div>
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        <strong style={{ color: "var(--vb-fg-2)" }}>Known limitation:</strong> filtering happens
+        after DNS resolution; a malicious DNS server can still race-rebind a host between
+        resolution and connect. Defense-in-depth alongside an operator-level firewall (iptables /
+        VPC NACL) is recommended.
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
   );
 }
 
@@ -514,80 +639,85 @@ function ThemeSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Theme</h3>
-        <span className="meta">accent + surface + text colors · admin UI only</span>
+    <SectionShell id="theme">
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        Hex colors: <VbCode>#e85a4f</VbCode>, <VbCode>#fff</VbCode>, <VbCode>#e85a4f80</VbCode>{" "}
+        (alpha). Empty falls back to the built-in default. Changes apply on next page load — and
+        immediately once you save.
       </div>
-      <div className="settings-section-body">
-        <div className="help" style={{ marginBottom: 16 }}>
-          Hex colors: <code style={codeStyle}>#e85a4f</code>, <code style={codeStyle}>#fff</code>,
-          <code style={codeStyle}>#e85a4f80</code> (alpha). Empty falls back to the built-in default.
-          Changes apply on next page load — and immediately to every other tab once you save.
-        </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          {THEME_KNOBS.map((k) => {
-            const v = values[k.key] ?? "";
-            const effective = v.trim() || k.defaultValue;
-            const isHex = HEX_RE.test(effective);
-            return (
-              <div key={k.key} className="row" style={{ gap: 10, alignItems: "center" }}>
-                <input
-                  type="color"
-                  value={isHex && effective.length === 7 ? effective : k.defaultValue}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {THEME_KNOBS.map((k) => {
+          const v = values[k.key] ?? "";
+          const effective = v.trim() || k.defaultValue;
+          const isHex = HEX_RE.test(effective);
+          return (
+            <div key={k.key} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                type="color"
+                value={isHex && effective.length === 7 ? effective : k.defaultValue}
+                onChange={(e) => update(k.key, e.target.value)}
+                disabled={!loaded}
+                style={{
+                  width: 32, height: 32, padding: 0, cursor: "pointer",
+                  background: "transparent",
+                  border: "1px solid var(--vb-border-2)",
+                  borderRadius: 5,
+                }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 600, letterSpacing: 1.2,
+                  textTransform: "uppercase", color: "var(--vb-fg-2)",
+                  fontFamily: "var(--font-mono)", marginBottom: 4,
+                }}>{k.label}</div>
+                <VbInput
+                  mono
+                  value={v}
                   onChange={(e) => update(k.key, e.target.value)}
+                  placeholder={k.defaultValue}
                   disabled={!loaded}
-                  style={{ width: 36, height: 30, border: "0.5px solid var(--border-default)", borderRadius: 4, padding: 0, cursor: "pointer", background: "transparent" }}
+                  style={{ height: 28 }}
                 />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <label className="label" style={{ marginBottom: 2 }}>{k.label}</label>
-                  <input
-                    className="input mono"
-                    value={v}
-                    onChange={(e) => update(k.key, e.target.value)}
-                    placeholder={k.defaultValue}
-                    disabled={!loaded}
-                    style={{ fontSize: 12, padding: "4px 8px", height: 26 }}
-                  />
-                </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
+      </div>
 
-        <div
-          style={{
-            marginTop: 24,
-            padding: 16,
-            borderRadius: 8,
-            border: "0.5px solid var(--border-default)",
-            background: "var(--bg-panel)",
-            ...liveStyle(),
-          }}
-        >
-          <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-            Live preview
-          </div>
-          <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <button className="btn btn-primary">Primary action</button>
-            <button className="btn btn-ghost">Secondary</button>
-            <span className="badge success">success</span>
-            <span className="badge warning">warning</span>
-            <span className="badge danger">danger</span>
-            <a href="#" onClick={(e) => e.preventDefault()} style={{ color: "var(--accent-light)" }}>An accent link</a>
-          </div>
+      <div style={{
+        padding: 16, borderRadius: 8,
+        background: "var(--vb-bg-2)",
+        border: "1px solid var(--vb-border)",
+        ...liveStyle(),
+      }}>
+        <div style={{
+          fontSize: 9.5, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)",
+          textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10,
+        }}>
+          Live preview
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <VbBtn kind="primary" size="sm">Primary action</VbBtn>
+          <VbBtn kind="ghost" size="sm">Secondary</VbBtn>
+          <VbPill tone="success" dot>success</VbPill>
+          <VbPill tone="warning" dot>warning</VbPill>
+          <VbPill tone="danger" dot>danger</VbPill>
         </div>
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "space-between" }}>
-        <button className="btn btn-ghost" onClick={reset} disabled={!loaded || saving}>
+
+      <div style={{
+        display: "flex", justifyContent: "space-between", gap: 8,
+        paddingTop: 4, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="ghost" size="sm" onClick={reset} disabled={!loaded || saving}>
           Reset to defaults
-        </button>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+        </VbBtn>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
           {saving ? "Saving…" : "Save changes"}
-        </button>
+        </VbBtn>
       </div>
-    </div>
+    </SectionShell>
   );
 }
 
@@ -631,62 +761,80 @@ function CorsSection() {
   const wildcardWithCreds = credentials && origins.split(",").map((s) => s.trim()).includes("*");
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>CORS</h3>
-        <span className="meta">cross-origin allow-list for the HTTP API</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Allowed origins (comma-separated)</label>
-          <div className="help">
-            Empty blocks all cross-origin requests. <code style={codeStyle}>*</code> permits any origin
+    <SectionShell id="cors">
+      <VbField
+        label="Allowed origins (comma-separated)"
+        hint={
+          <>
+            Empty blocks all cross-origin requests. <VbCode>*</VbCode> permits any origin
             (incompatible with credentials — silently downgraded). Otherwise list each origin
-            verbatim, e.g. <code style={codeStyle}>https://app.example.com,https://admin.example.com</code>.
-          </div>
-        </div>
+            verbatim, e.g. <VbCode>https://app.example.com,https://admin.example.com</VbCode>.
+          </>
+        }
+      >
         <textarea
-          className="input mono" rows={2} value={origins}
+          rows={2}
+          value={origins}
           onChange={(e) => setOrigins(e.target.value)}
           placeholder="(blank = block cross-origin)"
           disabled={!loaded}
-          style={{ width: "100%", fontSize: 12, padding: "8px 10px", resize: "vertical" }}
+          style={{
+            width: "100%", padding: "8px 10px",
+            background: "var(--vb-bg-3)", border: "1px solid var(--vb-border-2)",
+            borderRadius: 5, color: "var(--vb-fg)",
+            fontFamily: "var(--font-mono)", fontSize: 12,
+            outline: "none", resize: "vertical",
+          }}
         />
+      </VbField>
 
-        <div className="row" style={{ gap: 16, marginTop: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Allowed methods</label>
-            <input className="input mono" value={methods} onChange={(e) => setMethods(e.target.value)} placeholder="GET,POST,PUT,PATCH,DELETE,OPTIONS" disabled={!loaded} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label className="label">Allowed headers</label>
-            <input className="input mono" value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder="Authorization,Content-Type,If-Match,X-VB-Idempotency-Key" disabled={!loaded} />
-          </div>
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <VbField label="Allowed methods">
+          <VbInput
+            mono value={methods} onChange={(e) => setMethods(e.target.value)}
+            placeholder="GET,POST,PUT,PATCH,DELETE,OPTIONS" disabled={!loaded}
+          />
+        </VbField>
+        <VbField label="Allowed headers">
+          <VbInput
+            mono value={headers} onChange={(e) => setHeaders(e.target.value)}
+            placeholder="Authorization,Content-Type,If-Match,X-VB-Idempotency-Key" disabled={!loaded}
+          />
+        </VbField>
+      </div>
 
-        <div className="row" style={{ gap: 16, marginTop: 16, alignItems: "center" }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Preflight cache (seconds)</label>
-            <input className="input mono" type="number" min={0} value={maxAge} onChange={(e) => setMaxAge(e.target.value)} disabled={!loaded} />
-          </div>
-          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, marginTop: 22 }}>
-            <Toggle on={credentials} onChange={setCredentials} />
-            <span style={{ fontSize: 12 }}>Allow credentials (cookies / Authorization)</span>
-          </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "center" }}>
+        <VbField label="Preflight cache (seconds)">
+          <VbInput
+            mono type="number" min={0} value={maxAge}
+            onChange={(e) => setMaxAge(e.target.value)} disabled={!loaded}
+          />
+        </VbField>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 18 }}>
+          <Toggle on={credentials} onChange={setCredentials} />
+          <span style={{ fontSize: 12, color: "var(--vb-fg-2)" }}>
+            Allow credentials (cookies / Authorization)
+          </span>
         </div>
-        {wildcardWithCreds && (
-          <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12 }}>
-            <Icon name="alert" size={12} /> <code style={codeStyle}>*</code> origin + credentials is not
-            permitted by browsers. Vaultbase will echo the matched origin instead.
-          </div>
-        )}
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+
+      {wildcardWithCreds && (
+        <div style={{
+          padding: "8px 10px", borderRadius: 5,
+          background: "var(--vb-status-danger-bg)",
+          color: "var(--vb-status-danger)",
+          fontSize: 12, display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <Icon name="alert" size={13} />
+          <span>
+            <VbCode>*</VbCode> origin + credentials is not permitted by browsers.
+            Vaultbase will echo the matched origin instead.
+          </span>
+        </div>
+      )}
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
   );
 }
 
@@ -722,13 +870,16 @@ function shortRel(unixSec: number): string {
 
 function SecuritySection() {
   return (
-    <div className="col" style={{ gap: 24 }}>
+    <SectionShell id="security">
+      {/* The five cards below keep their existing legacy chrome. They render
+          as stacked card-style sections within the shared shell — only one
+          page-level header per tab. */}
       <ActiveSessionsCard />
       <BruteForceCard />
       <TrustedProxiesCard />
       <FingerprintsCard />
       <HeadersPreviewCard />
-    </div>
+    </SectionShell>
   );
 }
 
@@ -765,60 +916,67 @@ function ActiveSessionsCard() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Active admin sessions</h3>
-          <span className="meta">{sessions.length} active · revoke individually or all at once</span>
+    <SubCard
+      title="Active admin sessions"
+      meta={`${sessions.length} active · revoke individually or all at once`}
+      right={
+        <>
+          <VbBtn kind="ghost" size="sm" icon="refresh" onClick={load} disabled={loading}>Refresh</VbBtn>
+          <VbBtn kind="danger" size="sm" onClick={logoutAll}>Force logout all</VbBtn>
+        </>
+      }
+    >
+      {sessions.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "var(--vb-fg-3)", fontSize: 12 }}>
+          No active admin sessions.
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-ghost" onClick={load} disabled={loading}>
-            <Icon name="refresh" size={12} /> Refresh
-          </button>
-          <button className="btn" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} onClick={logoutAll}>
-            Force logout all
-          </button>
-        </div>
-      </div>
-      <div style={{ padding: "0 18px 18px" }}>
-        {sessions.length === 0 ? (
-          <div className="empty" style={{ padding: 24, textAlign: "center" }}>No active admin sessions.</div>
-        ) : (
-          <table className="vb-table" style={{ width: "100%", fontSize: 12 }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "var(--text-muted)", borderBottom: "0.5px solid var(--border-default)" }}>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Admin</th>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Issued</th>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>Expires</th>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>IP</th>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>User-Agent</th>
-                <th style={{ padding: "8px 10px", fontWeight: 500 }}>jti</th>
-                <th style={{ padding: "8px 10px", width: 80 }}></th>
+      ) : (
+        <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{
+              textAlign: "left",
+              color: "var(--vb-fg-3)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 10.5,
+              fontWeight: 600,
+              letterSpacing: 1.2,
+              textTransform: "uppercase",
+              borderBottom: "1px solid var(--vb-border)",
+            }}>
+              <th style={{ padding: "8px 10px" }}>Admin</th>
+              <th style={{ padding: "8px 10px" }}>Issued</th>
+              <th style={{ padding: "8px 10px" }}>Expires</th>
+              <th style={{ padding: "8px 10px" }}>IP</th>
+              <th style={{ padding: "8px 10px" }}>User-Agent</th>
+              <th style={{ padding: "8px 10px" }}>jti</th>
+              <th style={{ padding: "8px 10px", width: 80 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sessions.map((s) => (
+              <tr key={s.jti} style={{
+                borderBottom: "1px solid var(--vb-border)",
+                opacity: s.revoked ? 0.5 : 1,
+              }}>
+                <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--vb-fg)" }}>{s.admin_email}</td>
+                <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--vb-fg-3)" }}>{shortRel(s.issued_at)}</td>
+                <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--vb-fg-3)" }}>{shortRel(s.expires_at)}</td>
+                <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--vb-fg-3)" }}>{s.ip ?? "—"}</td>
+                <td style={{ padding: "8px 10px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--vb-fg-3)" }} title={s.user_agent ?? ""}>{s.user_agent ?? "—"}</td>
+                <td style={{ padding: "8px 10px", fontFamily: "var(--font-mono)", color: "var(--vb-fg-3)" }}>{s.jti.slice(0, 8)}…</td>
+                <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                  {s.revoked ? (
+                    <VbPill tone="neutral">revoked</VbPill>
+                  ) : (
+                    <VbBtn kind="ghost" size="sm" onClick={() => revoke(s.jti)}>Revoke</VbBtn>
+                  )}
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => (
-                <tr key={s.jti} style={{ borderBottom: "0.5px solid rgba(255,255,255,0.04)", opacity: s.revoked ? 0.5 : 1 }}>
-                  <td style={{ padding: "8px 10px" }} className="mono">{s.admin_email}</td>
-                  <td style={{ padding: "8px 10px" }} className="mono muted">{shortRel(s.issued_at)}</td>
-                  <td style={{ padding: "8px 10px" }} className="mono muted">{shortRel(s.expires_at)}</td>
-                  <td style={{ padding: "8px 10px" }} className="mono muted">{s.ip ?? "—"}</td>
-                  <td style={{ padding: "8px 10px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} className="muted" title={s.user_agent ?? ""}>{s.user_agent ?? "—"}</td>
-                  <td style={{ padding: "8px 10px" }} className="mono muted">{s.jti.slice(0, 8)}…</td>
-                  <td style={{ padding: "8px 10px", textAlign: "right" }}>
-                    {s.revoked ? (
-                      <span className="muted" style={{ fontSize: 10 }}>revoked</span>
-                    ) : (
-                      <button className="btn btn-ghost" style={{ fontSize: 11, padding: "3px 8px" }} onClick={() => revoke(s.jti)}>Revoke</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </SubCard>
   );
 }
 
@@ -853,44 +1011,48 @@ function BruteForceCard() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Brute-force lockout</h3>
-          <span className="meta">per-email + per-IP failed-login throttle</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <SubCard
+      title="Brute-force lockout"
+      meta="per-email + per-IP failed-login throttle"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
-            {enabled ? "Enabled" : "Off"}
-          </span>
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+          }}>{enabled ? "enabled" : "off"}</span>
+        </span>
+      }
+    >
+      <div style={{ opacity: enabled ? 1 : 0.6, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <VbField label="Max failed attempts">
+            <VbInput mono type="number" min={1} value={maxAttempts}
+              onChange={(e) => setMaxAttempts(e.target.value)}
+              disabled={!enabled || !loaded} />
+          </VbField>
+          <VbField label="Lockout duration (seconds)" hint="Default 900 (15 minutes). Min 60.">
+            <VbInput mono type="number" min={60} value={duration}
+              onChange={(e) => setDuration(e.target.value)}
+              disabled={!enabled || !loaded} />
+          </VbField>
         </div>
-      </div>
-      <div className="settings-section-body" style={{ opacity: enabled ? 1 : 0.6 }}>
-        <div className="row" style={{ gap: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Max failed attempts</label>
-            <input className="input mono" type="number" min={1} value={maxAttempts} onChange={(e) => setMaxAttempts(e.target.value)} disabled={!enabled || !loaded} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label className="label">Lockout duration (seconds)</label>
-            <input className="input mono" type="number" min={60} value={duration} onChange={(e) => setDuration(e.target.value)} disabled={!enabled || !loaded} />
-            <div className="help" style={{ fontSize: 11 }}>Default 900 (15 minutes). Min 60.</div>
-          </div>
-        </div>
-        <div className="help" style={{ marginTop: 12 }}>
-          Tracks both <code style={codeStyle}>email:&lt;addr&gt;</code> and <code style={codeStyle}>ip:&lt;addr&gt;</code> keys so a
+        <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
+          Tracks both <VbCode>email:&lt;addr&gt;</VbCode> and <VbCode>ip:&lt;addr&gt;</VbCode> keys so a
           spray attack across emails from one IP gets caught alongside a single-account attack.
-          Per-IP keying requires <code style={codeStyle}>VAULTBASE_TRUSTED_PROXIES</code> (or the proxies setting below) to
-          surface real client IPs through your reverse proxy.
+          Per-IP keying requires <VbCode>VAULTBASE_TRUSTED_PROXIES</VbCode> (or the proxies card below)
+          to surface real client IPs through your reverse proxy.
+        </div>
+        <div style={{
+          display: "flex", justifyContent: "flex-end",
+          paddingTop: 12, borderTop: "1px solid var(--vb-border)",
+        }}>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </VbBtn>
         </div>
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+    </SubCard>
   );
 }
 
@@ -921,33 +1083,39 @@ function TrustedProxiesCard() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Trusted proxies</h3>
-        <span className="meta">CIDRs allowed to set <code style={codeStyle}>X-Forwarded-For</code></span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Allowed proxy CIDRs (comma-separated)</label>
-          <div className="help">
-            Empty + no <code style={codeStyle}>VAULTBASE_TRUSTED_PROXIES</code> env → vaultbase ignores
-            <code style={codeStyle}>X-Forwarded-For</code> entirely (defensive default). Set this when your
-            reverse proxy / load balancer sits in front of vaultbase.
-          </div>
-        </div>
-        <input className="input mono" value={value} onChange={(e) => setValue(e.target.value)} placeholder="10.0.0.0/8,127.0.0.1/32" disabled={!loaded} />
+    <SubCard
+      title="Trusted proxies"
+      meta={<>CIDRs allowed to set <VbCode>X-Forwarded-For</VbCode></>}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <VbField
+          label="Allowed proxy CIDRs (comma-separated)"
+          hint={
+            <>
+              Empty + no <VbCode>VAULTBASE_TRUSTED_PROXIES</VbCode> env → vaultbase ignores{" "}
+              <VbCode>X-Forwarded-For</VbCode> entirely (defensive default). Set this when your
+              reverse proxy / load balancer sits in front of vaultbase.
+            </>
+          }
+        >
+          <VbInput mono value={value} onChange={(e) => setValue(e.target.value)}
+            placeholder="10.0.0.0/8,127.0.0.1/32" disabled={!loaded} />
+        </VbField>
         {envFallback && !value.trim() && (
-          <div className="help" style={{ marginTop: 8 }}>
-            Currently effective via env: <code style={codeStyle}>{envFallback}</code>
+          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+            Currently effective via env: <VbCode>{envFallback}</VbCode>
           </div>
         )}
+        <div style={{
+          display: "flex", justifyContent: "flex-end",
+          paddingTop: 12, borderTop: "1px solid var(--vb-border)",
+        }}>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </VbBtn>
+        </div>
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+    </SubCard>
   );
 }
 
@@ -963,45 +1131,53 @@ function FingerprintsCard() {
   }, []);
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Secrets fingerprints</h3>
-        <span className="meta">read-only · SHA-256 first 8 bytes</span>
-      </div>
-      <div className="settings-section-body">
-        {loading ? (
-          <div className="muted" style={{ fontSize: 12 }}>loading…</div>
-        ) : !fp ? (
-          <div className="muted" style={{ fontSize: 12 }}>—</div>
-        ) : (
-          <>
-            <div className="row" style={{ gap: 16 }}>
-              <div style={{ flex: 1 }}>
-                <label className="label">JWT signing secret</label>
-                <div className="mono" style={{ fontSize: 13 }}>{fp.jwt_secret_fingerprint}</div>
+    <SubCard title="Secrets fingerprints" meta="read-only · SHA-256 first 8 bytes">
+      {loading ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>loading…</div>
+      ) : !fp ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>—</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <VbField label="JWT signing secret">
+              <div style={{ fontSize: 13, color: "var(--vb-fg)", fontFamily: "var(--font-mono)" }}>
+                {fp.jwt_secret_fingerprint}
               </div>
-              <div style={{ flex: 1 }}>
-                <label className="label">AES encryption key</label>
-                <div className="mono" style={{ fontSize: 13, color: fp.encryption_key_present ? undefined : "var(--text-muted)" }}>
-                  {fp.encryption_key_present ? fp.encryption_key_fingerprint : "(not set — encrypted fields disabled)"}
-                </div>
+            </VbField>
+            <VbField label="AES encryption key">
+              <div style={{
+                fontSize: 13,
+                color: fp.encryption_key_present ? "var(--vb-fg)" : "var(--vb-fg-3)",
+                fontFamily: "var(--font-mono)",
+              }}>
+                {fp.encryption_key_present
+                  ? fp.encryption_key_fingerprint
+                  : "(not set — encrypted fields disabled)"}
               </div>
+            </VbField>
+          </div>
+          {!fp.encryption_key_present && (
+            <div style={{
+              padding: "8px 10px", borderRadius: 5,
+              background: "var(--vb-status-warning-bg)",
+              color: "var(--vb-status-warning)",
+              fontSize: 12, display: "flex", alignItems: "center", gap: 8,
+            }}>
+              <Icon name="alert" size={13} />
+              <span>
+                No <VbCode>VAULTBASE_ENCRYPTION_KEY</VbCode> set — fields marked{" "}
+                <VbCode>encrypted</VbCode> store plaintext.
+              </span>
             </div>
-            {!fp.encryption_key_present && (
-              <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 4, background: "rgba(251,191,36,0.1)", color: "#fbbf24", fontSize: 12 }}>
-                <Icon name="alert" size={12} /> No <code style={codeStyle}>VAULTBASE_ENCRYPTION_KEY</code> set —
-                fields marked <code style={codeStyle}>encrypted</code> store plaintext.
-              </div>
-            )}
-            <div className="help" style={{ marginTop: 12 }}>
-              Compare these across hosts in a fleet to confirm they share the same secrets.
-              A mismatch means JWTs from one host won't verify on the other and encrypted
-              fields written on one will be unreadable on the other.
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          )}
+          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
+            Compare these across hosts in a fleet to confirm they share the same secrets. A
+            mismatch means JWTs from one host won't verify on the other and encrypted fields
+            written on one will be unreadable on the other.
+          </div>
+        </div>
+      )}
+    </SubCard>
   );
 }
 
@@ -1015,16 +1191,16 @@ function HeadersPreviewCard() {
   }, []);
 
   function renderTable(headers: Record<string, string> | undefined) {
-    if (!headers) return <div className="muted" style={{ fontSize: 12 }}>—</div>;
+    if (!headers) return <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>—</div>;
     const entries = Object.entries(headers);
-    if (entries.length === 0) return <div className="muted" style={{ fontSize: 12 }}>(no headers)</div>;
+    if (entries.length === 0) return <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>(no headers)</div>;
     return (
-      <table style={{ width: "100%", fontSize: 11 }} className="mono">
+      <table style={{ width: "100%", fontSize: 11, fontFamily: "var(--font-mono)", borderCollapse: "collapse" }}>
         <tbody>
           {entries.map(([k, v]) => (
-            <tr key={k} style={{ borderBottom: "0.5px solid rgba(255,255,255,0.04)" }}>
-              <td style={{ padding: "5px 8px", color: "var(--accent-light)", whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
-              <td style={{ padding: "5px 8px", wordBreak: "break-all" }}>{v}</td>
+            <tr key={k} style={{ borderBottom: "1px solid var(--vb-border)" }}>
+              <td style={{ padding: "5px 8px", color: "var(--vb-accent)", whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
+              <td style={{ padding: "5px 8px", wordBreak: "break-all", color: "var(--vb-fg)" }}>{v}</td>
             </tr>
           ))}
         </tbody>
@@ -1033,23 +1209,17 @@ function HeadersPreviewCard() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Security headers</h3>
-        <span className="meta">read-only · what vaultbase emits per response</span>
+    <SubCard title="Security headers" meta="read-only · what vaultbase emits per response">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <VbField label="API responses">{renderTable(preview?.api)}</VbField>
+        <VbField
+          label="Admin UI / non-API responses"
+          hint="CSP applies here only — the API surface returns JSON and doesn't need it."
+        >
+          {renderTable(preview?.ui)}
+        </VbField>
       </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">API responses</label>
-        </div>
-        {renderTable(preview?.api)}
-        <div className="label-block" style={{ marginTop: 16 }}>
-          <label className="label">Admin UI / non-API responses</label>
-          <div className="help">CSP applies here only — the API surface returns JSON and doesn't need it.</div>
-        </div>
-        {renderTable(preview?.ui)}
-      </div>
-    </div>
+    </SubCard>
   );
 }
 
@@ -1096,57 +1266,56 @@ function PasswordPolicySection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Password policy</h3>
-        <span className="meta">applies to admin + auth-collection users</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Minimum length</label>
-          <div className="help">NIST 800-63B recommends at least 8 characters; OWASP recommends 12. Floor is 8.</div>
-        </div>
-        <input className="input mono" type="number" min={8} value={minLen} onChange={(e) => setMinLen(e.target.value)} disabled={!loaded} style={{ maxWidth: 120 }} />
+    <SectionShell id="password-policy">
+      <VbField
+        label="Minimum length"
+        hint="NIST 800-63B recommends at least 8 characters; OWASP recommends 12. Floor is 8."
+      >
+        <VbInput
+          mono type="number" min={8} value={minLen}
+          onChange={(e) => setMinLen(e.target.value)} disabled={!loaded}
+          style={{ maxWidth: 120 }}
+        />
+      </VbField>
 
-        <div className="label-block" style={{ marginTop: 16 }}>
-          <label className="label">Required character classes</label>
-          <div className="help">
-            Off by default — modern guidance favors length over character-class complexity.
-            Enable only if a compliance regime requires it.
-          </div>
+      <VbField
+        label="Required character classes"
+        hint="Off by default — modern guidance favors length over character-class complexity. Enable only if a compliance regime requires it."
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {[
+            { key: "upper",  label: "Uppercase letter (A-Z)", on: reqUpper,  set: setReqUpper  },
+            { key: "lower",  label: "Lowercase letter (a-z)", on: reqLower,  set: setReqLower  },
+            { key: "digit",  label: "Digit (0-9)",            on: reqDigit,  set: setReqDigit  },
+            { key: "symbol", label: "Symbol (anything non-alphanumeric)", on: reqSymbol, set: setReqSymbol },
+          ].map((row) => (
+            <div key={row.key} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <Toggle on={row.on} onChange={row.set} />
+              <span style={{ fontSize: 12, color: "var(--vb-fg-2)" }}>{row.label}</span>
+            </div>
+          ))}
         </div>
-        {[
-          { key: "upper",  label: "Uppercase letter (A-Z)", on: reqUpper,  set: setReqUpper  },
-          { key: "lower",  label: "Lowercase letter (a-z)", on: reqLower,  set: setReqLower  },
-          { key: "digit",  label: "Digit (0-9)",            on: reqDigit,  set: setReqDigit  },
-          { key: "symbol", label: "Symbol (anything non-alphanumeric)", on: reqSymbol, set: setReqSymbol },
-        ].map((row) => (
-          <div key={row.key} className="row" style={{ gap: 10, alignItems: "center", marginTop: 8 }}>
-            <Toggle on={row.on} onChange={row.set} />
-            <span style={{ fontSize: 12 }}>{row.label}</span>
-          </div>
-        ))}
+      </VbField>
 
-        <div className="label-block" style={{ marginTop: 24 }}>
-          <label className="label">Have-I-Been-Pwned check</label>
-          <div className="help">
-            Reject passwords found in known breach corpora. Uses the
-            <code style={codeStyle}>api.pwnedpasswords.com</code> k-anonymity API —
-            only the first 5 SHA-1 characters leave the server. Fails open on network error
-            so a downed API doesn't lock signups.
-          </div>
-        </div>
-        <div className="row" style={{ gap: 10, alignItems: "center", marginTop: 8 }}>
+      <VbField
+        label="Have-I-Been-Pwned check"
+        hint={
+          <>
+            Reject passwords found in known breach corpora. Uses the{" "}
+            <VbCode>api.pwnedpasswords.com</VbCode> k-anonymity API — only the first 5 SHA-1
+            characters leave the server. Fails open on network error so a downed API doesn't
+            lock signups.
+          </>
+        }
+      >
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <Toggle on={hibp} onChange={setHibp} />
-          <span style={{ fontSize: 12 }}>Block breached passwords</span>
+          <span style={{ fontSize: 12, color: "var(--vb-fg-2)" }}>Block breached passwords</span>
         </div>
-      </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+      </VbField>
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
   );
 }
 
@@ -1186,46 +1355,51 @@ function MetricsSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Health &amp; metrics</h3>
-          <span className="meta">Prometheus exposition at <code style={codeStyle}>/api/v1/metrics</code></span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <SectionShell
+      id="metrics"
+      sub={<>Prometheus exposition at <VbCode>/api/v1/metrics</VbCode>.</>}
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
-            {enabled ? "Enabled" : "Off"}
-          </span>
-        </div>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Bearer token (optional)</label>
-          <div className="help">
-            When set, scrapers must send <code style={codeStyle}>Authorization: Bearer &lt;token&gt;</code>.
-            Leave blank to expose <code style={codeStyle}>/api/v1/metrics</code> publicly — only do this
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+          }}>{enabled ? "enabled" : "off"}</span>
+        </span>
+      }
+    >
+      <VbField
+        label="Bearer token (optional)"
+        hint={
+          <>
+            When set, scrapers must send <VbCode>Authorization: Bearer &lt;token&gt;</VbCode>.
+            Leave blank to expose <VbCode>/api/v1/metrics</VbCode> publicly — only do this
             if the endpoint is protected at the proxy layer.
-          </div>
+          </>
+        }
+      >
+        <div style={{ display: "flex", gap: 8 }}>
+          <VbInput
+            mono
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="(blank = no auth)"
+            disabled={!loaded}
+            style={{ flex: 1 }}
+          />
+          <VbBtn kind="ghost" size="sm" onClick={regenerateToken} icon="refresh">Generate</VbBtn>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <input className="input mono" value={token} onChange={(e) => setToken(e.target.value)} placeholder="(blank = no auth)" disabled={!loaded} style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={regenerateToken}>Generate</button>
-        </div>
+      </VbField>
 
-        <div className="help" style={{ marginTop: 16 }}>
-          Endpoint format: <code style={codeStyle}>text/plain; version=0.0.4</code> — the standard
-          Prometheus exposition. Exports request RPS, total counter, uptime, per-step latency
-          summary (p50/p90/p99/p99.9), and SQLite page/WAL gauges. Always available to admins as
-          JSON at <code style={codeStyle}>/_/metrics</code>.
-        </div>
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        Endpoint format: <VbCode>text/plain; version=0.0.4</VbCode> — the standard Prometheus
+        exposition. Exports request RPS, total counter, uptime, per-step latency summary
+        (p50/p90/p99/p99.9), and SQLite page/WAL gauges. Always available to admins as JSON at{" "}
+        <VbCode>/_/metrics</VbCode>.
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
   );
 }
 
@@ -1285,143 +1459,122 @@ function UpdatesSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Updates</h3>
-          <span className="meta">polls GitHub for the latest release tag</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <SectionShell
+      id="updates"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
-            {enabled ? "Auto-check on" : "Off"}
+          <span style={{
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+            textTransform: "lowercase",
+            letterSpacing: 0.3,
+          }}>
+            {enabled ? "auto-check on" : "off"}
           </span>
-        </div>
-      </div>
-      <div className="settings-section-body">
-        {status && (
-          <div
-            style={{
-              padding: "20px 22px",
-              borderRadius: 10,
-              background: status.update_available
-                ? "linear-gradient(180deg, rgba(96,165,250,0.10), rgba(96,165,250,0.02))"
-                : "rgba(255,255,255,0.02)",
-              border: `1px solid ${status.update_available ? "rgba(96,165,250,0.3)" : "var(--border-default)"}`,
-              marginBottom: 20,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
-                    Installed
-                  </div>
-                  <div className="mono" style={{ fontSize: 20, fontWeight: 600, lineHeight: 1.3 }}>
-                    v{status.current_version}
-                  </div>
+        </span>
+      }
+    >
+      {status && (
+        <div style={{
+          padding: 16,
+          borderRadius: 8,
+          background: "var(--vb-bg-2)",
+          border: `1px solid ${status.update_available ? "var(--vb-accent-soft)" : "var(--vb-border)"}`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+              <div>
+                <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 1.2, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+                  Installed
                 </div>
-                <Icon
-                  name="arrowRight"
-                  size={16}
-                  style={{ color: status.update_available ? "var(--accent-light)" : "var(--text-muted)", flexShrink: 0 }}
-                />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)" }}>
-                    Latest
-                  </div>
-                  <div
-                    className="mono"
-                    style={{
-                      fontSize: 20,
-                      fontWeight: 600,
-                      lineHeight: 1.3,
-                      color: status.update_available ? "var(--accent-light)" : undefined,
-                    }}
-                  >
-                    {status.latest_version ?? <span className="muted" style={{ fontSize: 14, fontWeight: 400 }}>—</span>}
-                  </div>
+                <div style={{ fontSize: 18, fontWeight: 600, lineHeight: 1.3, color: "var(--vb-fg)", fontFamily: "var(--font-mono)" }}>
+                  v{status.current_version}
                 </div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    padding: "3px 8px",
-                    borderRadius: 10,
-                    background: status.update_available
-                      ? "rgba(96,165,250,0.15)"
-                      : status.latest_version
-                        ? "rgba(74,222,128,0.12)"
-                        : "rgba(255,255,255,0.06)",
-                    color: status.update_available
-                      ? "var(--accent-light)"
-                      : status.latest_version
-                        ? "var(--success)"
-                        : "var(--text-muted)",
-                  }}
-                >
-                  {status.update_available ? "UPDATE AVAILABLE" : status.latest_version ? "UP TO DATE" : "NEVER CHECKED"}
-                </span>
-                <span className="muted" style={{ fontSize: 11 }}>
-                  {status.checked_at ? `checked ${relativeShort(status.checked_at)} ago` : "—"}
-                </span>
+              <Icon
+                name="chevronRight"
+                size={14}
+                style={{ color: status.update_available ? "var(--vb-accent)" : "var(--vb-fg-3)", flexShrink: 0 }}
+              />
+              <div>
+                <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 1.2, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+                  Latest
+                </div>
+                <div style={{
+                  fontSize: 18, fontWeight: 600, lineHeight: 1.3,
+                  color: status.update_available ? "var(--vb-accent)" : "var(--vb-fg)",
+                  fontFamily: "var(--font-mono)",
+                }}>
+                  {status.latest_version ?? <span style={{ fontSize: 14, fontWeight: 400, color: "var(--vb-fg-3)" }}>—</span>}
+                </div>
               </div>
             </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+              <VbPill tone={status.update_available ? "accent" : status.latest_version ? "success" : "neutral"} dot>
+                {status.update_available ? "update available" : status.latest_version ? "up to date" : "never checked"}
+              </VbPill>
+              <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+                {status.checked_at ? `checked ${relativeShort(status.checked_at)} ago` : "—"}
+              </span>
+            </div>
           </div>
-        )}
-
-        {status?.update_available && status.latest_version && (
-          <a
-            href={`https://github.com/vaultbase-sh/vaultbase/releases/tag/${status.latest_version}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "14px 16px",
-              borderRadius: 8,
-              background: "rgba(96,165,250,0.08)",
-              border: "1px solid rgba(96,165,250,0.25)",
-              color: "var(--accent-light)",
-              fontSize: 13,
-              textDecoration: "none",
-              marginBottom: 20,
-            }}
-          >
-            <Icon name="download" size={14} />
-            <span style={{ flex: 1 }}>
-              View release notes for <code style={codeStyle}>{status.latest_version}</code> on GitHub
-            </span>
-            <Icon name="arrowRight" size={12} />
-          </a>
-        )}
-
-        {status?.last_error && (
-          <div style={{ padding: "12px 14px", borderRadius: 6, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12, marginBottom: 20, display: "flex", gap: 8, alignItems: "center" }}>
-            <Icon name="alert" size={14} />
-            <span>Last check failed: {status.last_error}</span>
-          </div>
-        )}
-
-        <div className="help" style={{ lineHeight: 1.6 }}>
-          Polls <code style={codeStyle}>api.github.com/repos/vaultbase-sh/vaultbase/releases/latest</code>{" "}
-          on boot (after a 30 s delay) and every 6 hours. Disable to silence the poller — no banner,
-          no network call. Vaultbase never auto-updates; this is purely a notification.
         </div>
+      )}
+
+      {status?.update_available && status.latest_version && (
+        <a
+          href={`https://github.com/vaultbase-sh/vaultbase/releases/tag/${status.latest_version}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "12px 14px", borderRadius: 6,
+            background: "var(--vb-accent-soft)",
+            border: "1px solid var(--vb-accent-soft)",
+            color: "var(--vb-accent)",
+            fontSize: 12.5, textDecoration: "none",
+          }}
+        >
+          <Icon name="download" size={14} />
+          <span style={{ flex: 1 }}>
+            View release notes for <VbCode>{status.latest_version}</VbCode> on GitHub
+          </span>
+          <Icon name="chevronRight" size={12} />
+        </a>
+      )}
+
+      {status?.last_error && (
+        <div style={{
+          padding: "10px 12px", borderRadius: 6,
+          background: "var(--vb-status-danger-bg)",
+          color: "var(--vb-status-danger)",
+          fontSize: 12, display: "flex", gap: 8, alignItems: "center",
+        }}>
+          <Icon name="alert" size={13} />
+          <span>Last check failed: {status.last_error}</span>
+        </div>
+      )}
+
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        Polls <VbCode>api.github.com/repos/vaultbase-sh/vaultbase/releases/latest</VbCode> on boot
+        (after a 30 s delay) and every 6 hours. Disable to silence the poller — no banner, no
+        network call. Vaultbase never auto-updates; this is purely a notification.
       </div>
-      <div className="settings-section-foot" style={{ justifyContent: "space-between" }}>
-        <button className="btn btn-ghost" onClick={checkNow} disabled={!loaded || checking || !enabled}>
-          <Icon name="refresh" size={12} /> {checking ? "Checking…" : "Check now"}
-        </button>
-        <button className="btn btn-primary" onClick={save} disabled={!loaded || saving}>
+
+      <div style={{
+        display: "flex", justifyContent: "space-between", gap: 8,
+        paddingTop: 4, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="ghost" size="sm" icon="refresh" onClick={checkNow} disabled={!loaded || checking || !enabled}>
+          {checking ? "Checking…" : "Check now"}
+        </VbBtn>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
           {saving ? "Saving…" : "Save changes"}
-        </button>
+        </VbBtn>
       </div>
-    </div>
+    </SectionShell>
   );
 }
 
@@ -1493,46 +1646,43 @@ function BackupSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Backup & restore</h3>
-        <span className="meta">SQLite snapshot</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Download backup</label>
-          <div className="help">Downloads the live <code style={codeStyle}>data.db</code> file. Uploaded files are not included.</div>
-        </div>
+    <SectionShell id="backup">
+      <VbField
+        label="Download backup"
+        hint={<>Downloads the live <VbCode>data.db</VbCode> file. Uploaded files are not included.</>}
+      >
         <div>
-          <button className="btn btn-ghost" onClick={handleDownload}>
-            <Icon name="download" size={12} /> Download .db
-          </button>
+          <VbBtn kind="ghost" size="sm" icon="download" onClick={handleDownload}>
+            Download .db
+          </VbBtn>
         </div>
-        <div className="label-block span2"><div className="divider" style={{ margin: 0 }} /></div>
-        <div className="label-block">
-          <label className="label" style={{ color: "var(--warning)" }}>Restore from backup</label>
-          <div className="help">
-            Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged).
-          </div>
-        </div>
+      </VbField>
+
+      <VbField
+        label="Restore from backup"
+        hint="Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged)."
+        right={<VbPill tone="warning" dot>destructive</VbPill>}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".db,application/octet-stream"
+          style={{ display: "none" }}
+          onChange={handleRestore}
+        />
         <div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".db,application/octet-stream"
-            style={{ display: "none" }}
-            onChange={handleRestore}
-          />
-          <button
-            className="btn btn-ghost"
+          <VbBtn
+            kind="danger"
+            size="sm"
+            icon="upload"
             onClick={() => fileInputRef.current?.click()}
             disabled={restoring}
           >
-            <Icon name="upload" size={12} /> {restoring ? "Restoring…" : "Upload .db"}
-          </button>
+            {restoring ? "Restoring…" : "Upload .db"}
+          </VbBtn>
         </div>
-      </div>
-    </div>
+      </VbField>
+    </SectionShell>
   );
 }
 
@@ -1598,117 +1748,82 @@ function SmtpSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>SMTP / Email</h3>
-          <span className="meta">outbound email via SMTP server</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <SectionShell
+      id="smtp"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
-          <span style={{ fontSize: 12, color: enabled ? "var(--success)" : "var(--text-muted)" }}>
-            {enabled ? "Enabled" : "Disabled"}
-          </span>
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+          }}>{enabled ? "enabled" : "disabled"}</span>
+        </span>
+      }
+    >
+      <div style={{ opacity: enabled ? 1 : 0.5, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 200px", gap: 14 }}>
+          <VbField label="Host" hint={<>SMTP server hostname (e.g. <VbCode>smtp.resend.com</VbCode>)</>}>
+            <VbInput mono value={host} onChange={(e) => setHost(e.target.value)}
+              placeholder="smtp.example.com" disabled={!enabled || loading} />
+          </VbField>
+          <VbField label="Port" hint="587 / 465 / 25">
+            <VbInput mono type="number" min={1} max={65535} value={port}
+              onChange={(e) => setPort(e.target.value)} disabled={!enabled || loading} />
+          </VbField>
+          <VbField label="Secure (TLS)" hint="On for port 465; off for STARTTLS on 587.">
+            <div style={{ display: "flex", alignItems: "center", gap: 10, height: 32 }}>
+              <Toggle on={secure} onChange={setSecure} />
+              <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>
+                {secure ? "TLS" : "STARTTLS"}
+              </span>
+            </div>
+          </VbField>
         </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <VbField label="Username" hint="SMTP auth username (often your email or API key id)">
+            <VbInput mono value={user} onChange={(e) => setUser(e.target.value)}
+              placeholder="apikey or user@example.com" autoComplete="off"
+              disabled={!enabled || loading} />
+          </VbField>
+          <VbField label="Password" hint="SMTP auth password / API key.">
+            <VbInput mono type="password" value={pass} onChange={(e) => setPass(e.target.value)}
+              placeholder="••••••••" autoComplete="new-password"
+              disabled={!enabled || loading} />
+          </VbField>
+        </div>
+
+        <VbField label="From address" hint={<>Sender used in <VbCode>From:</VbCode> header</>}>
+          <VbInput mono value={from} onChange={(e) => setFrom(e.target.value)}
+            placeholder='"Vaultbase" <noreply@example.com>' disabled={!enabled || loading} />
+        </VbField>
       </div>
 
-      <div className="settings-section-body" style={{ opacity: enabled ? 1 : 0.5 }}>
-        <div className="label-block">
-          <label className="label">Host</label>
-          <div className="help">SMTP server hostname (e.g. <code style={codeStyle}>smtp.resend.com</code>)</div>
-        </div>
-        <input
-          className="input mono"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-          placeholder="smtp.example.com"
-          disabled={!enabled || loading}
-        />
-
-        <div className="label-block">
-          <label className="label">Port</label>
-          <div className="help">Common: 587 (STARTTLS), 465 (TLS), 25 (plain)</div>
-        </div>
-        <input
-          className="input mono"
-          type="number"
-          min={1}
-          max={65535}
-          value={port}
-          onChange={(e) => setPort(e.target.value)}
-          disabled={!enabled || loading}
-        />
-
-        <div className="label-block">
-          <label className="label">Secure (TLS)</label>
-          <div className="help">Enable for port 465. Leave off for STARTTLS on 587.</div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Toggle on={secure} onChange={setSecure} />
-          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-            {secure ? "TLS" : "STARTTLS"}
-          </span>
-        </div>
-
-        <div className="label-block">
-          <label className="label">Username</label>
-          <div className="help">SMTP auth username (often your email or API key id)</div>
-        </div>
-        <input
-          className="input mono"
-          value={user}
-          onChange={(e) => setUser(e.target.value)}
-          placeholder="apikey or user@example.com"
-          autoComplete="off"
-          disabled={!enabled || loading}
-        />
-
-        <div className="label-block">
-          <label className="label">Password</label>
-          <div className="help">SMTP auth password / API key. Stored in plaintext in the settings table.</div>
-        </div>
-        <input
-          className="input mono"
-          type="password"
-          value={pass}
-          onChange={(e) => setPass(e.target.value)}
-          placeholder="••••••••"
-          autoComplete="new-password"
-          disabled={!enabled || loading}
-        />
-
-        <div className="label-block">
-          <label className="label">From address</label>
-          <div className="help">Sender used in <code style={codeStyle}>From:</code> header</div>
-        </div>
-        <input
-          className="input mono"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          placeholder='"Vaultbase" <noreply@example.com>'
-          disabled={!enabled || loading}
-        />
-      </div>
-
-      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        flexWrap: "wrap", gap: 10,
+        paddingTop: 12, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input
-            className="input mono"
-            style={{ width: 240 }}
+          <VbInput
+            mono
+            style={{ width: 260 }}
             value={testTo}
             onChange={(e) => setTestTo(e.target.value)}
             placeholder="test recipient email"
             disabled={!enabled || loading}
           />
-          <button className="btn btn-ghost" onClick={handleTest} disabled={!enabled || loading || testing}>
-            <Icon name="play" size={11} /> {testing ? "Sending…" : "Send test"}
-          </button>
+          <VbBtn kind="ghost" size="sm" icon="send"
+            onClick={handleTest} disabled={!enabled || loading || testing}>
+            {testing ? "Sending…" : "Send test"}
+          </VbBtn>
         </div>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+        <VbBtn kind="primary" size="sm" icon="check"
+          onClick={handleSave} disabled={loading || saving}>
           {saving ? "Saving…" : "Save changes"}
-        </button>
+        </VbBtn>
       </div>
-    </div>
+    </SectionShell>
   );
 }
 
@@ -1763,96 +1878,84 @@ function EmailTemplatesSection() {
     toast("Email templates saved");
   }
 
+  const taStyle: React.CSSProperties = {
+    width: "100%", padding: "8px 10px",
+    background: "var(--vb-bg-3)", border: "1px solid var(--vb-border-2)",
+    borderRadius: 5, color: "var(--vb-fg)",
+    fontFamily: "var(--font-mono)", fontSize: 12,
+    outline: "none", resize: "vertical",
+  };
+
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Email templates</h3>
-        <span className="meta">verify + password reset</span>
-      </div>
+    <SectionShell id="templates">
+      <VbField
+        label="App URL"
+        hint={<>Base URL of your frontend. Used to build the <VbCode>{`{{link}}`}</VbCode> in emails.</>}
+      >
+        <VbInput mono value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://example.com" disabled={loading} />
+      </VbField>
 
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">App URL</label>
-          <div className="help">Base URL of your frontend. Used to build the <code style={codeStyle}>{`{{link}}`}</code> in emails.</div>
-        </div>
-        <input
-          className="input mono"
-          value={appUrl}
-          onChange={(e) => setAppUrl(e.target.value)}
-          placeholder="https://example.com"
-          disabled={loading}
-        />
-
-        <div className="label-block span2">
-          <div className="divider" style={{ margin: 0 }} />
-        </div>
-
-        <div className="label-block span2">
-          <label className="label">Verification email</label>
-          <div className="help">
-            Sent on registration and via <code style={codeStyle}>POST /api/v1/auth/:collection/request-verify</code>.
-            Variables: <code style={codeStyle}>{`{{email}}`}</code> <code style={codeStyle}>{`{{token}}`}</code> <code style={codeStyle}>{`{{link}}`}</code> <code style={codeStyle}>{`{{appUrl}}`}</code> <code style={codeStyle}>{`{{collection}}`}</code>
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 10,
+        padding: 14, borderRadius: 8,
+        background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
+            Verification email
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+            Sent on registration and via{" "}
+            <VbCode>POST /api/v1/auth/:collection/request-verify</VbCode>. Variables:{" "}
+            <VbCode>{`{{email}}`}</VbCode> <VbCode>{`{{token}}`}</VbCode>{" "}
+            <VbCode>{`{{link}}`}</VbCode> <VbCode>{`{{appUrl}}`}</VbCode>{" "}
+            <VbCode>{`{{collection}}`}</VbCode>
           </div>
         </div>
-        <div className="label-block">
-          <label className="label">Subject</label>
-        </div>
-        <input
-          className="input mono"
-          value={verifySubject}
-          onChange={(e) => setVerifySubject(e.target.value)}
-          disabled={loading}
-        />
-        <div className="label-block">
-          <label className="label">Body (plain text)</label>
-        </div>
-        <textarea
-          className="input mono"
-          rows={8}
-          value={verifyBody}
-          onChange={(e) => setVerifyBody(e.target.value)}
-          disabled={loading}
-          style={{ fontFamily: "var(--font-mono)", resize: "vertical" }}
-        />
+        <VbField label="Subject">
+          <VbInput mono value={verifySubject} onChange={(e) => setVerifySubject(e.target.value)} disabled={loading} />
+        </VbField>
+        <VbField label="Body (plain text)">
+          <textarea
+            rows={8}
+            value={verifyBody}
+            onChange={(e) => setVerifyBody(e.target.value)}
+            disabled={loading}
+            style={taStyle}
+          />
+        </VbField>
+      </div>
 
-        <div className="label-block span2">
-          <div className="divider" style={{ margin: 0 }} />
-        </div>
-
-        <div className="label-block span2">
-          <label className="label">Password reset email</label>
-          <div className="help">
-            Sent via <code style={codeStyle}>POST /api/v1/auth/:collection/request-password-reset</code>. Same variables as above.
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 10,
+        padding: 14, borderRadius: 8,
+        background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
+      }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
+            Password reset email
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+            Sent via <VbCode>POST /api/v1/auth/:collection/request-password-reset</VbCode>. Same
+            variables as above.
           </div>
         </div>
-        <div className="label-block">
-          <label className="label">Subject</label>
-        </div>
-        <input
-          className="input mono"
-          value={resetSubject}
-          onChange={(e) => setResetSubject(e.target.value)}
-          disabled={loading}
-        />
-        <div className="label-block">
-          <label className="label">Body (plain text)</label>
-        </div>
-        <textarea
-          className="input mono"
-          rows={8}
-          value={resetBody}
-          onChange={(e) => setResetBody(e.target.value)}
-          disabled={loading}
-          style={{ fontFamily: "var(--font-mono)", resize: "vertical" }}
-        />
+        <VbField label="Subject">
+          <VbInput mono value={resetSubject} onChange={(e) => setResetSubject(e.target.value)} disabled={loading} />
+        </VbField>
+        <VbField label="Body (plain text)">
+          <textarea
+            rows={8}
+            value={resetBody}
+            onChange={(e) => setResetBody(e.target.value)}
+            disabled={loading}
+            style={taStyle}
+          />
+        </VbField>
       </div>
 
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+      <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
+    </SectionShell>
   );
 }
 
@@ -1926,39 +2029,43 @@ function AuthFeaturesSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Auth features</h3>
-        <span className="meta">enable / disable per-feature</span>
+    <SectionShell id="auth">
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+        Disabled features return <VbCode>422</VbCode> from their endpoints. Disabling MFA blocks
+        new enrollment only — already-enrolled users keep working.
       </div>
 
-      <div className="settings-section-body" style={{ gridTemplateColumns: "1fr", padding: "10px 14px" }}>
-        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
-          Disabled features return <code style={codeStyle}>422</code> from their endpoints. Disabling MFA blocks new enrollment only — already-enrolled users keep working.
-        </div>
-
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {AUTH_FEATURES.map((f) => {
           const on = isOn(f.key, f.defaultOn);
           return (
             <div
               key={f.key}
               style={{
-                border: "0.5px solid var(--border-default)",
+                border: "1px solid var(--vb-border)",
                 borderRadius: 7,
                 padding: "12px 14px",
-                marginBottom: 8,
-                background: on ? "rgba(255,255,255,0.02)" : "transparent",
+                background: on ? "var(--vb-bg-2)" : "transparent",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>{f.label}</div>
-                  <div className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>{f.description}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2, color: "var(--vb-fg)" }}>
+                    {f.label}
+                  </div>
+                  <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--vb-fg-3)" }}>
+                    {f.description}
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                   <Toggle on={on} onChange={(v) => setKey(f.key, v)} />
-                  <span style={{ fontSize: 12, color: on ? "var(--success)" : "var(--text-muted)", minWidth: 60 }}>
-                    {on ? "Enabled" : "Disabled"}
+                  <span style={{
+                    fontSize: 11,
+                    fontFamily: "var(--font-mono)",
+                    color: on ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+                    minWidth: 56,
+                  }}>
+                    {on ? "enabled" : "disabled"}
                   </span>
                 </div>
               </div>
@@ -1967,12 +2074,8 @@ function AuthFeaturesSection() {
         })}
       </div>
 
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+      <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
+    </SectionShell>
   );
 }
 
@@ -2056,18 +2159,27 @@ function SessionLifetimesSection() {
     toast("Session lifetimes saved");
   }
 
+  // Rendered as a sibling block under the "Auth" SectionShell (no own page
+  // header — there's only one header per tab). Visually a card-style group.
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Session lifetimes</h3>
-        <span className="meta">JWT exp window per token kind, in seconds</span>
+    <div style={{
+      padding: "20px 28px 32px",
+      borderTop: "1px solid var(--vb-border)",
+      display: "flex", flexDirection: "column", gap: 16,
+    }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
+          Session lifetimes
+        </h2>
+        <p style={{ margin: 0, fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
+          JWT <VbCode>exp</VbCode> window per token kind, in seconds. Changing a window affects{" "}
+          <strong style={{ color: "var(--vb-fg-2)" }}>newly issued</strong> tokens only — existing
+          tokens keep their original expiry. To revoke active sessions immediately, rotate the JWT
+          secret in <VbCode>data_dir/.secret</VbCode> and restart.
+        </p>
       </div>
 
-      <div className="settings-section-body" style={{ gridTemplateColumns: "1fr", padding: "10px 14px" }}>
-        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
-          Changing a window affects <strong>newly issued</strong> tokens only — existing tokens keep their original expiry. To revoke active sessions immediately, rotate the JWT secret in <code style={codeStyle}>data_dir/.secret</code> and restart.
-        </div>
-
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {SESSION_KINDS.map((k) => {
           const current = parseInt(values[k.kind] ?? String(k.defaultSeconds), 10);
           const isDefault = current === k.defaultSeconds;
@@ -2075,46 +2187,46 @@ function SessionLifetimesSection() {
             <div
               key={k.kind}
               style={{
-                border: "0.5px solid var(--border-default)",
+                border: "1px solid var(--vb-border)",
                 borderRadius: 7,
                 padding: "12px 14px",
-                marginBottom: 8,
-                background: "rgba(255,255,255,0.02)",
+                background: "var(--vb-bg-2)",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>
-                    {k.label}{" "}
-                    <span className="muted mono" style={{ fontSize: 10, fontWeight: 400 }}>
-                      ({fmtDuration(current)}{isDefault ? " · default" : ""})
-                    </span>
-                  </div>
-                  <div className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>{k.description}</div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>
+                  {k.label}{" "}
+                  <span style={{
+                    fontSize: 10.5, fontWeight: 400, color: "var(--vb-fg-3)",
+                    fontFamily: "var(--font-mono)",
+                  }}>
+                    ({fmtDuration(current)}{isDefault ? " · default" : ""})
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--vb-fg-3)", marginTop: 2 }}>
+                  {k.description}
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={60}
-                  max={365 * 86400}
+                <VbInput
+                  mono type="number" min={60} max={365 * 86400}
                   value={values[k.kind] ?? ""}
                   onChange={(e) => setVal(k.kind, e.target.value)}
                   disabled={loading}
                   style={{ width: 140 }}
                 />
-                <span className="muted" style={{ fontSize: 11 }}>seconds</span>
+                <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>seconds</span>
                 {PRESETS.map((p) => (
-                  <button
+                  <VbBtn
                     key={p.label}
-                    className="btn btn-ghost"
-                    style={{ fontSize: 11, padding: "2px 8px", height: 24 }}
+                    kind="ghost"
+                    size="sm"
                     onClick={() => setVal(k.kind, String(p.seconds))}
                     disabled={loading}
+                    style={{ height: 24, padding: "0 8px", fontSize: 11 }}
                   >
                     {p.label}
-                  </button>
+                  </VbBtn>
                 ))}
               </div>
             </div>
@@ -2122,11 +2234,7 @@ function SessionLifetimesSection() {
         })}
       </div>
 
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
+      <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
     </div>
   );
 }
@@ -2265,20 +2373,22 @@ function OAuth2Section() {
   const enabledCount = OAUTH_PROVIDERS.filter((p) => isOn(p.name)).length;
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>OAuth2 providers</h3>
-        <span className="meta">{enabledCount} of {OAUTH_PROVIDERS.length} enabled</span>
+    <SectionShell
+      id="oauth2"
+      right={
+        <VbPill tone={enabledCount > 0 ? "success" : "neutral"} dot>
+          {enabledCount} of {OAUTH_PROVIDERS.length} enabled
+        </VbPill>
+      }
+    >
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
+        Enable a provider to expose it via{" "}
+        <VbCode>GET /api/v1/auth/&lt;collection&gt;/oauth2/providers</VbCode>. Your app drives the
+        popup + state, then POSTs the code to{" "}
+        <VbCode>/api/v1/auth/&lt;collection&gt;/oauth2/exchange</VbCode>.
       </div>
 
-      <div className="settings-section-body" style={{ gridTemplateColumns: "1fr", padding: "10px 14px" }}>
-        <div className="muted" style={{ fontSize: 11, marginBottom: 10 }}>
-          Enable a provider to expose it via{" "}
-          <code style={codeStyle}>GET /api/v1/auth/&lt;collection&gt;/oauth2/providers</code>
-          {" · "}your app drives the popup + state, then POSTs the code to{" "}
-          <code style={codeStyle}>/api/v1/auth/&lt;collection&gt;/oauth2/exchange</code>.
-        </div>
-
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {OAUTH_PROVIDERS.map((p) => {
           const on = isOn(p.name);
           const isExpanded = expanded.has(p.name);
@@ -2286,131 +2396,116 @@ function OAuth2Section() {
             <div
               key={p.name}
               style={{
-                border: "0.5px solid var(--border-default)",
-                borderRadius: 7,
-                marginBottom: 8,
-                background: on ? "rgba(255,255,255,0.02)" : "transparent",
+                background: on ? "var(--vb-bg-2)" : "transparent",
+                border: "1px solid var(--vb-border)",
+                borderRadius: 8,
                 overflow: "hidden",
               }}
             >
-              {/* Collapsed header — click to expand */}
               <div
+                onClick={() => toggleExpanded(p.name)}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 12,
-                  padding: "10px 12px",
+                  padding: "10px 14px",
                   cursor: "pointer",
                   userSelect: "none",
                 }}
-                onClick={() => toggleExpanded(p.name)}
               >
+                <Icon name={isExpanded ? "chevronDown" : "chevronRight"} size={12} />
                 <ProviderLogo provider={p.name} size={20} />
-                <div style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{p.displayName}</div>
-                {on && (
-                  <span
-                    style={{
-                      fontSize: 10.5,
-                      color: "var(--success)",
-                      background: "rgba(74,222,128,0.1)",
-                      padding: "2px 8px",
-                      borderRadius: 10,
-                    }}
-                  >
-                    enabled
-                  </span>
-                )}
+                <div style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>
+                  {p.displayName}
+                </div>
+                {on && <VbPill tone="success" dot>enabled</VbPill>}
                 <div onClick={(e) => e.stopPropagation()}>
                   <Toggle
                     on={on}
                     onChange={(v) => set(`oauth2.${p.name}.enabled`, v ? "1" : "0")}
                   />
                 </div>
-                <Icon name={isExpanded ? "chevronDown" : "chevronRight"} size={12} />
               </div>
 
-              {/* Expanded body */}
               {isExpanded && (
-                <div
-                  style={{
-                    padding: "0 12px 14px 44px",
-                    borderTop: "0.5px solid rgba(255,255,255,0.04)",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 10,
-                  }}
-                >
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, paddingTop: 12 }}>
+                <div style={{
+                  padding: "14px 14px 14px 48px",
+                  borderTop: "1px solid var(--vb-border)",
+                  background: "var(--vb-bg-1)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 14,
+                }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                     {!p.hideStandardClientId && (
-                      <div>
-                        <label className="label">{p.name === "apple" ? "Services ID" : "Client ID"}</label>
-                        <input
-                          className="input mono"
-                          value={get(`oauth2.${p.name}.client_id`)}
+                      <VbField label={p.name === "apple" ? "Services ID" : "Client ID"}>
+                        <VbInput mono value={get(`oauth2.${p.name}.client_id`)}
                           onChange={(e) => set(`oauth2.${p.name}.client_id`, e.target.value)}
-                          placeholder="client identifier"
-                          autoComplete="off"
-                          disabled={loading}
-                        />
-                      </div>
+                          placeholder="client identifier" autoComplete="off"
+                          disabled={loading} />
+                      </VbField>
                     )}
                     {!p.hideStandardClientSecret && (
-                      <div>
-                        <label className="label">Client secret</label>
-                        <input
-                          className="input mono"
-                          type="password"
+                      <VbField label="Client secret">
+                        <VbInput mono type="password"
                           value={get(`oauth2.${p.name}.client_secret`)}
                           onChange={(e) => set(`oauth2.${p.name}.client_secret`, e.target.value)}
-                          placeholder="••••••••"
-                          autoComplete="new-password"
-                          disabled={loading}
-                        />
-                      </div>
+                          placeholder="••••••••" autoComplete="new-password"
+                          disabled={loading} />
+                      </VbField>
                     )}
                   </div>
 
                   {p.extraFields && p.extraFields.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                       {p.extraFields.map((f) => (
-                        <div key={f.key}>
-                          <label className="label">{f.label}</label>
+                        <VbField key={f.key} label={f.label}>
                           {f.type === "textarea" ? (
                             <textarea
-                              className="input mono"
                               value={get(f.key)}
                               onChange={(e) => set(f.key, e.target.value)}
                               placeholder={f.placeholder}
                               autoComplete="off"
                               rows={6}
                               disabled={loading}
-                              style={{ fontFamily: "var(--font-mono)", fontSize: 11, resize: "vertical" }}
+                              style={{
+                                width: "100%", padding: "8px 10px",
+                                background: "var(--vb-bg-3)",
+                                border: "1px solid var(--vb-border-2)",
+                                borderRadius: 5, color: "var(--vb-fg)",
+                                fontFamily: "var(--font-mono)", fontSize: 11,
+                                outline: "none", resize: "vertical",
+                              }}
                             />
                           ) : (
-                            <input
-                              className="input mono"
+                            <VbInput mono
                               type={f.type === "password" ? "password" : "text"}
                               value={get(f.key)}
                               onChange={(e) => set(f.key, e.target.value)}
                               placeholder={f.placeholder}
                               autoComplete="off"
-                              disabled={loading}
-                            />
+                              disabled={loading} />
                           )}
-                        </div>
+                        </VbField>
                       ))}
                     </div>
                   )}
 
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-                    <div className="muted" style={{ fontSize: 11, flex: 1 }}>
+                  <div style={{
+                    display: "flex", justifyContent: "space-between",
+                    alignItems: "center", flexWrap: "wrap", gap: 8,
+                  }}>
+                    <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", flex: 1, lineHeight: 1.5 }}>
                       {p.redirectHint}
                     </div>
                     <a
                       href={p.helpUrl}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ fontSize: 11, color: "var(--accent-light)", textDecoration: "none" }}
+                      style={{
+                        fontSize: 11.5, color: "var(--vb-accent)",
+                        textDecoration: "none", fontWeight: 600,
+                      }}
                     >
                       Get credentials ↗
                     </a>
@@ -2422,12 +2517,8 @@ function OAuth2Section() {
         })}
       </div>
 
-      <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-    </div>
+      <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
+    </SectionShell>
   );
 }
 
@@ -2562,37 +2653,29 @@ function MigrationsSection() {
     : 0;
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Migrations</h3>
-        <span className="meta">schema snapshot for env sync</span>
-      </div>
-
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Download snapshot</label>
-          <div className="help">
-            Exports every collection's full definition (name · type · fields · rules · view query) as a JSON file.
-            Commit it to git, then upload it on a fresh install to recreate the schema.
-          </div>
-        </div>
+    <SectionShell id="migrations">
+      <VbField
+        label="Download snapshot"
+        hint="Exports every collection's full definition (name · type · fields · rules · view query) as a JSON file. Commit it to git, then upload it on a fresh install to recreate the schema."
+      >
         <div>
-          <button className="btn btn-ghost" onClick={handleDownload}>
-            <Icon name="download" size={12} /> Download .json
-          </button>
+          <VbBtn kind="ghost" size="sm" icon="download" onClick={handleDownload}>
+            Download .json
+          </VbBtn>
         </div>
+      </VbField>
 
-        <div className="label-block span2"><div className="divider" style={{ margin: 0 }} /></div>
-
-        <div className="label-block">
-          <label className="label">Apply snapshot</label>
-          <div className="help">
-            <strong>Additive</strong> creates collections that don't exist yet — safe default.{" "}
-            <strong>Sync</strong> also updates existing collections to match the snapshot (fields, rules, view query).
+      <VbField
+        label="Apply snapshot"
+        hint={
+          <>
+            <strong style={{ color: "var(--vb-fg-2)" }}>Additive</strong> creates collections that don't exist yet — safe default.{" "}
+            <strong style={{ color: "var(--vb-fg-2)" }}>Sync</strong> also updates existing collections to match the snapshot (fields, rules, view query).
             Neither mode ever deletes a collection.
-          </div>
-        </div>
-        <div className="col" style={{ gap: 10 }}>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Dropdown
             value={mode}
             options={[
@@ -2600,7 +2683,7 @@ function MigrationsSection() {
               { label: "Sync — also update existing (destructive)", value: "sync" },
             ]}
             onChange={(e) => setMode(e.value as "additive" | "sync")}
-            style={{ height: 34 }}
+            style={{ height: 32, fontSize: 12 }}
           />
           <input
             ref={fileInputRef}
@@ -2610,149 +2693,162 @@ function MigrationsSection() {
             onChange={handleSelectFile}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <button
-              className="btn btn-ghost"
+            <VbBtn
+              kind="ghost"
+              size="sm"
+              icon="upload"
               onClick={() => fileInputRef.current?.click()}
               disabled={applying || diffLoading}
             >
-              <Icon name="upload" size={12} /> {pendingFileName ? "Choose different file" : "Choose snapshot file"}
-            </button>
+              {pendingFileName ? "Choose different file" : "Choose snapshot file"}
+            </VbBtn>
             {pendingFileName && (
-              <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--vb-fg-3)" }}>
                 {pendingFileName}
               </span>
             )}
             {pendingFileName && (
               <button
-                className="btn-icon"
                 onClick={clearPending}
                 disabled={applying}
                 title="Clear selection"
-                style={{ marginLeft: "auto" }}
+                style={{
+                  appearance: "none", border: 0, background: "transparent",
+                  color: "var(--vb-fg-3)", cursor: "pointer", padding: 4,
+                  marginLeft: "auto",
+                }}
               >
                 <Icon name="x" size={12} />
               </button>
             )}
           </div>
         </div>
+      </VbField>
 
-        {/* ── Diff preview panel ─────────────────────────────────────────── */}
-        {(diffLoading || diff !== null) && (
-          <div className="label-block span2" style={{ marginTop: 6 }}>
-            <div
-              style={{
-                border: "0.5px solid var(--border-default)",
-                borderRadius: 7,
-                padding: "12px 14px",
-                background: "rgba(255,255,255,0.02)",
-              }}
-            >
-              {diffLoading && (
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Computing diff…</div>
+      {(diffLoading || diff !== null) && (
+        <div style={{
+          padding: "12px 14px", borderRadius: 7,
+          background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
+        }}>
+          {diffLoading && (
+            <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>Computing diff…</div>
+          )}
+
+          {diff && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                <strong style={{ fontSize: 12, color: "var(--vb-fg)" }}>Preview</strong>
+                <VbPill tone="success" dot>{diff.added.length} added</VbPill>
+                <VbPill tone="warning" dot>{diff.modified.length} modified</VbPill>
+                <VbPill tone="neutral" dot>{diff.unchanged.length} unchanged</VbPill>
+                <VbPill tone="danger" dot>{diff.removed.length} removed</VbPill>
+              </div>
+
+              <div style={{ fontSize: 12, color: "var(--vb-fg-2)", marginBottom: 10 }}>
+                Will create <strong>{willCreate}</strong>
+                {" · "}update <strong>{willUpdate}</strong>
+                {" · "}leave <strong>{willLeave}</strong> unchanged
+                {mode === "additive" && diff.modified.length > 0 && (
+                  <span style={{ marginLeft: 6, color: "var(--vb-fg-3)" }}>
+                    ({diff.modified.length} drift visible — switch to Sync to update)
+                  </span>
+                )}
+              </div>
+
+              {diff.added.length > 0 && (
+                <DiffGroup label="Added" tone="success">
+                  {diff.added.map((a) => (
+                    <DiffLine key={a.name} name={a.name} suffix={a.type} />
+                  ))}
+                </DiffGroup>
               )}
 
-              {diff && (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                    <strong style={{ fontSize: 12 }}>Preview</strong>
-                    <Tag value={`${diff.added.length} added`} severity="success" rounded />
-                    <Tag value={`${diff.modified.length} modified`} severity="warning" rounded />
-                    <Tag value={`${diff.unchanged.length} unchanged`} severity="secondary" rounded />
-                    <Tag value={`${diff.removed.length} removed`} severity="danger" rounded />
-                  </div>
-
-                  <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 }}>
-                    Will create <strong>{willCreate}</strong>
-                    {" · "}update <strong>{willUpdate}</strong>
-                    {" · "}leave <strong>{willLeave}</strong> unchanged
-                    {mode === "additive" && diff.modified.length > 0 && (
-                      <span className="muted" style={{ marginLeft: 6 }}>
-                        ({diff.modified.length} drift visible — switch to Sync to update)
-                      </span>
-                    )}
-                  </div>
-
-                  {diff.added.length > 0 && (
-                    <DiffGroup label="Added" tone="success">
-                      {diff.added.map((a) => (
-                        <DiffLine key={a.name} name={a.name} suffix={a.type} />
-                      ))}
-                    </DiffGroup>
-                  )}
-
-                  {diff.modified.length > 0 && (
-                    <DiffGroup label="Modified" tone="warning">
-                      {diff.modified.map((m) => (
-                        <details key={m.name} className="mig-diff-details">
-                          <summary>
-                            <span className="mono" style={{ fontSize: 11 }}>{m.name}</span>
-                            <span className="muted" style={{ fontSize: 10.5, marginLeft: 6 }}>{m.type}</span>
-                            <span className="muted" style={{ fontSize: 10.5, marginLeft: 6 }}>
-                              · {m.changes.length} change{m.changes.length === 1 ? "" : "s"}
-                            </span>
-                          </summary>
-                          <ul style={{ margin: "4px 0 6px 0", paddingLeft: 20, fontSize: 11, color: "var(--text-secondary)" }}>
-                            {m.changes.map((c, i) => (
-                              <li key={i} className="mono">{c}</li>
-                            ))}
-                          </ul>
-                        </details>
-                      ))}
-                    </DiffGroup>
-                  )}
-
-                  {diff.unchanged.length > 0 && (
-                    <DiffGroup label="Unchanged" tone="muted">
-                      {diff.unchanged.map((u) => (
-                        <DiffLine key={u.name} name={u.name} muted />
-                      ))}
-                    </DiffGroup>
-                  )}
-
-                  {diff.removed.length > 0 && (
-                    <DiffGroup label="Removed" tone="danger" note="(not deleted by apply)">
-                      {diff.removed.map((r) => (
-                        <DiffLine key={r.name} name={r.name} />
-                      ))}
-                    </DiffGroup>
-                  )}
-                </>
+              {diff.modified.length > 0 && (
+                <DiffGroup label="Modified" tone="warning">
+                  {diff.modified.map((m) => (
+                    <details key={m.name} style={{ fontSize: 11, lineHeight: 1.7 }}>
+                      <summary style={{ cursor: "pointer", color: "var(--vb-fg)" }}>
+                        <span style={{ fontFamily: "var(--font-mono)" }}>{m.name}</span>
+                        <span style={{ color: "var(--vb-fg-3)", marginLeft: 6 }}>{m.type}</span>
+                        <span style={{ color: "var(--vb-fg-3)", marginLeft: 6 }}>
+                          · {m.changes.length} change{m.changes.length === 1 ? "" : "s"}
+                        </span>
+                      </summary>
+                      <ul style={{ margin: "4px 0 6px 0", paddingLeft: 20, color: "var(--vb-fg-2)" }}>
+                        {m.changes.map((c, i) => (
+                          <li key={i} style={{ fontFamily: "var(--font-mono)" }}>{c}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  ))}
+                </DiffGroup>
               )}
-            </div>
-          </div>
-        )}
 
-        {/* ── Apply button row ───────────────────────────────────────────── */}
-        {pendingSnapshot && (
-          <div className="label-block span2" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <button
-              className="btn btn-primary"
-              onClick={handleApply}
-              disabled={applying || diffLoading || !diff}
-            >
-              <Icon name="upload" size={12} /> {applying
-                ? "Applying…"
-                : mode === "sync" ? "Apply (sync mode)" : "Apply"}
-            </button>
-          </div>
-        )}
-      </div>
+              {diff.unchanged.length > 0 && (
+                <DiffGroup label="Unchanged" tone="muted">
+                  {diff.unchanged.map((u) => (
+                    <DiffLine key={u.name} name={u.name} muted />
+                  ))}
+                </DiffGroup>
+              )}
+
+              {diff.removed.length > 0 && (
+                <DiffGroup label="Removed" tone="danger" note="(not deleted by apply)">
+                  {diff.removed.map((r) => (
+                    <DiffLine key={r.name} name={r.name} />
+                  ))}
+                </DiffGroup>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {pendingSnapshot && (
+        <div style={{
+          display: "flex", justifyContent: "flex-end", gap: 8,
+          paddingTop: 12, borderTop: "1px solid var(--vb-border)",
+        }}>
+          <VbBtn
+            kind="primary"
+            size="sm"
+            icon="upload"
+            onClick={handleApply}
+            disabled={applying || diffLoading || !diff}
+          >
+            {applying ? "Applying…" : mode === "sync" ? "Apply (sync mode)" : "Apply"}
+          </VbBtn>
+        </div>
+      )}
 
       {result && (
-        <div className="settings-section-foot" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+        <div style={{
+          display: "flex", flexDirection: "column", gap: 6,
+          padding: "12px 14px", borderRadius: 7,
+          background: result.errors.length > 0 ? "var(--vb-status-danger-bg)" : "var(--vb-bg-2)",
+          border: "1px solid var(--vb-border)",
+        }}>
           {(["created", "updated", "skipped"] as const).map((k) =>
             result[k].length > 0 ? (
               <div key={k} style={{ fontSize: 12 }}>
-                <span style={{ color: "var(--text-muted)", textTransform: "capitalize", marginRight: 6 }}>{k}:</span>
-                <span className="mono" style={{ fontSize: 11 }}>{result[k].join(", ")}</span>
+                <span style={{
+                  color: "var(--vb-fg-3)",
+                  fontFamily: "var(--font-mono)",
+                  textTransform: "uppercase",
+                  letterSpacing: 1.2,
+                  marginRight: 8, fontSize: 10.5,
+                }}>{k}</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg)" }}>
+                  {result[k].join(", ")}
+                </span>
               </div>
             ) : null
           )}
           {result.errors.length > 0 && (
-            <div style={{ fontSize: 12, color: "var(--danger)" }}>
+            <div style={{ fontSize: 12, color: "var(--vb-status-danger)" }}>
               <div style={{ marginBottom: 4 }}>Errors:</div>
               {result.errors.map((e, i) => (
-                <div key={i} className="mono" style={{ fontSize: 11, paddingLeft: 8 }}>
+                <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 11, paddingLeft: 8 }}>
                   • {e.collection}: {e.error}
                 </div>
               ))}
@@ -2760,7 +2856,7 @@ function MigrationsSection() {
           )}
         </div>
       )}
-    </div>
+    </SectionShell>
   );
 }
 
@@ -2884,25 +2980,16 @@ function StorageSection() {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>File storage</h3>
-          <span className="meta">where uploaded files live</span>
-        </div>
-        {status && (
-          <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            active: <span style={{ color: "var(--accent-light)" }}>{status.driver}</span>
-            {status.bucket && <> · {status.bucket}</>}
-          </span>
-        )}
-      </div>
-
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Driver</label>
-          <div className="help">Switching drivers does not migrate existing files. Plan accordingly.</div>
-        </div>
+    <SectionShell
+      id="storage"
+      right={status && (
+        <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+          active: <span style={{ color: "var(--vb-accent)" }}>{status.driver}</span>
+          {status.bucket && <> · {status.bucket}</>}
+        </span>
+      )}
+    >
+      <VbField label="Driver" hint="Switching drivers does not migrate existing files. Plan accordingly.">
         <Dropdown
           value={driver}
           options={[
@@ -2911,108 +2998,75 @@ function StorageSection() {
           ]}
           onChange={(e) => setDriver(e.value)}
           disabled={loading}
+          style={{ height: 32, fontSize: 12 }}
         />
+      </VbField>
 
-        {driver === "s3" && (
-          <>
-            <div className="label-block">
-              <label className="label">Preset</label>
-              <div className="help">One-click defaults for common providers.</div>
+      {driver === "s3" && (
+        <>
+          <VbField label="Preset" hint="One-click defaults for common providers.">
+            <div style={{ display: "flex", gap: 8 }}>
+              <VbBtn kind="ghost" size="sm" onClick={applyR2Preset}>Cloudflare R2</VbBtn>
+              <VbBtn kind="ghost" size="sm" onClick={applyS3Preset}>AWS S3</VbBtn>
             </div>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn btn-ghost" onClick={applyR2Preset}>
-                Cloudflare R2
-              </button>
-              <button className="btn btn-ghost" onClick={applyS3Preset}>
-                AWS S3
-              </button>
-            </div>
+          </VbField>
 
-            <div className="label-block">
-              <label className="label">Endpoint</label>
-              <div className="help">
-                R2: <code style={codeStyle}>{`https://<account-id>.r2.cloudflarestorage.com`}</code>.
-                AWS S3: leave blank.
-              </div>
-            </div>
-            <input
-              className="input mono"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              placeholder="https://acc.r2.cloudflarestorage.com"
-            />
+          <VbField
+            label="Endpoint"
+            hint={<>R2: <VbCode>{`https://<account-id>.r2.cloudflarestorage.com`}</VbCode>. AWS S3: leave blank.</>}
+          >
+            <VbInput mono value={endpoint} onChange={(e) => setEndpoint(e.target.value)}
+              placeholder="https://acc.r2.cloudflarestorage.com" />
+          </VbField>
 
-            <div className="label-block">
-              <label className="label">Bucket</label>
-              <div className="help">Must exist already. Vaultbase does not create buckets.</div>
-            </div>
-            <input
-              className="input mono"
-              value={bucket}
-              onChange={(e) => setBucket(e.target.value)}
-              placeholder="vaultbase-uploads"
-            />
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 14 }}>
+            <VbField label="Bucket" hint="Must exist already. Vaultbase does not create buckets.">
+              <VbInput mono value={bucket} onChange={(e) => setBucket(e.target.value)}
+                placeholder="vaultbase-uploads" />
+            </VbField>
+            <VbField label="Region" hint={<>R2: <VbCode>auto</VbCode>. AWS: e.g. <VbCode>us-east-1</VbCode>.</>}>
+              <VbInput mono value={region} onChange={(e) => setRegion(e.target.value)}
+                placeholder="auto" />
+            </VbField>
+          </div>
 
-            <div className="label-block">
-              <label className="label">Region</label>
-              <div className="help">R2: <code style={codeStyle}>auto</code>. AWS: e.g. <code style={codeStyle}>us-east-1</code>.</div>
-            </div>
-            <input
-              className="input mono"
-              value={region}
-              onChange={(e) => setRegion(e.target.value)}
-              placeholder="auto"
-            />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <VbField label="Access key ID" hint="For R2: an API token with Object Read & Write.">
+              <VbInput mono value={accessKeyId}
+                onChange={(e) => setAccessKeyId(e.target.value)} autoComplete="off" />
+            </VbField>
+            <VbField
+              label="Secret access key"
+              hint="Stored encrypted at rest when VAULTBASE_ENCRYPTION_KEY is set."
+            >
+              <VbInput mono type="password" value={secretAccessKey}
+                onChange={(e) => setSecretAccessKey(e.target.value)}
+                placeholder="••••••••" autoComplete="new-password" />
+            </VbField>
+          </div>
 
-            <div className="label-block">
-              <label className="label">Access key ID</label>
-              <div className="help">For R2: an API token with Object Read &amp; Write.</div>
-            </div>
-            <input
-              className="input mono"
-              value={accessKeyId}
-              onChange={(e) => setAccessKeyId(e.target.value)}
-              autoComplete="off"
-            />
+          <VbField
+            label="Public URL"
+            hint="Optional. If your bucket is fronted by a CDN, files link directly to it. Leave blank to proxy bytes through Vaultbase."
+          >
+            <VbInput mono value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)}
+              placeholder="https://cdn.example.com" />
+          </VbField>
+        </>
+      )}
 
-            <div className="label-block">
-              <label className="label">Secret access key</label>
-              <div className="help">Stored in plaintext in the settings table. Treat the DB accordingly.</div>
-            </div>
-            <input
-              className="input mono"
-              type="password"
-              value={secretAccessKey}
-              onChange={(e) => setSecretAccessKey(e.target.value)}
-              placeholder="••••••••"
-              autoComplete="new-password"
-            />
-
-            <div className="label-block">
-              <label className="label">Public URL <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
-              <div className="help">
-                If your bucket is fronted by a CDN/public domain, files can link directly to it. Leave blank to proxy bytes through Vaultbase.
-              </div>
-            </div>
-            <input
-              className="input mono"
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              placeholder="https://cdn.example.com"
-            />
-          </>
-        )}
-      </div>
-
-      <div className="settings-section-foot" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <button className="btn btn-ghost" onClick={handleTest} disabled={testing}>
-          <Icon name="play" size={11} /> {testing ? "Testing…" : "Test connection"}
-        </button>
-        <button className="btn btn-primary" onClick={handleSave} disabled={loading || saving}>
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        gap: 10, paddingTop: 12, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="ghost" size="sm" icon="send" onClick={handleTest} disabled={testing}>
+          {testing ? "Testing…" : "Test connection"}
+        </VbBtn>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={loading || saving}>
           {saving ? "Saving…" : "Save changes"}
-        </button>
+        </VbBtn>
       </div>
-    </div>
+    </SectionShell>
   );
 }
 
@@ -3038,57 +3092,7 @@ interface NotificationProvidersResponse {
   };
 }
 
-type ChannelTab = "push" | "inbox" | "devices";
 type ProviderId = "onesignal" | "fcm";
-
-type Tone = "neutral" | "success" | "warning" | "danger" | "accent";
-
-const VB_TONE_BG: Record<Tone, string> = {
-  neutral: "rgba(255,255,255,0.06)",
-  success: "var(--vb-status-success-bg)",
-  warning: "var(--vb-status-warning-bg)",
-  danger:  "var(--vb-status-danger-bg)",
-  accent:  "var(--vb-accent-soft)",
-};
-const VB_TONE_FG: Record<Tone, string> = {
-  neutral: "rgba(231,229,225,0.7)",
-  success: "var(--vb-status-success)",
-  warning: "var(--vb-status-warning)",
-  danger:  "var(--vb-status-danger)",
-  accent:  "var(--vb-accent)",
-};
-
-const VbPill: React.FC<{ tone?: Tone; children: React.ReactNode; dot?: boolean }> = ({ tone = "neutral", children, dot }) => (
-  <span style={{
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    padding: "2px 7px",
-    borderRadius: 4,
-    fontSize: 10.5,
-    fontWeight: 600,
-    letterSpacing: 0.2,
-    background: VB_TONE_BG[tone],
-    color: VB_TONE_FG[tone],
-    fontFamily: "var(--font-mono)",
-    textTransform: "lowercase",
-  }}>
-    {dot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: VB_TONE_FG[tone] }} />}
-    {children}
-  </span>
-);
-
-const VbCode: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <code style={{
-    fontFamily: "var(--font-mono)",
-    fontSize: "0.86em",
-    padding: "1px 5px",
-    borderRadius: 4,
-    background: "var(--vb-code-bg)",
-    color: "var(--vb-code-fg)",
-    whiteSpace: "nowrap",
-  }}>{children}</code>
-);
 
 interface ProviderState {
   id: ProviderId;
@@ -3096,141 +3100,6 @@ interface ProviderState {
   enabled: boolean;
   expanded: boolean;
 }
-
-const VbStatusDot: React.FC<{ state: ProviderState }> = ({ state }) => {
-  let tone: "success" | "warning" | "neutral" = "neutral";
-  let label = "not configured";
-  if (state.configured && state.enabled) { tone = "success"; label = "live"; }
-  else if (state.configured && !state.enabled) { tone = "warning"; label = "paused"; }
-  const color = tone === "success" ? "var(--vb-status-success)"
-    : tone === "warning" ? "var(--vb-status-warning)"
-    : "rgba(255,255,255,0.18)";
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{
-        width: 8, height: 8, borderRadius: "50%",
-        background: color,
-        boxShadow: tone === "success" ? "0 0 0 3px rgba(98,204,156,0.16)" : "none",
-      }} />
-      <span style={{
-        fontSize: 11, fontWeight: 600, letterSpacing: 0.3,
-        color: tone === "neutral" ? "var(--vb-fg-3)" : color,
-        fontFamily: "var(--font-mono)",
-      }}>{label}</span>
-    </span>
-  );
-};
-
-const VbStat: React.FC<{ label: string; value: React.ReactNode; tone?: "danger" | null }> = ({ label, value, tone }) => (
-  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1.2 }}>
-    <span style={{
-      fontSize: 12, fontWeight: 600,
-      color: tone === "danger" ? "var(--vb-status-danger)" : "var(--vb-fg)",
-      fontFamily: "var(--font-mono)",
-      fontVariantNumeric: "tabular-nums",
-    }}>{value}</span>
-    <span style={{
-      fontSize: 9.5, color: "var(--vb-fg-3)",
-      textTransform: "uppercase", letterSpacing: 0.6,
-    }}>{label}</span>
-  </div>
-);
-
-const VbBtn: React.FC<{
-  kind?: "primary" | "ghost" | "soft";
-  size?: "sm" | "md";
-  icon?: string;
-  disabled?: boolean;
-  onClick?: (e: React.MouseEvent) => void;
-  children: React.ReactNode;
-  type?: "button" | "submit";
-}> = ({ kind = "primary", size = "md", icon, disabled, onClick, children, type = "button" }) => {
-  const sizes = size === "sm" ? { h: 26, px: 10, fs: 11.5 } : { h: 30, px: 12, fs: 12.5 };
-  const styles: Record<string, React.CSSProperties> = {
-    primary: { background: "var(--vb-accent)", color: "#fff", border: "1px solid transparent" },
-    ghost:   { background: "transparent", color: "var(--vb-fg-2)", border: "1px solid var(--vb-border-2)" },
-    soft:    { background: "var(--vb-bg-3)", color: "var(--vb-fg)", border: "1px solid transparent" },
-  };
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        ...styles[kind],
-        height: sizes.h,
-        padding: `0 ${sizes.px}px`,
-        borderRadius: 5,
-        fontSize: sizes.fs,
-        fontWeight: 600,
-        fontFamily: "inherit",
-        cursor: disabled ? "default" : "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        opacity: disabled ? 0.5 : 1,
-        transition: "background 120ms",
-      }}
-    >
-      {icon && <Icon name={icon} size={12} />}
-      {children}
-    </button>
-  );
-};
-
-const VbInput: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean }> = ({ mono, style, ...rest }) => (
-  <input
-    {...rest}
-    style={{
-      width: "100%",
-      height: 32,
-      padding: "0 10px",
-      background: "var(--vb-bg-3)",
-      border: "1px solid var(--vb-border-2)",
-      borderRadius: 5,
-      color: "var(--vb-fg)",
-      fontFamily: mono ? "var(--font-mono)" : "inherit",
-      fontSize: mono ? 12 : 12.5,
-      outline: "none",
-      ...(style ?? {}),
-    }}
-    onFocus={(e) => {
-      e.currentTarget.style.borderColor = "var(--vb-accent)";
-      e.currentTarget.style.background = "var(--vb-bg-2)";
-      rest.onFocus?.(e);
-    }}
-    onBlur={(e) => {
-      e.currentTarget.style.borderColor = "var(--vb-border-2)";
-      e.currentTarget.style.background = "var(--vb-bg-3)";
-      rest.onBlur?.(e);
-    }}
-  />
-);
-
-const VbField: React.FC<{
-  label: string;
-  hint?: React.ReactNode;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}> = ({ label, hint, right, children }) => (
-  <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-      <span style={{
-        fontSize: 10.5,
-        fontWeight: 600,
-        letterSpacing: 1.2,
-        textTransform: "uppercase",
-        color: "var(--vb-fg-2)",
-        fontFamily: "var(--font-mono)",
-      }}>{label}</span>
-      {right}
-    </div>
-    {hint && (
-      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{hint}</div>
-    )}
-    {children}
-  </label>
-);
 
 function NotificationsSection() {
   const [cfg, setCfg] = useState<NotificationProvidersResponse | null>(null);
@@ -3254,8 +3123,7 @@ function NotificationsSection() {
   const [fcmSaving, setFcmSaving] = useState(false);
   const [fcmTesting, setFcmTesting] = useState(false);
 
-  // ── Channel + per-row UI state
-  const [channel, setChannel] = useState<ChannelTab>("push");
+  // ── Per-row UI state
   const [expanded, setExpanded] = useState<Record<ProviderId, boolean>>({
     onesignal: true,   // default expanded since most operators start here
     fcm: false,
@@ -3389,195 +3257,107 @@ function NotificationsSection() {
   }
 
   return (
-    <div className="vb-notifications">
-      {/* ── Page header ───────────────────────────────────────────────── */}
-      <header style={{
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: 16,
-        paddingBottom: 18,
-        borderBottom: "1px solid var(--vb-border)",
-      }}>
-        <div>
-          <div style={{
-            fontSize: 11.5,
-            color: "var(--vb-fg-3)",
-            fontFamily: "var(--font-mono)",
-            marginBottom: 6,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}>
-            <span>Settings</span>
-            <span style={{ opacity: 0.5 }}>/</span>
-            <span style={{ color: "var(--vb-fg-2)" }}>Notifications</span>
-          </div>
-          <h1 style={{
-            margin: 0,
-            fontSize: 22,
-            fontWeight: 600,
-            color: "var(--vb-fg)",
-            letterSpacing: -0.2,
-            lineHeight: 1.2,
-          }}>Notifications</h1>
-          <div style={{
-            marginTop: 6,
-            fontSize: 12.5,
-            color: "var(--vb-fg-2)",
-            maxWidth: 620,
-            lineHeight: 1.5,
-          }}>
-            Trigger code is provider-agnostic — call <VbCode>helpers.notify(userId, payload)</VbCode> from a hook and
-            Vaultbase fans out to every enabled provider via the <VbCode>_notify</VbCode> queue.
-          </div>
-        </div>
+    <SectionShell
+      id="notifications"
+      sub={
+        <>
+          Trigger code is provider-agnostic — call <VbCode>helpers.notify(userId, payload)</VbCode> from a hook and
+          Vaultbase fans out to every enabled provider via the <VbCode>_notify</VbCode> queue.
+        </>
+      }
+      right={
         <VbPill tone={liveCount > 0 ? "success" : "neutral"} dot>
           {liveCount > 0 ? `${liveCount} live` : "no providers live"}
         </VbPill>
-      </header>
+      }
+    >
+      {/* Channel tabs (Push / Inbox / Devices) intentionally hidden until
+          inbox + device-registry panels exist — single-tab strips are noise. */}
 
-      {/* ── Channel tabs ──────────────────────────────────────────────── */}
+      {/* ── Push providers ───────────────────────────────────────────── */}
       <div style={{
         display: "flex",
-        gap: 0,
-        borderBottom: "1px solid var(--vb-border)",
-        marginBottom: 20,
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 0,
       }}>
-        {([
-          { id: "push" as const,    label: "Push providers",  count: configuredCount, icon: "bell"  },
-          { id: "inbox" as const,   label: "In-app inbox",    count: 1,              icon: "inbox" },
-          { id: "devices" as const, label: "Device registry", count: "—",            icon: "phone" },
-        ]).map((t) => {
-          const active = channel === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setChannel(t.id)}
-              style={{
-                appearance: "none",
-                border: 0,
-                background: "transparent",
-                padding: "12px 14px",
-                fontFamily: "inherit",
-                fontSize: 12.5,
-                fontWeight: active ? 600 : 500,
-                color: active ? "var(--vb-fg)" : "var(--vb-fg-2)",
-                borderBottom: `2px solid ${active ? "var(--vb-accent)" : "transparent"}`,
-                marginBottom: -1,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 7,
-                cursor: "pointer",
-              }}
-            >
-              <Icon name={t.icon} size={13} />
-              {t.label}
-              <span style={{
-                fontSize: 10.5,
-                padding: "1px 5px",
-                borderRadius: 3,
-                background: "var(--vb-bg-3)",
-                color: "var(--vb-fg-3)",
-                fontFamily: "var(--font-mono)",
-              }}>{t.count}</span>
-            </button>
-          );
-        })}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Providers</h2>
+          <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+            {liveCount} of 2 sending · enable any combination
+          </span>
+        </div>
+        <VbBtn kind="ghost" size="sm" icon="plus" disabled>Add provider</VbBtn>
       </div>
 
-      {/* ── Tab body ─────────────────────────────────────────────────── */}
-      {channel === "push" && (
-        <>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 12,
-          }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-              <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Providers</h2>
-              <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
-                {liveCount} of 2 sending · enable any combination
-              </span>
-            </div>
-            <VbBtn kind="ghost" size="sm" icon="plus" disabled>Add provider</VbBtn>
-          </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* ── OneSignal row ────────────────────────────────────────── */}
+        <ProviderRow
+          state={onesignalState}
+          name="OneSignal"
+          tagline="external_id-based · server-side fan-out"
+          onToggleExpand={() => toggleExpand("onesignal")}
+          onToggleEnable={(v) => { setOsEnabled(v); setOsDirty(true); }}
+          onTestConnection={() => { void handleTestOneSignal(); }}
+          testing={osTesting}
+          loading={loading}
+        >
+          <OneSignalFields
+            cfg={cfg}
+            appId={osAppId}
+            apiKey={osApiKey}
+            showKey={osShowKey}
+            dirty={osDirty}
+            saving={osSaving}
+            loading={loading}
+            onAppId={(v) => { setOsAppId(v); setOsDirty(true); }}
+            onApiKey={(v) => { setOsApiKey(v); setOsDirty(true); }}
+            onToggleShowKey={() => setOsShowKey((v) => !v)}
+            onSave={() => { void handleSaveOneSignal(); }}
+            onReset={() => { void refresh(); }}
+            testUid={osTestUid}
+            onTestUid={setOsTestUid}
+            onSendTest={() => { void handleSendTest("onesignal", osTestUid); }}
+            testSending={osTestSending}
+            testEnabled={onesignalState.enabled}
+          />
+        </ProviderRow>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {/* ── OneSignal row ────────────────────────────────────── */}
-            <ProviderRow
-              state={onesignalState}
-              name="OneSignal"
-              tagline="external_id-based · server-side fan-out"
-              onToggleExpand={() => toggleExpand("onesignal")}
-              onToggleEnable={(v) => { setOsEnabled(v); setOsDirty(true); }}
-              onTestConnection={() => { void handleTestOneSignal(); }}
-              testing={osTesting}
-              loading={loading}
-            >
-              <OneSignalFields
-                cfg={cfg}
-                appId={osAppId}
-                apiKey={osApiKey}
-                showKey={osShowKey}
-                dirty={osDirty}
-                saving={osSaving}
-                loading={loading}
-                onAppId={(v) => { setOsAppId(v); setOsDirty(true); }}
-                onApiKey={(v) => { setOsApiKey(v); setOsDirty(true); }}
-                onToggleShowKey={() => setOsShowKey((v) => !v)}
-                onSave={() => { void handleSaveOneSignal(); }}
-                onReset={() => { void refresh(); }}
-                testUid={osTestUid}
-                onTestUid={setOsTestUid}
-                onSendTest={() => { void handleSendTest("onesignal", osTestUid); }}
-                testSending={osTestSending}
-                testEnabled={onesignalState.enabled}
-              />
-            </ProviderRow>
+        {/* ── FCM row ─────────────────────────────────────────────── */}
+        <ProviderRow
+          state={fcmState}
+          name="Firebase Cloud Messaging"
+          tagline="per-token · OAuth2 service account"
+          onToggleExpand={() => toggleExpand("fcm")}
+          onToggleEnable={(v) => { setFcmEnabled(v); setFcmDirty(true); }}
+          onTestConnection={() => { void handleTestFcm(); }}
+          testing={fcmTesting}
+          loading={loading}
+        >
+          <FCMFields
+            cfg={cfg}
+            projectId={fcmProjectId}
+            serviceAccount={fcmServiceAccount}
+            showSa={fcmShowSa}
+            dirty={fcmDirty}
+            saving={fcmSaving}
+            loading={loading}
+            onProjectId={(v) => { setFcmProjectId(v); setFcmDirty(true); }}
+            onServiceAccount={(v) => { setFcmServiceAccount(v); setFcmDirty(true); setFcmShowSa(true); }}
+            onToggleShowSa={() => setFcmShowSa((v) => !v)}
+            onSave={() => { void handleSaveFcm(); }}
+            onReset={() => { void refresh(); }}
+            testUid={fcmTestUid}
+            onTestUid={setFcmTestUid}
+            onSendTest={() => { void handleSendTest("fcm", fcmTestUid); }}
+            testSending={fcmTestSending}
+            testEnabled={fcmState.enabled}
+          />
+        </ProviderRow>
+      </div>
 
-            {/* ── FCM row ─────────────────────────────────────────── */}
-            <ProviderRow
-              state={fcmState}
-              name="Firebase Cloud Messaging"
-              tagline="per-token · OAuth2 service account"
-              onToggleExpand={() => toggleExpand("fcm")}
-              onToggleEnable={(v) => { setFcmEnabled(v); setFcmDirty(true); }}
-              onTestConnection={() => { void handleTestFcm(); }}
-              testing={fcmTesting}
-              loading={loading}
-            >
-              <FCMFields
-                cfg={cfg}
-                projectId={fcmProjectId}
-                serviceAccount={fcmServiceAccount}
-                showSa={fcmShowSa}
-                dirty={fcmDirty}
-                saving={fcmSaving}
-                loading={loading}
-                onProjectId={(v) => { setFcmProjectId(v); setFcmDirty(true); }}
-                onServiceAccount={(v) => { setFcmServiceAccount(v); setFcmDirty(true); setFcmShowSa(true); }}
-                onToggleShowSa={() => setFcmShowSa((v) => !v)}
-                onSave={() => { void handleSaveFcm(); }}
-                onReset={() => { void refresh(); }}
-                testUid={fcmTestUid}
-                onTestUid={setFcmTestUid}
-                onSendTest={() => { void handleSendTest("fcm", fcmTestUid); }}
-                testSending={fcmTestSending}
-                testEnabled={fcmState.enabled}
-              />
-            </ProviderRow>
-          </div>
-
-          <SystemCollectionsHint />
-        </>
-      )}
-
-      {channel === "inbox" && <ComingSoon label="In-app inbox" />}
-      {channel === "devices" && <ComingSoon label="Device registry" />}
-    </div>
+      <SystemCollectionsHint />
+    </SectionShell>
   );
 }
 
@@ -3927,43 +3707,26 @@ const SystemCollectionsHint: React.FC = () => (
   </div>
 );
 
-const ComingSoon: React.FC<{ label: string }> = ({ label }) => (
-  <div style={{
-    padding: "60px 24px",
-    textAlign: "center",
-    color: "var(--vb-fg-3)",
-    fontSize: 13,
-  }}>
-    <div style={{ fontSize: 14, color: "var(--vb-fg-2)", marginBottom: 4 }}>{label}</div>
-    placeholder content for this tab
-  </div>
-);
 
 // ── Danger zone ──────────────────────────────────────────────────────────────
 function DangerZone() {
   return (
-    <div className="settings-section danger">
-      <div className="settings-section-head">
-        <h3 style={{ color: "var(--danger)" }}>Danger zone</h3>
-        <span className="meta">irreversible actions</span>
-      </div>
-      <div className="settings-section-body">
-        <div className="label-block">
-          <label className="label">Sign out</label>
-          <div className="help">Clear your session token from this browser.</div>
-        </div>
+    <SectionShell id="danger">
+      <VbField label="Sign out" hint="Clear your session token from this browser.">
         <div>
-          <button
-            className="btn btn-ghost"
+          <VbBtn
+            kind="danger"
+            size="sm"
+            icon="logout"
             onClick={() => {
               useAuth.getState().signOut();
               window.location.href = "/_/login";
             }}
           >
-            <Icon name="logout" size={12} /> Sign out
-          </button>
+            Sign out
+          </VbBtn>
         </div>
-      </div>
-    </div>
+      </VbField>
+    </SectionShell>
   );
 }

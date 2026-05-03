@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { api, getMemoryToken, type ApiResponse, type Collection, parseFields } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -170,16 +170,18 @@ export default function ApiPreview() {
 
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "API preview" }]}
-        actions={
+      <VbPageHeader
+        breadcrumb={["API preview"]}
+        title="API preview"
+        sub="Try any REST endpoint live against this instance. Pick a preset or build a request — see the response, copy as curl or fetch()."
+        right={
           <>
-            <button className="btn btn-ghost" onClick={() => copy(buildCurl(), "curl")}>
-              <Icon name="copy" size={11} /> Copy curl
-            </button>
-            <button className="btn btn-ghost" onClick={() => copy(buildFetch(), "fetch()")}>
-              <Icon name="code" size={11} /> Copy fetch()
-            </button>
+            <VbBtn kind="ghost" size="sm" icon="copy" onClick={() => copy(buildCurl(), "curl")}>
+              Copy curl
+            </VbBtn>
+            <VbBtn kind="ghost" size="sm" icon="copy" onClick={() => copy(buildFetch(), "fetch()")}>
+              Copy fetch()
+            </VbBtn>
           </>
         }
       />

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
 import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
-import { Modal, FieldTypeChip, Toggle } from "../components/UI.tsx";
+import { Modal, Toggle } from "../components/UI.tsx";
+import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
 import { CodeEditor, type SqlSchema } from "../components/CodeEditor.tsx";
 
@@ -21,6 +22,12 @@ function cleanFieldName(raw: string): string {
 function cleanCollName(raw: string): string {
   return raw.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
+
+const TYPE_DESCRIPTIONS: Record<"base" | "auth" | "view", (name: string) => React.ReactNode> = {
+  base: (name) => <>Standard records collection. CRUD via <Code>/api/{name || "name"}</Code>.</>,
+  auth: (name) => <>Email + password sign-up via <Code>/api/v1/auth/{name || "name"}/register</Code>. Field names <Code>email</Code>, <Code>password</Code>, <Code>verified</Code> are managed by the implicit auth schema and cannot be redefined.</>,
+  view: () => <>Read-only collection backed by a SQL <Code>SELECT</Code>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>,
+};
 
 export default function NewCollectionModal({
   open,
@@ -75,16 +82,12 @@ export default function NewCollectionModal({
       setError("");
       setLoading(false);
       setViewQuery("");
-      // Fetch existing collections for relation autocomplete
       api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
         if (res.data) setAllCollections(res.data);
       });
     }
   }, [open]);
 
-  // Keep implicit fields in sync with selected type. Implicit fields render
-  // ahead of the user-defined section and ahead of the trailing system fields.
-  // For view collections, fields are inferred from the SQL query on save.
   useEffect(() => {
     setFields((prev) => {
       const userFields = prev.filter((f) => !f.system && !f.implicit);
@@ -107,7 +110,7 @@ export default function NewCollectionModal({
   function addField(t: FieldDef["type"]) {
     const newField: FieldDef = { name: "", type: t, required: false, options: {} };
     setFields((fs) => [...fs.slice(0, -2), newField, ...fs.slice(-2)]);
-    setExpanded(fields.length - 2); // index of newly inserted field
+    setExpanded(fields.length - 2);
   }
 
   function patchField(i: number, patch: Partial<FieldDef>) {
@@ -136,7 +139,6 @@ export default function NewCollectionModal({
       if (!viewQuery.trim()) { setError("View collections require a SELECT query."); return; }
       setError("");
       setLoading(true);
-      // For view collections we let the backend infer fields from the SQL.
       const res = await api.post<ApiResponse<Collection>>("/api/v1/collections", {
         name: collName,
         type,
@@ -184,200 +186,329 @@ export default function NewCollectionModal({
       open={open}
       onClose={onClose}
       title="New collection"
-      width={620}
+      width={680}
       footer={
         <>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button
-            className="btn btn-primary"
+          <VbBtn kind="ghost" size="md" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn
+            kind="primary"
+            size="md"
+            icon="check"
             disabled={!collName || loading}
             onClick={handleCreate}
           >
-            <Icon name="check" size={12} />
             {loading ? "Creating…" : "Create collection"}
-          </button>
+          </VbBtn>
         </>
       }
     >
-      <div className="col" style={{ gap: 16 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6 }}>
-            {error}
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "var(--vb-status-danger)",
+            fontSize: 12,
+            padding: "8px 12px",
+            background: "var(--vb-status-danger-bg)",
+            border: "1px solid rgba(232,90,79,0.3)",
+            borderRadius: 6,
+          }}>
+            <Icon name="alert" size={12} />
+            <span>{error}</span>
           </div>
         )}
 
-        {/* Collection name */}
-        <div>
-          <label className="label">Name</label>
-          <input
-            className="input mono"
+        <VbField
+          label="Name"
+          hint={
+            <>
+              {name && collName !== name && (
+                <span>Stored as <Code>{collName}</Code> · </span>
+              )}
+              API path: <Code>/api/{collName || "name"}</Code>
+            </>
+          }
+        >
+          <VbInput
+            mono
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="my_collection"
             autoFocus
           />
-          {name && collName !== name && (
-            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-              Stored as: <span className="mono" style={{ color: "var(--text-secondary)" }}>{collName}</span>
-            </div>
-          )}
-          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            API path: <span className="mono">/api/{collName || "name"}</span>
-          </div>
-        </div>
+        </VbField>
 
-        {/* Type */}
-        <div>
-          <label className="label">Type</label>
+        <VbField label="Type" hint={TYPE_DESCRIPTIONS[type](collName)}>
           <div style={{ display: "flex", gap: 8 }}>
             {(["base", "auth", "view"] as const).map((t) => (
               <button
                 key={t}
                 type="button"
                 onClick={() => setType(t)}
-                className={`btn ${type === t ? "btn-primary" : "btn-ghost"}`}
-                style={{ flex: 1, justifyContent: "center", textTransform: "capitalize" }}
+                style={{
+                  appearance: "none",
+                  flex: 1,
+                  height: 36,
+                  borderRadius: 5,
+                  border: "1px solid",
+                  borderColor: type === t ? "transparent" : "var(--vb-border-2)",
+                  background: type === t ? "var(--vb-accent)" : "var(--vb-bg-3)",
+                  color: type === t ? "#fff" : "var(--vb-fg-2)",
+                  fontFamily: "inherit",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  textTransform: "capitalize",
+                  transition: "background 100ms",
+                }}
               >
                 {t}
               </button>
             ))}
           </div>
-          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-            {type === "auth" && <>Email + password sign-up via <span className="mono">/api/v1/auth/{collName || "name"}/register</span>. Field names <span className="mono">email</span>, <span className="mono">password</span>, <span className="mono">verified</span> are managed by the implicit auth schema and cannot be redefined.</>}
-            {type === "view" && <>Read-only collection backed by a SQL <span className="mono">SELECT</span>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>}
-            {type === "base" && <>Standard records collection. CRUD via <span className="mono">/api/{collName || "name"}</span>.</>}
-          </div>
-        </div>
+        </VbField>
 
-        {/* SQL query (view collections only) */}
         {type === "view" && (
+          <VbField label="SELECT query" hint={
+            <>Single SELECT only · autocomplete for <Code>vb_*</Code> tables and columns · backed by VIEW <Code>vb_{collName || "name"}</Code>.</>
+          } right={
+            <VbBtn kind="ghost" size="sm" icon="play" onClick={validateView} disabled={validating}>
+              {validating ? "Validating…" : "Validate"}
+            </VbBtn>
+          }>
+            <div style={{
+              border: "1px solid var(--vb-border-2)",
+              borderRadius: 5,
+              overflow: "hidden",
+              background: "var(--vb-bg-3)",
+            }}>
+              <CodeEditor
+                language="sql"
+                value={viewQuery}
+                onChange={(v) => { setViewQuery(v); setViewError(null); }}
+                sqlSchema={sqlSchema}
+                markers={viewError ? [{ message: viewError, line: 1, severity: "error" }] : []}
+                height={200}
+              />
+            </div>
+          </VbField>
+        )}
+
+        {type !== "view" && (
           <div>
-            <label className="label">SELECT query</label>
-            <CodeEditor
-              language="sql"
-              value={viewQuery}
-              onChange={(v) => { setViewQuery(v); setViewError(null); }}
-              sqlSchema={sqlSchema}
-              markers={viewError ? [{ message: viewError, line: 1, severity: "error" }] : []}
-              height={200}
-            />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, gap: 10 }}>
-              <div className="muted" style={{ fontSize: 11 }}>
-                Single SELECT only · autocomplete for <span className="mono">vb_*</span> tables and columns · backed by VIEW <span className="mono">vb_{collName || "name"}</span>.
-              </div>
-              <button className="btn btn-ghost" onClick={validateView} disabled={validating} type="button">
-                <Icon name="play" size={11} />
-                {validating ? "Validating…" : "Validate"}
-              </button>
+            <div style={{
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              marginBottom: 8,
+            }}>
+              <span style={{
+                fontSize: 10.5,
+                fontWeight: 600,
+                letterSpacing: 1.2,
+                textTransform: "uppercase",
+                color: "var(--vb-fg-2)",
+                fontFamily: "var(--font-mono)",
+              }}>Schema</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>
+                {fields.length} fields
+              </span>
+            </div>
+
+            <div style={{
+              border: "1px solid var(--vb-border)",
+              borderRadius: 8,
+              overflow: "hidden",
+              background: "var(--vb-bg-2)",
+            }}>
+              {fields.map((f, i) => {
+                const locked = f.system || f.implicit;
+                const isExpanded = expanded === i;
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      borderBottom: i === fields.length - 1 ? "none" : "1px solid var(--vb-border)",
+                    }}
+                  >
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "9px 12px",
+                      background: isExpanded ? "var(--vb-bg-3)" : "transparent",
+                      opacity: locked ? 0.7 : 1,
+                    }}>
+                      <span style={{ color: "var(--vb-fg-3)", flexShrink: 0, display: "inline-flex" }}>
+                        <Icon name="grip" size={12} />
+                      </span>
+
+                      {locked ? (
+                        <span style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 12,
+                          color: "var(--vb-fg)",
+                          minWidth: 130,
+                        }}>{f.name}</span>
+                      ) : (
+                        <div style={{ width: 150 }}>
+                          <input
+                            value={f.name}
+                            onChange={(e) => patchField(i, { name: cleanFieldName(e.target.value) })}
+                            onClick={(e) => e.stopPropagation()}
+                            placeholder="field_name"
+                            style={{
+                              width: "100%",
+                              height: 28,
+                              padding: "0 8px",
+                              background: "var(--vb-bg-1)",
+                              border: "1px solid var(--vb-border-2)",
+                              borderRadius: 4,
+                              color: "var(--vb-fg)",
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 12,
+                              outline: "none",
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {locked ? (
+                        <FieldTypePill type={f.type} />
+                      ) : (
+                        <Dropdown
+                          value={f.type}
+                          options={FIELD_TYPES}
+                          onChange={(e) => { e.originalEvent?.stopPropagation(); patchField(i, { type: e.value as FieldDef["type"], options: {} }); }}
+                          style={{ height: 28, minWidth: 110, fontSize: 12 }}
+                          panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                        />
+                      )}
+
+                      {!locked && (
+                        <label
+                          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--vb-fg-2)", cursor: "pointer" }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Toggle on={f.required ?? false} onChange={(v) => patchField(i, { required: v })} />
+                          <span>req</span>
+                        </label>
+                      )}
+
+                      {locked ? (
+                        <span style={{
+                          marginLeft: "auto",
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 10,
+                          color: "var(--vb-fg-3)",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.6,
+                        }}>{f.implicit ? "implicit" : "system"}</span>
+                      ) : (
+                        <span style={{ marginLeft: "auto", display: "inline-flex", gap: 4 }}>
+                          <VbBtn
+                            kind="ghost"
+                            size="sm"
+                            icon={isExpanded ? "chevronDown" : "chevronRight"}
+                            onClick={() => setExpanded(isExpanded ? null : i)}
+                            title={isExpanded ? "Hide options" : "Show options"}
+                          />
+                          <VbBtn
+                            kind="danger"
+                            size="sm"
+                            icon="x"
+                            onClick={() => removeField(i)}
+                            title="Remove field"
+                          />
+                        </span>
+                      )}
+                    </div>
+
+                    {isExpanded && !locked && (
+                      <FieldOptionsPanel
+                        field={f}
+                        onPatchOptions={(patch) => patchOptions(i, patch)}
+                        onPatchField={(patch) => patchField(i, patch)}
+                        collectionNames={collectionNames}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{
+              marginTop: 8,
+              border: "1px solid var(--vb-border)",
+              borderRadius: 8,
+              padding: "10px 12px",
+              background: "var(--vb-bg-2)",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 8,
+            }}>
+              <span style={{
+                fontSize: 10.5,
+                fontWeight: 600,
+                letterSpacing: 1.2,
+                textTransform: "uppercase",
+                color: "var(--vb-fg-3)",
+                fontFamily: "var(--font-mono)",
+                marginRight: 4,
+              }}>Add field</span>
+              {FIELD_TYPES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => addField(t)}
+                  style={{
+                    appearance: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "4px 9px",
+                    borderRadius: 4,
+                    border: "1px dashed var(--vb-border-2)",
+                    background: "transparent",
+                    color: "var(--vb-fg-2)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    transition: "background 100ms, border-color 100ms",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "var(--vb-bg-3)";
+                    e.currentTarget.style.borderColor = "var(--vb-accent)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.borderColor = "var(--vb-border-2)";
+                  }}
+                >
+                  <Icon name="plus" size={10} />{t}
+                </button>
+              ))}
             </div>
           </div>
         )}
-
-        {/* Field schema (hidden for view collections — fields are inferred from the SQL) */}
-        {type !== "view" && (
-        <div>
-          <label className="label">Schema · {fields.length} fields</label>
-          <div className="field-list" style={{ borderRadius: 8 }}>
-            {fields.map((f, i) => {
-              const locked = f.system || f.implicit;
-              return (
-              <div key={i} style={{ borderBottom: i < fields.length - 1 ? "0.5px solid rgba(255,255,255,0.04)" : "none" }}>
-                <div
-                  className={`field-row-edit${expanded === i ? " selected" : ""}`}
-                  style={{ padding: "8px 12px", gap: 8, borderBottom: "none", opacity: locked ? 0.7 : 1 }}
-                >
-                  <span className="grip" style={{ flexShrink: 0 }}>
-                    <Icon name="grip" size={12} />
-                  </span>
-
-                  {locked ? (
-                    <span className="name" style={{ minWidth: 140, fontSize: 12 }}>{f.name}</span>
-                  ) : (
-                    <input
-                      className="input mono"
-                      style={{ height: 26, fontSize: 12, minWidth: 130, maxWidth: 160 }}
-                      value={f.name}
-                      onChange={(e) => patchField(i, { name: cleanFieldName(e.target.value) })}
-                      onClick={(e) => e.stopPropagation()}
-                      placeholder="field_name"
-                    />
-                  )}
-
-                  {locked ? (
-                    <FieldTypeChip type={f.type} />
-                  ) : (
-                    <Dropdown
-                      value={f.type}
-                      options={FIELD_TYPES}
-                      onChange={(e) => { e.originalEvent?.stopPropagation(); patchField(i, { type: e.value as FieldDef["type"], options: {} }); }}
-                      style={{ height: 26, minWidth: 100, fontSize: 11 }}
-                      panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 11 }}
-                    />
-                  )}
-
-                  {!locked && (
-                    <label
-                      style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-secondary)" }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Toggle
-                        on={f.required ?? false}
-                        onChange={(v) => patchField(i, { required: v })}
-                      />
-                      <span>req</span>
-                    </label>
-                  )}
-
-                  {locked ? (
-                    <span className="system" style={{ marginLeft: "auto", fontSize: 10.5 }}>
-                      {f.implicit ? "implicit" : "system"}
-                    </span>
-                  ) : (
-                    <>
-                      <button
-                        className="btn-icon"
-                        style={{ marginLeft: "auto", flexShrink: 0 }}
-                        onClick={(e) => { e.stopPropagation(); setExpanded(expanded === i ? null : i); }}
-                        title={expanded === i ? "Hide options" : "Show options"}
-                      >
-                        <Icon name={expanded === i ? "chevronDown" : "chevronRight"} size={12} />
-                      </button>
-                      <button
-                        className="btn-icon"
-                        style={{ flexShrink: 0 }}
-                        onClick={(e) => { e.stopPropagation(); removeField(i); }}
-                        title="Remove field"
-                      >
-                        <Icon name="x" size={12} />
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {expanded === i && !locked && (
-                  <FieldOptionsPanel
-                    field={f}
-                    onPatchOptions={(patch) => patchOptions(i, patch)}
-                    onPatchField={(patch) => patchField(i, patch)}
-                    collectionNames={collectionNames}
-                  />
-                )}
-              </div>
-              );
-            })}
-          </div>
-          <div className="add-field-bar" style={{ borderRadius: 8, marginTop: 6, border: "0.5px solid var(--border-default)" }}>
-            <span className="label-mini">Add field</span>
-            {FIELD_TYPES.map((t) => (
-              <span className="add-chip" key={t} onClick={() => addField(t)}>
-                <Icon name="plus" size={10} />{t}
-              </span>
-            ))}
-          </div>
-        </div>
-        )}
       </div>
     </Modal>
+  );
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code style={{
+      fontFamily: "var(--font-mono)",
+      fontSize: "0.86em",
+      padding: "1px 5px",
+      borderRadius: 4,
+      background: "var(--vb-bg-3)",
+      color: "var(--vb-fg)",
+    }}>{children}</code>
   );
 }
 
@@ -402,53 +533,52 @@ function FieldOptionsPanel({
   }
 
   return (
-    <div
-      style={{
-        padding: "10px 14px 12px 36px",
-        background: "rgba(255,255,255,0.015)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        fontSize: 12,
-      }}
-    >
+    <div style={{
+      padding: "12px 14px 14px 38px",
+      background: "var(--vb-bg-1)",
+      borderTop: "1px solid var(--vb-border)",
+      display: "flex",
+      flexDirection: "column",
+      gap: 12,
+    }}>
       {/* Text / Email / URL */}
       {(field.type === "text" || field.type === "email" || field.type === "url") && (
         <>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Field label="Min length">
-              <input
-                className="input mono"
-                style={{ height: 28, fontSize: 12 }}
-                type="number"
-                min={0}
-                value={(opts["min"] as number | undefined) ?? ""}
-                onChange={(e) => onPatchOptions({ min: numOrUndef(e.target.value) })}
-                placeholder="0"
-              />
-            </Field>
-            <Field label="Max length">
-              <input
-                className="input mono"
-                style={{ height: 28, fontSize: 12 }}
-                type="number"
-                min={0}
-                value={(opts["max"] as number | undefined) ?? ""}
-                onChange={(e) => onPatchOptions({ max: numOrUndef(e.target.value) })}
-                placeholder="—"
-              />
-            </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <VbField label="Min length">
+                <VbInput
+                  mono
+                  type="number"
+                  min={0}
+                  value={(opts["min"] as number | undefined) ?? ""}
+                  onChange={(e) => onPatchOptions({ min: numOrUndef(e.target.value) })}
+                  placeholder="0"
+                />
+              </VbField>
+            </div>
+            <div style={{ flex: 1 }}>
+              <VbField label="Max length">
+                <VbInput
+                  mono
+                  type="number"
+                  min={0}
+                  value={(opts["max"] as number | undefined) ?? ""}
+                  onChange={(e) => onPatchOptions({ max: numOrUndef(e.target.value) })}
+                  placeholder="—"
+                />
+              </VbField>
+            </div>
           </div>
           {field.type === "text" && (
-            <Field label="Regex pattern">
-              <input
-                className="input mono"
-                style={{ height: 28, fontSize: 12 }}
+            <VbField label="Regex pattern">
+              <VbInput
+                mono
                 value={(opts["pattern"] as string | undefined) ?? ""}
                 onChange={(e) => onPatchOptions({ pattern: e.target.value || undefined })}
                 placeholder="^[a-z0-9-]+$"
               />
-            </Field>
+            </VbField>
           )}
           <UniqueToggle opts={opts} onPatchOptions={onPatchOptions} />
         </>
@@ -457,27 +587,29 @@ function FieldOptionsPanel({
       {/* Number */}
       {field.type === "number" && (
         <>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Field label="Min value">
-              <input
-                className="input mono"
-                style={{ height: 28, fontSize: 12 }}
-                type="number"
-                value={(opts["min"] as number | undefined) ?? ""}
-                onChange={(e) => onPatchOptions({ min: numOrUndef(e.target.value) })}
-                placeholder="—"
-              />
-            </Field>
-            <Field label="Max value">
-              <input
-                className="input mono"
-                style={{ height: 28, fontSize: 12 }}
-                type="number"
-                value={(opts["max"] as number | undefined) ?? ""}
-                onChange={(e) => onPatchOptions({ max: numOrUndef(e.target.value) })}
-                placeholder="—"
-              />
-            </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <VbField label="Min value">
+                <VbInput
+                  mono
+                  type="number"
+                  value={(opts["min"] as number | undefined) ?? ""}
+                  onChange={(e) => onPatchOptions({ min: numOrUndef(e.target.value) })}
+                  placeholder="—"
+                />
+              </VbField>
+            </div>
+            <div style={{ flex: 1 }}>
+              <VbField label="Max value">
+                <VbInput
+                  mono
+                  type="number"
+                  value={(opts["max"] as number | undefined) ?? ""}
+                  onChange={(e) => onPatchOptions({ max: numOrUndef(e.target.value) })}
+                  placeholder="—"
+                />
+              </VbField>
+            </div>
           </div>
           <UniqueToggle opts={opts} onPatchOptions={onPatchOptions} />
         </>
@@ -486,7 +618,7 @@ function FieldOptionsPanel({
       {/* Select */}
       {field.type === "select" && (
         <>
-          <Field label="Allowed values">
+          <VbField label="Allowed values">
             <Chips
               value={Array.isArray(opts["values"]) ? (opts["values"] as string[]) : []}
               onChange={(e) => onPatchOptions({ values: e.value ?? [] })}
@@ -494,22 +626,20 @@ function FieldOptionsPanel({
               separator=","
               style={{ width: "100%" }}
             />
-          </Field>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-            <Toggle
-              on={!!opts["multiple"]}
-              onChange={(v) => onPatchOptions({ multiple: v })}
-            />
-            <span>Allow multiple values</span>
-          </label>
+          </VbField>
+          <ToggleRow
+            on={!!opts["multiple"]}
+            onChange={(v) => onPatchOptions({ multiple: v })}
+            label="Allow multiple values"
+          />
         </>
       )}
 
       {/* Relation */}
       {field.type === "relation" && (
-        <Field label="Target collection">
+        <VbField label="Target collection">
           {collectionNames.length === 0 ? (
-            <div className="muted" style={{ fontSize: 11 }}>
+            <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
               No other collections yet. Create the target collection first.
             </div>
           ) : (
@@ -520,28 +650,27 @@ function FieldOptionsPanel({
               placeholder="Select a collection…"
               filter
               showClear
-              style={{ width: "100%", height: 28, fontSize: 12 }}
+              style={{ width: "100%", height: 32 }}
               panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
             />
           )}
-        </Field>
+        </VbField>
       )}
 
       {/* File */}
       {field.type === "file" && (
         <>
-          <Field label="Max size (bytes)">
-            <input
-              className="input mono"
-              style={{ height: 28, fontSize: 12 }}
+          <VbField label="Max size (bytes)">
+            <VbInput
+              mono
               type="number"
               min={0}
               value={(opts["maxSize"] as number | undefined) ?? ""}
               onChange={(e) => onPatchOptions({ maxSize: numOrUndef(e.target.value) })}
               placeholder="5242880 = 5MB"
             />
-          </Field>
-          <Field label="Allowed MIME types">
+          </VbField>
+          <VbField label="Allowed MIME types">
             <Chips
               value={Array.isArray(opts["mimeTypes"]) ? (opts["mimeTypes"] as string[]) : []}
               onChange={(e) => onPatchOptions({ mimeTypes: e.value ?? [] })}
@@ -549,25 +678,26 @@ function FieldOptionsPanel({
               separator=","
               style={{ width: "100%" }}
             />
-          </Field>
+          </VbField>
         </>
       )}
 
       {(field.type === "bool" || field.type === "date" || field.type === "json") && (
-        <div className="muted" style={{ fontSize: 11 }}>No additional options for this type.</div>
+        <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+          No additional options for this type.
+          {field.type === "bool" && <> <VbPill tone="neutral">true / false</VbPill></>}
+        </div>
       )}
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function ToggleRow({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
-    <div style={{ flex: 1 }}>
-      <div style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, fontWeight: 500 }}>
-        {label}
-      </div>
-      {children}
-    </div>
+    <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--vb-fg-2)", cursor: "pointer" }}>
+      <Toggle on={on} onChange={onChange} />
+      <span>{label}</span>
+    </label>
   );
 }
 
@@ -579,9 +709,10 @@ function UniqueToggle({
   onPatchOptions: (patch: Record<string, unknown>) => void;
 }) {
   return (
-    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-      <Toggle on={!!opts["unique"]} onChange={(v) => onPatchOptions({ unique: v })} />
-      <span>Unique — reject duplicate values</span>
-    </label>
+    <ToggleRow
+      on={!!opts["unique"]}
+      onChange={(v) => onPatchOptions({ unique: v })}
+      label="Unique — reject duplicate values"
+    />
   );
 }

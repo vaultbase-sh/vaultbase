@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import {
+  VbBtn, VbEmptyState, VbField, VbInput, VbPageHeader, VbPill,
+  VbTable, type VbTableColumn,
+} from "../components/Vb.tsx";
 import { Modal } from "../components/UI.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -41,102 +44,107 @@ export default function Superusers() {
     load();
   }
 
+  const columns: VbTableColumn<Admin>[] = [
+    { key: "email", label: "Email", flex: 2, render: (a) => (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+        <span style={{
+          width: 28, height: 28, borderRadius: 6,
+          background: "var(--vb-accent)",
+          display: "grid", placeItems: "center",
+          fontSize: 12, fontWeight: 600, color: "#fff",
+          flexShrink: 0,
+        }}>{a.email[0]!.toUpperCase()}</span>
+        <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <span style={{ fontSize: 13, color: "var(--vb-fg)", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {a.email}
+          </span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--vb-fg-3)" }}>
+            {a.id.slice(0, 12)}…
+            {a.email === adminEmail && (
+              <span style={{ color: "var(--vb-accent)", marginLeft: 6 }}>· you</span>
+            )}
+          </span>
+        </span>
+      </span>
+    )},
+    { key: "created_at", label: "Created", width: 140, mono: true, render: (a) => (
+      <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+        {new Date(a.created_at * 1000).toLocaleDateString()}
+      </span>
+    )},
+    { key: "actions", label: "", width: 96, align: "right", render: (a) => (
+      <span
+        style={{ display: "inline-flex", gap: 4, justifyContent: "flex-end" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setShowEdit(a)} title="Edit" />
+        <VbBtn
+          kind="danger"
+          size="sm"
+          icon="trash"
+          onClick={() => handleDelete(a)}
+          disabled={a.email === adminEmail}
+          title={a.email === adminEmail ? "Cannot delete your own account" : "Delete"}
+        />
+      </span>
+    )},
+  ];
+
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "Superusers" }]}
-        actions={
-          <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-            <Icon name="plus" size={12} /> New superuser
-          </button>
+      <VbPageHeader
+        breadcrumb={["Superusers"]}
+        title="Superusers"
+        sub="Operator-equivalent admin accounts. Compromise of any superuser is equivalent to root on the host — treat them carefully."
+        right={
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+            <VbPill tone="warning" dot>{admins.length} active</VbPill>
+            <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowAdd(true)}>
+              New superuser
+            </VbBtn>
+          </span>
         }
       />
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : admins.length === 0 ? (
-            <div className="empty-state">
-              <div className="ic"><Icon name="users" size={20} /></div>
-              <h4>No superusers</h4>
-              <p>
-                Superusers have full admin access — they can manage collections,
-                edit hooks, and impersonate any user.
-              </p>
-              <div className="row">
-                <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-                  <Icon name="plus" size={12} /> New superuser
-                </button>
-              </div>
-            </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ width: "50%" }}>Email</th>
-                  <th>Created</th>
-                  <th style={{ textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {admins.map((a) => (
-                  <tr key={a.id}>
-                    <td>
-                      <div className="row" style={{ gap: 10 }}>
-                        <div
-                          style={{
-                            width: 28, height: 28, borderRadius: "50%",
-                            background: "linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent), purple 40%))",
-                            display: "grid", placeItems: "center", fontSize: 12, fontWeight: 600, color: "#000",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {a.email[0]!.toUpperCase()}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 13 }}>{a.email}</div>
-                          <div className="muted mono" style={{ fontSize: 10.5 }}>
-                            {a.id.slice(0, 12)}…
-                            {a.email === adminEmail && (
-                              <span style={{ color: "var(--accent-light)", marginLeft: 6 }}>· you</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="muted mono-cell" style={{ fontSize: 11.5 }}>
-                      {new Date(a.created_at * 1000).toLocaleDateString()}
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                        <button
-                          className="btn-icon"
-                          onClick={() => setShowEdit(a)}
-                          title="Edit"
-                        >
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button
-                          className="btn-icon danger"
-                          onClick={() => handleDelete(a)}
-                          title={a.email === adminEmail ? "Cannot delete your own account" : "Delete"}
-                          disabled={a.email === adminEmail}
-                        >
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <VbTable<Admin>
+          rows={admins}
+          columns={columns}
+          rowKey={(a) => a.id}
+          loading={loading}
+          onRowClick={(a) => setShowEdit(a)}
+          emptyState={
+            <VbEmptyState
+              icon="users"
+              title="No superusers"
+              body="Superusers have full admin access — they can manage collections, edit hooks, and impersonate any user."
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowAdd(true)}>New superuser</VbBtn>}
+            />
+          }
+        />
       </div>
 
       <AddSuperuserModal open={showAdd} onClose={() => setShowAdd(false)} onAdded={() => { toast("Superuser added"); load(); }} />
       <EditSuperuserModal admin={showEdit} onClose={() => setShowEdit(null)} onSaved={() => { toast("Superuser updated"); load(); }} />
     </>
+  );
+}
+
+function ModalErrorBar({ message }: { message: string }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      color: "var(--vb-status-danger)",
+      fontSize: 12,
+      padding: "8px 12px",
+      background: "var(--vb-status-danger-bg)",
+      border: "1px solid rgba(232,90,79,0.3)",
+      borderRadius: 6,
+    }}>
+      <Icon name="alert" size={12} />
+      <span>{message}</span>
+    </div>
   );
 }
 
@@ -165,30 +173,24 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
       open={open}
       onClose={onClose}
       title="New superuser"
-      width={400}
+      width={420}
       footer={
         <>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSubmit} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Adding…" : "Create"}
-          </button>
+          <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={handleSubmit} disabled={saving}>
+            {saving ? "Adding…" : "Create"}
+          </VbBtn>
         </>
       }
     >
-      <div className="col" style={{ gap: 12 }}>
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6 }}>
-            {error}
-          </div>
-        )}
-        <div>
-          <label className="label">Email</label>
-          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-        </div>
-        <div>
-          <label className="label">Password (min 8 chars)</label>
-          <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
-        </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {error && <ModalErrorBar message={error} />}
+        <VbField label="Email">
+          <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="ops@example.com" />
+        </VbField>
+        <VbField label="Password" hint="min 8 characters">
+          <VbInput type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+        </VbField>
       </div>
     </Modal>
   );
@@ -224,30 +226,24 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
       open={!!admin}
       onClose={onClose}
       title="Edit superuser"
-      width={400}
+      width={420}
       footer={
         <>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSubmit} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
+          <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={handleSubmit} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </VbBtn>
         </>
       }
     >
-      <div className="col" style={{ gap: 12 }}>
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6 }}>
-            {error}
-          </div>
-        )}
-        <div>
-          <label className="label">Email</label>
-          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        </div>
-        <div>
-          <label className="label">New password (leave blank to keep)</label>
-          <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
-        </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {error && <ModalErrorBar message={error} />}
+        <VbField label="Email">
+          <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </VbField>
+        <VbField label="New password" hint="leave blank to keep current">
+          <VbInput type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+        </VbField>
       </div>
     </Modal>
   );

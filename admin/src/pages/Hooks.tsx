@@ -4,7 +4,11 @@ import { Dialog } from "primereact/dialog";
 import cronstrue from "cronstrue";
 import { CronExpressionParser } from "cron-parser";
 import { api, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import {
+  VbPageHeader, VbTabs, type VbTab,
+  VbBtn, VbInput, VbField, VbPill, VbTable, VbEmptyState,
+  type VbTableColumn,
+} from "../components/Vb.tsx";
 import { Toggle } from "../components/UI.tsx";
 import { CodeEditor } from "../components/CodeEditor.tsx";
 import Icon from "../components/Icon.tsx";
@@ -176,31 +180,24 @@ if (!ctx.record.slug && ctx.record.title) {
 }
 `;
 
+const HOOKS_TABS: VbTab<Tab>[] = [
+  { id: "hooks",   label: "Record hooks",  icon: "webhook" },
+  { id: "routes",  label: "Custom routes", icon: "play" },
+  { id: "jobs",    label: "Cron jobs",     icon: "refresh" },
+  { id: "workers", label: "Workers",       icon: "zap" },
+  { id: "joblog",  label: "Jobs log",      icon: "scroll" },
+];
+
 export default function Hooks() {
   const [tab, setTab] = useState<Tab>("hooks");
   return (
     <>
-      <Topbar
+      <VbPageHeader
+        breadcrumb={["Hooks"]}
         title="Hooks"
-        subtitle="Server-side JS — record events + custom HTTP routes"
+        sub="Server-side JS — record events, custom HTTP routes, cron jobs, queue workers."
       />
-      <div className="tabs" style={{ paddingLeft: 20 }}>
-        <div className={`tab ${tab === "hooks" ? "active" : ""}`} onClick={() => setTab("hooks")}>
-          <Icon name="webhook" size={12} /> Record hooks
-        </div>
-        <div className={`tab ${tab === "routes" ? "active" : ""}`} onClick={() => setTab("routes")}>
-          <Icon name="server" size={12} /> Custom routes
-        </div>
-        <div className={`tab ${tab === "jobs" ? "active" : ""}`} onClick={() => setTab("jobs")}>
-          <Icon name="refresh" size={12} /> Cron jobs
-        </div>
-        <div className={`tab ${tab === "workers" ? "active" : ""}`} onClick={() => setTab("workers")}>
-          <Icon name="zap" size={12} /> Workers
-        </div>
-        <div className={`tab ${tab === "joblog" ? "active" : ""}`} onClick={() => setTab("joblog")}>
-          <Icon name="scroll" size={12} /> Jobs log
-        </div>
-      </div>
+      <VbTabs<Tab> tabs={HOOKS_TABS} active={tab} onChange={setTab} />
       {tab === "hooks" && <HooksTab />}
       {tab === "routes" && <RoutesTab />}
       {tab === "jobs" && <JobsTab />}
@@ -209,6 +206,42 @@ export default function Hooks() {
     </>
   );
 }
+
+// ── Shared row-action button cluster ────────────────────────────────────────
+function RowActions({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      style={{ display: "inline-flex", gap: 4, justifyContent: "flex-end" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {children}
+    </span>
+  );
+}
+
+function NameCell({ name }: { name: string }) {
+  return name ? (
+    <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--vb-fg)" }}>{name}</span>
+  ) : (
+    <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)", fontStyle: "italic" }}>(unnamed)</span>
+  );
+}
+
+function CodePreview({ code }: { code: string }) {
+  const line = code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//"))?.trim() ?? "(empty)";
+  return (
+    <span style={{
+      fontFamily: "var(--font-mono)",
+      fontSize: 11,
+      color: "var(--vb-fg-3)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    }}>{line}</span>
+  );
+}
+
+// ── Hooks tab ───────────────────────────────────────────────────────────────
 
 function HooksTab() {
   const [hooks, setHooks] = useState<Hook[]>([]);
@@ -251,90 +284,51 @@ function HooksTab() {
     load();
   }
 
+  const columns: VbTableColumn<Hook>[] = [
+    { key: "name", label: "Name", flex: 1.2, render: (h) => <NameCell name={h.name} /> },
+    { key: "collection", label: "Collection", flex: 1, render: (h) => (
+      h.collection_name === ""
+        ? <VbPill tone="accent">global</VbPill>
+        : <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{h.collection_name}</span>
+    )},
+    { key: "event", label: "Event", width: 130, render: (h) => (
+      <VbPill tone={h.event.startsWith("before") ? "warning" : "success"}>{h.event}</VbPill>
+    )},
+    { key: "code", label: "Code preview", flex: 2, render: (h) => <CodePreview code={h.code} /> },
+    { key: "enabled", label: "On", width: 70, align: "center", render: (h) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <Toggle on={!!h.enabled} onChange={() => toggleEnabled(h)} />
+      </span>
+    )},
+    { key: "actions", label: "", width: 88, align: "right", render: (h) => (
+      <RowActions>
+        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setEditing(h)} title="Edit" />
+        <VbBtn kind="danger" size="sm" icon="trash" onClick={() => handleDelete(h)} title="Delete" />
+      </RowActions>
+    )},
+  ];
+
   return (
     <>
-      <div style={{ padding: "12px 20px 0", display: "flex", justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-          <Icon name="plus" size={12} /> New hook
-        </button>
+      <div style={{ padding: "14px 28px 0", display: "flex", justifyContent: "flex-end" }}>
+        <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New hook</VbBtn>
       </div>
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : hooks.length === 0 ? (
-            <div className="empty">
-              No hooks yet. Hooks run server-side JS on record events (beforeCreate, afterUpdate, etc.).
-            </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Collection</th>
-                  <th>Event</th>
-                  <th>Code preview</th>
-                  <th style={{ width: 80 }}>Enabled</th>
-                  <th style={{ width: 90, textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {hooks.map((h) => (
-                  <tr key={h.id}>
-                    <td onClick={() => setEditing(h)} style={{ cursor: "pointer" }}>
-                      {h.name ? (
-                        <span style={{ fontSize: 13, fontWeight: 500 }}>{h.name}</span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
-                      )}
-                    </td>
-                    <td className="mono-cell">
-                      {h.collection_name === "" ? (
-                        <span className="badge auth">global</span>
-                      ) : (
-                        <span style={{ fontSize: 12 }}>{h.collection_name}</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge ${h.event.startsWith("before") ? "warning" : "success"}`}>
-                        {h.event}
-                      </span>
-                    </td>
-                    <td
-                      className="mono-cell muted"
-                      style={{
-                        fontSize: 11,
-                        maxWidth: 320,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      onClick={() => setEditing(h)}
-                    >
-                      {h.code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//"))?.trim() ?? "(empty)"}
-                    </td>
-                    <td>
-                      <Toggle
-                        on={!!h.enabled}
-                        onChange={() => toggleEnabled(h)}
-                      />
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                        <button className="btn-icon" onClick={() => setEditing(h)} title="Edit">
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button className="btn-icon danger" onClick={() => handleDelete(h)} title="Delete">
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <VbTable<Hook>
+          rows={hooks}
+          columns={columns}
+          rowKey={(h) => h.id}
+          loading={loading}
+          onRowClick={setEditing}
+          emptyState={
+            <VbEmptyState
+              icon="webhook"
+              title="No record hooks yet"
+              body="Hooks run server-side JS on record events — beforeCreate, afterUpdate, etc."
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New hook</VbBtn>}
+            />
+          }
+        />
       </div>
 
       <HookEditor
@@ -354,6 +348,85 @@ function HooksTab() {
     </>
   );
 }
+
+function EditorHeader({
+  title, idHint,
+}: { title: string; idHint?: string | null }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</span>
+      {idHint && (
+        <span style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          color: "var(--vb-fg-3)",
+          background: "var(--vb-bg-3)",
+          padding: "2px 6px",
+          borderRadius: 4,
+        }}>{idHint}</span>
+      )}
+    </div>
+  );
+}
+
+function EditorErrorBar({ message }: { message: string }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      color: "var(--vb-status-danger)",
+      fontSize: 12,
+      padding: "8px 18px",
+      background: "var(--vb-status-danger-bg)",
+      borderBottom: "1px solid rgba(232,90,79,0.3)",
+    }}>
+      <Icon name="alert" size={12} />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function EditorFootnote({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      fontSize: 11,
+      color: "var(--vb-fg-3)",
+      display: "flex",
+      gap: 14,
+      flexWrap: "wrap",
+      alignItems: "center",
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function ToggleField({ on, onChange, label = "Enabled" }: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
+  return (
+    <label style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 12,
+      color: "var(--vb-fg-2)",
+      marginTop: 18,
+      cursor: "pointer",
+    }}>
+      <Toggle on={on} onChange={onChange} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+const EDITOR_DIALOG_STYLE: React.CSSProperties = { width: "92vw", height: "92vh", maxWidth: 1400 };
+const EDITOR_CONTENT_STYLE: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  padding: 0,
+  height: "100%",
+  background: "var(--vb-bg-2)",
+};
 
 function HookEditor({
   hook,
@@ -404,7 +477,6 @@ function HookEditor({
     [collections]
   );
 
-  // Pull schema fields for the selected collection — drives ctx.record IntelliSense
   const fieldsForCtx: FieldDef[] = useMemo(() => {
     if (!collName) return [];
     const col = collections.find((c) => c.name === collName);
@@ -425,93 +497,68 @@ function HookEditor({
     onClose();
   }
 
-  const headerNode = (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-      <span style={{ fontSize: 14, fontWeight: 600 }}>
-        {isNew ? "New hook" : (name || "Edit hook")}
-      </span>
-      {!isNew && hook && (
-        <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
-          {hook.id.slice(0, 12)}…
-        </span>
-      )}
-    </div>
-  );
-
   return (
     <Dialog
       visible={open}
       onHide={onClose}
-      header={headerNode}
+      header={<EditorHeader title={isNew ? "New hook" : (name || "Edit hook")} idHint={hook ? `${hook.id.slice(0, 12)}…` : null} />}
       modal
       draggable={false}
       resizable={false}
       maximizable
-      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
-      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
+      style={EDITOR_DIALOG_STYLE}
+      contentStyle={EDITOR_CONTENT_STYLE}
     >
       <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
-        {/* Top config bar */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "12px 18px",
-            borderBottom: "0.5px solid var(--border-default)",
-            background: "var(--bg-surface)",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Name</span>
-            <input
-              className="input"
-              style={{ height: 32, width: 240, fontSize: 13 }}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. auto-slug-posts"
-            />
+        <div style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 14,
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-2)",
+          flexWrap: "wrap",
+        }}>
+          <div style={{ width: 240 }}>
+            <VbField label="Name">
+              <VbInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. auto-slug-posts" />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Collection</span>
-            <Dropdown
-              value={collName}
-              options={collOptions}
-              onChange={(e) => setCollName(e.value)}
-              filter
-              style={{ width: 220, height: 32 }}
-            />
+          <div style={{ width: 220 }}>
+            <VbField label="Collection">
+              <Dropdown
+                value={collName}
+                options={collOptions}
+                onChange={(e) => setCollName(e.value)}
+                filter
+                style={{ width: "100%", height: 32 }}
+              />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Event</span>
-            <Dropdown
-              value={event}
-              options={EVENTS.map((e) => ({ label: e, value: e }))}
-              onChange={(e) => setEvent(e.value as HookEvent)}
-              style={{ width: 180, height: 32 }}
-              panelStyle={{ fontFamily: "var(--font-mono)" }}
-            />
+          <div style={{ width: 180 }}>
+            <VbField label="Event">
+              <Dropdown
+                value={event}
+                options={EVENTS.map((e) => ({ label: e, value: e }))}
+                onChange={(e) => setEvent(e.value as HookEvent)}
+                style={{ width: "100%", height: 32 }}
+                panelStyle={{ fontFamily: "var(--font-mono)" }}
+              />
+            </VbField>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
-            <Toggle on={enabled} onChange={setEnabled} />
-            <span>Enabled</span>
-          </label>
+          <ToggleField on={enabled} onChange={setEnabled} />
           <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+            <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </VbBtn>
+          </div>
         </div>
 
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
-            {error}
-          </div>
-        )}
+        {error && <EditorErrorBar message={error} />}
 
-        {/* Editor takes all remaining space */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
           <div style={{ flex: 1, minHeight: 0 }}>
             <CodeEditor
               value={code}
@@ -523,19 +570,31 @@ function HookEditor({
               height="100%"
             />
           </div>
-          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <span>Type <span className="mono">ctx.</span> for autocomplete</span>
-            <span>·</span>
-            <span><span className="mono">ctx.helpers.abort(msg)</span> in <span className="mono">before*</span> → 422</span>
-            <span>·</span>
-            <span><span className="mono">after*</span> errors are logged, don't fail the request</span>
+          <EditorFootnote>
+            <span>Type <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.</span> for autocomplete</span>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.helpers.abort(msg)</span>
+              {" "}in{" "}
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>before*</span>
+              {" "}→ 422
+            </span>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>after*</span>
+              {" "}errors are logged, don't fail the request
+            </span>
             {collName && fieldsForCtx.length > 0 && (
               <>
-                <span>·</span>
-                <span><span className="mono">ctx.record</span> typed as <span className="mono" style={{ color: "var(--accent-light)" }}>{collName}Record</span></span>
+                <span style={{ opacity: 0.4 }}>·</span>
+                <span>
+                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.record</span>
+                  {" "}typed as{" "}
+                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-accent)" }}>{collName}Record</span>
+                </span>
               </>
             )}
-          </div>
+          </EditorFootnote>
         </div>
       </div>
     </Dialog>
@@ -543,6 +602,17 @@ function HookEditor({
 }
 
 // ── Routes tab ──────────────────────────────────────────────────────────────
+
+function methodTone(method: string): "success" | "warning" | "danger" | "accent" | "neutral" {
+  switch (method.toUpperCase()) {
+    case "GET":    return "success";
+    case "POST":   return "accent";
+    case "PATCH":
+    case "PUT":    return "warning";
+    case "DELETE": return "danger";
+    default:       return "neutral";
+  }
+}
 
 function RoutesTab() {
   const [routes, setRoutes] = useState<CustomRoute[]>([]);
@@ -580,82 +650,50 @@ function RoutesTab() {
     load();
   }
 
+  const columns: VbTableColumn<CustomRoute>[] = [
+    { key: "name", label: "Name", flex: 1.2, render: (r) => <NameCell name={r.name} /> },
+    { key: "method", label: "Method", width: 90, render: (r) => <VbPill tone={methodTone(r.method)}>{r.method}</VbPill> },
+    { key: "path", label: "Path", flex: 1.5, render: (r) => (
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
+        <span style={{ color: "var(--vb-fg-3)" }}>/api/v1/custom</span>
+        <span style={{ color: "var(--vb-accent)" }}>{r.path}</span>
+      </span>
+    )},
+    { key: "code", label: "Code preview", flex: 2, render: (r) => <CodePreview code={r.code} /> },
+    { key: "enabled", label: "On", width: 70, align: "center", render: (r) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <Toggle on={!!r.enabled} onChange={() => toggleEnabled(r)} />
+      </span>
+    )},
+    { key: "actions", label: "", width: 88, align: "right", render: (r) => (
+      <RowActions>
+        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setEditing(r)} title="Edit" />
+        <VbBtn kind="danger" size="sm" icon="trash" onClick={() => handleDelete(r)} title="Delete" />
+      </RowActions>
+    )},
+  ];
+
   return (
     <>
-      <div style={{ padding: "12px 20px 0", display: "flex", justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-          <Icon name="plus" size={12} /> New route
-        </button>
+      <div style={{ padding: "14px 28px 0", display: "flex", justifyContent: "flex-end" }}>
+        <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New route</VbBtn>
       </div>
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : routes.length === 0 ? (
-            <div className="empty">
-              No custom routes. Routes mount under <code style={{ fontFamily: "var(--font-mono)" }}>/api/v1/custom/&lt;your-path&gt;</code>.
-            </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th style={{ width: 80 }}>Method</th>
-                  <th>Path</th>
-                  <th>Code preview</th>
-                  <th style={{ width: 80 }}>Enabled</th>
-                  <th style={{ width: 90, textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {routes.map((r) => (
-                  <tr key={r.id}>
-                    <td onClick={() => setEditing(r)} style={{ cursor: "pointer" }}>
-                      {r.name ? (
-                        <span style={{ fontSize: 13, fontWeight: 500 }}>{r.name}</span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge method-${r.method.toLowerCase()}`}>{r.method}</span>
-                    </td>
-                    <td className="mono-cell" onClick={() => setEditing(r)} style={{ cursor: "pointer" }}>
-                      <span style={{ color: "var(--text-muted)" }}>/api/v1/custom</span>
-                      <span style={{ color: "var(--accent-light)" }}>{r.path}</span>
-                    </td>
-                    <td
-                      className="mono-cell muted"
-                      style={{
-                        fontSize: 11,
-                        maxWidth: 320,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      onClick={() => setEditing(r)}
-                    >
-                      {r.code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//"))?.trim() ?? "(empty)"}
-                    </td>
-                    <td>
-                      <Toggle on={!!r.enabled} onChange={() => toggleEnabled(r)} />
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                        <button className="btn-icon" onClick={() => setEditing(r)} title="Edit">
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button className="btn-icon danger" onClick={() => handleDelete(r)} title="Delete">
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <VbTable<CustomRoute>
+          rows={routes}
+          columns={columns}
+          rowKey={(r) => r.id}
+          loading={loading}
+          onRowClick={setEditing}
+          emptyState={
+            <VbEmptyState
+              icon="play"
+              title="No custom routes"
+              body={<>Routes mount under <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>/api/v1/custom/&lt;your-path&gt;</span>.</>}
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New route</VbBtn>}
+            />
+          }
+        />
       </div>
 
       <RouteEditor
@@ -730,92 +768,60 @@ function RouteEditor({
     onClose();
   }
 
-  const headerNode = (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-      <span style={{ fontSize: 14, fontWeight: 600 }}>
-        {isNew ? "New route" : (name || `${method} ${path}`)}
-      </span>
-      {!isNew && route && (
-        <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
-          {route.id.slice(0, 12)}…
-        </span>
-      )}
-    </div>
-  );
-
   return (
     <Dialog
       visible={open}
       onHide={onClose}
-      header={headerNode}
+      header={<EditorHeader title={isNew ? "New route" : (name || `${method} ${path}`)} idHint={route ? `${route.id.slice(0, 12)}…` : null} />}
       modal
       draggable={false}
       resizable={false}
       maximizable
-      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
-      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
+      style={EDITOR_DIALOG_STYLE}
+      contentStyle={EDITOR_CONTENT_STYLE}
     >
       <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "12px 18px",
-            borderBottom: "0.5px solid var(--border-default)",
-            background: "var(--bg-surface)",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Name</span>
-            <input
-              className="input"
-              style={{ height: 32, width: 220, fontSize: 13 }}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. user-profile-endpoint"
-            />
+        <div style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 14,
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-2)",
+          flexWrap: "wrap",
+        }}>
+          <div style={{ width: 220 }}>
+            <VbField label="Name">
+              <VbInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. user-profile-endpoint" />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Method</span>
-            <Dropdown
-              value={method}
-              options={ROUTE_METHODS.map((m) => ({ label: m, value: m }))}
-              onChange={(e) => setMethod(e.value)}
-              style={{ width: 110, height: 32 }}
-            />
+          <div style={{ width: 110 }}>
+            <VbField label="Method">
+              <Dropdown
+                value={method}
+                options={ROUTE_METHODS.map((m) => ({ label: m, value: m }))}
+                onChange={(e) => setMethod(e.value)}
+                style={{ width: "100%", height: 32 }}
+              />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 240 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Path <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(mounts under /api/v1/custom)</span>
-            </span>
-            <input
-              className="input mono"
-              style={{ height: 32, fontSize: 12 }}
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/users/:id/profile"
-            />
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <VbField label="Path" hint="mounts under /api/v1/custom">
+              <VbInput mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="/users/:id/profile" />
+            </VbField>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
-            <Toggle on={enabled} onChange={setEnabled} />
-            <span>Enabled</span>
-          </label>
-          <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
+          <ToggleField on={enabled} onChange={setEnabled} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+            <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </VbBtn>
+          </div>
         </div>
 
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
-            {error}
-          </div>
-        )}
+        {error && <EditorErrorBar message={error} />}
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
           <div style={{ flex: 1, minHeight: 0 }}>
             <CodeEditor
               value={code}
@@ -825,13 +831,20 @@ function RouteEditor({
               height="100%"
             />
           </div>
-          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <span>Type <span className="mono">ctx.</span> for autocomplete</span>
-            <span>·</span>
-            <span>Mounts at <span className="mono" style={{ color: "var(--accent-light)" }}>{method} /api/v1/custom{path}</span></span>
-            <span>·</span>
-            <span>Throw or call <span className="mono">ctx.helpers.abort(msg)</span> → 422</span>
-          </div>
+          <EditorFootnote>
+            <span>Type <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.</span> for autocomplete</span>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>
+              Mounts at{" "}
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-accent)" }}>{method} /api/v1/custom{path}</span>
+            </span>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>
+              Throw or call{" "}
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.helpers.abort(msg)</span>
+              {" "}→ 422
+            </span>
+          </EditorFootnote>
         </div>
       </div>
     </Dialog>
@@ -894,84 +907,57 @@ function JobsTab() {
     load();
   }
 
+  const columns: VbTableColumn<CronJob>[] = [
+    { key: "name", label: "Name", flex: 1.2, render: (j) => <NameCell name={j.name} /> },
+    { key: "cron", label: "Schedule", width: 140, mono: true, render: (j) => (
+      <span style={{ fontSize: 12, color: "var(--vb-fg)" }}>{j.cron}</span>
+    )},
+    { key: "last", label: "Last run", width: 110, mono: true, render: (j) => (
+      <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>{fmtRelTime(j.last_run_at)}</span>
+    )},
+    { key: "next", label: "Next run", width: 110, mono: true, render: (j) => (
+      <span style={{ fontSize: 11, color: "var(--vb-accent)" }}>{fmtRelTime(j.next_run_at)}</span>
+    )},
+    { key: "status", label: "Status", width: 90, render: (j) => (
+      j.last_status === "ok" ? <VbPill tone="success">ok</VbPill>
+      : j.last_status === "error" ? <span title={j.last_error ?? ""}><VbPill tone="danger">error</VbPill></span>
+      : <span style={{ color: "var(--vb-fg-3)", fontSize: 11 }}>—</span>
+    )},
+    { key: "enabled", label: "On", width: 70, align: "center", render: (j) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <Toggle on={!!j.enabled} onChange={() => toggleEnabled(j)} />
+      </span>
+    )},
+    { key: "actions", label: "", width: 130, align: "right", render: (j) => (
+      <RowActions>
+        <VbBtn kind="ghost" size="sm" icon="play" onClick={() => handleRunNow(j)} title="Run now" />
+        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setEditing(j)} title="Edit" />
+        <VbBtn kind="danger" size="sm" icon="trash" onClick={() => handleDelete(j)} title="Delete" />
+      </RowActions>
+    )},
+  ];
+
   return (
     <>
-      <div style={{ padding: "12px 20px 0", display: "flex", justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-          <Icon name="plus" size={12} /> New job
-        </button>
+      <div style={{ padding: "14px 28px 0", display: "flex", justifyContent: "flex-end" }}>
+        <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New job</VbBtn>
       </div>
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : jobs.length === 0 ? (
-            <div className="empty">
-              No cron jobs. Schedule JS code with cron expressions (UTC). Try <code style={{ fontFamily: "var(--font-mono)" }}>0 * * * *</code> for hourly.
-            </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th style={{ width: 130 }}>Schedule</th>
-                  <th style={{ width: 110 }}>Last run</th>
-                  <th style={{ width: 110 }}>Next run</th>
-                  <th style={{ width: 80 }}>Status</th>
-                  <th style={{ width: 80 }}>Enabled</th>
-                  <th style={{ width: 130, textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {jobs.map((j) => (
-                  <tr key={j.id}>
-                    <td onClick={() => setEditing(j)} style={{ cursor: "pointer" }}>
-                      {j.name ? (
-                        <span style={{ fontSize: 13, fontWeight: 500 }}>{j.name}</span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
-                      )}
-                    </td>
-                    <td className="mono-cell" style={{ fontSize: 12 }} onClick={() => setEditing(j)}>
-                      {j.cron}
-                    </td>
-                    <td className="muted mono-cell" style={{ fontSize: 11 }}>
-                      {fmtRelTime(j.last_run_at)}
-                    </td>
-                    <td className="mono-cell" style={{ fontSize: 11, color: "var(--accent-light)" }}>
-                      {fmtRelTime(j.next_run_at)}
-                    </td>
-                    <td>
-                      {j.last_status === "ok" ? (
-                        <span className="badge success">ok</span>
-                      ) : j.last_status === "error" ? (
-                        <span className="badge danger" title={j.last_error ?? ""}>error</span>
-                      ) : (
-                        <span className="muted" style={{ fontSize: 11 }}>—</span>
-                      )}
-                    </td>
-                    <td>
-                      <Toggle on={!!j.enabled} onChange={() => toggleEnabled(j)} />
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                        <button className="btn-icon" onClick={() => handleRunNow(j)} title="Run now">
-                          <Icon name="play" size={11} />
-                        </button>
-                        <button className="btn-icon" onClick={() => setEditing(j)} title="Edit">
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button className="btn-icon danger" onClick={() => handleDelete(j)} title="Delete">
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <VbTable<CronJob>
+          rows={jobs}
+          columns={columns}
+          rowKey={(j) => j.id}
+          loading={loading}
+          onRowClick={setEditing}
+          emptyState={
+            <VbEmptyState
+              icon="refresh"
+              title="No cron jobs"
+              body={<>Schedule JS code with cron expressions (UTC). Try <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>0 * * * *</span> for hourly.</>}
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New job</VbBtn>}
+            />
+          }
+        />
       </div>
 
       <JobEditor
@@ -1089,145 +1075,141 @@ function JobEditor({
     onClose();
   }
 
-  const headerNode = (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-      <span style={{ fontSize: 14, fontWeight: 600 }}>
-        {isNew ? "New cron job" : (name || "Edit job")}
-      </span>
-      {!isNew && job && (
-        <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
-          {job.id.slice(0, 12)}…
-        </span>
-      )}
-    </div>
-  );
+  const cronBorder = cron.trim() === ""
+    ? undefined
+    : cronAnalysis.valid ? "var(--vb-status-success)" : "var(--vb-status-danger)";
 
   return (
     <Dialog
       visible={open}
       onHide={onClose}
-      header={headerNode}
+      header={<EditorHeader title={isNew ? "New cron job" : (name || "Edit job")} idHint={job ? `${job.id.slice(0, 12)}…` : null} />}
       modal
       draggable={false}
       resizable={false}
       maximizable
-      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
-      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
+      style={EDITOR_DIALOG_STYLE}
+      contentStyle={EDITOR_CONTENT_STYLE}
     >
       <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "12px 18px",
-            borderBottom: "0.5px solid var(--border-default)",
-            background: "var(--bg-surface)",
-            flexWrap: "wrap",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Name</span>
-            <input
-              className="input"
-              style={{ height: 32, width: 220, fontSize: 13 }}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. nightly-cleanup"
-            />
+        <div style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 14,
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-2)",
+          flexWrap: "wrap",
+        }}>
+          <div style={{ width: 220 }}>
+            <VbField label="Name">
+              <VbInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. nightly-cleanup" />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 220 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Cron expression <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>(UTC)</span>
-            </span>
-            <input
-              className="input mono"
-              style={{
-                height: 32,
-                fontSize: 12,
-                borderColor: cron.trim() === "" ? undefined : (cronAnalysis.valid ? "var(--success)" : "var(--danger)"),
-              }}
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              placeholder="0 3 * * *"
-            />
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <VbField label="Cron expression" hint="UTC">
+              <VbInput
+                mono
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="0 3 * * *"
+                style={cronBorder ? { borderColor: cronBorder } : undefined}
+              />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Preset</span>
-            <Dropdown
-              value={null}
-              options={CRON_PRESETS.map((p) => ({ label: p.label, value: p.expr }))}
-              onChange={(e) => setCron(e.value)}
-              placeholder="—"
-              style={{ width: 180, height: 32 }}
-            />
+          <div style={{ width: 200 }}>
+            <VbField label="Preset">
+              <Dropdown
+                value={null}
+                options={CRON_PRESETS.map((p) => ({ label: p.label, value: p.expr }))}
+                onChange={(e) => setCron(e.value)}
+                placeholder="—"
+                style={{ width: "100%", height: 32 }}
+              />
+            </VbField>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Run mode</span>
-            <Dropdown
-              value={modeKind}
-              options={[
-                { label: "Inline (in-process)", value: "inline" },
-                { label: "Enqueue onto worker queue", value: "worker" },
-              ]}
-              onChange={(e) => setModeKind(e.value)}
-              style={{ width: 220, height: 32 }}
-            />
+          <div style={{ width: 230 }}>
+            <VbField label="Run mode">
+              <Dropdown
+                value={modeKind}
+                options={[
+                  { label: "Inline (in-process)", value: "inline" },
+                  { label: "Enqueue onto worker queue", value: "worker" },
+                ]}
+                onChange={(e) => setModeKind(e.value)}
+                style={{ width: "100%", height: 32 }}
+              />
+            </VbField>
           </div>
           {modeKind === "worker" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Queue</span>
-              <input
-                className="input mono"
-                style={{ height: 32, width: 160, fontSize: 12 }}
-                value={modeQueue}
-                onChange={(e) => setModeQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
-                placeholder="default"
-              />
+            <div style={{ width: 160 }}>
+              <VbField label="Queue">
+                <VbInput
+                  mono
+                  value={modeQueue}
+                  onChange={(e) => setModeQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
+                  placeholder="default"
+                />
+              </VbField>
             </div>
           )}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
-            <Toggle on={enabled} onChange={setEnabled} />
-            <span>Enabled</span>
-          </label>
-          <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
+          <ToggleField on={enabled} onChange={setEnabled} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+            <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </VbBtn>
+          </div>
         </div>
 
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
-            {error}
-          </div>
-        )}
+        {error && <EditorErrorBar message={error} />}
 
-        {/* Cron interpretation panel */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "stretch",
-            gap: 0,
-            padding: "10px 18px",
-            borderBottom: "0.5px solid var(--border-default)",
-            background: "rgba(255,255,255,0.015)",
-            fontSize: 12,
-          }}
-        >
+        <div style={{
+          display: "flex",
+          alignItems: "stretch",
+          gap: 0,
+          padding: "12px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-2)",
+          fontSize: 12,
+        }}>
           {cronAnalysis.valid ? (
             <>
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4, paddingRight: 16, borderRight: "0.5px solid var(--border-default)" }}>
-                <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  Schedule (cronstrue)
-                </span>
-                <span style={{ color: "var(--accent-light)" }}>{cronAnalysis.description}</span>
+              <div style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                paddingRight: 16,
+                borderRight: "1px solid var(--vb-border)",
+              }}>
+                <span style={{
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: 1.2,
+                  textTransform: "uppercase",
+                  color: "var(--vb-fg-3)",
+                  fontFamily: "var(--font-mono)",
+                }}>Schedule</span>
+                <span style={{ color: "var(--vb-accent)" }}>{cronAnalysis.description}</span>
               </div>
-              <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 4, paddingLeft: 16 }}>
-                <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  Next 5 runs
-                </span>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-secondary)" }}>
+              <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 6, paddingLeft: 16 }}>
+                <span style={{
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: 1.2,
+                  textTransform: "uppercase",
+                  color: "var(--vb-fg-3)",
+                  fontFamily: "var(--font-mono)",
+                }}>Next 5 runs</span>
+                <div style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--vb-fg-2)",
+                }}>
                   {cronAnalysis.nextRuns.map((r, i) => (
                     <span key={i}>{r}</span>
                   ))}
@@ -1235,14 +1217,14 @@ function JobEditor({
               </div>
             </>
           ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--danger)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--vb-status-danger)" }}>
               <Icon name="alert" size={12} />
               <span>{cronAnalysis.error ?? "Invalid cron expression"}</span>
             </div>
           )}
         </div>
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
           <div style={{ flex: 1, minHeight: 0 }}>
             <CodeEditor
               value={code}
@@ -1252,15 +1234,15 @@ function JobEditor({
               height="100%"
             />
           </div>
-          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <span>Cron format: <span className="mono">min hour dom mon dow</span></span>
-            <span>·</span>
+          <EditorFootnote>
+            <span>Cron format: <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>min hour dom mon dow</span></span>
+            <span style={{ opacity: 0.4 }}>·</span>
             <span>Scheduler ticks every 30s</span>
-            <span>·</span>
-            <span>Errors logged to <span className="mono">last_error</span></span>
-            <span>·</span>
-            <a href="https://crontab.guru/" target="_blank" rel="noreferrer" style={{ color: "var(--accent-light)" }}>crontab.guru</a>
-          </div>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>Errors logged to <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>last_error</span></span>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <a href="https://crontab.guru/" target="_blank" rel="noreferrer" style={{ color: "var(--vb-accent)" }}>crontab.guru</a>
+          </EditorFootnote>
         </div>
       </div>
     </Dialog>
@@ -1313,84 +1295,66 @@ function WorkersTab() {
     return m;
   }, [stats]);
 
+  const columns: VbTableColumn<Worker>[] = [
+    { key: "name", label: "Name", flex: 1.2, render: (w) => <NameCell name={w.name} /> },
+    { key: "queue", label: "Queue", width: 140, mono: true, render: (w) => (
+      <span style={{ fontSize: 12, color: "var(--vb-fg)" }}>{w.queue}</span>
+    )},
+    { key: "concurrency", label: "Concurrency", width: 110, mono: true, align: "right", render: (w) => (
+      <span style={{ color: "var(--vb-fg)" }}>{w.concurrency}</span>
+    )},
+    { key: "retry", label: "Retry", width: 160, mono: true, render: (w) => (
+      <span style={{ fontSize: 11, color: "var(--vb-fg-2)" }}>
+        {w.retry_max} × {w.retry_backoff} ({w.retry_delay_ms}ms)
+      </span>
+    )},
+    { key: "backlog", label: "Backlog", width: 220, render: (w) => {
+      const s = statByQueue.get(w.queue);
+      if (!s) return <span style={{ color: "var(--vb-fg-3)", fontSize: 11 }}>—</span>;
+      return (
+        <span style={{ display: "inline-flex", gap: 10, fontFamily: "var(--font-mono)", fontSize: 11 }}>
+          <span style={{ color: "var(--vb-accent)" }}>{s.queued}q</span>
+          <span style={{ color: "var(--vb-status-warning)" }}>{s.running}r</span>
+          <span style={{ color: "var(--vb-status-success)" }}>{s.succeeded}✓</span>
+          <span style={{ color: "var(--vb-status-danger)" }}>{s.dead}☠</span>
+        </span>
+      );
+    }},
+    { key: "enabled", label: "On", width: 70, align: "center", render: (w) => (
+      <span onClick={(e) => e.stopPropagation()}>
+        <Toggle on={!!w.enabled} onChange={() => toggleEnabled(w)} />
+      </span>
+    )},
+    { key: "actions", label: "", width: 88, align: "right", render: (w) => (
+      <RowActions>
+        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setEditing(w)} title="Edit" />
+        <VbBtn kind="danger" size="sm" icon="trash" onClick={() => handleDelete(w)} title="Delete" />
+      </RowActions>
+    )},
+  ];
+
   return (
     <>
-      <div style={{ padding: "12px 20px 0", display: "flex", justifyContent: "flex-end" }}>
-        <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-          <Icon name="plus" size={12} /> New worker
-        </button>
+      <div style={{ padding: "14px 28px 0", display: "flex", justifyContent: "flex-end" }}>
+        <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New worker</VbBtn>
       </div>
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : workers.length === 0 ? (
-            <div className="empty">
-              No workers. Workers process jobs from a named queue. Enqueue from hooks/routes/cron via{" "}
-              <span className="mono">ctx.helpers.enqueue("queue-name", payload)</span>.
-            </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th style={{ width: 130 }}>Queue</th>
-                  <th style={{ width: 100, textAlign: "right" }}>Concurrency</th>
-                  <th style={{ width: 130 }}>Retry</th>
-                  <th style={{ width: 220 }}>Backlog</th>
-                  <th style={{ width: 80 }}>Enabled</th>
-                  <th style={{ width: 90, textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {workers.map((w) => {
-                  const s = statByQueue.get(w.queue);
-                  return (
-                    <tr key={w.id}>
-                      <td onClick={() => setEditing(w)} style={{ cursor: "pointer" }}>
-                        {w.name ? (
-                          <span style={{ fontSize: 13, fontWeight: 500 }}>{w.name}</span>
-                        ) : (
-                          <span className="muted" style={{ fontSize: 12, fontStyle: "italic" }}>(unnamed)</span>
-                        )}
-                      </td>
-                      <td className="mono-cell" style={{ fontSize: 12 }}>{w.queue}</td>
-                      <td className="mono-cell" style={{ textAlign: "right", fontSize: 12 }}>{w.concurrency}</td>
-                      <td className="mono-cell" style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-                        {w.retry_max} × {w.retry_backoff} ({w.retry_delay_ms}ms)
-                      </td>
-                      <td>
-                        {s ? (
-                          <span style={{ display: "inline-flex", gap: 8, fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                            <span style={{ color: "var(--accent-light)" }}>{s.queued}q</span>
-                            <span style={{ color: "var(--warning)" }}>{s.running}r</span>
-                            <span style={{ color: "var(--success)" }}>{s.succeeded}✓</span>
-                            <span style={{ color: "var(--danger)" }}>{s.dead}☠</span>
-                          </span>
-                        ) : (
-                          <span className="muted" style={{ fontSize: 11 }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        <Toggle on={!!w.enabled} onChange={() => toggleEnabled(w)} />
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                          <button className="btn-icon" onClick={() => setEditing(w)} title="Edit">
-                            <Icon name="pencil" size={12} />
-                          </button>
-                          <button className="btn-icon danger" onClick={() => handleDelete(w)} title="Delete">
-                            <Icon name="trash" size={12} />
-                          </button>
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <VbTable<Worker>
+          rows={workers}
+          columns={columns}
+          rowKey={(w) => w.id}
+          loading={loading}
+          onRowClick={setEditing}
+          emptyState={
+            <VbEmptyState
+              icon="zap"
+              title="No workers"
+              body={<>Workers process jobs from a named queue. Enqueue from hooks/routes/cron via{" "}
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg-2)" }}>ctx.helpers.enqueue("queue-name", payload)</span>.</>}
+              actions={<VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>New worker</VbBtn>}
+            />
+          }
+        />
       </div>
 
       <WorkerEditor
@@ -1484,102 +1448,97 @@ function WorkerEditor({
     <Dialog
       visible={open}
       onHide={onClose}
-      header={
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>{isNew ? "New worker" : (name || "Edit worker")}</span>
-          {!isNew && worker && (
-            <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
-              {worker.id.slice(0, 12)}…
-            </span>
-          )}
-        </div>
-      }
+      header={<EditorHeader title={isNew ? "New worker" : (name || "Edit worker")} idHint={worker ? `${worker.id.slice(0, 12)}…` : null} />}
       modal
       draggable={false}
       resizable={false}
       maximizable
-      style={{ width: "92vw", height: "92vh", maxWidth: 1400 }}
-      contentStyle={{ display: "flex", flexDirection: "column", padding: 0, height: "100%", background: "var(--bg-surface)" }}
+      style={EDITOR_DIALOG_STYLE}
+      contentStyle={EDITOR_CONTENT_STYLE}
     >
       <div style={{ display: "flex", flexDirection: "column", height: "100%", flex: 1 }}>
-        <div
-          style={{
-            display: "flex", alignItems: "center", gap: 12, padding: "12px 18px",
-            borderBottom: "0.5px solid var(--border-default)",
-            background: "var(--bg-surface)", flexWrap: "wrap",
-          }}
-        >
-          <FieldCol label="Name">
-            <input className="input" style={{ height: 32, width: 220, fontSize: 13 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. send-emails" />
-          </FieldCol>
-          <FieldCol label="Queue">
-            <input
-              className="input mono"
-              style={{ height: 32, width: 200, fontSize: 12 }}
-              value={queue}
-              onChange={(e) => setQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
-              placeholder="default"
-            />
-          </FieldCol>
-          <FieldCol label="Concurrency">
-            <input
-              className="input mono"
-              type="number"
-              min={1}
-              style={{ height: 32, width: 80, fontSize: 12 }}
-              value={concurrency}
-              onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))}
-            />
-          </FieldCol>
-          <FieldCol label="Retries">
-            <input
-              className="input mono"
-              type="number"
-              min={0}
-              style={{ height: 32, width: 80, fontSize: 12 }}
-              value={retryMax}
-              onChange={(e) => setRetryMax(Math.max(0, Number(e.target.value) || 0))}
-            />
-          </FieldCol>
-          <FieldCol label="Backoff">
-            <Dropdown
-              value={backoff}
-              options={[
-                { label: "Exponential", value: "exponential" },
-                { label: "Fixed",       value: "fixed" },
-              ]}
-              onChange={(e) => setBackoff(e.value)}
-              style={{ width: 140, height: 32 }}
-            />
-          </FieldCol>
-          <FieldCol label="Delay (ms)">
-            <input
-              className="input mono"
-              type="number"
-              min={50}
-              style={{ height: 32, width: 100, fontSize: 12 }}
-              value={retryDelayMs}
-              onChange={(e) => setRetryDelayMs(Math.max(50, Number(e.target.value) || 50))}
-            />
-          </FieldCol>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", marginTop: 18 }}>
-            <Toggle on={enabled} onChange={setEnabled} />
-            <span>Enabled</span>
-          </label>
-          <div style={{ flex: 1 }} />
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-            <Icon name="check" size={12} /> {saving ? "Saving…" : "Save"}
-          </button>
+        <div style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: 14,
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-2)",
+          flexWrap: "wrap",
+        }}>
+          <div style={{ width: 200 }}>
+            <VbField label="Name">
+              <VbInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. send-emails" />
+            </VbField>
+          </div>
+          <div style={{ width: 180 }}>
+            <VbField label="Queue">
+              <VbInput
+                mono
+                value={queue}
+                onChange={(e) => setQueue(e.target.value.replace(/[^a-zA-Z0-9_:-]/g, ""))}
+                placeholder="default"
+              />
+            </VbField>
+          </div>
+          <div style={{ width: 110 }}>
+            <VbField label="Concurrency">
+              <VbInput
+                mono
+                type="number"
+                min={1}
+                value={concurrency}
+                onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))}
+              />
+            </VbField>
+          </div>
+          <div style={{ width: 100 }}>
+            <VbField label="Retries">
+              <VbInput
+                mono
+                type="number"
+                min={0}
+                value={retryMax}
+                onChange={(e) => setRetryMax(Math.max(0, Number(e.target.value) || 0))}
+              />
+            </VbField>
+          </div>
+          <div style={{ width: 150 }}>
+            <VbField label="Backoff">
+              <Dropdown
+                value={backoff}
+                options={[
+                  { label: "Exponential", value: "exponential" },
+                  { label: "Fixed",       value: "fixed" },
+                ]}
+                onChange={(e) => setBackoff(e.value)}
+                style={{ width: "100%", height: 32 }}
+              />
+            </VbField>
+          </div>
+          <div style={{ width: 110 }}>
+            <VbField label="Delay (ms)">
+              <VbInput
+                mono
+                type="number"
+                min={50}
+                value={retryDelayMs}
+                onChange={(e) => setRetryDelayMs(Math.max(50, Number(e.target.value) || 50))}
+              />
+            </VbField>
+          </div>
+          <ToggleField on={enabled} onChange={setEnabled} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+            <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </VbBtn>
+          </div>
         </div>
 
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 18px", background: "rgba(248,113,113,0.1)", borderBottom: "0.5px solid rgba(248,113,113,0.3)" }}>
-            {error}
-          </div>
-        )}
+        {error && <EditorErrorBar message={error} />}
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 6, background: "var(--bg-deep)" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
           <div style={{ flex: 1, minHeight: 0 }}>
             <CodeEditor
               value={code}
@@ -1589,25 +1548,14 @@ function WorkerEditor({
               height="100%"
             />
           </div>
-          <div className="muted" style={{ fontSize: 11, display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <EditorFootnote>
             <span>Throw to fail (counts as a retry attempt) · Return any value to mark succeeded</span>
-            <span>·</span>
+            <span style={{ opacity: 0.4 }}>·</span>
             <span>Scheduler polls every 500ms · Single worker per queue per tick</span>
-          </div>
+          </EditorFootnote>
         </div>
       </div>
     </Dialog>
-  );
-}
-
-function FieldCol({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span style={{ fontSize: 10.5, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-        {label}
-      </span>
-      {children}
-    </div>
   );
 }
 
@@ -1620,6 +1568,13 @@ const JOB_STATUSES: Array<{ label: string; value: JobLogStatus | "" }> = [
   { label: "Failed",     value: "failed" },
   { label: "Dead",       value: "dead" },
 ];
+
+function jobStatusTone(s: JobLogStatus): "success" | "warning" | "danger" | "accent" | "neutral" {
+  if (s === "succeeded") return "success";
+  if (s === "running") return "warning";
+  if (s === "failed" || s === "dead") return "danger";
+  return "accent";
+}
 
 function JobsLogTab() {
   const [rows, setRows] = useState<JobLogRow[]>([]);
@@ -1670,9 +1625,46 @@ function JobsLogTab() {
 
   const queueOptions = [{ label: "All queues", value: "" }, ...stats.map((s) => ({ label: s.queue, value: s.queue }))];
 
+  const columns: VbTableColumn<JobLogRow>[] = [
+    { key: "status", label: "Status", width: 110, render: (j) => <VbPill tone={jobStatusTone(j.status)}>{j.status}</VbPill> },
+    { key: "queue", label: "Queue", width: 140, mono: true, render: (j) => (
+      <span style={{ fontSize: 12, color: "var(--vb-fg)" }}>{j.queue}</span>
+    )},
+    { key: "id", label: "Job id", flex: 1, mono: true, render: (j) => (
+      <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>{j.id.slice(0, 16)}…</span>
+    )},
+    { key: "attempt", label: "Try", width: 60, mono: true, align: "right", render: (j) => (
+      <span style={{ color: "var(--vb-fg)" }}>{j.attempt}</span>
+    )},
+    { key: "enqueued", label: "Enqueued", width: 130, mono: true, render: (j) => (
+      <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>{fmtRelTime(j.enqueued_at)}</span>
+    )},
+    { key: "finished", label: "Finished", width: 130, mono: true, render: (j) => (
+      <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>{fmtRelTime(j.finished_at)}</span>
+    )},
+    { key: "actions", label: "", width: 110, align: "right", render: (j) => (
+      <RowActions>
+        {(j.status === "failed" || j.status === "dead" || j.status === "succeeded") && (
+          <VbBtn kind="ghost" size="sm" icon="refresh" onClick={() => handleRetry(j)} title="Re-queue" />
+        )}
+        {j.status !== "running" && (
+          <VbBtn kind="danger" size="sm" icon="trash" onClick={() => handleDiscard(j)} title="Discard" />
+        )}
+      </RowActions>
+    )},
+  ];
+
+  const totalPages = rows.length < 50 ? page : page + 1;
+
   return (
     <>
-      <div style={{ padding: "12px 20px 0", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{
+        padding: "14px 28px 0",
+        display: "flex",
+        gap: 12,
+        alignItems: "center",
+        flexWrap: "wrap",
+      }}>
         <Dropdown
           value={queueFilter}
           options={queueOptions}
@@ -1685,93 +1677,74 @@ function JobsLogTab() {
           onChange={(e) => { setPage(1); setStatusFilter(e.value); }}
           style={{ height: 32, minWidth: 140 }}
         />
-        <button className="btn btn-ghost" onClick={load} title="Refresh">
-          <Icon name="refresh" size={12} /> Refresh
-        </button>
+        <VbBtn kind="ghost" size="sm" icon="refresh" onClick={load}>Refresh</VbBtn>
         <div style={{ flex: 1 }} />
-        <div className="muted" style={{ fontSize: 11, display: "flex", gap: 12 }}>
+        <div style={{
+          fontSize: 11,
+          color: "var(--vb-fg-3)",
+          display: "flex",
+          gap: 14,
+          flexWrap: "wrap",
+          fontFamily: "var(--font-mono)",
+        }}>
           {stats.map((s) => (
-            <span key={s.queue} style={{ fontFamily: "var(--font-mono)" }}>
-              <span style={{ color: "var(--text-secondary)" }}>{s.queue}:</span>{" "}
-              <span style={{ color: "var(--accent-light)" }}>{s.queued}q</span>{" "}
-              <span style={{ color: "var(--warning)" }}>{s.running}r</span>{" "}
-              <span style={{ color: "var(--danger)" }}>{s.dead}☠</span>
+            <span key={s.queue}>
+              <span style={{ color: "var(--vb-fg-2)" }}>{s.queue}:</span>{" "}
+              <span style={{ color: "var(--vb-accent)" }}>{s.queued}q</span>{" "}
+              <span style={{ color: "var(--vb-status-warning)" }}>{s.running}r</span>{" "}
+              <span style={{ color: "var(--vb-status-danger)" }}>{s.dead}☠</span>
             </span>
           ))}
         </div>
       </div>
       <div className="app-body">
-        <div className="table-wrap">
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : rows.length === 0 ? (
-            <div className="empty">No jobs match the current filters.</div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ width: 110 }}>Status</th>
-                  <th style={{ width: 130 }}>Queue</th>
-                  <th>Job id</th>
-                  <th style={{ width: 60, textAlign: "right" }}>Try</th>
-                  <th style={{ width: 130 }}>Enqueued</th>
-                  <th style={{ width: 130 }}>Finished</th>
-                  <th style={{ width: 130, textAlign: "right" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((j) => (
-                  <tr key={j.id}>
-                    <td>
-                      <span className={`badge ${jobBadgeClass(j.status)}`}>{j.status}</span>
-                    </td>
-                    <td className="mono-cell" style={{ fontSize: 12 }}>{j.queue}</td>
-                    <td className="mono-cell" style={{ fontSize: 11, cursor: "pointer" }} onClick={() => setSelected(j)}>
-                      {j.id.slice(0, 16)}…
-                    </td>
-                    <td className="mono-cell" style={{ textAlign: "right", fontSize: 12 }}>{j.attempt}</td>
-                    <td className="muted mono-cell" style={{ fontSize: 11 }}>{fmtRelTime(j.enqueued_at)}</td>
-                    <td className="muted mono-cell" style={{ fontSize: 11 }}>{fmtRelTime(j.finished_at)}</td>
-                    <td style={{ textAlign: "right" }}>
-                      <span className="row-actions" style={{ opacity: 1, gap: 4 }}>
-                        {(j.status === "failed" || j.status === "dead" || j.status === "succeeded") && (
-                          <button className="btn-icon" onClick={() => handleRetry(j)} title="Re-queue">
-                            <Icon name="refresh" size={11} />
-                          </button>
-                        )}
-                        {j.status !== "running" && (
-                          <button className="btn-icon danger" onClick={() => handleDiscard(j)} title="Discard">
-                            <Icon name="trash" size={12} />
-                          </button>
-                        )}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div style={{ padding: "8px 20px", display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
-          <button className="btn btn-ghost" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-            <Icon name="chevronLeft" size={12} /> Prev
-          </button>
-          <span className="muted mono" style={{ fontSize: 11 }}>page {page}</span>
-          <button className="btn btn-ghost" disabled={rows.length < 50} onClick={() => setPage((p) => p + 1)}>
-            Next <Icon name="chevronRight" size={12} />
-          </button>
+        <VbTable<JobLogRow>
+          rows={rows}
+          columns={columns}
+          rowKey={(j) => j.id}
+          loading={loading}
+          onRowClick={setSelected}
+          emptyState={
+            <VbEmptyState
+              icon="scroll"
+              title="No jobs match the current filters"
+              body="Adjust queue/status filters or run a job to populate the log."
+            />
+          }
+        />
+        <div style={{
+          padding: "10px 4px 0",
+          display: "flex",
+          gap: 8,
+          justifyContent: "flex-end",
+          alignItems: "center",
+          fontFamily: "var(--font-mono)",
+          fontSize: 11.5,
+          color: "var(--vb-fg-3)",
+        }}>
+          <VbBtn kind="ghost" size="sm" icon="chevronLeft" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
+            Prev
+          </VbBtn>
+          <span>page <span style={{ color: "var(--vb-fg)" }}>{page}</span></span>
+          <VbBtn kind="ghost" size="sm" iconRight="chevronRight" onClick={() => setPage((p) => p + 1)} disabled={rows.length < 50}>
+            Next
+          </VbBtn>
+          <span style={{ opacity: 0.5 }}>{totalPages > page ? "more available" : "end"}</span>
         </div>
       </div>
 
       <Dialog
         visible={!!selected}
         onHide={() => setSelected(null)}
-        header={selected ? `Job ${selected.id.slice(0, 12)}…` : ""}
-        modal draggable={false} resizable={false}
-        style={{ width: 640 }}
+        header={<EditorHeader title={selected ? `Job ${selected.id.slice(0, 12)}…` : ""} />}
+        modal
+        draggable={false}
+        resizable={false}
+        style={{ width: 680 }}
+        contentStyle={{ background: "var(--vb-bg-2)" }}
       >
         {selected && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <KV k="status" v={selected.status} />
             <KV k="queue" v={selected.queue} />
             <KV k="worker_id" v={selected.worker_id ?? "—"} />
@@ -1782,15 +1755,37 @@ function JobsLogTab() {
             <KV k="started_at"   v={fmtRelTime(selected.started_at)} />
             <KV k="finished_at"  v={fmtRelTime(selected.finished_at)} />
             <div>
-              <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>payload</div>
-              <pre className="mono" style={{ background: "var(--bg-deep)", padding: 10, borderRadius: 6, fontSize: 11.5, maxHeight: 240, overflow: "auto" }}>
+              <KvLabel>payload</KvLabel>
+              <pre style={{
+                background: "var(--vb-bg-1)",
+                border: "1px solid var(--vb-border)",
+                color: "var(--vb-fg)",
+                padding: 12,
+                borderRadius: 6,
+                fontFamily: "var(--font-mono)",
+                fontSize: 11.5,
+                maxHeight: 240,
+                overflow: "auto",
+                margin: 0,
+              }}>
                 {tryPretty(selected.payload)}
               </pre>
             </div>
             {selected.error && (
               <div>
-                <div className="muted" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>error</div>
-                <pre className="mono" style={{ background: "rgba(248,113,113,0.08)", color: "#fca5a5", padding: 10, borderRadius: 6, fontSize: 11.5, maxHeight: 240, overflow: "auto" }}>
+                <KvLabel>error</KvLabel>
+                <pre style={{
+                  background: "var(--vb-status-danger-bg)",
+                  border: "1px solid rgba(232,90,79,0.3)",
+                  color: "var(--vb-status-danger)",
+                  padding: 12,
+                  borderRadius: 6,
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11.5,
+                  maxHeight: 240,
+                  overflow: "auto",
+                  margin: 0,
+                }}>
                   {selected.error}
                 </pre>
               </div>
@@ -1802,23 +1797,36 @@ function JobsLogTab() {
   );
 }
 
-function jobBadgeClass(s: JobLogStatus): string {
-  if (s === "succeeded") return "success";
-  if (s === "running") return "warning";
-  if (s === "failed" || s === "dead") return "danger";
-  return "auth";
-}
-
 function tryPretty(s: string): string {
   try { return JSON.stringify(JSON.parse(s), null, 2); }
   catch { return s; }
 }
 
+function KvLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      fontSize: 10.5,
+      fontWeight: 600,
+      letterSpacing: 1.2,
+      textTransform: "uppercase",
+      color: "var(--vb-fg-3)",
+      fontFamily: "var(--font-mono)",
+      marginBottom: 6,
+    }}>{children}</div>
+  );
+}
+
 function KV({ k, v }: { k: string; v: string }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-      <span className="muted mono" style={{ fontSize: 11, minWidth: 110 }}>{k}</span>
-      <span className="mono" style={{ fontSize: 12 }}>{v}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <span style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        color: "var(--vb-fg-3)",
+        minWidth: 110,
+        letterSpacing: 0.4,
+      }}>{k}</span>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--vb-fg)" }}>{v}</span>
     </div>
   );
 }

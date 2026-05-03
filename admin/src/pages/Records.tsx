@@ -1,7 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DataTable } from "primereact/datatable";
-import { Column } from "primereact/column";
-import type { DataTablePageEvent } from "primereact/datatable";
 import { Dropdown } from "primereact/dropdown";
 import { MultiSelect } from "primereact/multiselect";
 import { Editor as QuillEditor } from "primereact/editor";
@@ -10,11 +7,22 @@ import {
   type RecordRow, collColor, parseFields,
 } from "../api.ts";
 import { useNavigate, useParams } from "react-router-dom";
-import { Topbar } from "../components/Shell.tsx";
 import { Drawer, FieldTypeChip, Modal, Toggle } from "../components/UI.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 import Icon from "../components/Icon.tsx";
+import {
+  CollectionAvatar,
+  TypePill,
+  VbBtn,
+  VbEmptyState,
+  VbInput,
+  VbSubHeader,
+  VbTable,
+  VbTabs,
+  type VbTab,
+  type VbTableColumn,
+} from "../components/Vb.tsx";
 
 // ── GeoPoint map picker (Leaflet + OpenStreetMap) ──────────────────────────
 //
@@ -49,17 +57,22 @@ function GeoPointMap({
     let cleanupFn: (() => void) | null = null;
 
     void (async () => {
-      const L = await import("leaflet");
+      const [L, iconUrl, iconRetinaUrl, shadowUrl] = await Promise.all([
+        import("leaflet"),
+        import("leaflet/dist/images/marker-icon.png?url"),
+        import("leaflet/dist/images/marker-icon-2x.png?url"),
+        import("leaflet/dist/images/marker-shadow.png?url"),
+      ]);
       if (cancelled || !containerRef.current) return;
 
-      // Vite/Rollup mangles Leaflet's relative URLs to its default-marker
-      // sprite. Pin the icon to the unpkg copy of the same files so the
-      // marker renders without extra build config.
+      // Vite mangles Leaflet's relative URLs to its default-marker sprite.
+      // Bundle the icons via ?url imports so they ship from the same origin
+      // and don't require relaxing the img-src CSP for unpkg.
       const Icon = L.Icon as unknown as { Default: { mergeOptions: (o: Record<string, string>) => void } };
       Icon.Default.mergeOptions({
-        iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-        iconUrl:       "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-        shadowUrl:     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+        iconUrl:       iconUrl.default,
+        iconRetinaUrl: iconRetinaUrl.default,
+        shadowUrl:     shadowUrl.default,
       });
 
       const hasCoords = typeof lat === "number" && typeof lng === "number";
@@ -437,7 +450,7 @@ function FieldInput({
   if (field.type === "file") {
     const filenames = filenamesFromValue(value);
     return (
-      <div className="col" style={{ gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {filenames.length > 0 && collectionName && recordId ? (
           <FileFieldPreview
             field={field}
@@ -447,8 +460,8 @@ function FieldInput({
           />
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input className="input" value="—" disabled />
-            <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+            <VbInput value="—" disabled style={{ flex: 1 }} />
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)", whiteSpace: "nowrap" }}>
               File upload available in v2
             </span>
           </div>
@@ -470,14 +483,14 @@ function FieldInput({
           showClear
           placeholder={opts.length === 0 ? `No records in '${target}'` : "Select a record…"}
           emptyMessage={`No records in '${target}'`}
-          style={{ width: "100%", height: 34 }}
+          style={{ width: "100%", height: 32 }}
           panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
         />
       );
     }
     return (
-      <input
-        className="input mono"
+      <VbInput
+        mono
         value={String(value ?? "")}
         onChange={(e) => onChange(e.target.value)}
         readOnly={readOnly}
@@ -490,8 +503,8 @@ function FieldInput({
     if (opts.length === 0) {
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input className="input" value="" disabled placeholder="No values configured" />
-          <span style={{ fontSize: 11, color: "var(--warning)", whiteSpace: "nowrap" }}>
+          <VbInput value="" disabled placeholder="No values configured" style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: "var(--vb-status-warning)", whiteSpace: "nowrap" }}>
             Set allowed values in schema
           </span>
         </div>
@@ -508,7 +521,7 @@ function FieldInput({
           display="chip"
           placeholder="Select values…"
           filter
-          style={{ width: "100%", minHeight: 34 }}
+          style={{ width: "100%", minHeight: 32 }}
           panelStyle={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
         />
       );
@@ -519,14 +532,14 @@ function FieldInput({
         options={[{ label: "— none —", value: "" }, ...opts.map((o) => ({ label: o, value: o }))]}
         onChange={(e) => onChange(e.value)}
         disabled={readOnly}
-        style={{ width: "100%", height: 34 }}
+        style={{ width: "100%", height: 32 }}
       />
     );
   }
   if (field.type === "number") {
     return (
-      <input
-        className="input mono"
+      <VbInput
+        mono
         type="number"
         value={String(value ?? "")}
         onChange={(e) => onChange(e.target.valueAsNumber)}
@@ -536,14 +549,10 @@ function FieldInput({
   }
   if (field.type === "password") {
     return (
-      <input
-        className="input mono"
-        type="password"
+      <PasswordInput
         value={typeof value === "string" ? value : ""}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(v) => onChange(v)}
         readOnly={readOnly}
-        placeholder="• • • • • • • •"
-        autoComplete="new-password"
       />
     );
   }
@@ -562,25 +571,19 @@ function FieldInput({
     const setLat = (lat: number) => onChange({ lat, lng: v.lng ?? 0 });
     const setLng = (lng: number) => onChange({ lat: v.lat ?? 0, lng });
     return (
-      <div className="col" style={{ gap: 8 }}>
-        <div className="row" style={{ gap: 8 }}>
-          <input
-            className="input mono"
-            type="number"
-            step="any"
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <VbInput
+            mono type="number" step="any" placeholder="lat"
             value={typeof v.lat === "number" ? String(v.lat) : ""}
             onChange={(e) => setLat(e.target.valueAsNumber)}
             readOnly={readOnly}
-            placeholder="lat"
           />
-          <input
-            className="input mono"
-            type="number"
-            step="any"
+          <VbInput
+            mono type="number" step="any" placeholder="lng"
             value={typeof v.lng === "number" ? String(v.lng) : ""}
             onChange={(e) => setLng(e.target.valueAsNumber)}
             readOnly={readOnly}
-            placeholder="lng"
           />
         </div>
         <GeoPointMap
@@ -593,13 +596,198 @@ function FieldInput({
     );
   }
   return (
-    <input
-      className={`input${["autodate"].includes(field.type) ? " mono" : ""}`}
+    <VbInput
+      mono={["autodate"].includes(field.type)}
       value={String(value ?? "")}
       onChange={(e) => onChange(e.target.value)}
       readOnly={readOnly}
     />
   );
+}
+
+const DrawerFieldRow: React.FC<{
+  name: string;
+  type: string;
+  required?: boolean;
+  children: React.ReactNode;
+}> = ({ name, type, required, children }) => (
+  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{
+      display: "flex",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      gap: 12,
+    }}>
+      <span style={{
+        fontSize: 10.5,
+        fontWeight: 600,
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        color: "var(--vb-fg-2)",
+        fontFamily: "var(--font-mono)",
+      }}>
+        {name}
+        {required && (
+          <span style={{ color: "var(--vb-status-danger)", marginLeft: 4 }}>*</span>
+        )}
+      </span>
+      <FieldTypeChip type={type} />
+    </div>
+    {children}
+  </div>
+);
+
+const PasswordInput: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  readOnly?: boolean;
+}> = ({ value, onChange, readOnly }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <VbInput
+        mono
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        placeholder="• • • • • • • •  (leave blank to keep)"
+        autoComplete="new-password"
+        style={{ paddingRight: 32 }}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((v) => !v)}
+        disabled={!value}
+        style={{
+          position: "absolute",
+          right: 6,
+          top: "50%",
+          transform: "translateY(-50%)",
+          background: "transparent",
+          border: 0,
+          color: "var(--vb-fg-3)",
+          cursor: value ? "pointer" : "default",
+          padding: 4,
+        }}
+        title={show ? "Hide" : "Show"}
+      >
+        <Icon name="eye" size={13} />
+      </button>
+    </div>
+  );
+};
+
+// ── Column builder for the VbTable ───────────────────────────────────────────
+
+function recordColumns(
+  collection: Collection | null,
+  displayCols: string[],
+  fieldsByName: Map<string, FieldDef>,
+  cellValue: (rec: RecordRow, col: string) => string,
+): VbTableColumn<RecordRow>[] {
+  const cols: VbTableColumn<RecordRow>[] = [];
+
+  cols.push({
+    key: "id",
+    label: "id",
+    width: 140,
+    mono: true,
+    render: (r) => (
+      <span style={{ color: "var(--vb-fg-3)" }}>{String(r.id).slice(0, 12)}…</span>
+    ),
+  });
+
+  for (const c of displayCols) {
+    const fdef = fieldsByName.get(c);
+    const isFile = fdef?.type === "file";
+    const isGeo = fdef?.type === "geoPoint";
+    cols.push({
+      key: c,
+      label: c,
+      flex: 1,
+      mono: false,
+      render: (r) => {
+        if (isFile && collection && fdef) {
+          return (
+            <FileFieldPreview
+              field={fdef}
+              value={r[c]}
+              collectionName={collection.name}
+              recordId={String(r.id)}
+            />
+          );
+        }
+        if (isGeo) {
+          const text = cellValue(r, c);
+          if (text === "—") return <span style={{ color: "var(--vb-fg-3)" }}>—</span>;
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#62cc9c", fontFamily: "var(--font-mono)" }}>
+              <Icon name="mapPin" size={11} />
+              {text}
+            </span>
+          );
+        }
+        const text = cellValue(r, c);
+        if (text === "—") return <span style={{ color: "var(--vb-fg-3)" }}>—</span>;
+        return text;
+      },
+    });
+  }
+
+  if (collection?.type === "auth") {
+    cols.push({
+      key: "status",
+      label: "status",
+      width: 100,
+      render: (r) => (
+        <span style={{ display: "inline-flex", gap: 4 }}>
+          {r["mfa_enabled"] === true && (
+            <span title="MFA enabled" style={{
+              fontSize: 10, padding: "1px 6px", borderRadius: 8,
+              background: "var(--vb-status-success-bg)", color: "var(--vb-status-success)",
+              fontFamily: "var(--font-mono)",
+            }}>MFA</span>
+          )}
+          {r["anonymous"] === true && (
+            <span title="Anonymous user" style={{
+              fontSize: 10, padding: "1px 6px", borderRadius: 8,
+              background: "var(--vb-bg-3)", color: "var(--vb-fg-3)",
+              fontFamily: "var(--font-mono)",
+            }}>anon</span>
+          )}
+        </span>
+      ),
+    });
+  }
+
+  cols.push({
+    key: "created",
+    label: "created",
+    width: 110,
+    mono: true,
+    sortable: true,
+    render: (r) => (
+      <span style={{ color: "var(--vb-fg-3)", fontSize: 11.5 }}>
+        {new Date((r.created as number) * 1000).toLocaleDateString()}
+      </span>
+    ),
+  });
+
+  cols.push({
+    key: "updated",
+    label: "updated",
+    width: 110,
+    mono: true,
+    sortable: true,
+    render: (r) => (
+      <span style={{ color: "var(--vb-fg-3)", fontSize: 11.5 }}>
+        {new Date((r.updated as number) * 1000).toLocaleDateString()}
+      </span>
+    ),
+  });
+
+  return cols;
 }
 
 // ── Main Records page ────────────────────────────────────────────────────────
@@ -781,9 +969,14 @@ export default function Records() {
     loadRecords(page);
   }
 
-  function applyFilter() {
+  function applyFilter(override?: string) {
     setPage(1);
-    setAppliedFilter(filter);
+    if (override !== undefined) {
+      setFilter(override);
+      setAppliedFilter(override);
+    } else {
+      setAppliedFilter(filter);
+    }
   }
 
   function handleExport() {
@@ -898,47 +1091,62 @@ export default function Records() {
     return String(val);
   }
 
+  // Sub-tab navigation: clicking Schema/Rules/Indexes jumps into CollectionEdit.
+  // (CollectionEdit's internal tab state defaults to Fields; param-syncing the
+  // exact tab is a small follow-up — for now the navigation is intent-correct.)
+  const subTabs: VbTab<"records" | "schema" | "rules" | "indexes">[] = [
+    { id: "records",  label: "Records",   icon: "stack", count: total > 0 ? total : 0 },
+    { id: "schema",   label: "Schema",    icon: "settings" },
+    { id: "rules",    label: "API rules", icon: "shield" },
+    { id: "indexes",  label: "Indexes",   icon: "zap" },
+  ];
+  const onSubTab = (id: typeof subTabs[number]["id"]) => {
+    if (id === "records") return;
+    if (id === "rules" || id === "indexes" || id === "schema") {
+      navigate(`/_/collections/${collId}/edit`);
+    }
+  };
+
+  const recordCount = collection ? `${total.toLocaleString()} records` : "—";
+  const newBtnLabel = collection?.type === "auth" ? "New user"
+    : collection?.type === "view" ? "Read-only"
+    : "New record";
+  const newBtnTitle = collection?.type === "auth"
+    ? "Users register via POST /api/v1/auth/<collection>/register"
+    : collection?.type === "view" ? "View collections are read-only"
+    : undefined;
+
   return (
     <>
-      <Topbar
-        title={
-          collection ? (
-            <span className="row" style={{ gap: 10 }}>
-              <span className={`coll-icon ${color}`} style={{ width: 22, height: 22, fontSize: 11 }}>
-                {collection.name[0]!.toUpperCase()}
-              </span>
-              <span className="mono" style={{ fontSize: 14 }}>{collection.name}</span>
-            </span>
-          ) : "Records"
-        }
-        subtitle={`${total.toLocaleString()} records`}
+      <VbSubHeader
         onBack={() => navigate("/_/collections")}
-        actions={
+        crumbs={[
+          <span key="c" style={{ color: "var(--vb-fg-3)" }}>Collections</span>,
+          collection ? (
+            <span key="n" style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+              <CollectionAvatar letter={collection.name[0] ?? "?"} />
+              <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.1 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--vb-fg)", fontFamily: "var(--font-mono)" }}>
+                  {collection.name}
+                </span>
+                <span style={{ fontSize: 10.5, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+                  {recordCount} · {collection.type}
+                </span>
+              </span>
+              <TypePill type={collection.type} />
+            </span>
+          ) : <span key="loading">Loading…</span>,
+        ]}
+        right={
           <>
-            {collection && (
-              <button
-                className="btn btn-ghost"
-                onClick={() => navigate(`/_/collections/${collId}/edit`)}
-              >
-                <Icon name="pencil" size={12} /> Schema
-              </button>
-            )}
             {collection?.type === "base" && (
               <>
-                <button
-                  className="btn btn-ghost"
-                  onClick={handleExport}
-                  title="Download all records as CSV"
-                >
-                  <Icon name="download" size={12} /> Export
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => importInputRef.current?.click()}
-                  title="Upload a CSV to bulk-create records"
-                >
-                  <Icon name="upload" size={12} /> Import
-                </button>
+                <VbBtn kind="ghost" size="sm" icon="download" onClick={handleExport} title="Download all records as CSV">
+                  Export
+                </VbBtn>
+                <VbBtn kind="ghost" size="sm" icon="upload" onClick={() => importInputRef.current?.click()} title="Upload a CSV to bulk-create records">
+                  Import
+                </VbBtn>
                 <input
                   ref={importInputRef}
                   type="file"
@@ -948,198 +1156,191 @@ export default function Records() {
                 />
               </>
             )}
-            <button
-              className="btn btn-primary"
+            <span style={{ width: 1, height: 20, background: "var(--vb-border)", margin: "0 4px" }} />
+            <VbBtn
+              kind="primary"
+              size="sm"
+              icon="plus"
               onClick={() => setShowNew(true)}
               disabled={!collection || collection.type === "auth" || collection.type === "view"}
-              title={
-                collection?.type === "auth" ? "Users register via POST /api/v1/auth/<collection>/register"
-                : collection?.type === "view" ? "View collections are read-only"
-                : undefined
-              }
+              title={newBtnTitle}
             >
-              <Icon name="plus" size={12} /> {
-                collection?.type === "auth" ? "New user"
-                : collection?.type === "view" ? "Read-only"
-                : "New record"
-              }
-            </button>
+              {newBtnLabel}
+            </VbBtn>
           </>
         }
       />
-      <div className="app-body">
-        <div className="filter-bar">
-          <div
-            className="input-group"
-            style={{ flex: 1, maxWidth: 520 }}
-            onKeyDown={(e) => e.key === "Enter" && applyFilter()}
-          >
-            <Icon name="search" size={13} />
+
+      <VbTabs
+        tabs={subTabs}
+        active="records"
+        onChange={onSubTab}
+      />
+
+      <div className="app-body" style={{ padding: "16px 28px 28px" }}>
+        {/* Filter bar */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1, position: "relative" }}>
+            <span style={{
+              position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)",
+              color: "var(--vb-fg-3)",
+            }}>
+              <Icon name="search" size={14} />
+            </span>
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="filter e.g. (title='hello') — press Enter to apply"
+              onKeyDown={(e) => e.key === "Enter" && applyFilter()}
+              placeholder='filter — e.g. (title="hello") · press Enter to apply'
+              style={{
+                width: "100%",
+                height: 32,
+                padding: "0 110px 0 32px",
+                background: "var(--vb-bg-2)",
+                border: "1px solid var(--vb-border-2)",
+                borderRadius: 6,
+                color: "var(--vb-fg)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                outline: "none",
+              }}
             />
-            {appliedFilter && (
+            {appliedFilter ? (
               <button
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 0 }}
                 onClick={() => { setFilter(""); setAppliedFilter(""); setPage(1); }}
                 title="Clear filter"
+                style={{
+                  position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                  background: "transparent", border: "0", color: "var(--vb-fg-3)",
+                  cursor: "pointer", padding: 4,
+                }}
               >
                 <Icon name="x" size={12} />
               </button>
+            ) : (
+              <span style={{
+                position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                fontSize: 10, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)",
+                padding: "2px 6px", borderRadius: 3, background: "var(--vb-bg-3)",
+                pointerEvents: "none",
+              }}>⏎ apply</span>
             )}
           </div>
-          <div className="right">
-            <Dropdown
-              value={sort}
-              options={[
-                { label: "Created ↓", value: "-created" },
-                { label: "Created ↑", value: "created" },
-                { label: "Updated ↓", value: "-updated" },
-                { label: "Updated ↑", value: "updated" },
-                { label: "ID ↓", value: "-id" },
-                { label: "ID ↑", value: "id" },
-              ]}
-              onChange={(e) => { setSort(e.value); setPage(1); }}
-              style={{ height: 30, minWidth: 130, fontSize: 12 }}
-            />
-          </div>
+          <Dropdown
+            value={sort}
+            options={[
+              { label: "Created ↓", value: "-created" },
+              { label: "Created ↑", value: "created" },
+              { label: "Updated ↓", value: "-updated" },
+              { label: "Updated ↑", value: "updated" },
+              { label: "ID ↓", value: "-id" },
+              { label: "ID ↑", value: "id" },
+            ]}
+            onChange={(e) => { setSort(e.value); setPage(1); }}
+            style={{ height: 32, minWidth: 132, fontSize: 12 }}
+          />
+        </div>
+
+        {/* Filter presets — visual placeholder. Wiring saved presets is a
+            follow-up; today these chips set example filters into the input. */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6,
+          marginBottom: 12, flexWrap: "wrap",
+        }}>
+          <span style={{
+            fontSize: 10.5, color: "var(--vb-fg-3)",
+            textTransform: "uppercase", letterSpacing: 1.2, marginRight: 4,
+            fontFamily: "var(--font-mono)",
+          }}>presets</span>
+          {[
+            { label: "Last 24h",    set: `created > "${new Date(Date.now() - 86400_000).toISOString()}"` },
+            { label: "Has updates", set: `updated != created` },
+          ].map((p) => (
+            <button
+              key={p.label}
+              onClick={() => applyFilter(p.set)}
+              style={{
+                appearance: "none",
+                border: "1px solid var(--vb-border-2)",
+                background: "var(--vb-bg-2)",
+                color: "var(--vb-fg-2)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 10.5,
+                padding: "3px 8px",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+            >{p.label}</button>
+          ))}
         </div>
 
         {selected.length > 0 && (
-          <div className="bulk-bar">
-            <span className="count">
-              <span className="num">{selected.length}</span> selected
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 14px",
+            background: "var(--vb-accent-soft)",
+            border: "1px solid rgba(232, 90, 79, 0.30)",
+            borderRadius: 6,
+            marginBottom: 10,
+          }}>
+            <span style={{
+              fontSize: 11.5, fontFamily: "var(--font-mono)",
+              color: "var(--vb-accent)",
+            }}>
+              <span style={{ fontWeight: 700 }}>{selected.length}</span> selected
             </span>
             {collection?.type === "base" && (
-              <button className="btn btn-ghost" onClick={handleExport} disabled={bulkDeleting}>
-                <Icon name="download" size={11} /> Export
-              </button>
+              <VbBtn kind="ghost" size="sm" icon="download" onClick={handleExport} disabled={bulkDeleting}>
+                Export
+              </VbBtn>
             )}
-            <button className="btn btn-ghost" onClick={() => setSelected([])} disabled={bulkDeleting}>
+            <VbBtn kind="ghost" size="sm" onClick={() => setSelected([])} disabled={bulkDeleting}>
               Clear
-            </button>
-            <button
-              className="btn btn-danger"
+            </VbBtn>
+            <VbBtn
+              kind="danger"
+              size="sm"
+              icon="trash"
               onClick={handleBulkDelete}
               disabled={bulkDeleting || collection?.type === "view"}
             >
-              <Icon name="trash" size={11} />
               {bulkDeleting ? "Deleting…" : `Delete · ${selected.length}`}
-            </button>
-            <span className="meta">{total.toLocaleString()} total</span>
+            </VbBtn>
+            <span style={{
+              marginLeft: "auto",
+              fontSize: 11, color: "var(--vb-fg-3)",
+              fontFamily: "var(--font-mono)",
+            }}>{total.toLocaleString()} total</span>
           </div>
         )}
 
-        <DataTable
-          value={records}
-          lazy
-          paginator
-          rows={30}
-          totalRecords={total}
-          first={(page - 1) * 30}
-          onPage={(e: DataTablePageEvent) => setPage(Math.floor(e.first / 30) + 1)}
+        <VbTable<RecordRow>
+          rows={records}
+          rowKey={(r) => String(r.id)}
           loading={loading}
-          onRowClick={(e) => openRecord(e.data as RecordRow)}
-          // Selection drives off the checkbox column only (selectionMode="checkbox"
-          // on the DataTable means row clicks open the drawer; ticking the
-          // checkbox manages bulk selection independently).
-          selection={(collection?.type === "view" ? null : selected) as never}
-          onSelectionChange={((e: { value: RecordRow[] }) => setSelected(e.value)) as never}
-          selectionMode={collection?.type === "view" ? null : "checkbox"}
-          dataKey="id"
-          emptyMessage={appliedFilter ? "No records match this filter." : "No records yet."}
-          style={{ fontSize: 13 }}
-        >
-          {collection?.type !== "view" && (
-            <Column
-              selectionMode="multiple"
-              headerStyle={{ width: "3rem" }}
-              bodyStyle={{ width: "3rem" }}
+          selectable={collection?.type !== "view"}
+          selected={collection?.type === "view" ? [] : selected}
+          onSelectionChange={setSelected}
+          onRowClick={(r) => openRecord(r)}
+          sort={sort}
+          onSortChange={(s) => { setSort(s); setPage(1); }}
+          total={total}
+          page={page}
+          pageSize={30}
+          onPageChange={setPage}
+          columns={recordColumns(collection, displayCols, fieldsByName, cellValue)}
+          emptyState={
+            <VbEmptyState
+              icon="stack"
+              title={appliedFilter ? "No records match this filter." : "No records yet"}
+              body={appliedFilter
+                ? "Adjust the filter or clear it to see all records."
+                : "Create one manually, import a CSV, or insert from a hook."}
             />
-          )}
-          <Column
-            field="id"
-            header="id"
-            body={(r: RecordRow) => (
-              <span className="mono-cell muted">{String(r.id).slice(0, 12)}…</span>
-            )}
-          />
-          {displayCols.map((c) => {
-            const fdef = fieldsByName.get(c);
-            const isFile = fdef?.type === "file";
-            const isGeo = fdef?.type === "geoPoint";
-            return (
-              <Column
-                key={c}
-                field={c}
-                header={c}
-                body={(r: RecordRow) => {
-                  if (isFile && collection && fdef) {
-                    return (
-                      <FileFieldPreview
-                        field={fdef}
-                        value={r[c]}
-                        collectionName={collection.name}
-                        recordId={String(r.id)}
-                      />
-                    );
-                  }
-                  if (isGeo) {
-                    const text = cellValue(r, c);
-                    if (text === "—") return <span className="muted">—</span>;
-                    return (
-                      <span className="row mono-cell" style={{ gap: 4, alignItems: "center", color: "var(--type-geopoint)" }}>
-                        <Icon name="mapPin" size={11} />
-                        <span>{text}</span>
-                      </span>
-                    );
-                  }
-                  return (
-                    <span style={{ display: "block", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {cellValue(r, c)}
-                    </span>
-                  );
-                }}
-              />
-            );
-          })}
-          {collection?.type === "auth" && (
-            <Column
-              field="status"
-              header="status"
-              body={(r: RecordRow) => (
-                <span style={{ display: "inline-flex", gap: 4 }}>
-                  {r["mfa_enabled"] === true && (
-                    <span title="MFA enabled" style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "rgba(74,222,128,0.15)", color: "var(--success)" }}>MFA</span>
-                  )}
-                  {r["anonymous"] === true && (
-                    <span title="Anonymous user" style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "rgba(255,255,255,0.07)", color: "var(--text-muted)" }}>anon</span>
-                  )}
-                </span>
-              )}
-            />
-          )}
-          <Column
-            field="created"
-            header="created"
-            body={(r: RecordRow) => (
-              <span className="muted mono-cell" style={{ fontSize: 11.5 }}>
-                {new Date((r.created as number) * 1000).toLocaleDateString()}
-              </span>
-            )}
-          />
-          <Column
-            field="updated"
-            header="updated"
-            body={(r: RecordRow) => (
-              <span className="muted mono-cell" style={{ fontSize: 11.5 }}>
-                {new Date((r.updated as number) * 1000).toLocaleDateString()}
-              </span>
-            )}
-          />
-        </DataTable>
+          }
+        />
       </div>
 
       {/* Edit drawer */}
@@ -1150,47 +1351,56 @@ export default function Records() {
         idLabel={openRec ? String(openRec.id).slice(0, 16) : undefined}
         footer={
           collection?.type === "view" ? (
-            <button className="btn btn-ghost" onClick={() => setOpenRec(null)} style={{ marginLeft: "auto" }}>Close</button>
+            <VbBtn kind="ghost" size="sm" onClick={() => setOpenRec(null)} style={{ marginLeft: "auto" }}>
+              Close
+            </VbBtn>
           ) : (
             <>
-              <button
-                className="btn btn-danger"
+              <VbBtn
+                kind="danger"
+                size="sm"
+                icon="trash"
                 onClick={() => openRec && handleDelete(String(openRec.id))}
               >
-                <Icon name="trash" size={12} /> Delete
-              </button>
+                Delete
+              </VbBtn>
               {collection?.type === "auth" && openRec && (
                 <>
                   {openRec["mfa_enabled"] === true && (
-                    <button
-                      className="btn btn-ghost"
+                    <VbBtn
+                      kind="ghost"
+                      size="sm"
+                      icon="key"
                       onClick={() => handleDisableMfa(String(openRec.id))}
                       title="Reset MFA — user signs in with password only until they re-enroll"
                     >
-                      <Icon name="key" size={12} /> Disable MFA
-                    </button>
+                      Disable MFA
+                    </VbBtn>
                   )}
-                  <button
-                    className="btn btn-ghost"
+                  <VbBtn
+                    kind="ghost"
+                    size="sm"
+                    icon="users"
                     onClick={() => handleImpersonate(String(openRec.id))}
                     title="Mint a 1h user JWT for support purposes (audited)"
                   >
-                    <Icon name="users" size={12} /> Impersonate
-                  </button>
+                    Impersonate
+                  </VbBtn>
                 </>
               )}
               <span style={{ flex: 1 }} />
-              <button className="btn btn-ghost" onClick={() => setOpenRec(null)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-                <Icon name="check" size={12} />
+              <VbBtn kind="ghost" size="sm" onClick={() => setOpenRec(null)}>
+                Cancel
+              </VbBtn>
+              <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving…" : "Save"}
-              </button>
+              </VbBtn>
             </>
           )
         }
       >
         {openRec && (
-          <div className="col" style={{ gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {/* System read-only fields */}
             {(["id", "created", "updated"] as const).map((key) => {
               const raw = openRec[key];
@@ -1198,23 +1408,15 @@ export default function Records() {
                 ? String(raw)
                 : new Date((raw as number) * 1000).toISOString();
               return (
-                <div className="field-row" key={key}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <span className="field-name">{key}</span>
-                    <FieldTypeChip type={key === "id" ? "text" : "autodate"} />
-                  </div>
-                  <input className="input mono" value={display} readOnly />
-                </div>
+                <DrawerFieldRow key={key} name={key} type={key === "id" ? "text" : "autodate"}>
+                  <VbInput mono value={display} readOnly />
+                </DrawerFieldRow>
               );
             })}
-            <div className="divider" />
+            <div style={{ borderTop: "1px solid var(--vb-border)", margin: "4px 0" }} />
             {/* User fields */}
             {userFields.map((f) => (
-              <div className="field-row" key={f.name}>
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <span className="field-name">{f.name}</span>
-                  <FieldTypeChip type={f.type} />
-                </div>
+              <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
                 <FieldInput
                   field={f}
                   value={editData[f.name]}
@@ -1228,11 +1430,16 @@ export default function Records() {
                   recordId={String(openRec.id)}
                 />
                 {editErrors[f.name] && (
-                  <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
+                  <div style={{
+                    fontSize: 11,
+                    color: "var(--vb-status-danger)",
+                    marginTop: 4,
+                    fontFamily: "var(--font-mono)",
+                  }}>
                     {editErrors[f.name]}
                   </div>
                 )}
-              </div>
+              </DrawerFieldRow>
             ))}
           </div>
         )}

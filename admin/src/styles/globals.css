@@ -1269,6 +1269,9 @@ a { color: inherit; text-decoration: none; }
 .tab .badge { padding: 1px 6px; font-size: 10px; }
 
 /* Stat cards -------------------------------------------------------------- */
+/* StatCard — kept for legacy callers (Dashboard, Collections fallback). New
+   surfaces should use BigStat from Vb.tsx (mono uppercase label, larger num).
+   Visuals here align to the v0.9 redesign tokens. */
 .stat-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1276,19 +1279,21 @@ a { color: inherit; text-decoration: none; }
   margin-bottom: 20px;
 }
 .stat-card {
-  background: rgba(255,255,255,0.04);
-  border: 0.5px solid var(--border-default);
-  border-radius: 10px;
-  padding: 14px 16px;
+  background: var(--vb-bg-2);
+  border: 1px solid var(--vb-border);
+  border-radius: 8px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .stat-label {
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 9.5px;
+  color: var(--vb-fg-3);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 1.2px;
+  font-family: var(--font-mono);
+  font-weight: 600;
 }
 .stat-value {
   display: flex;
@@ -1296,27 +1301,29 @@ a { color: inherit; text-decoration: none; }
   gap: 8px;
 }
 .stat-value .num {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--vb-fg);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
 }
 .stat-value .delta {
   font-size: 11px;
   font-family: var(--font-mono);
 }
-.delta.up { color: var(--success); }
-.delta.down { color: var(--danger); }
+.delta.up { color: var(--vb-status-success); }
+.delta.down { color: var(--vb-status-danger); }
 .stat-spark {
-  height: 24px;
+  height: 22px;
   display: flex;
   align-items: flex-end;
   gap: 2px;
+  margin-top: 2px;
 }
 .stat-spark span {
   flex: 1;
-  background: var(--accent);
+  background: var(--vb-accent);
   opacity: 0.4;
   border-radius: 1px;
   min-height: 2px;
@@ -2407,23 +2414,23 @@ a { color: inherit; text-decoration: none; }
 .status-4xx { color: var(--warning); }
 .status-5xx { color: var(--danger); }
 
-/* Toast ------------------------------------------------------------------- */
+/* Toast — bottom-right card stack pinned to --vb-* tokens. */
 .toast-host {
   position: fixed;
   bottom: 20px; right: 20px;
-  display: flex; flex-direction: column; gap: var(--space-2);
+  display: flex; flex-direction: column; gap: 8px;
   z-index: 1000;
   pointer-events: none;
 }
 .vb-toast {
-  background: var(--bg-panel-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-md);
-  padding: 11px 14px;
-  font-size: 13px;
-  color: var(--text-primary);
-  box-shadow: var(--shadow-e2);
-  animation: toast-in var(--motion-standard) var(--ease-standard);
+  background: var(--vb-bg-2);
+  border: 1px solid var(--vb-border-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--vb-fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  animation: toast-in 180ms cubic-bezier(0.40, 0, 0.20, 1);
   pointer-events: auto;
   display: flex; align-items: flex-start; gap: 10px;
   min-width: 320px;
@@ -2435,27 +2442,28 @@ a { color: inherit; text-decoration: none; }
 .vb-toast .dup {
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: var(--text-tertiary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  color: var(--vb-fg-3);
+  background: var(--vb-bg-3);
+  border: 1px solid var(--vb-border);
+  border-radius: 999px;
   padding: 1px 8px;
   align-self: center;
 }
 .vb-toast .dismiss {
   background: transparent;
   border: 0;
-  color: var(--text-muted);
+  color: var(--vb-fg-3);
   cursor: pointer;
   padding: 2px;
   margin: -2px;
-  border-radius: var(--r-xs);
-  transition: color var(--motion-fast) var(--ease-fast);
+  border-radius: 4px;
+  transition: color 120ms;
 }
-.vb-toast .dismiss:hover { color: var(--text-primary); }
-.vb-toast.sev-error { border-color: rgba(239,68,68,0.30); }
-.vb-toast.sev-warn  { border-color: rgba(245,158,11,0.30); }
-.vb-toast.sev-info  { border-color: rgba(59,130,246,0.30); }
+.vb-toast .dismiss:hover { color: var(--vb-fg); }
+.vb-toast.sev-error { border-color: rgba(232, 90, 79, 0.30); }
+.vb-toast.sev-warn  { border-color: rgba(232, 161, 52, 0.30); }
+.vb-toast.sev-info  { border-color: rgba(59, 130, 246, 0.30); } /* info stays blue intentionally */
+.vb-toast.sev-check { border-color: rgba(98, 204, 156, 0.30); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
   to   { opacity: 1; transform: translateX(0); }
@@ -2544,90 +2552,88 @@ a { color: inherit; text-decoration: none; }
   --font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* Dialog */
-.p-dialog { background: var(--bg-surface); border: 0.5px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
+/* Dialog (Modal primitive) — pinned to --vb-* per the v0.9 redesign. */
 .p-dialog {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-e3);
+  background: var(--vb-bg-2);
+  border: 1px solid var(--vb-border);
+  border-radius: 10px;
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.6);
   overflow: hidden;
 }
 .p-dialog .p-dialog-header {
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 16px 20px;
+  background: var(--vb-bg-1);
+  color: var(--vb-fg);
+  border-bottom: 1px solid var(--vb-border);
+  padding: 14px 18px;
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.1px;
 }
 .p-dialog .p-dialog-content {
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  padding: 18px 20px;
+  background: var(--vb-bg-2);
+  color: var(--vb-fg);
+  padding: 18px;
+  font-size: 12.5px;
 }
 .p-dialog .p-dialog-footer {
-  background: var(--bg-app);
-  border-top: 1px solid var(--border-subtle);
-  padding: 12px 20px;
+  background: var(--vb-bg-1);
+  border-top: 1px solid var(--vb-border);
+  padding: 10px 18px;
   display: flex;
   justify-content: flex-end;
-  gap: var(--space-2);
+  gap: 8px;
   position: sticky;
   bottom: 0;
 }
 .p-dialog .p-dialog-header-icons .p-dialog-header-close {
-  color: var(--text-muted);
+  color: var(--vb-fg-3);
   background: transparent;
   border: 0;
-  border-radius: var(--r-sm);
-  width: 28px;
-  height: 28px;
-  transition: background var(--motion-fast) var(--ease-fast),
-              color var(--motion-fast) var(--ease-fast);
+  border-radius: 5px;
+  width: 26px;
+  height: 26px;
+  transition: background 120ms, color 120ms;
 }
 .p-dialog .p-dialog-header-icons .p-dialog-header-close:hover {
-  background: var(--bg-row-hover);
-  color: var(--text-primary);
+  background: var(--vb-bg-3);
+  color: var(--vb-fg);
 }
-.p-dialog-mask { background: rgba(0,0,0,0.6); }
+.p-dialog-mask { background: rgba(0, 0, 0, 0.6); }
 
-/* Sidebar (Drawer) */
+/* Sidebar (Drawer primitive) — pinned to --vb-* per the v0.9 redesign. */
 .p-sidebar {
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border-default);
-  box-shadow: -20px 0 60px rgba(0,0,0,0.4);
+  background: var(--vb-bg-2);
+  border-left: 1px solid var(--vb-border);
+  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.45);
 }
 .p-sidebar .p-sidebar-header {
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-subtle);
-  padding: 16px 20px;
+  background: var(--vb-bg-1);
+  color: var(--vb-fg);
+  border-bottom: 1px solid var(--vb-border);
+  padding: 14px 18px;
 }
 .p-sidebar .p-sidebar-content {
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  padding: 18px 20px;
+  background: var(--vb-bg-2);
+  color: var(--vb-fg);
+  padding: 18px;
 }
 .p-sidebar .p-sidebar-header .p-sidebar-close {
-  color: var(--text-muted);
+  color: var(--vb-fg-3);
   background: transparent;
   border: 0;
-  border-radius: var(--r-sm);
-  width: 28px;
-  height: 28px;
-  transition: background var(--motion-fast) var(--ease-fast),
-              color var(--motion-fast) var(--ease-fast);
+  border-radius: 5px;
+  width: 26px;
+  height: 26px;
+  transition: background 120ms, color 120ms;
 }
 .p-sidebar .p-sidebar-header .p-sidebar-close:hover {
-  background: var(--bg-row-hover);
-  color: var(--text-primary);
+  background: var(--vb-bg-3);
+  color: var(--vb-fg);
 }
-.p-sidebar-mask { background: rgba(0,0,0,0.55); }
+.p-sidebar-mask { background: rgba(0, 0, 0, 0.55); }
 
-/* Toggle — brand spec: 32×18 track, 14×14 thumb, off track is border-default,
-   on track is accent, transitions on standard motion (180ms). */
+/* Toggle — 32×18 track, 14×14 thumb. Off → --vb-bg-4, on → --vb-accent. */
 .vb-toggle {
   position: relative;
   display: inline-flex;
@@ -2638,33 +2644,31 @@ a { color: inherit; text-decoration: none; }
   padding: 0;
   margin: 0;
   border: 0;
-  border-radius: var(--r-pill);
-  background: var(--border-default);
+  border-radius: 999px;
+  background: var(--vb-bg-4);
   cursor: pointer;
-  transition: background var(--motion-standard) var(--ease-standard),
-              box-shadow var(--motion-fast) var(--ease-fast);
+  transition: background 180ms cubic-bezier(0.40, 0, 0.20, 1),
+              box-shadow 120ms;
   outline: none;
   vertical-align: middle;
 }
-.vb-toggle:hover { background: var(--border-strong); }
-.vb-toggle:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); }
+.vb-toggle:hover { background: rgba(255, 255, 255, 0.16); }
+.vb-toggle:focus-visible { box-shadow: 0 0 0 3px var(--vb-accent-soft); }
 .vb-toggle .vb-toggle-thumb {
   position: absolute;
   top: 2px;
   left: 2px;
   width: 14px;
   height: 14px;
-  border-radius: var(--r-pill);
-  background: #d8d9de;
-  box-shadow: var(--shadow-e1);
-  transition: transform var(--motion-standard) var(--ease-standard),
-              background var(--motion-standard) var(--ease-standard);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: transform 180ms cubic-bezier(0.40, 0, 0.20, 1);
 }
-.vb-toggle[data-on="true"] { background: var(--accent); }
-.vb-toggle[data-on="true"]:hover { background: var(--accent-hover); }
+.vb-toggle[data-on="true"] { background: var(--vb-accent); }
+.vb-toggle[data-on="true"]:hover { background: var(--vb-accent-h); }
 .vb-toggle[data-on="true"] .vb-toggle-thumb {
   transform: translateX(14px);
-  background: #ffffff;
 }
 .vb-toggle:disabled,
 .vb-toggle[aria-disabled="true"] {
@@ -2834,3 +2838,122 @@ a { color: inherit; text-decoration: none; }
 .p-paginator .p-paginator-page, .p-paginator .p-paginator-next, .p-paginator .p-paginator-prev, .p-paginator .p-paginator-first, .p-paginator .p-paginator-last { background: rgba(255,255,255,0.05); border: 0.5px solid var(--border-default); border-radius: 6px; color: var(--text-secondary); width: 28px; height: 28px; }
 .p-paginator .p-paginator-page.p-highlight { background: var(--accent-glow); color: var(--accent-light); border-color: var(--accent); }
 .p-paginator .p-paginator-page:hover, .p-paginator .p-paginator-next:hover, .p-paginator .p-paginator-prev:hover { background: rgba(255,255,255,0.09); }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * .vb-pr-table — opt-in restyle of the PrimeReact DataTable + paginator to
+ * match the design's aesthetic (mono uppercase header strip, --vb-bg-2 body,
+ * hover --vb-bg-3, accent-soft selection, mono pagination footer).
+ *
+ * Used on surfaces where a full VbTable swap isn't worth the rebuild — wrap
+ * the DataTable in <div className="vb-pr-table"> and the chrome aligns. Big,
+ * workflow-critical tables (Records) use VbTable directly instead.
+ *
+ * Fragility note: keyed off PrimeReact's `.p-datatable-*` class names. When
+ * upgrading PR, sanity-check this block.
+ * ───────────────────────────────────────────────────────────────────────── */
+.vb-pr-table .p-datatable {
+  background: var(--vb-bg-2);
+  border: 1px solid var(--vb-border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.vb-pr-table .p-datatable .p-datatable-thead > tr > th {
+  background: var(--vb-bg-1);
+  border: 0;
+  border-bottom: 1px solid var(--vb-border);
+  color: var(--vb-fg-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  padding: 9px 14px;
+}
+.vb-pr-table .p-datatable .p-datatable-tbody > tr {
+  background: transparent;
+  color: var(--vb-fg);
+  transition: background 100ms;
+}
+.vb-pr-table .p-datatable .p-datatable-tbody > tr > td {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--vb-border);
+  padding: 11px 14px;
+  font-size: 12px;
+  color: var(--vb-fg);
+}
+.vb-pr-table .p-datatable .p-datatable-tbody > tr:last-child > td {
+  border-bottom: 0;
+}
+.vb-pr-table .p-datatable .p-datatable-tbody > tr:not(.p-highlight):hover {
+  background: var(--vb-bg-3);
+}
+.vb-pr-table .p-datatable .p-datatable-tbody > tr.p-highlight {
+  background: var(--vb-accent-soft);
+  color: var(--vb-fg);
+}
+.vb-pr-table .p-datatable .p-sortable-column.p-highlight,
+.vb-pr-table .p-datatable .p-sortable-column.p-highlight:hover {
+  background: var(--vb-bg-1);
+  color: var(--vb-accent);
+}
+.vb-pr-table .p-datatable .p-sortable-column .p-sortable-column-icon {
+  color: var(--vb-fg-3);
+  margin-left: 4px;
+}
+.vb-pr-table .p-datatable .p-sortable-column.p-highlight .p-sortable-column-icon {
+  color: var(--vb-accent);
+}
+.vb-pr-table .p-datatable .p-checkbox .p-checkbox-box {
+  background: var(--vb-bg-3);
+  border: 1px solid var(--vb-border-2);
+  border-radius: 3px;
+}
+.vb-pr-table .p-datatable .p-checkbox .p-checkbox-box.p-highlight {
+  background: var(--vb-accent);
+  border-color: var(--vb-accent);
+}
+.vb-pr-table .p-datatable .p-datatable-emptymessage > td {
+  color: var(--vb-fg-3);
+  text-align: center;
+  padding: 32px 14px;
+}
+
+/* Paginator chrome inside vb-pr-table */
+.vb-pr-table .p-paginator {
+  background: var(--vb-bg-1);
+  border-top: 1px solid var(--vb-border);
+  padding: 8px 14px;
+  color: var(--vb-fg-3);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.vb-pr-table .p-paginator .p-paginator-page,
+.vb-pr-table .p-paginator .p-paginator-next,
+.vb-pr-table .p-paginator .p-paginator-prev,
+.vb-pr-table .p-paginator .p-paginator-first,
+.vb-pr-table .p-paginator .p-paginator-last {
+  background: var(--vb-bg-2);
+  border: 1px solid var(--vb-border-2);
+  color: var(--vb-fg-2);
+  border-radius: 4px;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  font-family: inherit;
+  font-size: 11px;
+}
+.vb-pr-table .p-paginator .p-paginator-page.p-highlight {
+  background: var(--vb-accent-soft);
+  color: var(--vb-accent);
+  border-color: var(--vb-accent);
+}
+.vb-pr-table .p-paginator .p-paginator-page:not(.p-highlight):hover,
+.vb-pr-table .p-paginator .p-paginator-next:hover,
+.vb-pr-table .p-paginator .p-paginator-prev:hover {
+  background: var(--vb-bg-3);
+  color: var(--vb-fg);
+}

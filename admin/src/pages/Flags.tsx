@@ -8,7 +8,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import {
+  VbBtn, VbField, VbInput, VbPageHeader, VbPill, VbEmptyState,
+} from "../components/Vb.tsx";
 import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
@@ -102,15 +104,17 @@ export default function Flags() {
 
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "Feature flags" }]}
-        actions={
-          <button
-            className="btn btn-primary"
+      <VbPageHeader
+        breadcrumb={["Feature flags"]}
+        title="Feature flags"
+        sub="Bool / string / number / json flags with rule-based targeting and sticky percentage rollout."
+        right={
+          <VbBtn
+            kind="primary"
+            size="sm"
+            icon="plus"
             onClick={() => { setCreating(true); setSelectedKey(null); }}
-          >
-            <Icon name="plus" size={12} /> New flag
-          </button>
+          >New flag</VbBtn>
         }
       />
       <div className="app-body" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, alignItems: "stretch" }}>
@@ -135,10 +139,11 @@ export default function Flags() {
             onDeleted={() => { setSelectedKey(null); load(); }}
           />
         ) : (
-          <div className="empty" style={{ padding: 60, textAlign: "center", color: "var(--text-muted)" }}>
-            <Icon name="webhook" size={28} />
-            <div style={{ marginTop: 12, fontSize: 13 }}>Pick a flag to edit, or create a new one.</div>
-          </div>
+          <VbEmptyState
+            icon="webhook"
+            title="Pick a flag to edit"
+            body="Or create a new one. Rules are evaluated top to bottom — first match wins."
+          />
         )}
       </div>
     </>
@@ -148,44 +153,81 @@ export default function Flags() {
 function FlagList({ flags, selectedKey, onSelect }: { flags: Flag[]; selectedKey: string | null; onSelect: (key: string) => void }) {
   if (flags.length === 0) {
     return (
-      <div className="empty" style={{ padding: 24, textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>
+      <div style={{
+        padding: 24,
+        background: "var(--vb-bg-2)",
+        border: "1px solid var(--vb-border)",
+        borderRadius: 8,
+        textAlign: "center",
+        fontSize: 12,
+        color: "var(--vb-fg-3)",
+      }}>
         No flags yet. Create one →
       </div>
     );
   }
   return (
-    <div className="col" style={{ gap: 4, alignContent: "start" }}>
-      {flags.map((f) => (
-        <button
-          key={f.key}
-          onClick={() => onSelect(f.key)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "10px 12px",
-            borderRadius: 6,
-            border: "0.5px solid var(--border-default)",
-            background: selectedKey === f.key ? "rgba(96,165,250,0.1)" : "var(--bg-panel)",
-            color: "var(--text-primary)",
-            textAlign: "left",
-            cursor: "pointer",
-          }}
-        >
-          <span
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--vb-bg-2)",
+      border: "1px solid var(--vb-border)",
+      borderRadius: 8,
+      overflow: "hidden",
+      alignSelf: "start",
+    }}>
+      {flags.map((f, i) => {
+        const isSel = selectedKey === f.key;
+        return (
+          <button
+            key={f.key}
+            onClick={() => onSelect(f.key)}
             style={{
-              width: 8, height: 8, borderRadius: 4, flexShrink: 0,
-              background: f.enabled ? "var(--success)" : "var(--text-muted)",
+              appearance: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "11px 14px",
+              border: "none",
+              borderBottom: i === flags.length - 1 ? "none" : "1px solid var(--vb-border)",
+              borderLeft: isSel ? "2px solid var(--vb-accent)" : "2px solid transparent",
+              background: isSel ? "var(--vb-accent-soft)" : "transparent",
+              color: "var(--vb-fg)",
+              textAlign: "left",
+              cursor: "pointer",
+              transition: "background 100ms",
             }}
-          />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="mono" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.key}</div>
-            <div className="muted" style={{ fontSize: 10, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {f.type} · {f.rules.length} rule{f.rules.length === 1 ? "" : "s"}
+            onMouseEnter={(e) => { if (!isSel) e.currentTarget.style.background = "var(--vb-bg-3)"; }}
+            onMouseLeave={(e) => { if (!isSel) e.currentTarget.style.background = "transparent"; }}
+          >
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+              background: f.enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+              boxShadow: f.enabled ? "0 0 0 3px rgba(98,204,156,0.16)" : "none",
+            }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                color: "var(--vb-fg)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>{f.key}</div>
+              <div style={{
+                fontSize: 10.5,
+                color: "var(--vb-fg-3)",
+                marginTop: 2,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>
+                {f.type} · {f.rules.length} rule{f.rules.length === 1 ? "" : "s"}
+              </div>
             </div>
-          </div>
-        </button>
-      ))}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -203,6 +245,38 @@ function emptyFlag(): Flag {
     created_at: now,
     updated_at: now,
   };
+}
+
+function Section({
+  title, meta, right, children,
+}: { title: string; meta?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: "var(--vb-bg-2)",
+      border: "1px solid var(--vb-border)",
+      borderRadius: 8,
+      overflow: "hidden",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "12px 16px",
+        borderBottom: "1px solid var(--vb-border)",
+        background: "var(--vb-bg-1)",
+        gap: 12,
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</h3>
+          {meta && (
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>{meta}</span>
+          )}
+        </div>
+        {right && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>}
+      </div>
+      <div style={{ padding: 16 }}>{children}</div>
+    </div>
+  );
 }
 
 function FlagEditor({
@@ -268,58 +342,58 @@ function FlagEditor({
   }
 
   return (
-    <div className="col" style={{ gap: 16 }}>
-      <div className="settings-section">
-        <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h3>{isNew ? "New flag" : draft.key}</h3>
-            {!isNew && <span className="meta">last updated {new Date(draft.updated_at * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC</span>}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+      <Section
+        title={isNew ? "New flag" : draft.key}
+        meta={!isNew ? `last updated ${new Date(draft.updated_at * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC` : undefined}
+        right={
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Toggle on={draft.enabled} onChange={(v) => patchDraft({ enabled: v })} />
-            <span style={{ fontSize: 12, color: draft.enabled ? "var(--success)" : "var(--text-muted)" }}>
+            <span style={{ fontSize: 12, color: draft.enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)" }}>
               {draft.enabled ? "Enabled" : "Off (kill switch)"}
             </span>
-          </div>
-        </div>
-        <div className="settings-section-body">
-          <div className="row" style={{ gap: 16 }}>
+          </span>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 16 }}>
             <div style={{ flex: 1 }}>
-              <label className="label">Key</label>
-              <input
-                className="input mono"
-                value={draft.key}
-                onChange={(e) => patchDraft({ key: e.target.value })}
-                placeholder="new_checkout"
-                disabled={!isNew}
-              />
+              <VbField label="Key">
+                <VbInput
+                  mono
+                  value={draft.key}
+                  onChange={(e) => patchDraft({ key: e.target.value })}
+                  placeholder="new_checkout"
+                  disabled={!isNew}
+                />
+              </VbField>
             </div>
             <div style={{ flex: 1 }}>
-              <label className="label">Type</label>
-              <Dropdown
-                value={draft.type}
-                options={TYPE_OPTIONS}
-                onChange={(e) => patchDraft({ type: e.value as FlagType, default_value: typeDefault(e.value as FlagType) })}
-                style={{ width: "100%" }}
-              />
+              <VbField label="Type">
+                <Dropdown
+                  value={draft.type}
+                  options={TYPE_OPTIONS}
+                  onChange={(e) => patchDraft({ type: e.value as FlagType, default_value: typeDefault(e.value as FlagType) })}
+                  style={{ width: "100%", height: 32 }}
+                />
+              </VbField>
             </div>
           </div>
-          <div className="label-block" style={{ marginTop: 14 }}>
-            <label className="label">Description</label>
-          </div>
-          <input className="input" value={draft.description} onChange={(e) => patchDraft({ description: e.target.value })} placeholder="What this flag controls" />
 
-          <div className="label-block" style={{ marginTop: 14 }}>
-            <label className="label">Default value (when no rule matches)</label>
-          </div>
-          <ValueEditor
-            type={draft.type}
-            value={draft.default_value}
-            variations={draft.variations}
-            onChange={(v) => patchDraft({ default_value: v })}
-          />
+          <VbField label="Description">
+            <VbInput value={draft.description} onChange={(e) => patchDraft({ description: e.target.value })} placeholder="What this flag controls" />
+          </VbField>
+
+          <VbField label="Default value" hint="returned when no rule matches">
+            <ValueEditor
+              type={draft.type}
+              value={draft.default_value}
+              variations={draft.variations}
+              onChange={(v) => patchDraft({ default_value: v })}
+            />
+          </VbField>
         </div>
-      </div>
+      </Section>
 
       {draft.type !== "bool" && (
         <VariationsEditor
@@ -336,64 +410,84 @@ function FlagEditor({
         onChange={(rules) => patchDraft({ rules })}
       />
 
-      <div className="settings-section">
-        <div className="settings-section-head">
-          <h3>Test context</h3>
-          <span className="meta">paste JSON · evaluate · trace which rule matched</span>
-        </div>
-        <div className="settings-section-body">
-          <textarea
-            className="input mono"
-            rows={5}
-            value={testCtx}
-            onChange={(e) => setTestCtx(e.target.value)}
-            style={{ width: "100%", fontSize: 12, resize: "vertical" }}
-          />
-          {testResult && (
-            <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 6, border: "0.5px solid var(--border-default)", background: "var(--bg-panel)" }}>
-              <div className="row" style={{ gap: 14, alignItems: "baseline" }}>
-                <div>
-                  <span className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>value</span>
-                  <div className="mono" style={{ fontSize: 14, color: "var(--accent-light)" }}>{JSON.stringify(testResult.value)}</div>
-                </div>
-                <div>
-                  <span className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>variation</span>
-                  <div className="mono" style={{ fontSize: 12 }}>{testResult.variation ?? "—"}</div>
-                </div>
-                <div>
-                  <span className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>reason</span>
-                  <div className="mono" style={{ fontSize: 12 }}>{testResult.reason}</div>
-                </div>
-                {testResult.rule_id && (
-                  <div>
-                    <span className="muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>rule</span>
-                    <div className="mono muted" style={{ fontSize: 11 }}>{testResult.rule_id}</div>
-                  </div>
-                )}
-              </div>
+      <Section
+        title="Test context"
+        meta="paste JSON · evaluate · trace which rule matched"
+        right={
+          <VbBtn kind="ghost" size="sm" icon="play" onClick={runTest} disabled={isNew}>Evaluate</VbBtn>
+        }
+      >
+        <textarea
+          rows={5}
+          value={testCtx}
+          onChange={(e) => setTestCtx(e.target.value)}
+          style={{
+            width: "100%",
+            background: "var(--vb-bg-3)",
+            border: "1px solid var(--vb-border-2)",
+            borderRadius: 5,
+            color: "var(--vb-fg)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 12,
+            padding: "8px 10px",
+            resize: "vertical",
+            outline: "none",
+          }}
+        />
+        {testResult && (
+          <div style={{
+            marginTop: 14,
+            padding: "12px 14px",
+            borderRadius: 6,
+            border: "1px solid var(--vb-border)",
+            background: "var(--vb-bg-1)",
+          }}>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "baseline" }}>
+              <KvBlock label="value" mono accent>{JSON.stringify(testResult.value)}</KvBlock>
+              <KvBlock label="variation" mono>{testResult.variation ?? "—"}</KvBlock>
+              <KvBlock label="reason" mono>{testResult.reason}</KvBlock>
+              {testResult.rule_id && (
+                <KvBlock label="rule" mono muted>{testResult.rule_id}</KvBlock>
+              )}
             </div>
-          )}
-        </div>
-        <div className="settings-section-foot" style={{ justifyContent: "flex-end" }}>
-          <button className="btn btn-ghost" onClick={runTest} disabled={isNew}>
-            <Icon name="play" size={11} /> Evaluate
-          </button>
-        </div>
-      </div>
+          </div>
+        )}
+      </Section>
 
-      <div className="row" style={{ gap: 8, justifyContent: "space-between" }}>
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
         {!isNew && onDeleted ? (
-          <button className="btn" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} onClick={remove}>
-            <Icon name="trash" size={12} /> Delete flag
-          </button>
+          <VbBtn kind="danger" size="md" icon="trash" onClick={remove}>Delete flag</VbBtn>
         ) : <span />}
         <div style={{ display: "flex", gap: 8 }}>
-          {isNew && onCancel && <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>}
-          <button className="btn btn-primary" onClick={save} disabled={saving || (isNew && !draft.key)}>
+          {isNew && onCancel && <VbBtn kind="ghost" size="md" onClick={onCancel}>Cancel</VbBtn>}
+          <VbBtn kind="primary" size="md" icon="check" onClick={save} disabled={saving || (isNew && !draft.key)}>
             {saving ? "Saving…" : isNew ? "Create flag" : "Save changes"}
-          </button>
+          </VbBtn>
         </div>
       </div>
+    </div>
+  );
+}
+
+function KvBlock({ label, children, mono, accent, muted }: {
+  label: string; children: React.ReactNode; mono?: boolean; accent?: boolean; muted?: boolean;
+}) {
+  return (
+    <div>
+      <div style={{
+        fontSize: 9.5,
+        fontWeight: 600,
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        color: "var(--vb-fg-3)",
+        fontFamily: "var(--font-mono)",
+      }}>{label}</div>
+      <div style={{
+        fontFamily: mono ? "var(--font-mono)" : "inherit",
+        fontSize: accent ? 14 : 12,
+        marginTop: 2,
+        color: accent ? "var(--vb-accent)" : muted ? "var(--vb-fg-3)" : "var(--vb-fg)",
+      }}>{children}</div>
     </div>
   );
 }
@@ -412,29 +506,41 @@ function ValueEditor({ type, value, variations, onChange }: {
 }) {
   if (type === "bool") {
     return (
-      <div className="row" style={{ gap: 10, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
         <Toggle on={Boolean(value)} onChange={onChange} />
-        <span className="mono" style={{ fontSize: 12 }}>{String(Boolean(value))}</span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--vb-fg)" }}>
+          {String(Boolean(value))}
+        </span>
       </div>
     );
   }
   if (type === "string") {
-    return <input className="input mono" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />;
+    return <VbInput mono value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />;
   }
   if (type === "number") {
-    return <input className="input mono" type="number" value={Number(value ?? 0)} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />;
+    return <VbInput mono type="number" value={Number(value ?? 0)} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />;
   }
   // json
   return (
     <textarea
-      className="input mono"
       rows={3}
       value={typeof value === "string" ? value : JSON.stringify(value, null, 2)}
       onChange={(e) => {
         try { onChange(JSON.parse(e.target.value)); }
         catch { onChange(e.target.value); /* will validate on save */ }
       }}
-      style={{ width: "100%", fontSize: 12, resize: "vertical" }}
+      style={{
+        width: "100%",
+        background: "var(--vb-bg-3)",
+        border: "1px solid var(--vb-border-2)",
+        borderRadius: 5,
+        color: "var(--vb-fg)",
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        padding: "8px 10px",
+        resize: "vertical",
+        outline: "none",
+      }}
     />
   );
   void variations;
@@ -453,32 +559,36 @@ function VariationsEditor({ type, variations, onChange }: {
     onChange(variations.filter((_, idx) => idx !== i));
   }
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h3>Variations</h3>
-        <span className="meta">named buckets the rule's "variation" picks from</span>
-      </div>
-      <div className="settings-section-body">
-        {variations.length === 0 ? (
-          <div className="muted" style={{ fontSize: 12 }}>No variations yet — add one to enable multivariate targeting.</div>
-        ) : (
-          variations.map((v, i) => (
-            <div key={i} className="row" style={{ gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <input className="input mono" style={{ flex: "0 0 160px" }} value={v.name} onChange={(e) => update(i, { name: e.target.value })} placeholder="treatment_a" />
+    <Section
+      title="Variations"
+      meta={`named buckets the rule's "variation" picks from`}
+      right={<VbBtn kind="ghost" size="sm" icon="plus" onClick={add}>Add variation</VbBtn>}
+    >
+      {variations.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
+          No variations yet — add one to enable multivariate targeting.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {variations.map((v, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ width: 160 }}>
+                <VbInput
+                  mono
+                  value={v.name}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  placeholder="treatment_a"
+                />
+              </div>
               <div style={{ flex: 1 }}>
                 <ValueEditor type={type} value={v.value} variations={[]} onChange={(val) => update(i, { value: val })} />
               </div>
-              <button className="btn-icon danger" onClick={() => remove(i)} title="Remove variation">
-                <Icon name="x" size={12} />
-              </button>
+              <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(i)} title="Remove variation" />
             </div>
-          ))
-        )}
-        <button className="btn btn-ghost" onClick={add}>
-          <Icon name="plus" size={11} /> Add variation
-        </button>
-      </div>
-    </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -504,87 +614,92 @@ function RulesEditor({ type, variations, rules, onChange }: {
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <h3>Targeting rules</h3>
-          <span className="meta">first matching rule wins · evaluated top to bottom</span>
+    <Section
+      title="Targeting rules"
+      meta="first matching rule wins · evaluated top to bottom"
+      right={<VbBtn kind="ghost" size="sm" icon="plus" onClick={add}>Add rule</VbBtn>}
+    >
+      {rules.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
+          No rules — every evaluation returns the default value.
         </div>
-        <button className="btn btn-ghost" onClick={add}>
-          <Icon name="plus" size={11} /> Add rule
-        </button>
-      </div>
-      <div className="settings-section-body">
-        {rules.length === 0 ? (
-          <div className="muted" style={{ fontSize: 12 }}>No rules — every evaluation returns the default value.</div>
-        ) : rules.map((r, i) => (
-          <div key={r.id} style={{ padding: 12, borderRadius: 6, border: "0.5px solid var(--border-default)", background: "var(--bg-panel)", marginBottom: 10 }}>
-            <div className="row" style={{ gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <span className="mono muted" style={{ fontSize: 11, minWidth: 24 }}>#{i + 1}</span>
-              <span className="mono muted" style={{ fontSize: 10 }}>{r.id}</span>
-              <span style={{ flex: 1 }} />
-              <button className="btn-icon" onClick={() => move(i, -1)} disabled={i === 0} title="Move up"><Icon name="arrowUp" size={11} /></button>
-              <button className="btn-icon" onClick={() => move(i, 1)} disabled={i === rules.length - 1} title="Move down"><Icon name="arrowDown" size={11} /></button>
-              <button className="btn-icon danger" onClick={() => remove(i)} title="Remove"><Icon name="x" size={11} /></button>
-            </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rules.map((r, i) => (
+            <div key={r.id} style={{
+              padding: 14,
+              borderRadius: 6,
+              border: "1px solid var(--vb-border)",
+              background: "var(--vb-bg-1)",
+            }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                <VbPill tone="accent">#{i + 1}</VbPill>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--vb-fg-3)" }}>{r.id}</span>
+                <span style={{ flex: 1 }} />
+                <VbBtn kind="ghost" size="sm" icon="arrowUp" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" />
+                <VbBtn kind="ghost" size="sm" icon="arrowDown" onClick={() => move(i, 1)} disabled={i === rules.length - 1} title="Move down" />
+                <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(i)} title="Remove rule" />
+              </div>
 
-            <ConditionsEditor
-              conds={r.when?.all ?? []}
-              onChange={(conds) => patch(i, conds.length === 0
-                ? { when: { all: [] } }
-                : { when: { all: conds } })}
-            />
+              <ConditionsEditor
+                conds={r.when?.all ?? []}
+                onChange={(conds) => patch(i, conds.length === 0
+                  ? { when: { all: [] } }
+                  : { when: { all: conds } })}
+              />
 
-            <div className="row" style={{ gap: 12, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div>
-                <label className="label" style={{ marginBottom: 2 }}>Variation</label>
-                {type === "bool" ? (
-                  <Dropdown
-                    value={r.variation}
-                    options={[{ label: "true", value: "true" }, { label: "false", value: "false" }]}
-                    onChange={(e) => patch(i, { variation: String(e.value) })}
-                    style={{ minWidth: 100, height: 30, fontSize: 12 }}
-                  />
-                ) : variations.length > 0 ? (
-                  <Dropdown
-                    value={r.variation}
-                    options={variations.map((v) => ({ label: v.name, value: v.name }))}
-                    onChange={(e) => patch(i, { variation: String(e.value) })}
-                    style={{ minWidth: 140, height: 30, fontSize: 12 }}
-                  />
-                ) : (
-                  <input className="input mono" style={{ minWidth: 140, height: 30 }} value={r.variation} onChange={(e) => patch(i, { variation: e.target.value })} />
-                )}
-              </div>
-              <div>
-                <label className="label" style={{ marginBottom: 2 }}>Rollout %</label>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={0}
-                  max={100}
-                  style={{ width: 80, height: 30, fontSize: 12 }}
-                  value={r.rollout?.value ?? 100}
-                  onChange={(e) => {
-                    const n = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-                    patch(i, { rollout: { value: n, sticky: r.rollout?.sticky ?? "user.id" } });
-                  }}
-                />
-              </div>
-              <div>
-                <label className="label" style={{ marginBottom: 2 }}>Sticky attr</label>
-                <input
-                  className="input mono"
-                  style={{ width: 140, height: 30, fontSize: 12 }}
-                  value={r.rollout?.sticky ?? "user.id"}
-                  onChange={(e) => patch(i, { rollout: { value: r.rollout?.value ?? 100, sticky: e.target.value } })}
-                />
+              <div style={{ display: "flex", gap: 14, marginTop: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+                <div style={{ minWidth: 140 }}>
+                  <VbField label="Variation">
+                    {type === "bool" ? (
+                      <Dropdown
+                        value={r.variation}
+                        options={[{ label: "true", value: "true" }, { label: "false", value: "false" }]}
+                        onChange={(e) => patch(i, { variation: String(e.value) })}
+                        style={{ width: "100%", height: 32 }}
+                      />
+                    ) : variations.length > 0 ? (
+                      <Dropdown
+                        value={r.variation}
+                        options={variations.map((v) => ({ label: v.name, value: v.name }))}
+                        onChange={(e) => patch(i, { variation: String(e.value) })}
+                        style={{ width: "100%", height: 32 }}
+                      />
+                    ) : (
+                      <VbInput mono value={r.variation} onChange={(e) => patch(i, { variation: e.target.value })} />
+                    )}
+                  </VbField>
+                </div>
+                <div style={{ width: 100 }}>
+                  <VbField label="Rollout %">
+                    <VbInput
+                      mono
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={r.rollout?.value ?? 100}
+                      onChange={(e) => {
+                        const n = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                        patch(i, { rollout: { value: n, sticky: r.rollout?.sticky ?? "user.id" } });
+                      }}
+                    />
+                  </VbField>
+                </div>
+                <div style={{ width: 160 }}>
+                  <VbField label="Sticky attr">
+                    <VbInput
+                      mono
+                      value={r.rollout?.sticky ?? "user.id"}
+                      onChange={(e) => patch(i, { rollout: { value: r.rollout?.value ?? 100, sticky: e.target.value } })}
+                    />
+                  </VbField>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
-    </div>
+          ))}
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -593,45 +708,56 @@ function ConditionsEditor({ conds, onChange }: { conds: Condition[]; onChange: (
   function remove(i: number) { onChange(conds.filter((_, idx) => idx !== i)); }
   function add() { onChange([...conds, { attr: "user.id", op: "eq", value: "" }]); }
   return (
-    <>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {conds.length === 0 ? (
-        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>No conditions — rule matches every context.</div>
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
+          No conditions — rule matches every context.
+        </div>
       ) : conds.map((c, i) => (
-        <div key={i} className="row" style={{ gap: 6, marginBottom: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <span className="muted" style={{ fontSize: 11, minWidth: 30 }}>{i === 0 ? "where" : "and"}</span>
-          <input className="input mono" style={{ flex: "0 0 160px", height: 28, fontSize: 12 }} value={c.attr} onChange={(e) => update(i, { attr: e.target.value })} placeholder="user.plan" />
+        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            color: "var(--vb-fg-3)",
+            minWidth: 36,
+            textAlign: "right",
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+          }}>{i === 0 ? "where" : "and"}</span>
+          <div style={{ width: 160 }}>
+            <VbInput mono value={c.attr} onChange={(e) => update(i, { attr: e.target.value })} placeholder="user.plan" />
+          </div>
           <Dropdown
             value={c.op}
             options={OP_OPTIONS}
             onChange={(e) => update(i, { op: e.value as Operator })}
-            style={{ minWidth: 160, height: 28, fontSize: 12 }}
+            style={{ minWidth: 170, height: 32 }}
           />
           {c.op !== "exists" && (
-            <input
-              className="input mono"
-              style={{ flex: 1, minWidth: 140, height: 28, fontSize: 12 }}
-              value={typeof c.value === "string" ? c.value : JSON.stringify(c.value)}
-              onChange={(e) => {
-                const raw = e.target.value;
-                let parsed: unknown = raw;
-                if (c.op === "in" || c.op === "not_in" || c.op === "between") {
-                  try { parsed = JSON.parse(raw); } catch { parsed = raw; }
-                } else if (raw === "true") parsed = true;
-                else if (raw === "false") parsed = false;
-                else if (!isNaN(Number(raw)) && raw.trim() !== "") parsed = Number(raw);
-                update(i, { value: parsed });
-              }}
-              placeholder={c.op === "in" || c.op === "not_in" ? '["pro","enterprise"]' : c.op === "between" ? "[0, 100]" : "value"}
-            />
+            <div style={{ flex: 1, minWidth: 160 }}>
+              <VbInput
+                mono
+                value={typeof c.value === "string" ? c.value : JSON.stringify(c.value)}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  let parsed: unknown = raw;
+                  if (c.op === "in" || c.op === "not_in" || c.op === "between") {
+                    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+                  } else if (raw === "true") parsed = true;
+                  else if (raw === "false") parsed = false;
+                  else if (!isNaN(Number(raw)) && raw.trim() !== "") parsed = Number(raw);
+                  update(i, { value: parsed });
+                }}
+                placeholder={c.op === "in" || c.op === "not_in" ? '["pro","enterprise"]' : c.op === "between" ? "[0, 100]" : "value"}
+              />
+            </div>
           )}
-          <button className="btn-icon danger" onClick={() => remove(i)} title="Remove condition">
-            <Icon name="x" size={11} />
-          </button>
+          <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(i)} title="Remove condition" />
         </div>
       ))}
-      <button className="btn btn-ghost" onClick={add} style={{ fontSize: 11 }}>
-        <Icon name="plus" size={10} /> Add condition
-      </button>
-    </>
+      <div style={{ marginTop: 4 }}>
+        <VbBtn kind="ghost" size="sm" icon="plus" onClick={add}>Add condition</VbBtn>
+      </div>
+    </div>
   );
 }

@@ -1,15 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type Collection, collColor, parseFields } from "../api.ts";
-import { Topbar, PageHeader } from "../components/Shell.tsx";
-import { StatCard } from "../components/UI.tsx";
-import Icon from "../components/Icon.tsx";
+import { api, parseFields } from "../api.ts";
 import { confirm } from "../components/Confirm.tsx";
+import Icon from "../components/Icon.tsx";
 import { toast } from "../stores/toast.ts";
 import { useCollections } from "../stores/collections.ts";
+import {
+  ActivityBar,
+  BigStat,
+  CollectionAvatar,
+  FilterInput,
+  TypePill,
+  VbBtn,
+  VbPageHeader,
+  VbTabs,
+  type VbTab,
+} from "../components/Vb.tsx";
 import NewCollectionModal from "./NewCollectionModal.tsx";
 
-const SPARK = [0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.7, 0.8, 0.9, 1.0, 1.0, 0.9];
+type Tab = "all" | "auth" | "base" | "view";
 
 export default function Collections() {
   const navigate = useNavigate();
@@ -19,11 +28,12 @@ export default function Collections() {
   const loadCollections = useCollections((s) => s.load);
   const invalidate = useCollections((s) => s.invalidate);
   const loading = isLoading || !isLoaded;
-  const [tab, setTab] = useState<"all" | "auth" | "base">("all");
+
+  const [tab, setTab] = useState<Tab>("all");
+  const [search, setSearch] = useState("");
   const [showNew, setShowNew] = useState(false);
 
   function load() { invalidate(); void loadCollections(true); }
-
   useEffect(() => { void loadCollections(); }, [loadCollections]);
 
   async function handleDelete(e: React.MouseEvent, id: string, name: string) {
@@ -39,150 +49,214 @@ export default function Collections() {
     load();
   }
 
-  const typed = collections.map((c, i) => ({
+  // Per-collection metadata (records, recent-activity rate, last write).
+  // The stats endpoint isn't exposed yet — these slots stay so the layout
+  // matches the design and the visual rhythm is right; values will land
+  // when the per-collection-stats endpoint does.
+  const enriched = useMemo(() => collections.map((c) => ({
     ...c,
-    type: c.type ?? "base",
-    color: collColor(i),
+    type: (c.type ?? "base") as "base" | "auth" | "view",
     fieldCount: parseFields(c.fields).length,
-  }));
+    records: null as number | null,
+    writeRate: 0,
+    lastWrite: null as string | null,
+  })), [collections]);
 
-  const filtered = typed.filter((c) => tab === "all" || c.type === tab);
-  const authCount = typed.filter((c) => c.type === "auth").length;
-  const baseCount = typed.filter((c) => c.type === "base").length;
+  const counts = {
+    all: enriched.length,
+    auth: enriched.filter((c) => c.type === "auth").length,
+    base: enriched.filter((c) => c.type === "base").length,
+    view: enriched.filter((c) => c.type === "view").length,
+  };
+
+  const tabs: VbTab<Tab>[] = [
+    { id: "all",  label: "All",  count: counts.all  },
+    { id: "auth", label: "Auth", count: counts.auth },
+    { id: "base", label: "Base", count: counts.base },
+    { id: "view", label: "View", count: counts.view },
+  ];
+
+  const visible = enriched
+    .filter((c) => tab === "all" || c.type === tab)
+    .filter((c) => !search || c.name.toLowerCase().includes(search.toLowerCase()));
+
+  // Summary strip — total records / writes / storage will get their numbers
+  // alongside the per-collection stats endpoint. For now: collection count is
+  // real, the rest are placeholders.
+  const totalFields = enriched.reduce((s, c) => s + c.fieldCount, 0);
 
   return (
-    <>
-      <Topbar
+    <div style={{
+      display: "flex",
+      flex: 1,
+      minWidth: 0,
+      flexDirection: "column",
+      overflow: "hidden",
+    }}>
+      <VbPageHeader
+        breadcrumb={["Collections"]}
         title="Collections"
-        subtitle={`${collections.length} collections`}
-        actions={
+        sub={
           <>
-            <button
-              className="btn btn-ghost"
-              disabled
-              title="Import available in v2"
-              style={{ opacity: 0.4, cursor: "not-allowed" }}
-            >
-              <Icon name="upload" size={12} /> Import
-              <span style={{ fontSize: 10, marginLeft: 4, color: "var(--text-muted)" }}>v2</span>
-            </button>
-            <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-              <Icon name="plus" size={12} /> New collection
-            </button>
+            Define your data shape. Each collection becomes a typed REST + realtime endpoint at{" "}
+            <code style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.86em",
+              padding: "1px 5px",
+              borderRadius: 4,
+              background: "var(--vb-code-bg)",
+              color: "var(--vb-code-fg)",
+            }}>/api/v1/&lt;name&gt;</code>.
+          </>
+        }
+        right={
+          <>
+            <VbBtn kind="ghost" size="sm" icon="copy" disabled title="Import — v2">Import</VbBtn>
+            <VbBtn kind="primary" size="sm" icon="plus" onClick={() => setShowNew(true)}>
+              New collection
+            </VbBtn>
           </>
         }
       />
-      <div className="tabs">
-        {[
-          { id: "all" as const, label: "All", count: collections.length },
-          { id: "auth" as const, label: "Auth", count: authCount },
-          { id: "base" as const, label: "Base", count: baseCount },
-        ].map((t) => (
-          <div
-            key={t.id}
-            className={`tab${tab === t.id ? " active" : ""}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}{" "}
-            <span className="badge base mono">{t.count}</span>
-          </div>
-        ))}
-      </div>
-      <div className="app-body">
-        <div className="stat-row">
-          <StatCard
-            label="Collections"
-            value={collections.length}
-            spark={SPARK}
+
+      <VbTabs<Tab>
+        tabs={tabs}
+        active={tab}
+        onChange={setTab}
+        rightSlot={
+          <FilterInput
+            placeholder="Search collections…"
+            value={search}
+            onChange={setSearch}
+            width={220}
           />
-          <StatCard
-            label="Auth collections"
-            value={authCount}
-            spark={SPARK.map((v) => v * 0.6)}
-          />
-          <StatCard
-            label="Base collections"
-            value={baseCount}
-            spark={SPARK.map((v) => v * 0.8)}
-          />
+        }
+      />
+
+      <div style={{ flex: 1, overflow: "auto", padding: "20px 28px 32px" }}>
+        {/* Summary strip */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 1,
+          marginBottom: 16,
+          background: "var(--vb-border)",
+          border: "1px solid var(--vb-border)",
+          borderRadius: 7,
+          overflow: "hidden",
+        }}>
+          <BigStat label="Collections" value={enriched.length} />
+          <BigStat label="Auth" value={counts.auth} />
+          <BigStat label="Base" value={counts.base} />
+          <BigStat label="Total fields" value={totalFields} />
         </div>
 
-        <div className="table-wrap">
+        {/* Table */}
+        <div style={{
+          background: "var(--vb-bg-2)",
+          border: "1px solid var(--vb-border)",
+          borderRadius: 8,
+          overflow: "hidden",
+        }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 100px 130px 130px 100px 56px",
+            padding: "9px 14px",
+            borderBottom: "1px solid var(--vb-border)",
+            background: "var(--vb-bg-1)",
+            fontSize: 10.5,
+            fontWeight: 600,
+            letterSpacing: 1.2,
+            textTransform: "uppercase",
+            color: "var(--vb-fg-3)",
+            fontFamily: "var(--font-mono)",
+          }}>
+            <span>Name</span>
+            <span>Type</span>
+            <span>Records</span>
+            <span>Activity</span>
+            <span style={{ textAlign: "right" }}>Fields</span>
+            <span />
+          </div>
+
           {loading ? (
-            <div className="empty">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="empty-state">
-              <div className="ic"><Icon name="database" size={20} /></div>
-              <h4>No collections yet</h4>
-              <p>
-                Collections are typed SQL tables with API rules and realtime
-                broadcasts. Create one to get started — pick <code className="mono">base</code> for data,{" "}
-                <code className="mono">auth</code> for users.
-              </p>
-              <div className="row">
-                <button className="btn btn-primary" onClick={() => setShowNew(true)}>
-                  <Icon name="plus" size={12} /> New collection
-                </button>
-                <a className="btn btn-ghost" href="https://vaultbase.dev/concepts/collections/" target="_blank" rel="noreferrer">
-                  Read docs <Icon name="arrowRight" size={11} />
-                </a>
-              </div>
+            <div style={{ padding: "32px", textAlign: "center", color: "var(--vb-fg-3)", fontSize: 12 }}>
+              Loading…
             </div>
+          ) : visible.length === 0 ? (
+            <CollectionsEmptyState
+              hasAny={enriched.length > 0}
+              onNew={() => setShowNew(true)}
+            />
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{ width: "40%" }}>Name</th>
-                  <th>Type</th>
-                  <th className="right">Fields</th>
-                  <th className="right" style={{ width: 92 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((c) => (
-                  <tr key={c.id} onClick={() => navigate(`/_/collections/${c.id}/records`)}>
-                    <td>
-                      <div className="cell-name">
-                        <div className={`coll-icon ${c.color}`}>
-                          {c.name[0]!.toUpperCase()}
-                        </div>
-                        <div className="cell-name-text">
-                          <span className="name">{c.name}</span>
-                          <span className="meta">
-                            {c.fieldCount} fields · id, created…
-                          </span>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`badge ${c.type}`}>{c.type}</span>
-                    </td>
-                    <td className="right mono-cell">{c.fieldCount}</td>
-                    <td className="right">
-                      <span className="row-actions">
-                        <button
-                          className="btn-icon"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/_/collections/${c.id}/edit`);
-                          }}
-                          title="Edit schema"
-                        >
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button
-                          className="btn-icon danger"
-                          onClick={(e) => handleDelete(e, c.id, c.name)}
-                          title="Delete"
-                        >
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            visible.map((c, i) => (
+              <div
+                key={c.id}
+                onClick={() => navigate(`/_/collections/${c.id}/records`)}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 100px 130px 130px 100px 56px",
+                  padding: "11px 14px",
+                  alignItems: "center",
+                  borderBottom: i === visible.length - 1 ? "none" : "1px solid var(--vb-border)",
+                  cursor: "pointer",
+                  transition: "background 100ms",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--vb-bg-3)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <CollectionAvatar letter={c.name[0] ?? "?"} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+                    <span style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--vb-fg)",
+                      fontFamily: "var(--font-mono)",
+                    }}>{c.name}</span>
+                    <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+                      {c.fieldCount} fields · id, created…
+                    </span>
+                  </div>
+                </div>
+                <span><TypePill type={c.type} /></span>
+                <span style={{
+                  fontSize: 12,
+                  color: c.records == null ? "var(--vb-fg-3)" : "var(--vb-fg)",
+                  fontFamily: "var(--font-mono)",
+                  fontVariantNumeric: "tabular-nums",
+                }}>
+                  {c.records == null ? "—" : c.records.toLocaleString()}
+                </span>
+                <ActivityBar rate={c.writeRate} lastWrite={c.lastWrite} />
+                <span style={{
+                  textAlign: "right",
+                  fontSize: 12,
+                  color: "var(--vb-fg-2)",
+                  fontFamily: "var(--font-mono)",
+                  fontVariantNumeric: "tabular-nums",
+                }}>{c.fieldCount}</span>
+                <span style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/_/collections/${c.id}/edit`);
+                    }}
+                    title="Edit schema"
+                    style={iconBtnStyle}
+                  >
+                    <Icon name="pencil" size={12} />
+                  </button>
+                  <button
+                    onClick={(e) => handleDelete(e, c.id, c.name)}
+                    title="Delete"
+                    style={{ ...iconBtnStyle, color: "var(--vb-status-danger)" }}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                </span>
+              </div>
+            ))
           )}
         </div>
       </div>
@@ -196,6 +270,81 @@ export default function Collections() {
           load();
         }}
       />
-    </>
+    </div>
   );
 }
+
+const iconBtnStyle: React.CSSProperties = {
+  appearance: "none",
+  border: "0",
+  background: "transparent",
+  color: "var(--vb-fg-3)",
+  cursor: "pointer",
+  padding: 4,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 4,
+};
+
+const CollectionsEmptyState: React.FC<{ hasAny: boolean; onNew: () => void }> = ({ hasAny, onNew }) => (
+  <div style={{
+    padding: "48px 28px",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 12,
+    textAlign: "center",
+  }}>
+    <div style={{
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      background: "var(--vb-bg-3)",
+      border: "1px dashed var(--vb-border-2)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "var(--vb-fg-3)",
+    }}>
+      <Icon name="stack" size={18} />
+    </div>
+    <div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
+        {hasAny ? "No matches" : "No collections yet"}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", maxWidth: 380 }}>
+        {hasAny
+          ? "Try a different filter or search term."
+          : "Collections are typed SQL tables with API rules and realtime broadcasts."}
+      </div>
+    </div>
+    {!hasAny && (
+      <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+        <VbBtn kind="primary" size="sm" icon="plus" onClick={onNew}>New collection</VbBtn>
+        <a
+          href="https://docs.vaultbase.dev/concepts/collections/"
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 26,
+            padding: "0 10px",
+            borderRadius: 5,
+            background: "transparent",
+            border: "1px solid var(--vb-border-2)",
+            color: "var(--vb-fg-2)",
+            fontSize: 11.5,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          Read docs
+          <Icon name="chevronRight" size={11} />
+        </a>
+      </div>
+    )}
+  </div>
+);

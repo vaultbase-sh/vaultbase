@@ -3,7 +3,7 @@ import { DataTable } from "primereact/datatable";
 import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
 import { api, type ListResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -83,13 +83,14 @@ export default function AuditLog() {
 
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "Audit log" }]}
-        actions={
-          <button className="btn btn-ghost" onClick={() => load()} title="Refresh">
-            <Icon name="refresh" size={12} />
+      <VbPageHeader
+        breadcrumb={["Audit log"]}
+        title="Audit log"
+        sub="Append-only trail of admin API state changes — who did what, when, from where."
+        right={
+          <VbBtn kind="ghost" size="sm" icon="refresh" onClick={() => load()} title="Refresh">
             Refresh
-          </button>
+          </VbBtn>
         }
       />
       <div className="app-body">
@@ -145,6 +146,7 @@ export default function AuditLog() {
             append-only · {total} entries
           </span>
         </div>
+        <div className="vb-pr-table">
         <DataTable
           value={entries}
           lazy
@@ -204,6 +206,7 @@ export default function AuditLog() {
             )}
           />
         </DataTable>
+        </div>
       </div>
 
       <Drawer

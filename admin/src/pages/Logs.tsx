@@ -4,7 +4,7 @@ import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ListResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import { VbBtn, VbPageHeader, VbTabs, type VbTab } from "../components/Vb.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -110,9 +110,11 @@ export default function Logs() {
 
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "Logs" }]}
-        actions={
+      <VbPageHeader
+        breadcrumb={["Logs"]}
+        title="Logs"
+        sub="Per-request log with rule-eval inspection. JSONPath search across the JSONL files on disk."
+        right={
           <>
             <Dropdown
               value={methodFilter}
@@ -151,36 +153,44 @@ export default function Logs() {
               style={{ height: 30, minWidth: 150, fontSize: 12 }}
               title="Filter by per-request rule evaluation outcome"
             />
-            <button
-              className={`btn ${showAdmin ? "btn-ghost" : "btn-ghost"}`}
+            <VbBtn
+              kind="ghost"
+              size="sm"
+              icon="key"
               onClick={() => { setShowAdmin((v) => !v); setPage(1); }}
               title={showAdmin ? "Hide admin requests" : "Show admin requests"}
-              style={showAdmin ? { borderColor: "var(--accent)", color: "var(--accent-light)" } : undefined}
+              style={showAdmin ? { borderColor: "var(--vb-accent)", color: "var(--vb-accent)" } : undefined}
             >
-              <Icon name="key" size={12} />
               Admin {showAdmin ? "on" : "off"}
-            </button>
-            <button
-              className={`btn ${autoRefresh ? "btn-primary" : "btn-ghost"}`}
+            </VbBtn>
+            <VbBtn
+              kind={autoRefresh ? "primary" : "ghost"}
+              size="sm"
+              icon={autoRefresh ? "pause" : "play"}
               onClick={() => setAutoRefresh((v) => !v)}
             >
-              <Icon name={autoRefresh ? "pause" : "play"} size={11} />
               {autoRefresh ? "Live" : "Paused"}
-            </button>
+            </VbBtn>
           </>
         }
       />
-      <div className="tabs" style={{ paddingLeft: 20 }}>
-        <div className={`tab ${mode === "live" ? "active" : ""}`} onClick={() => setMode("live")}>
-          <Icon name="activity" size={12} /> Recent
-        </div>
-        <div className={`tab ${mode === "search" ? "active" : ""}`} onClick={() => setMode("search")}>
-          <Icon name="search" size={12} /> JSONPath search
-        </div>
-        <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          file logs: <code>data_dir/logs/&lt;date&gt;.jsonl</code>
-        </span>
-      </div>
+      <VbTabs<"live" | "search">
+        tabs={[
+          { id: "live",   label: "Recent",          icon: "activity" },
+          { id: "search", label: "JSONPath search", icon: "search" },
+        ] as VbTab<"live" | "search">[]}
+        active={mode}
+        onChange={setMode}
+        rightSlot={
+          <span style={{ fontSize: 10.5, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
+            file logs: <code style={{
+              fontFamily: "var(--font-mono)", fontSize: "0.92em",
+              padding: "1px 5px", borderRadius: 3,
+              background: "var(--vb-code-bg)", color: "var(--vb-code-fg)",
+            }}>data_dir/logs/&lt;date&gt;.jsonl</code>
+          </span>
+        }
+      />
       {mode === "search" ? (
         <LogSearchPanel />
       ) : (
@@ -221,6 +231,7 @@ export default function Logs() {
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>ms</span>
           </div>
         </div>
+        <div className="vb-pr-table">
         <DataTable
           value={entries}
           lazy
@@ -297,6 +308,7 @@ export default function Logs() {
             )}
           />
         </DataTable>
+        </div>
       </div>
       )}
 

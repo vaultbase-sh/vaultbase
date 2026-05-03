@@ -5,7 +5,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse } from "../api.ts";
-import { Topbar } from "../components/Shell.tsx";
+import {
+  VbBtn, VbField, VbInput, VbPageHeader, VbPill,
+  VbTable, VbEmptyState, type VbTableColumn,
+} from "../components/Vb.tsx";
 import { Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
@@ -55,6 +58,35 @@ function relTime(t: number): string {
   return `${Math.floor(diff/86400)}d ago`;
 }
 
+const DELIVERY_COLUMNS: VbTableColumn<Delivery>[] = [
+  {
+    key: "when", label: "When", width: 110, mono: true,
+    render: (d) => <span style={{ color: "var(--vb-fg-3)" }}>{relTime(d.created_at)}</span>,
+  },
+  {
+    key: "event", label: "Event", flex: 1, mono: true,
+    render: (d) => <span style={{ color: "var(--vb-fg)" }}>{d.event}</span>,
+  },
+  {
+    key: "status", label: "Status", width: 110,
+    render: (d) => {
+      const tone = d.status === "succeeded" ? "success"
+        : d.status === "failed" ? "warning"
+        : d.status === "dead" ? "danger"
+        : "neutral";
+      return <VbPill tone={tone} dot>{d.status}</VbPill>;
+    },
+  },
+  {
+    key: "http", label: "HTTP", width: 80, mono: true, align: "right",
+    render: (d) => <span style={{ color: "var(--vb-fg-3)" }}>{d.response_status ?? "—"}</span>,
+  },
+  {
+    key: "attempt", label: "Attempt", width: 80, mono: true, align: "right",
+    render: (d) => <span style={{ color: "var(--vb-fg-3)" }}>{d.attempt}</span>,
+  },
+];
+
 function decodeArr(json: string): string[] {
   try { const v = JSON.parse(json); return Array.isArray(v) ? v.filter((x) => typeof x === "string") : []; }
   catch { return []; }
@@ -84,12 +116,17 @@ export default function Webhooks() {
 
   return (
     <>
-      <Topbar
-        crumbs={[{ label: "Webhooks" }]}
-        actions={
-          <button className="btn btn-primary" onClick={() => { setCreating(true); setSelectedId(null); }}>
-            <Icon name="plus" size={12} /> New webhook
-          </button>
+      <VbPageHeader
+        breadcrumb={["Webhooks"]}
+        title="Webhooks"
+        sub="Outbound HMAC-signed HTTP delivery on record events. Per-webhook event subscriptions, retry budget, dead-letter trail."
+        right={
+          <VbBtn
+            kind="primary"
+            size="sm"
+            icon="plus"
+            onClick={() => { setCreating(true); setSelectedId(null); }}
+          >New webhook</VbBtn>
         }
       />
       <div className="app-body" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, alignItems: "stretch" }}>
@@ -110,10 +147,11 @@ export default function Webhooks() {
             onDeleted={() => { setSelectedId(null); load(); }}
           />
         ) : (
-          <div className="empty" style={{ padding: 60, textAlign: "center", color: "var(--text-muted)" }}>
-            <Icon name="webhook" size={28} />
-            <div style={{ marginTop: 12, fontSize: 13 }}>Pick a webhook to edit, or create a new one.</div>
-          </div>
+          <VbEmptyState
+            icon="webhook"
+            title="Pick a webhook to edit"
+            body="Or create a new one to start broadcasting record events."
+          />
         )}
       </div>
     </>
@@ -123,35 +161,76 @@ export default function Webhooks() {
 function List({ list, selectedId, onSelect }: { list: Webhook[]; selectedId: string | null; onSelect: (id: string) => void }) {
   if (list.length === 0) {
     return (
-      <div className="empty" style={{ padding: 24, textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>
+      <div style={{
+        padding: 24,
+        background: "var(--vb-bg-2)",
+        border: "1px solid var(--vb-border)",
+        borderRadius: 8,
+        textAlign: "center",
+        fontSize: 12,
+        color: "var(--vb-fg-3)",
+      }}>
         No webhooks yet. Create one →
       </div>
     );
   }
   return (
-    <div className="col" style={{ gap: 4, alignContent: "start" }}>
-      {list.map((w) => {
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      background: "var(--vb-bg-2)",
+      border: "1px solid var(--vb-border)",
+      borderRadius: 8,
+      overflow: "hidden",
+      alignSelf: "start",
+    }}>
+      {list.map((w, i) => {
         const events = decodeArr(w.events);
+        const isSel = selectedId === w.id;
         return (
           <button
             key={w.id}
             onClick={() => onSelect(w.id)}
             style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-              borderRadius: 6, border: "0.5px solid var(--border-default)",
-              background: selectedId === w.id ? "rgba(96,165,250,0.1)" : "var(--bg-panel)",
-              color: "var(--text-primary)", textAlign: "left", cursor: "pointer",
+              appearance: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "11px 14px",
+              border: "none",
+              borderBottom: i === list.length - 1 ? "none" : "1px solid var(--vb-border)",
+              borderLeft: isSel ? "2px solid var(--vb-accent)" : "2px solid transparent",
+              background: isSel ? "var(--vb-accent-soft)" : "transparent",
+              color: "var(--vb-fg)",
+              textAlign: "left",
+              cursor: "pointer",
+              transition: "background 100ms",
             }}
+            onMouseEnter={(e) => { if (!isSel) e.currentTarget.style.background = "var(--vb-bg-3)"; }}
+            onMouseLeave={(e) => { if (!isSel) e.currentTarget.style.background = "transparent"; }}
           >
             <span style={{
-              width: 8, height: 8, borderRadius: 4, flexShrink: 0,
-              background: w.enabled ? "var(--success)" : "var(--text-muted)",
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+              background: w.enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+              boxShadow: w.enabled ? "0 0 0 3px rgba(98,204,156,0.16)" : "none",
             }} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="mono" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {w.name || w.url}
-              </div>
-              <div className="muted" style={{ fontSize: 10, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <div style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                color: "var(--vb-fg)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>{w.name || w.url}</div>
+              <div style={{
+                fontSize: 10.5,
+                color: "var(--vb-fg-3)",
+                marginTop: 2,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}>
                 {events.length} event{events.length === 1 ? "" : "s"} · {w.url}
               </div>
             </div>
@@ -169,6 +248,57 @@ function empty(): Webhook {
     retry_max: 3, retry_backoff: "exponential", retry_delay_ms: 1000, timeout_ms: 30000,
     custom_headers: "{}", created_at: now, updated_at: now,
   };
+}
+
+function Section({
+  title, meta, right, children,
+}: { title: string; meta?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: "var(--vb-bg-2)",
+      border: "1px solid var(--vb-border)",
+      borderRadius: 8,
+      overflow: "hidden",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "12px 16px",
+        borderBottom: "1px solid var(--vb-border)",
+        background: "var(--vb-bg-1)",
+        gap: 12,
+      }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</h3>
+          {meta && (
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>{meta}</span>
+          )}
+        </div>
+        {right && <div style={{ display: "flex", gap: 8 }}>{right}</div>}
+      </div>
+      <div style={{ padding: 16 }}>{children}</div>
+    </div>
+  );
+}
+
+function Hint({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5, marginTop: 4 }}>{children}</div>
+  );
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code style={{
+      fontFamily: "var(--font-mono)",
+      fontSize: "0.86em",
+      padding: "1px 5px",
+      borderRadius: 4,
+      background: "var(--vb-bg-3)",
+      color: "var(--vb-fg)",
+    }}>{children}</code>
+  );
 }
 
 function Editor({
@@ -250,149 +380,125 @@ function Editor({
   const headers = decodeObj(draft.custom_headers);
 
   return (
-    <div className="col" style={{ gap: 16 }}>
-      <div className="settings-section">
-        <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h3>{isNew ? "New webhook" : draft.name || draft.url}</h3>
-            {!isNew && <span className="meta">last updated {new Date(draft.updated_at * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC</span>}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+      <Section
+        title={isNew ? "New webhook" : draft.name || draft.url}
+        meta={!isNew ? `last updated ${new Date(draft.updated_at * 1000).toISOString().slice(0, 19).replace("T", " ")} UTC` : undefined}
+        right={
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Toggle on={draft.enabled === 1} onChange={(v) => patch({ enabled: v ? 1 : 0 })} />
-            <span style={{ fontSize: 12, color: draft.enabled === 1 ? "var(--success)" : "var(--text-muted)" }}>
+            <span style={{ fontSize: 12, color: draft.enabled === 1 ? "var(--vb-status-success)" : "var(--vb-fg-3)" }}>
               {draft.enabled === 1 ? "Enabled" : "Off"}
             </span>
-          </div>
-        </div>
-        <div className="settings-section-body">
-          <div className="row" style={{ gap: 16 }}>
+          </span>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", gap: 16 }}>
             <div style={{ flex: 1 }}>
-              <label className="label">Name</label>
-              <input className="input" value={draft.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Stripe payment events" />
+              <VbField label="Name">
+                <VbInput value={draft.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Stripe payment events" />
+              </VbField>
             </div>
             <div style={{ flex: 2 }}>
-              <label className="label">URL</label>
-              <input className="input mono" value={draft.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://api.example.com/webhooks/vaultbase" />
+              <VbField label="URL">
+                <VbInput mono value={draft.url} onChange={(e) => patch({ url: e.target.value })} placeholder="https://api.example.com/webhooks/vaultbase" />
+              </VbField>
             </div>
           </div>
 
-          <div className="label-block" style={{ marginTop: 14 }}>
-            <label className="label">Events</label>
-            <div className="help">
-              Subscribe to record events: <code>posts.create</code>, <code>posts.*</code>, <code>users.delete</code>.
-              Use <code>*</code> for everything. Custom events fired from hooks (<code>helpers.webhooks.dispatch</code>)
-              also match here.
+          <div>
+            <VbField label="Events" hint={
+              <>Subscribe to record events: <Code>posts.create</Code>, <Code>posts.*</Code>, <Code>users.delete</Code>. Use <Code>*</Code> for everything. Custom events fired from hooks (<Code>helpers.webhooks.dispatch</Code>) also match here.</>
+            }>
+              <div />
+            </VbField>
+            <div style={{ marginTop: 8 }}>
+              <EventEditor events={events} onChange={patchEvents} />
             </div>
           </div>
-          <EventEditor events={events} onChange={patchEvents} />
 
-          <div className="row" style={{ gap: 16, marginTop: 16 }}>
-            <div style={{ flex: 2 }}>
-              <label className="label">HMAC secret</label>
-              <div className="row" style={{ gap: 8 }}>
-                <input className="input mono" value={draft.secret} onChange={(e) => patch({ secret: e.target.value })} placeholder="(auto-generated on save)" />
-                <button className="btn btn-ghost" onClick={regenerateSecret}>Generate</button>
+          <div>
+            <VbField label="HMAC secret" hint={
+              <>Sent as <Code>X-Vaultbase-Signature: sha256=&lt;hmac&gt;</Code>. Receivers verify with <Code>hmac(secret, "&lt;timestamp&gt;.&lt;body&gt;")</Code>.</>
+            }>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <VbInput mono value={draft.secret} onChange={(e) => patch({ secret: e.target.value })} placeholder="(auto-generated on save)" />
+                </div>
+                <VbBtn kind="ghost" size="md" icon="refresh" onClick={regenerateSecret}>Generate</VbBtn>
               </div>
-              <div className="help" style={{ fontSize: 11, marginTop: 4 }}>
-                Sent as <code>X-Vaultbase-Signature: sha256=&lt;hmac&gt;</code>. Receivers verify with{" "}
-                <code>hmac(secret, "&lt;timestamp&gt;.&lt;body&gt;")</code>.
-              </div>
+            </VbField>
+          </div>
+
+          <div>
+            <VbField label="Custom headers" hint="Extra request headers (Authorization, X-API-Key, etc.).">
+              <div />
+            </VbField>
+            <div style={{ marginTop: 8 }}>
+              <HeaderEditor headers={headers} onChange={patchHeaders} />
             </div>
           </div>
 
-          <div className="label-block" style={{ marginTop: 14 }}>
-            <label className="label">Custom headers</label>
-            <div className="help">Extra request headers (Authorization, X-API-Key, etc.).</div>
-          </div>
-          <HeaderEditor headers={headers} onChange={patchHeaders} />
-
-          <div className="row" style={{ gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 120 }}>
-              <label className="label">Retry max</label>
-              <input className="input mono" type="number" min={0} value={draft.retry_max} onChange={(e) => patch({ retry_max: parseInt(e.target.value) || 0 })} />
+              <VbField label="Retry max">
+                <VbInput mono type="number" min={0} value={draft.retry_max} onChange={(e) => patch({ retry_max: parseInt(e.target.value) || 0 })} />
+              </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
-              <label className="label">Retry backoff</label>
-              <Dropdown value={draft.retry_backoff} options={BACKOFF_OPTIONS} onChange={(e) => patch({ retry_backoff: e.value as "exponential" | "fixed" })} style={{ width: "100%" }} />
+              <VbField label="Retry backoff">
+                <Dropdown value={draft.retry_backoff} options={BACKOFF_OPTIONS} onChange={(e) => patch({ retry_backoff: e.value as "exponential" | "fixed" })} style={{ width: "100%", height: 32 }} />
+              </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
-              <label className="label">Retry delay (ms)</label>
-              <input className="input mono" type="number" min={100} value={draft.retry_delay_ms} onChange={(e) => patch({ retry_delay_ms: parseInt(e.target.value) || 1000 })} />
+              <VbField label="Retry delay (ms)">
+                <VbInput mono type="number" min={100} value={draft.retry_delay_ms} onChange={(e) => patch({ retry_delay_ms: parseInt(e.target.value) || 1000 })} />
+              </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
-              <label className="label">Timeout (ms)</label>
-              <input className="input mono" type="number" min={1000} value={draft.timeout_ms} onChange={(e) => patch({ timeout_ms: parseInt(e.target.value) || 30000 })} />
+              <VbField label="Timeout (ms)">
+                <VbInput mono type="number" min={1000} value={draft.timeout_ms} onChange={(e) => patch({ timeout_ms: parseInt(e.target.value) || 30000 })} />
+              </VbField>
             </div>
           </div>
         </div>
-      </div>
+      </Section>
 
       {!isNew && (
-        <div className="settings-section">
-          <div className="settings-section-head" style={{ justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <h3>Recent deliveries</h3>
-              <span className="meta">{deliveries.length} entries · pending → succeeded / failed / dead</span>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-ghost" onClick={loadDeliveries}><Icon name="refresh" size={11} /> Refresh</button>
-              <button className="btn btn-ghost" onClick={fireTest}><Icon name="play" size={11} /> Fire test</button>
-            </div>
-          </div>
-          <div style={{ padding: "0 18px 18px" }}>
-            {deliveries.length === 0 ? (
-              <div className="empty" style={{ padding: 24, textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>
+        <Section
+          title="Recent deliveries"
+          meta={`${deliveries.length} entries · pending → succeeded / failed / dead`}
+          right={
+            <>
+              <VbBtn kind="ghost" size="sm" icon="refresh" onClick={loadDeliveries}>Refresh</VbBtn>
+              <VbBtn kind="ghost" size="sm" icon="play" onClick={fireTest}>Fire test</VbBtn>
+            </>
+          }
+        >
+          <VbTable<Delivery>
+            rows={deliveries}
+            rowKey={(d) => d.id}
+            onRowClick={(d) => setOpenDelivery(d)}
+            columns={DELIVERY_COLUMNS}
+            emptyState={
+              <div style={{ padding: 32, textAlign: "center", fontSize: 12, color: "var(--vb-fg-3)" }}>
                 No deliveries yet.
               </div>
-            ) : (
-              <table style={{ width: "100%", fontSize: 12 }}>
-                <thead>
-                  <tr style={{ textAlign: "left", color: "var(--text-muted)", borderBottom: "0.5px solid var(--border-default)" }}>
-                    <th style={{ padding: "8px 10px" }}>When</th>
-                    <th style={{ padding: "8px 10px" }}>Event</th>
-                    <th style={{ padding: "8px 10px" }}>Status</th>
-                    <th style={{ padding: "8px 10px" }}>HTTP</th>
-                    <th style={{ padding: "8px 10px" }}>Attempt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {deliveries.map((d) => (
-                    <tr
-                      key={d.id}
-                      onClick={() => setOpenDelivery(d)}
-                      style={{ cursor: "pointer", borderBottom: "0.5px solid rgba(255,255,255,0.04)" }}
-                    >
-                      <td style={{ padding: "8px 10px" }} className="mono muted">{relTime(d.created_at)}</td>
-                      <td style={{ padding: "8px 10px" }} className="mono" >{d.event}</td>
-                      <td style={{ padding: "8px 10px" }}>
-                        <span className={`badge ${
-                          d.status === "succeeded" ? "success"
-                          : d.status === "failed"  ? "warning"
-                          : d.status === "dead"    ? "danger" : "info"
-                        }`}>{d.status}</span>
-                      </td>
-                      <td style={{ padding: "8px 10px" }} className="mono muted">{d.response_status ?? "—"}</td>
-                      <td style={{ padding: "8px 10px" }} className="mono muted">{d.attempt}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
+            }
+          />
+        </Section>
       )}
 
-      <div className="row" style={{ gap: 8, justifyContent: "space-between" }}>
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
         {!isNew && onDeleted ? (
-          <button className="btn" style={{ borderColor: "var(--danger)", color: "var(--danger)" }} onClick={remove}>
-            <Icon name="trash" size={12} /> Delete webhook
-          </button>
+          <VbBtn kind="danger" size="md" icon="trash" onClick={remove}>Delete webhook</VbBtn>
         ) : <span />}
         <div style={{ display: "flex", gap: 8 }}>
-          {isNew && onCancel && <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>}
-          <button className="btn btn-primary" onClick={save} disabled={saving || !draft.url}>
+          {isNew && onCancel && <VbBtn kind="ghost" size="md" onClick={onCancel}>Cancel</VbBtn>}
+          <VbBtn kind="primary" size="md" icon="check" onClick={save} disabled={saving || !draft.url}>
             {saving ? "Saving…" : isNew ? "Create webhook" : "Save changes"}
-          </button>
+          </VbBtn>
         </div>
       </div>
 
@@ -415,28 +521,43 @@ function EventEditor({ events, onChange }: { events: string[]; onChange: (e: str
   function remove(i: number) { onChange(events.filter((_, idx) => idx !== i)); }
   return (
     <>
-      <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-        {events.map((e, i) => (
-          <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 8px", borderRadius: 4, background: "rgba(96,165,250,0.1)", color: "var(--accent-light)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-            {e}
-            <button onClick={() => remove(i)} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, lineHeight: 1 }}>
-              <Icon name="x" size={10} />
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="row" style={{ gap: 6 }}>
-        <input
-          className="input mono"
-          style={{ flex: 1 }}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
-          placeholder="posts.create — press Enter to add"
-        />
-        <button className="btn btn-ghost" onClick={add} disabled={!draft.trim()}>
-          <Icon name="plus" size={11} /> Add
-        </button>
+      {events.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {events.map((e, i) => (
+            <span key={i} style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 8px",
+              borderRadius: 4,
+              background: "var(--vb-accent-soft)",
+              color: "var(--vb-accent)",
+              fontSize: 11,
+              fontFamily: "var(--font-mono)",
+            }}>
+              {e}
+              <button
+                onClick={() => remove(i)}
+                style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, lineHeight: 1 }}
+                title="Remove event"
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1 }}>
+          <VbInput
+            mono
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+            placeholder="posts.create — press Enter to add"
+          />
+        </div>
+        <VbBtn kind="ghost" size="md" icon="plus" onClick={add} disabled={!draft.trim()}>Add</VbBtn>
       </div>
     </>
   );
@@ -461,100 +582,174 @@ function HeaderEditor({ headers, onChange }: { headers: Record<string, string>; 
   return (
     <>
       {entries.length === 0 ? (
-        <div className="muted" style={{ fontSize: 12 }}>No custom headers — add one below.</div>
+        <Hint>No custom headers — add one below.</Hint>
       ) : entries.map(([k, v], i) => (
-        <div key={i} className="row" style={{ gap: 6, marginBottom: 6 }}>
-          <input className="input mono" style={{ flex: 1 }} value={k} onChange={(e) => update(i, e.target.value, v)} />
-          <input className="input mono" style={{ flex: 2 }} value={v} onChange={(e) => update(i, k, e.target.value)} placeholder="value" />
-          <button className="btn-icon danger" onClick={() => remove(i)}><Icon name="x" size={11} /></button>
+        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
+          <div style={{ flex: 1 }}>
+            <VbInput mono value={k} onChange={(e) => update(i, e.target.value, v)} placeholder="X-Header-Name" />
+          </div>
+          <div style={{ flex: 2 }}>
+            <VbInput mono value={v} onChange={(e) => update(i, k, e.target.value)} placeholder="value" />
+          </div>
+          <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(i)} title="Remove header" />
         </div>
       ))}
-      <button className="btn btn-ghost" onClick={add} style={{ marginTop: 6 }}>
-        <Icon name="plus" size={11} /> Add header
-      </button>
+      <div style={{ marginTop: 8 }}>
+        <VbBtn kind="ghost" size="sm" icon="plus" onClick={add}>Add header</VbBtn>
+      </div>
     </>
   );
 }
 
 function DeliveryDetail({ delivery, onClose }: { delivery: Delivery; onClose: () => void }) {
+  const tone = delivery.status === "succeeded" ? "success"
+    : delivery.status === "failed"  ? "warning"
+    : delivery.status === "dead"    ? "danger" : "neutral";
+
   return (
     <div
       onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 100, display: "flex", justifyContent: "flex-end" }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100, display: "flex", justifyContent: "flex-end" }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 520, maxWidth: "100vw", height: "100vh", background: "var(--bg-app)", borderLeft: "0.5px solid var(--border-default)", padding: 24, overflow: "auto" }}
+        style={{
+          width: 540,
+          maxWidth: "100vw",
+          height: "100vh",
+          background: "var(--vb-bg-2)",
+          borderLeft: "1px solid var(--vb-border)",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: "-8px 0 40px rgba(0,0,0,0.4)",
+        }}
       >
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 16 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: 14 }}>Delivery</h3>
-            <div className="mono muted" style={{ fontSize: 11, marginTop: 4 }}>{delivery.id}</div>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--vb-border)",
+          background: "var(--vb-bg-1)",
+          gap: 12,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--vb-fg)" }}>Delivery</div>
+            <div style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--vb-fg-3)",
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>{delivery.id}</div>
           </div>
-          <button className="btn-icon" onClick={onClose}><Icon name="x" size={12} /></button>
+          <VbBtn kind="ghost" size="sm" icon="x" onClick={onClose} title="Close" />
         </div>
 
-        <div className="row" style={{ gap: 16, marginBottom: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Event</label>
-            <div className="mono" style={{ fontSize: 13 }}>{delivery.event}</div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <label className="label">Status</label>
-            <span className={`badge ${
-              delivery.status === "succeeded" ? "success"
-              : delivery.status === "failed"  ? "warning"
-              : delivery.status === "dead"    ? "danger" : "info"
-            }`}>{delivery.status}</span>
-          </div>
-        </div>
-
-        <div className="row" style={{ gap: 16, marginBottom: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label className="label">Attempt</label>
-            <div className="mono" style={{ fontSize: 13 }}>{delivery.attempt}</div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <label className="label">HTTP</label>
-            <div className="mono" style={{ fontSize: 13 }}>{delivery.response_status ?? "—"}</div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <label className="label">Created</label>
-          <div className="mono muted" style={{ fontSize: 12 }}>{new Date(delivery.created_at * 1000).toISOString()}</div>
-        </div>
-        {delivery.delivered_at && (
-          <div style={{ marginBottom: 16 }}>
-            <label className="label">Finished</label>
-            <div className="mono muted" style={{ fontSize: 12 }}>{new Date(delivery.delivered_at * 1000).toISOString()}</div>
-          </div>
-        )}
-
-        <label className="label">Payload</label>
-        <pre className="code-block" style={{ margin: 0, marginBottom: 16, maxHeight: 220, overflow: "auto", fontSize: 11 }}>
-          {tryFormat(delivery.payload)}
-        </pre>
-
-        {delivery.response_body && (
-          <>
-            <label className="label">Response body</label>
-            <pre className="code-block" style={{ margin: 0, marginBottom: 16, maxHeight: 180, overflow: "auto", fontSize: 11 }}>
-              {tryFormat(delivery.response_body)}
-            </pre>
-          </>
-        )}
-
-        {delivery.error && (
-          <>
-            <label className="label">Error</label>
-            <div style={{ padding: "8px 10px", borderRadius: 4, background: "rgba(248,113,113,0.1)", color: "var(--danger)", fontSize: 12 }}>
-              {delivery.error}
+        <div style={{ flex: 1, overflow: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", gap: 16 }}>
+            <div style={{ flex: 1 }}>
+              <KvLabel>Event</KvLabel>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--vb-fg)" }}>{delivery.event}</div>
             </div>
-          </>
-        )}
+            <div style={{ flex: 1 }}>
+              <KvLabel>Status</KvLabel>
+              <VbPill tone={tone} dot>{delivery.status}</VbPill>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 16 }}>
+            <div style={{ flex: 1 }}>
+              <KvLabel>Attempt</KvLabel>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--vb-fg)" }}>{delivery.attempt}</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <KvLabel>HTTP</KvLabel>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--vb-fg)" }}>{delivery.response_status ?? "—"}</div>
+            </div>
+          </div>
+
+          <div>
+            <KvLabel>Created</KvLabel>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--vb-fg-3)" }}>
+              {new Date(delivery.created_at * 1000).toISOString()}
+            </div>
+          </div>
+          {delivery.delivered_at && (
+            <div>
+              <KvLabel>Finished</KvLabel>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--vb-fg-3)" }}>
+                {new Date(delivery.delivered_at * 1000).toISOString()}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <KvLabel>Payload</KvLabel>
+            <pre style={{
+              background: "var(--vb-bg-1)",
+              border: "1px solid var(--vb-border)",
+              color: "var(--vb-fg)",
+              padding: 12,
+              borderRadius: 6,
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              maxHeight: 220,
+              overflow: "auto",
+              margin: 0,
+            }}>{tryFormat(delivery.payload)}</pre>
+          </div>
+
+          {delivery.response_body && (
+            <div>
+              <KvLabel>Response body</KvLabel>
+              <pre style={{
+                background: "var(--vb-bg-1)",
+                border: "1px solid var(--vb-border)",
+                color: "var(--vb-fg)",
+                padding: 12,
+                borderRadius: 6,
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                maxHeight: 180,
+                overflow: "auto",
+                margin: 0,
+              }}>{tryFormat(delivery.response_body)}</pre>
+            </div>
+          )}
+
+          {delivery.error && (
+            <div>
+              <KvLabel>Error</KvLabel>
+              <div style={{
+                padding: "10px 12px",
+                borderRadius: 6,
+                background: "var(--vb-status-danger-bg)",
+                border: "1px solid rgba(232,90,79,0.3)",
+                color: "var(--vb-status-danger)",
+                fontSize: 12,
+              }}>{delivery.error}</div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function KvLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      fontSize: 10.5,
+      fontWeight: 600,
+      letterSpacing: 1.2,
+      textTransform: "uppercase",
+      color: "var(--vb-fg-3)",
+      fontFamily: "var(--font-mono)",
+      marginBottom: 6,
+    }}>{children}</div>
   );
 }
 
