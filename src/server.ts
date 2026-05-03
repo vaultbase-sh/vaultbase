@@ -305,9 +305,17 @@ export function createServer(config: Config) {
           return;
         }
         const topics = msg.topics ?? msg.collections;
-        if (!Array.isArray(topics)) return;
-        if (msg.type === "subscribe") subscribe(ws, topics);
-        else if (msg.type === "unsubscribe") unsubscribe(ws, topics);
+        if (!Array.isArray(topics)) {
+          ws.send(JSON.stringify({ type: "error", code: "invalid_topics", message: "topics must be a string array" }));
+          return;
+        }
+        if (msg.type === "subscribe") {
+          const accepted = subscribe(ws, topics);
+          ws.send(JSON.stringify({ type: "subscribed", topics: accepted }));
+        } else if (msg.type === "unsubscribe") {
+          const removed = unsubscribe(ws, topics);
+          ws.send(JSON.stringify({ type: "unsubscribed", topics: removed }));
+        }
       },
       close(ws) {
         disconnectAll(ws);

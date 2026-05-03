@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "bun:test";
-import { subscribe, unsubscribe, disconnectAll, broadcast, _reset } from "../realtime/manager.ts";
+import { subscribe, unsubscribe, disconnectAll, broadcast, normalizeTopic, _reset } from "../realtime/manager.ts";
 
 interface MockWS {
   sent: string[];
@@ -117,5 +117,57 @@ describe("RealtimeManager", () => {
     broadcast("posts", { type: "create", collection: "posts", record: { id: "a", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
     broadcast("posts", { type: "create", collection: "posts", record: { id: "b", collectionId: "c", collectionName: "posts", created: 0, updated: 0 } });
     expect(ws.sent).toHaveLength(2);
+  });
+
+  // ── topic normalisation ──────────────────────────────────────────────
+
+  describe("normalizeTopic", () => {
+    it("strips .* and /* trailing wildcard", () => {
+      expect(normalizeTopic("posts.*")).toBe("posts");
+      expect(normalizeTopic("posts/*")).toBe("posts");
+    });
+    it("preserves canonical forms", () => {
+      expect(normalizeTopic("posts")).toBe("posts");
+      expect(normalizeTopic("posts/abc123")).toBe("posts/abc123");
+      expect(normalizeTopic("*")).toBe("*");
+    });
+    it("rejects empty / whitespace-only", () => {
+      expect(normalizeTopic("")).toBeNull();
+      expect(normalizeTopic("   ")).toBeNull();
+    });
+    it("trims whitespace", () => {
+      expect(normalizeTopic("  posts  ")).toBe("posts");
+    });
+  });
+
+  it("subscribe then unsubscribe with .* wildcard form removes the same key", () => {
+    const ws = mockWs();
+    // Canonical subscribe.
+    subscribe(ws, ["posts"]);
+    // Unsub with the wildcard variant — should still hit `posts`.
+    const removed = unsubscribe(ws, ["posts.*"]);
+    expect(removed).toEqual(["posts"]);
+    broadcast("posts", { type: "delete", collection: "posts", id: "1" });
+    expect(ws.sent).toHaveLength(0);
+  });
+
+  it("subscribe with .* form is reachable via canonical broadcast", () => {
+    const ws = mockWs();
+    subscribe(ws, ["posts.*"]);
+    broadcast("posts", { type: "delete", collection: "posts", id: "1" });
+    expect(ws.sent).toHaveLength(1);
+  });
+
+  it("subscribe returns the canonical accepted topics", () => {
+    const ws = mockWs();
+    const accepted = subscribe(ws, ["posts.*", "users/*", "*", "  ", ""]);
+    expect(accepted).toEqual(["posts", "users", "*"]);
+  });
+
+  it("unsubscribe returns only the topics that actually had this socket", () => {
+    const ws = mockWs();
+    subscribe(ws, ["posts"]);
+    const removed = unsubscribe(ws, ["posts.*", "users.*"]);
+    expect(removed).toEqual(["posts"]);
   });
 });

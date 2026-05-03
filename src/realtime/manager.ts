@@ -56,18 +56,53 @@ export function getWSAuth(ws: WSLike): WSAuth | undefined {
   return wsAuth.get(ws);
 }
 
-export function subscribe(ws: WSLike, topics: string[]): void {
-  for (const t of topics) {
+/**
+ * Canonicalise a topic string. The internal store keys are:
+ *
+ *   <collection>            collection-level
+ *   <collection>/<id>       single-record
+ *   *                       global wildcard
+ *
+ * For ergonomic + PB-compat reasons we accept these synonyms:
+ *
+ *   <collection>.*          → <collection>     (dotted-wildcard)
+ *   <collection>/*          → <collection>     (slashed-wildcard)
+ *   <collection>            → <collection>     (no-op)
+ *
+ * Returns the canonical form, or `null` if the topic is empty/malformed.
+ * Symmetric — used by both subscribe + unsubscribe so the two halves
+ * always agree on the storage key.
+ */
+export function normalizeTopic(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.trim();
+  if (!t) return null;
+  if (t === "*") return "*";
+  if (t.endsWith(".*")) return t.slice(0, -2) || null;
+  if (t.endsWith("/*")) return t.slice(0, -2) || null;
+  return t;
+}
+
+export function subscribe(ws: WSLike, topics: string[]): string[] {
+  const accepted: string[] = [];
+  for (const raw of topics) {
+    const t = normalizeTopic(raw);
     if (!t) continue;
     if (!subs.has(t)) subs.set(t, new Set());
     subs.get(t)!.add(ws);
+    accepted.push(t);
   }
+  return accepted;
 }
 
-export function unsubscribe(ws: WSLike, topics: string[]): void {
-  for (const t of topics) {
-    subs.get(t)?.delete(ws);
+export function unsubscribe(ws: WSLike, topics: string[]): string[] {
+  const removed: string[] = [];
+  for (const raw of topics) {
+    const t = normalizeTopic(raw);
+    if (!t) continue;
+    if (subs.get(t)?.delete(ws)) removed.push(t);
   }
+  return removed;
 }
 
 export function disconnectAll(ws: WSLike): void {
