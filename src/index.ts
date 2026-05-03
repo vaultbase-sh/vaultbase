@@ -167,6 +167,20 @@ async function main() {
     return;
   }
 
+  // `vaultbase update` — self-update. Pulls the latest signed release for
+  // the running platform, verifies SHA-256 + cosign sig, atomically
+  // replaces the binary. Skips server boot.
+  if (process.argv[2] === "update") {
+    const { runUpdate } = await import("./scripts/update.ts");
+    try {
+      await runUpdate(process.argv.slice(3));
+      process.exit(0);
+    } catch (e) {
+      process.stderr.write(`vaultbase update: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(2);
+    }
+  }
+
   // `vaultbase backup --to <dest>` — atomic SQLite snapshot + push.
   // Skips server boot entirely so cron / one-shot ops can run alongside
   // a live `vaultbase` daemon (VACUUM INTO is concurrent-safe).
