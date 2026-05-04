@@ -183,6 +183,25 @@ async function main() {
     }
   }
 
+  // `vaultbase doctor` — pre-flight checks for the v0.11 auth-collection
+  // migration. Read-only DB inspection; reports blockers + warnings and
+  // exits non-zero on blockers so CI / scripts can guard.
+  if (process.argv[2] === "doctor") {
+    const config = await loadConfig();
+    const { runDoctorCli } = await import("./scripts/doctor.ts");
+    const code = runDoctorCli(process.argv.slice(3), config.dbPath);
+    process.exit(code);
+  }
+
+  // `vaultbase wipe` — hard-reset the install. Dry-run by default;
+  // refuses on production signals unless `--force`. See scripts/wipe.ts.
+  if (process.argv[2] === "wipe") {
+    const config = await loadConfig();
+    const { runWipeCli } = await import("./scripts/wipe.ts");
+    const code = runWipeCli(process.argv.slice(3), config.dataDir);
+    process.exit(code);
+  }
+
   // `vaultbase token <subcmd>` — local API-token management. Reads + writes
   // the DB directly, bypassing HTTP. Skips server boot.
   if (process.argv[2] === "token") {

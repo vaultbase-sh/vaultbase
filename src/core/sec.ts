@@ -1,7 +1,7 @@
 import * as jose from "jose";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
-import { admin, apiTokens, tokenRevocations, users } from "../db/schema.ts";
+import { admin, apiTokens, tokenRevocations } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 
 /**
@@ -158,9 +158,23 @@ export async function verifyAuthToken(
         if (!a) return null;
         if (typeof ctx.iat === "number" && a.password_reset_at > ctx.iat) return null;
       } else {
-        const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
-        const u = rows[0];
+        // v0.11: user-token recheck routes to `vb_<col>` via the JWT
+        // `collection` claim. Tokens minted before v0.11 lack the claim
+        // and now hard-fail — users re-login on upgrade. Documented.
+        const collectionName = typeof payload["collection"] === "string"
+          ? payload["collection"] : null;
+        if (!collectionName) return null;
+        const { getCollection } = await import("./collections.ts");
+        const col = await getCollection(collectionName);
+        if (!col) return null;
+        const { findUserById } = await import("./users-table.ts");
+        const u = findUserById(col, id);
         if (!u) return null;
+        // password_reset_at on per-collection table — bumping it (via
+        // force-logout-all) invalidates this token.
+        if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at > ctx.iat) {
+          return null;
+        }
       }
     }
 

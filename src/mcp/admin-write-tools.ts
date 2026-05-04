@@ -556,7 +556,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     requiredScope: "mcp:sql",
     definition: {
       name: "vaultbase.run_sql",
-      description: "Run a raw SQL query against the live SQLite DB. Read-only by default — write/DDL queries require `allow_write: true` and tear through every safety net (RBAC, validation, hooks, audit). Avoid unless absolutely necessary; use the typed tools instead. Bound result set: 100 rows.",
+      description: "Run a raw SQL query against the live SQLite DB. Read-only by default — write/DDL queries require `allow_write: true` and tear through every safety net (RBAC, validation, hooks, audit). Avoid unless absolutely necessary; use the typed tools instead. Bound result set: 100 rows.\n\nSchema convention: every collection (base + auth) has a `vb_<name>` table. Auth collections additionally have inline columns for `email`, `password_hash`, `email_verified`, `totp_secret`, `totp_enabled`, `is_anonymous`, `password_reset_at`. Inserting auth users via raw SQL bypasses password hashing + email-verification flows — prefer `POST /api/v1/auth/<col>/register` (or the existing typed CRUD path) for login-capable users.",
       inputSchema: {
         type: "object",
         properties: {

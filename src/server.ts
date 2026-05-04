@@ -13,7 +13,6 @@ import { makeFilesPlugin, pruneFileTokenUses } from "./api/files.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
 import { makeAdminsPlugin } from "./api/admins.ts";
-import { makeAuthUsersPlugin } from "./api/auth-users.ts";
 import { makeBackupPlugin } from "./api/backup.ts";
 import { makeRateLimitPlugin } from "./api/ratelimit.ts";
 import { makeIndexesPlugin } from "./api/indexes.ts";
@@ -198,7 +197,6 @@ export function createServer(config: Config) {
       .use(makeLogsPlugin(config.jwtSecret))
       .use(makeAuthPlugin(config.jwtSecret))
       .use(makeAdminsPlugin(config.jwtSecret))
-      .use(makeAuthUsersPlugin(config.jwtSecret))
       .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
       .use(makeIndexesPlugin(config.jwtSecret))
       .use(makeSettingsPlugin(config.jwtSecret))

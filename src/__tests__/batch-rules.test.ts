@@ -31,24 +31,13 @@ afterEach(() => {
 });
 
 async function signUser(id: string, email: string): Promise<string> {
-  // Seed the principal so verifyAuthToken's recheckPrincipal pass succeeds.
-  const now = Math.floor(Date.now() / 1000);
-  try {
-    await getDb().insert(usersTable).values({
-      id,
-      collection_id: "test",
-      email,
-      password_hash: "x",
-      data: "{}",
-      created_at: now,
-      updated_at: now,
-    });
-  } catch { /* already inserted */ }
-  return await new jose.SignJWT({ id, email, jti: crypto.randomUUID() })
+  const { seedAuthUser } = await import("./_helpers.ts");
+  try { await seedAuthUser({ collection: "users", id, email }); } catch { /* dup */ }
+  return await new jose.SignJWT({ id, email, collection: "users", jti: crypto.randomUUID() })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setAudience("user")
-    .setIssuedAt(now)
+    .setIssuedAt(Math.floor(Date.now() / 1000))
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(SECRET));
 }

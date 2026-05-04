@@ -41,22 +41,10 @@ afterEach(() => {
 });
 
 async function signUser(id: string, email: string): Promise<string> {
-  const { users } = await import("../db/schema.ts");
-  const now = Math.floor(Date.now() / 1000);
-  try {
-    await getDb().insert(users).values({
-      id, collection_id: "test", email, password_hash: "x",
-      data: "{}", created_at: now, updated_at: now,
-    });
-  } catch { /* dup */ }
-  return await new jose.SignJWT({ id, email })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuer("vaultbase")
-    .setAudience("user")
-    .setIssuedAt(now)
-    .setExpirationTime("1h")
-    .setJti(crypto.randomUUID())
-    .sign(new TextEncoder().encode(SECRET));
+  const { seedAuthUser, signUserJwt } = await import("./_helpers.ts");
+  // Idempotent — duplicate seed swallowed.
+  try { await seedAuthUser({ collection: "users", id, email }); } catch { /* dup */ }
+  return signUserJwt(id, email, "users", SECRET);
 }
 
 async function signAdmin(id: string): Promise<string> {

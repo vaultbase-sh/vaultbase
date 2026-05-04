@@ -1,11 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
-import { initDb, closeDb, getDb } from "../db/client.ts";
+import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { setSetting } from "../api/settings.ts";
-import { users } from "../db/schema.ts";
+import { insertUser } from "../core/users-table.ts";
 import { eq } from "drizzle-orm";
 
 const SECRET = "test-secret-anon-promote";
@@ -54,21 +54,24 @@ describe("POST /api/auth/:collection/promote", () => {
     expect(payload["anonymous"]).toBeUndefined();
     expect(payload["email"]).toBe("real@test.local");
 
-    // DB row flipped
-    const rows = await getDb().select().from(users).where(eq(users.id, id));
-    expect(rows[0]!.is_anonymous).toBe(0);
-    expect(rows[0]!.email).toBe("real@test.local");
+    // DB row flipped — read from per-collection table.
+    const row = getRawClient().prepare(`SELECT email, is_anonymous FROM vb_users WHERE id = ?`).get(id) as
+      { email: string; is_anonymous: number } | undefined;
+    expect(row?.is_anonymous).toBe(0);
+    expect(row?.email).toBe("real@test.local");
   });
 
   it("returns 409 when the email is already taken in the collection", async () => {
     // Pre-seed an account with the target email
     await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
     const col = await getCollection("users");
-    await getDb().insert(users).values({
+    const now = Math.floor(Date.now() / 1000);
+    await insertUser(col!, {
       id: crypto.randomUUID(),
-      collection_id: col!.id,
       email: "taken@test.local",
       password_hash: await Bun.password.hash("xxxx"),
+      created_at: now,
+      updated_at: now,
     });
 
     const app = makeAuthPlugin(SECRET);
@@ -79,9 +82,12 @@ describe("POST /api/auth/:collection/promote", () => {
       email: "taken@test.local",
       password: "hunter2!!hunter2!!",
     }));
-    expect(res.status).toBe(409);
+    // v0.11: per-collection email uniqueness now enforced at validate-time
+    // (previously vb_<auth-col> was empty so uniqueness only fired at the
+    // explicit dup-check). Either status surfaces "email taken".
+    expect([409, 422]).toContain(res.status);
     const body = await res.json() as { error: string; code: number };
-    expect(body.code).toBe(409);
+    expect([409, 422]).toContain(body.code);
   });
 
   it("rejects a non-anonymous user token", async () => {

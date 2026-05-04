@@ -229,6 +229,48 @@ export function dropUserTable(collectionName: string): void {
   rawClient().exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
+/**
+ * Auth-only columns added to every auth collection's `vb_<name>` table —
+ * uniform across collections, managed by the auth flow. Defined once here so
+ * the schema migration + collection-creation paths emit identical DDL.
+ *
+ * v0.11 promotes auth users to per-collection real tables (was a shared
+ * `vaultbase_users` keyed by collection_id). These columns are the auth
+ * surface that flows into every `vb_<auth-col>`.
+ */
+export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<{ name: string; sql: string }> = [
+  { name: "email",             sql: "TEXT" },
+  { name: "password_hash",     sql: "TEXT" },
+  { name: "email_verified",    sql: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "totp_secret",       sql: "TEXT" },
+  { name: "totp_enabled",      sql: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "is_anonymous",      sql: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "password_reset_at", sql: "INTEGER NOT NULL DEFAULT 0" },
+];
+
+/**
+ * Idempotent: ensure every auth column exists on `vb_<name>`. ALTER TABLE
+ * ADD COLUMN throws if the column already exists; we swallow that.
+ *
+ * Called from createCollection (for fresh auth collections) and from the
+ * boot migration (for upgraded installs). Symmetric on both paths.
+ */
+export function ensureAuthColumns(collectionName: string): void {
+  assertSqlIdent(collectionName, "collection");
+  const tname = quoteIdent(userTableName(collectionName));
+  const client = rawClient();
+  for (const c of AUTH_SYSTEM_COLUMNS) {
+    try {
+      client.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
+    } catch { /* column exists — idempotent */ }
+  }
+  // Unique email index — anonymous users get a synthetic uniqe email so the
+  // unconditional UNIQUE works without a partial-index workaround.
+  try {
+    client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
+  } catch { /* may already exist or fail on duplicates pre-migration */ }
+}
+
 // ── View collections ────────────────────────────────────────────────────────
 
 /**
@@ -528,6 +570,12 @@ export async function createCollection(
   } else {
     // Per-collection real table excludes implicit fields — those live on vaultbase_users.
     createUserTable(row.name, fields.filter((f) => !f.implicit));
+    if (type === "auth") {
+      // v0.11+: auth columns (email/password_hash/...) live on `vb_<name>`
+      // alongside the per-collection custom fields. Existing v0.10 installs
+      // get the same shape via the boot migration in db/migrate.ts.
+      ensureAuthColumns(row.name);
+    }
   }
 
   const created = await db.select().from(collections).where(eq(collections.id, id)).limit(1);

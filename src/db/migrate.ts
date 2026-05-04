@@ -28,10 +28,15 @@ export async function runMigrations() {
   // Drop legacy single-table records (replaced by per-collection tables)
   client.exec(`DROP TABLE IF EXISTS vaultbase_records`);
 
+  // v0.11: `vaultbase_users` is no longer the source of truth for auth
+  // users — each auth collection has its own `vb_<name>` table with auth
+  // columns inline. The CREATE block stays here only so v0.10 → v0.11
+  // upgrades have a table to read from in `v0_11PrepAuthTables`. Once
+  // every row is mirrored, `v0_11FinalizeAuthMigration` drops it.
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_users (
       id TEXT PRIMARY KEY,
-      collection_id TEXT NOT NULL REFERENCES vaultbase_collections(id) ON DELETE CASCADE,
+      collection_id TEXT NOT NULL,
       email TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       email_verified INTEGER NOT NULL DEFAULT 0,
@@ -43,10 +48,6 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
-  try { client.exec(`ALTER TABLE vaultbase_users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_users ADD COLUMN totp_secret TEXT`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_users ADD COLUMN is_anonymous INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_auth_tokens (
@@ -392,4 +393,156 @@ export async function runMigrations() {
     )
   `);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_sql_queries_owner ON vaultbase_sql_queries(owner_admin_id, updated_at DESC)`);
+
+  // ── v0.11: auth users moved to per-collection `vb_<auth-col>` tables ──
+  //
+  // Old model: every auth user lived in shared `vaultbase_users` keyed by
+  // `collection_id`. New model: each auth collection gets a real
+  // `vb_<name>` table with auth columns inline. Migration: ALTER+COPY
+  // first run (idempotent), then DROP `vaultbase_users` once every row
+  // has a home in its per-collection table.
+  v0_11PrepAuthTables(client);
+  v0_11FinalizeAuthMigration(client);
+}
+
+/**
+ * Drop `vaultbase_users` once every row has been mirrored to a
+ * `vb_<auth-col>` table. Runs after `v0_11PrepAuthTables`. Idempotent —
+ * if the table is already gone the function returns immediately.
+ *
+ * Safety: refuses to drop if any row in `vaultbase_users` is missing
+ * from the corresponding per-collection table. Operator must run
+ * `vaultbase doctor` and reconcile before the next boot.
+ */
+function v0_11FinalizeAuthMigration(client: Database): void {
+  const exists = client.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='vaultbase_users'`,
+  ).get() as { name: string } | undefined;
+  if (!exists) return;
+
+  const total = (client.prepare(`SELECT count(*) AS n FROM vaultbase_users`).get() as { n: number }).n;
+  if (total === 0) {
+    client.exec(`DROP TABLE vaultbase_users`);
+    return;
+  }
+
+  // Verify every row was copied. If any are missing, leave the legacy
+  // table in place so the operator can re-run migration / fix data.
+  const authCols = client.prepare(
+    `SELECT id, name FROM vaultbase_collections WHERE type='auth'`,
+  ).all() as Array<{ id: string; name: string }>;
+  let copied = 0;
+  for (const c of authCols) {
+    const tbl = `vb_${c.name}`;
+    const quoted = `"${tbl.replace(/"/g, '""')}"`;
+    try {
+      const matched = (client.prepare(
+        `SELECT count(u.id) AS n FROM vaultbase_users u
+         JOIN ${quoted} v ON v.id = u.id
+         WHERE u.collection_id = ?`,
+      ).get(c.id) as { n: number }).n;
+      copied += matched;
+    } catch { /* per-table query failed — be conservative, don't drop */ return; }
+  }
+  if (copied >= total) {
+    client.exec(`DROP TABLE vaultbase_users`);
+  } else {
+    process.stderr.write(
+      `[vaultbase] WARN: vaultbase_users still has ${total - copied} row(s) not yet ` +
+      `mirrored to per-collection vb_<auth-col> tables. Run \`vaultbase doctor\` and ` +
+      `reconcile before the next boot — the legacy table will not be dropped until clean.\n`,
+    );
+  }
+}
+
+/** Per-auth-collection table prep. Exported for the doctor CLI to dry-run. */
+function v0_11PrepAuthTables(client: Database): void {
+  // Skip entirely if vaultbase_users doesn't exist yet (fresh install).
+  const usersTableExists = client.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='vaultbase_users'`,
+  ).get() as { name: string } | undefined;
+  if (!usersTableExists) return;
+
+  const authCols = client.prepare(
+    `SELECT id, name, fields FROM vaultbase_collections WHERE type='auth'`,
+  ).all() as Array<{ id: string; name: string; fields: string }>;
+
+  for (const col of authCols) {
+    const tbl = `vb_${col.name}`;
+    const quoted = `"${tbl.replace(/"/g, '""')}"`;
+
+    // 1. ALTER ADD auth columns (idempotent).
+    const authColumns = [
+      ["email",             "TEXT"],
+      ["password_hash",     "TEXT"],
+      ["email_verified",    "INTEGER NOT NULL DEFAULT 0"],
+      ["totp_secret",       "TEXT"],
+      ["totp_enabled",      "INTEGER NOT NULL DEFAULT 0"],
+      ["is_anonymous",      "INTEGER NOT NULL DEFAULT 0"],
+      ["password_reset_at", "INTEGER NOT NULL DEFAULT 0"],
+    ];
+    for (const [name, sql] of authColumns) {
+      try { client.exec(`ALTER TABLE ${quoted} ADD COLUMN "${name}" ${sql}`); }
+      catch { /* column exists */ }
+    }
+
+    // 2. ALTER ADD custom-field columns from the collection's `fields` JSON
+    // (skip implicit + autodate). Idempotent.
+    let fields: Array<{ name?: unknown; type?: unknown; implicit?: unknown; system?: unknown }> = [];
+    try { fields = JSON.parse(col.fields || "[]") as typeof fields; } catch { /* skip */ }
+    for (const f of fields) {
+      if (typeof f.name !== "string") continue;
+      if (f.implicit || f.system || f.type === "autodate") continue;
+      // SQL ident safety: collections.ts validated these at create time.
+      const colName = `"${f.name.replace(/"/g, '""')}"`;
+      let sqlType: string;
+      switch (f.type) {
+        case "number":   sqlType = "REAL"; break;
+        case "bool":     sqlType = "INTEGER"; break;
+        case "date":     sqlType = "INTEGER"; break;
+        default:         sqlType = "TEXT"; break;
+      }
+      try { client.exec(`ALTER TABLE ${quoted} ADD COLUMN ${colName} ${sqlType}`); }
+      catch { /* column exists */ }
+    }
+
+    // 3. Copy rows from vaultbase_users into vb_<name>. INSERT OR IGNORE so
+    // re-running on already-migrated installs is a no-op. The custom-column
+    // values are pulled from the row's `data` JSON via json_extract.
+    const customColNames = (fields
+      .filter((f) => typeof f.name === "string" && !f.implicit && !f.system && f.type !== "autodate")
+      .map((f) => f.name as string));
+
+    const insertCols = [
+      "id", "email", "password_hash", "email_verified", "totp_secret",
+      "totp_enabled", "is_anonymous", "created_at", "updated_at",
+      ...customColNames,
+    ];
+    const insertColsList = insertCols.map((c) => `"${c.replace(/"/g, '""')}"`).join(", ");
+
+    // Build SELECT list. Custom cols come from json_extract on `data`.
+    const selectExprs = [
+      `id`, `email`, `password_hash`, `email_verified`, `totp_secret`,
+      `totp_enabled`, `is_anonymous`, `created_at`, `updated_at`,
+      ...customColNames.map((c) => `json_extract(data, '$."${c.replace(/"/g, '""')}"')`),
+    ];
+    const selectList = selectExprs.join(", ");
+
+    const sql = `INSERT OR IGNORE INTO ${quoted} (${insertColsList}) ` +
+                `SELECT ${selectList} FROM vaultbase_users WHERE collection_id = ?`;
+    try {
+      client.prepare(sql).run(col.id);
+    } catch (e) {
+      process.stderr.write(
+        `[vaultbase] WARN: v0.11 auth-table prep failed for collection '${col.name}': ` +
+        `${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    }
+
+    // 4. UNIQUE index on email — collection-local. Skip silently if
+    // duplicates exist (doctor will flag them).
+    try {
+      client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${tbl}_email" ON ${quoted}(email) WHERE email IS NOT NULL`);
+    } catch { /* duplicate emails — operator must reconcile via doctor */ }
+  }
 }

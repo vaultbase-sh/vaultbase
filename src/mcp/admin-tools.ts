@@ -1,11 +1,11 @@
 /**
  * Generic admin MCP tools — collection-shape introspection, log + audit
- * surfaces, and auth-collection user listing. Phase-1 set; Phase-2 adds
- * mutation tools (create_collection, alter_collection, manage hooks etc.).
+ * surfaces. Phase-1 set; Phase-2 adds mutation tools (create_collection,
+ * alter_collection, manage hooks etc.).
+ *
+ * v0.11 dropped `vaultbase.list_auth_users` — the auto-generated
+ * `vaultbase.list_<auth-col>` per-collection tool covers it now.
  */
-import { eq } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
-import { users } from "../db/schema.ts";
 import { getCollection, listCollections, parseFields } from "../core/collections.ts";
 import { listAuditEntries } from "../core/audit-log.ts";
 import { readLogs } from "../core/file-logger.ts";
@@ -128,39 +128,4 @@ export function registerAdminTools(reg: ToolRegistry): void {
     },
   });
 
-  // ── list_users ─────────────────────────────────────────────────────────
-  reg.register({
-    requiredScope: "mcp:read",
-    definition: {
-      name: "vaultbase.list_users",
-      description: "List users in an auth collection. Returns id, email, verified, MFA status, anonymous flag, and timestamps. Password hashes are NEVER included.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          collection: { type: "string", description: "Auth-collection name" },
-          limit:      { type: "integer", minimum: 1, maximum: 500 },
-        },
-        required: ["collection"],
-        additionalProperties: false,
-      },
-    },
-    handler: async (args) => {
-      if (typeof args.collection !== "string") throw new Error("collection (string) is required");
-      const col = await getCollection(args.collection);
-      if (!col) throw new Error(`Collection '${args.collection}' not found`);
-      if (col.type !== "auth") throw new Error(`'${args.collection}' is not an auth collection`);
-      const limit = typeof args.limit === "number" ? Math.min(args.limit, 500) : 50;
-      const rows = await getDb().select().from(users).where(eq(users.collection_id, col.id)).limit(limit);
-      const sanitised = rows.map((u) => ({
-        id: u.id,
-        email: u.email,
-        email_verified: u.email_verified === 1,
-        totp_enabled: u.totp_enabled === 1,
-        is_anonymous: u.is_anonymous === 1,
-        created_at: u.created_at,
-        updated_at: u.updated_at,
-      }));
-      return asUntrustedJsonText(`${args.collection} users`, sanitised);
-    },
-  });
 }

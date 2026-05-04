@@ -111,7 +111,7 @@ describe("MCP — tools/list", () => {
     expect(names).toContain("vaultbase.describe_collection");
     expect(names).toContain("vaultbase.read_logs");
     expect(names).toContain("vaultbase.read_audit_log");
-    expect(names).toContain("vaultbase.list_users");
+    // v0.11 dropped the static list_auth_users — auto-gen covers it.
     expect(names).toContain("vaultbase.list_posts");
     expect(names).toContain("vaultbase.get_posts");
     expect(names).toContain("vaultbase.create_posts");

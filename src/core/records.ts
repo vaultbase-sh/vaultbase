@@ -113,6 +113,15 @@ async function decodeAfterStorage(val: unknown, field: FieldDef): Promise<unknow
   return decodeValue(val, field);
 }
 
+/**
+ * Auth-system columns on `vb_<auth-col>` that must never appear in API
+ * responses. Stripped on every row projection regardless of caller.
+ * Mirrors the contract enforced by /admin/users/:col in v0.10.
+ */
+const AUTH_PRIVATE_COLUMNS = new Set([
+  "password_hash", "totp_secret", "password_reset_at",
+]);
+
 async function rowToMetaAsync(
   row: Record<string, unknown>,
   col: Collection,
@@ -128,6 +137,8 @@ async function rowToMetaAsync(
   };
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
+    // Auth-system columns are private — never emit on the wire.
+    if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
     const def = fieldByName.get(k);
     // Never expose password hashes via the API
     if (def?.type === "password") continue;
@@ -238,6 +249,7 @@ function rowToMeta(
   };
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
+    if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
     const def = fieldByName.get(k);
     out[k] = def ? decodeValue(v, def) : v;
   }
@@ -361,6 +373,15 @@ export async function createRecord(
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
+  if (col.type === "auth") {
+    // Auth collections require credential hashing + verification-email
+    // semantics + uniqueness checks that records.ts createRecord doesn't
+    // run. Route callers to the auth signup flow instead.
+    throw new Error(
+      `'${col.name}' is an auth collection. Create users via POST /api/v1/auth/${col.name}/register ` +
+      `(or /anonymous) — direct record-create bypasses password hashing + email verification.`,
+    );
+  }
   data = data ?? {};
 
   // beforeCreate hook (can mutate data, throw to abort)
@@ -430,6 +451,19 @@ export async function updateRecord(
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
   data = data ?? {};
+  if (col.type === "auth") {
+    // Strip auth-system columns from the incoming patch — those go through
+    // the dedicated auth flows (`/totp/...`, `/verify-email`, …) that
+    // handle hashing + email-verification + recovery-code lifecycle.
+    // Allowing them here would let callers set raw `password_hash` (or
+    // `email_verified`) bypassing the contract.
+    const stripped: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+    for (const k of ["password", "password_hash", "totp_secret", "totp_enabled",
+                     "email_verified", "is_anonymous", "password_reset_at"]) {
+      delete stripped[k];
+    }
+    data = stripped;
+  }
 
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");

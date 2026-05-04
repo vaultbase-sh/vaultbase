@@ -4,7 +4,8 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
-import { mfaRecoveryCodes, users } from "../db/schema.ts";
+import { mfaRecoveryCodes } from "../db/schema.ts";
+import { insertUser } from "../core/users-table.ts";
 import { generateCode, generateSecret } from "../core/totp.ts";
 import { eq } from "drizzle-orm";
 
@@ -18,21 +19,25 @@ beforeEach(async () => {
 afterEach(() => closeDb());
 
 async function setupUserWithTotp(): Promise<{ id: string; email: string; token: string; totpSecret: string }> {
-  await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+  const { ensureAuthCollection } = await import("./_helpers.ts");
+  const col = await ensureAuthCollection("users");
   const id = crypto.randomUUID();
   const email = "alice@test.local";
   const totpSecret = generateSecret();
-  await getDb().insert(users).values({
+  await insertUser(col, {
     id,
-    collection_id: (await (await import("../core/collections.ts")).getCollection("users"))!.id,
     email,
     password_hash: await Bun.password.hash("hunter2!!"),
     totp_secret: totpSecret,
     totp_enabled: 1,
+    created_at: Math.floor(Date.now() / 1000),
+    updated_at: Math.floor(Date.now() / 1000),
   });
   const token = await new jose.SignJWT({ id, email, collection: "users" })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer("vaultbase")
     .setAudience("user")
+    .setIssuedAt(Math.floor(Date.now() / 1000))
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(SECRET));
   return { id, email, token, totpSecret };

@@ -821,16 +821,26 @@ export default function Records() {
     if (!collection) return;
     setLoading(true);
     const params = new URLSearchParams({ page: String(p), perPage: "30" });
-    if (collection.type !== "auth") {
-      params.set("sort", sort);
-      if (f) params.set("filter", f);
-    }
-    const url = collection.type === "auth"
-      ? `/api/v1/admin/users/${collection.name}?${params}`
-      : `/api/v1/${collection.name}?${params}`;
-    const res = await api.get<ListResponse<RecordRow>>(url);
-    if (res.data) { setRecords(res.data); setTotal(res.totalItems); }
+    params.set("sort", sort);
+    if (f) params.set("filter", f);
+    // v0.11: auth collections are first-class; the records flow handles
+    // them like every other collection. The legacy /admin/users/:col path
+    // is retained server-side for back-compat but no longer needed here.
+    const url = `/api/v1/${encodeURIComponent(collection.name)}?${params}`;
+    const res = await api.get<ListResponse<RecordRow> & { error?: string }>(url);
     setLoading(false);
+    if (res.data) {
+      setRecords(res.data);
+      setTotal(res.totalItems);
+      return;
+    }
+    // Non-2xx — surface to the user instead of leaving the table silently empty.
+    setRecords([]);
+    setTotal(0);
+    const msg = res.error
+      ? `Couldn't load records: ${res.error}`
+      : "Couldn't load records — server returned no data.";
+    toast(msg, "info");
   }
 
   useEffect(() => { loadCollection(); }, [collId]);

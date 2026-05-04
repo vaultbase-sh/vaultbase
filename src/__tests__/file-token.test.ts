@@ -31,27 +31,9 @@ afterEach(() => {
 });
 
 async function signUser(id: string, email: string): Promise<string> {
-  // Insert the user row so verifyAuthToken's recheckPrincipal passes.
-  const { users } = await import("../db/schema.ts");
-  const now = Math.floor(Date.now() / 1000);
-  try {
-    await getDb().insert(users).values({
-      id,
-      collection_id: "test",
-      email,
-      password_hash: "x",
-      data: "{}",
-      created_at: now,
-      updated_at: now,
-    });
-  } catch { /* already inserted */ }
-  return await new jose.SignJWT({ id, email, jti: crypto.randomUUID() })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuer("vaultbase")
-    .setAudience("user")
-    .setIssuedAt(now)
-    .setExpirationTime("1h")
-    .sign(new TextEncoder().encode(SECRET));
+  const { seedAuthUser, signUserJwt } = await import("./_helpers.ts");
+  try { await seedAuthUser({ collection: "users", id, email }); } catch { /* dup */ }
+  return signUserJwt(id, email, "users", SECRET);
 }
 
 async function signAdmin(id: string): Promise<string> {

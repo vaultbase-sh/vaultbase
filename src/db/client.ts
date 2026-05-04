@@ -86,4 +86,12 @@ async function clearAllStmtCachesOnClose(): Promise<void> {
     const mod = await import("../core/records.ts");
     mod.invalidatePreparedStatements?.();
   } catch { /* records module not loaded — nothing to clear */ }
+  try {
+    const mod = await import("../core/users-table.ts");
+    mod.invalidateUserTableColumnCache?.();
+  } catch { /* not loaded */ }
+  try {
+    const mod = await import("../core/collections.ts");
+    mod._resetCollectionCache?.();
+  } catch { /* not loaded */ }
 }

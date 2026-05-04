@@ -3,7 +3,8 @@ import * as jose from "jose";
 import { closeDb, getDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
-import { authTokens, oauthLinks, users } from "../db/schema.ts";
+import { authTokens, oauthLinks } from "../db/schema.ts";
+import { insertUser } from "../core/users-table.ts";
 import { and, eq } from "drizzle-orm";
 import { makeAuthPlugin } from "../api/auth.ts";
 
@@ -23,17 +24,17 @@ async function authCol(): Promise<{ id: string; name: string }> {
   return { id: col.id, name: col.name };
 }
 
-async function seedUser(collectionId: string, email: string, password: string): Promise<string> {
+async function seedUser(_collectionId: string, email: string, password: string): Promise<string> {
+  const { ensureAuthCollection } = await import("./_helpers.ts");
+  const col = await ensureAuthCollection("users");
   const id = crypto.randomUUID();
   const hash = await Bun.password.hash(password);
   const now = Math.floor(Date.now() / 1000);
-  await getDb().insert(users).values({
+  await insertUser(col, {
     id,
-    collection_id: collectionId,
     email,
     password_hash: hash,
     email_verified: 1,
-    data: "{}",
     created_at: now,
     updated_at: now,
   });

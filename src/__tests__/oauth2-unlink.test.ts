@@ -3,7 +3,8 @@ import * as jose from "jose";
 import { closeDb, getDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
-import { oauthLinks, users } from "../db/schema.ts";
+import { oauthLinks } from "../db/schema.ts";
+import { insertUser as insertUserDb } from "../core/users-table.ts";
 import { eq, and } from "drizzle-orm";
 import { makeAuthPlugin } from "../api/auth.ts";
 
@@ -28,13 +29,14 @@ async function insertUser(opts: {
 }): Promise<string> {
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  await getDb().insert(users).values({
+  const { ensureAuthCollection } = await import("./_helpers.ts");
+  const col = await ensureAuthCollection("users");
+  void opts.collection_id;
+  await insertUserDb(col, {
     id,
-    collection_id: opts.collection_id,
     email: `${id}@example.test`,
     password_hash: opts.password_hash ?? "hashed-pw-placeholder",
     is_anonymous: opts.is_anonymous ?? 0,
-    data: "{}",
     created_at: now,
     updated_at: now,
   });
@@ -55,7 +57,9 @@ async function insertLink(userId: string, collectionId: string, provider: string
 async function userJwt(userId: string, collectionName: string): Promise<string> {
   return new jose.SignJWT({ id: userId, email: `${userId}@example.test`, collection: collectionName })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer("vaultbase")
     .setAudience("user")
+    .setIssuedAt(Math.floor(Date.now() / 1000))
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(JWT_SECRET));
 }

@@ -64,13 +64,17 @@ async function seedUserToken(userId?: string): Promise<{ id: string; token: stri
   const email = `${id}@x.test`;
   const hash = await Bun.password.hash("pw");
   const now = Math.floor(Date.now() / 1000);
+  const { ensureAuthCollection: ensureCol } = await import("./_helpers.ts");
+  const col = await ensureCol("users");
+  void collectionId;
   // Idempotent — second call with the same id is a no-op.
   const existing = (getDb() as unknown as { $client: import("bun:sqlite").Database }).$client
-    .prepare(`SELECT id FROM vaultbase_users WHERE id = ?`).get(id);
+    .prepare(`SELECT id FROM vb_users WHERE id = ?`).get(id);
   if (!existing) {
-    await getDb().insert(usersTable).values({
-      id, collection_id: collectionId, email, password_hash: hash,
-      email_verified: 1, data: "{}", created_at: now, updated_at: now,
+    const { insertUser } = await import("../core/users-table.ts");
+    await insertUser(col, {
+      id, email, password_hash: hash,
+      email_verified: 1, created_at: now, updated_at: now,
     });
   }
   const token = await new jose.SignJWT({ id, email, collection: "users" })
