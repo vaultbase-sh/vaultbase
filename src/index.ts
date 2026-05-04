@@ -102,19 +102,39 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     process.exit(1);
   }
   const db = getDb();
-  const existing = await db.select({ id: admin.id, email: admin.email }).from(admin).limit(1);
-  if (existing.length > 0 && !opts.force) {
+  const { eq } = await import("drizzle-orm");
+
+  // Check globally (any admin) for the no-force guard, AND check whether
+  // this specific email exists so --force can UPSERT instead of failing
+  // on the UNIQUE(email) constraint.
+  const anyAdmin = await db.select({ id: admin.id, email: admin.email }).from(admin).limit(1);
+  const sameEmail = await db.select({ id: admin.id }).from(admin).where(eq(admin.email, opts.email)).limit(1);
+
+  if (anyAdmin.length > 0 && !opts.force) {
     process.stderr.write(
-      `vaultbase: an admin already exists (${existing[0]?.email}). ` +
-      `Re-run with --force to add another, or use the admin UI to manage existing admins.\n`,
+      `vaultbase: an admin already exists (${anyAdmin[0]?.email}). ` +
+      `Re-run with --force to add another or reset the password of an existing admin.\n`,
     );
     process.exit(1);
   }
+
   const hash = await Bun.password.hash(opts.password);
-  const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
-  await db.insert(admin).values({ id, email: opts.email, password_hash: hash, password_reset_at: 0, created_at: now });
-  process.stdout.write(`vaultbase: admin '${opts.email}' created.\n`);
+
+  if (sameEmail.length > 0) {
+    // Email already taken → reset that admin's password. `password_reset_at`
+    // bump invalidates any tokens minted before this update (forced logout).
+    await db.update(admin)
+      .set({ password_hash: hash, password_reset_at: now })
+      .where(eq(admin.email, opts.email));
+    process.stdout.write(`vaultbase: admin '${opts.email}' password reset.\n`);
+  } else {
+    const id = crypto.randomUUID();
+    await db.insert(admin).values({
+      id, email: opts.email, password_hash: hash, password_reset_at: 0, created_at: now,
+    });
+    process.stdout.write(`vaultbase: admin '${opts.email}' created.\n`);
+  }
 }
 
 async function applySnapshotFromCli(path: string, mode: ApplyMode): Promise<void> {
