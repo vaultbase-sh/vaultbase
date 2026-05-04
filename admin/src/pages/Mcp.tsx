@@ -17,6 +17,7 @@ import {
   VbField,
   VbPageHeader,
   VbPill,
+  VbSecretInput,
   VbTabs,
   VbTable,
   FilterInput,
@@ -200,15 +201,14 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
           </>
         }
       >
-        <input
-          type="password"
-          value={tokenValue}
-          onChange={(e) => setTokenValue(e.target.value)}
-          placeholder="vbat_…"
-          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
-          autoComplete="off"
-          spellCheck={false}
-        />
+        <div style={{ maxWidth: 480 }}>
+          <VbSecretInput
+            value={tokenValue}
+            onChange={(e) => setTokenValue(e.target.value)}
+            placeholder="vbat_…"
+            spellCheck={false}
+          />
+        </div>
       </VbField>
 
       <div>

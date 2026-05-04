@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import {
-  VbBtn, VbEmptyState, VbField, VbInput, VbPageHeader, VbPill,
+  VbBtn, VbEmptyState, VbField, VbInput, VbPageHeader, VbPill, VbSecretInput,
   VbTable, type VbTableColumn,
 } from "../components/Vb.tsx";
 import { Modal } from "../components/UI.tsx";
@@ -189,7 +189,7 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
           <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="ops@example.com" />
         </VbField>
         <VbField label="Password" hint="min 8 characters">
-          <VbInput type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+          <VbSecretInput value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
         </VbField>
       </div>
     </Modal>
@@ -242,7 +242,7 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
           <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </VbField>
         <VbField label="New password" hint="leave blank to keep current">
-          <VbInput type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
+          <VbSecretInput value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
         </VbField>
       </div>
     </Modal>

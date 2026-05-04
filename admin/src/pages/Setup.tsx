@@ -31,6 +31,43 @@ export default function Setup() {
 }
 
 // ── Step indicator ───────────────────────────────────────────────────────────
+/** Password input with reveal toggle for the setup + login auth screens. */
+function PwInput({ value, onChange, placeholder }: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        className="input"
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{ paddingRight: 36 }}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((v) => !v)}
+        disabled={!value}
+        title={show ? "Hide" : "Show"}
+        style={{
+          position: "absolute",
+          right: 8, top: "50%", transform: "translateY(-50%)",
+          background: "transparent", border: 0,
+          color: "var(--vb-fg-3, #888)",
+          cursor: value ? "pointer" : "default",
+          padding: 4, display: "flex",
+        }}
+      >
+        <Icon name={show ? "eyeOff" : "eye"} size={14} />
+      </button>
+    </div>
+  );
+}
+
 function StepIndicator({ step }: { step: Step }) {
   const steps: { id: Step; label: string }[] = [
     { id: "welcome", label: "Welcome" },
@@ -161,7 +198,7 @@ function AdminStep({ onDone }: { onDone: (email: string) => void }) {
         </div>
         <div>
           <label className="label">Password</label>
-          <input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="At least 8 characters" />
+          <PwInput value={pw} onChange={setPw} placeholder="At least 8 characters" />
           {pwTooShort && (
             <div style={{ fontSize: 11, color: "var(--warning)", marginTop: 4 }}>
               Password must be at least 8 characters
@@ -170,7 +207,7 @@ function AdminStep({ onDone }: { onDone: (email: string) => void }) {
         </div>
         <div>
           <label className="label">Confirm password</label>
-          <input className="input" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} />
+          <PwInput value={pw2} onChange={setPw2} />
           {pwMismatch && (
             <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>
               Passwords don't match

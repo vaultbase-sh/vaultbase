@@ -154,6 +154,56 @@ export const VbInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttribu
 );
 VbInput.displayName = "VbInput";
 
+// ── Secret / password input with reveal toggle ──────────────────────────────
+//
+// Wraps `VbInput` with a trailing eye button that toggles `type="password"` ↔
+// `type="text"`. Default `mono` (monospace renders dots/asterisks evenly + makes
+// pasted hex/base64 secrets readable). Use everywhere a sensitive value goes
+// in: passwords, API keys, smtp creds, oauth client secrets, MCP tokens.
+
+export const VbSecretInput = React.forwardRef<
+  HTMLInputElement,
+  Omit<React.InputHTMLAttributes<HTMLInputElement>, "type"> & { mono?: boolean }
+>(({ mono = true, style, value, disabled, ...rest }, ref) => {
+  const [show, setShow] = React.useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <VbInput
+        ref={ref}
+        mono={mono}
+        type={show ? "text" : "password"}
+        value={value}
+        disabled={disabled}
+        autoComplete="off"
+        style={{ paddingRight: 32, ...(style ?? {}) }}
+        {...rest}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((v) => !v)}
+        disabled={disabled || !value}
+        title={show ? "Hide" : "Show"}
+        aria-label={show ? "Hide" : "Show"}
+        style={{
+          position: "absolute",
+          right: 6,
+          top: "50%",
+          transform: "translateY(-50%)",
+          background: "transparent",
+          border: 0,
+          color: "var(--vb-fg-3)",
+          cursor: value && !disabled ? "pointer" : "default",
+          padding: 4,
+          display: "flex",
+        }}
+      >
+        <Icon name={show ? "eyeOff" : "eye"} size={13} />
+      </button>
+    </div>
+  );
+});
+VbSecretInput.displayName = "VbSecretInput";
+
 // ── Field (label + hint + child) ────────────────────────────────────────────
 
 export const VbField: React.FC<{

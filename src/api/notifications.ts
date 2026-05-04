@@ -59,7 +59,7 @@ function isProviderName(s: string): s is ProviderName {
  * value out of browser-devtools logs and screenshots, which is the more
  * common exposure path.
  */
-function describeProviders() {
+function describeProviders(opts: { reveal?: boolean } = {}) {
   const cfg = loadProviderConfigs();
   let fcmClientEmail: string | null = null;
   let fcmServiceAccountBytes = 0;
@@ -76,6 +76,9 @@ function describeProviders() {
       enabled: cfg.onesignal.enabled,
       app_id: cfg.onesignal.app_id,
       api_key_set: cfg.onesignal.api_key.length > 0,
+      // Admin opt-in reveal — surfaces the raw key for the settings UI's
+      // "show secret" toggle. Default-masked keeps it out of casual logs.
+      ...(opts.reveal ? { api_key: cfg.onesignal.api_key } : {}),
     },
     fcm: {
       enabled: cfg.fcm.enabled,
@@ -83,6 +86,7 @@ function describeProviders() {
       service_account_set: fcmServiceAccountBytes > 0,
       service_account_bytes: fcmServiceAccountBytes,
       service_account_client_email: fcmClientEmail,
+      ...(opts.reveal ? { service_account: cfg.fcm.service_account } : {}),
     },
   };
 }
@@ -143,12 +147,13 @@ function applyPatch(provider: ProviderName, body: PatchBody): { applied: number;
 export function makeNotificationsPlugin(jwtSecret: string) {
   return new Elysia({ name: "notifications" })
     // ── Admin: list provider config (secrets masked) ───────────────────────
-    .get("/admin/notifications/providers", async ({ request, set }) => {
+    .get("/admin/notifications/providers", async ({ request, query, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
       }
-      return { data: describeProviders() };
+      const reveal = query.reveal === "1" || query.reveal === "true";
+      return { data: describeProviders({ reveal }) };
     })
     // ── Admin: patch one provider's config ─────────────────────────────────
     .patch(

@@ -30,7 +30,9 @@ import {
   type UpsertInput,
 } from "../core/flags.ts";
 import { dispatchEvent } from "../core/webhooks.ts";
-import { runJob, validateCron } from "../core/jobs.ts";
+import { runJob, validateCron, invalidateJobsCache } from "../core/jobs.ts";
+import { invalidateRoutesCache, ROUTE_METHODS } from "../core/routes.ts";
+import { invalidateHookCache } from "../core/hooks.ts";
 import { getSetting, setSetting, getAllSettings } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { ToolRegistry, asJsonText } from "./tools.ts";
@@ -159,13 +161,13 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     requiredScope: "mcp:admin",
     definition: {
       name: "vaultbase.create_hook",
-      description: "Register a new JS hook. Code is admin-trusted and runs in-process via `new AsyncFunction('ctx', code)` — has access to the full helper standard library (db, fs, http, mails, flags, webhooks).",
+      description: "Register a new JS hook. Code is admin-trusted and runs in-process via `new AsyncFunction('ctx', code)` — has access to the full helper standard library (db, fs, http, mails, flags, webhooks). Hook lifecycle events are camelCase (beforeCreate / afterCreate / …).",
       inputSchema: {
         type: "object",
         properties: {
           name:            { type: "string" },
           collection_name: { type: "string", description: "Collection this hook fires for; '' for global" },
-          event:           { type: "string", enum: ["before_create", "after_create", "before_update", "after_update", "before_delete", "after_delete"] },
+          event:           { type: "string", enum: ["beforeCreate", "afterCreate", "beforeUpdate", "afterUpdate", "beforeDelete", "afterDelete"] },
           code:            { type: "string", description: "Hook body — receives a single `ctx` object" },
           enabled:         { type: "boolean" },
         },
@@ -176,17 +178,25 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     handler: async (args) => {
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
+      // Normalise snake_case → camelCase so older LLM hint memory still works.
+      const eventRaw = String(args.event ?? "");
+      const event = eventRaw.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+      const allowed = ["beforeCreate", "afterCreate", "beforeUpdate", "afterUpdate", "beforeDelete", "afterDelete"];
+      if (!allowed.includes(event)) {
+        throw new Error(`Invalid event '${eventRaw}'. Allowed: ${allowed.join(", ")}`);
+      }
       await getDb().insert(hooks).values({
         id,
         name: String(args.name ?? ""),
         collection_name: String(args.collection_name ?? ""),
-        event: String(args.event ?? ""),
+        event,
         code: String(args.code ?? ""),
         enabled: args.enabled === false ? 0 : 1,
         created_at: now,
         updated_at: now,
       });
-      return asJsonText({ created: true, id });
+      invalidateHookCache();
+      return asJsonText({ created: true, id, event });
     },
   });
 
@@ -211,11 +221,15 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     },
     handler: async (args) => {
       const patch: Record<string, unknown> = { updated_at: Math.floor(Date.now() / 1000) };
-      for (const k of ["name", "collection_name", "event", "code"] as const) {
+      for (const k of ["name", "collection_name", "code"] as const) {
         if (typeof args[k] === "string") patch[k] = args[k];
+      }
+      if (typeof args.event === "string") {
+        patch.event = args.event.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
       }
       if (typeof args.enabled === "boolean") patch.enabled = args.enabled ? 1 : 0;
       await getDb().update(hooks).set(patch).where(eq(hooks.id, String(args.id)));
+      invalidateHookCache();
       return asJsonText({ updated: true, id: args.id });
     },
   });
@@ -234,6 +248,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     },
     handler: async (args) => {
       await getDb().delete(hooks).where(eq(hooks.id, String(args.id)));
+      invalidateHookCache();
       return asJsonText({ deleted: true, id: args.id });
     },
   });
@@ -271,17 +286,27 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     handler: async (args) => {
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
+      // Mirror REST POST /admin/routes: uppercase method, validate, then
+      // invalidate the runtime cache so the route is live immediately.
+      const method = String(args.method ?? "GET").toUpperCase();
+      if (!ROUTE_METHODS.includes(method as typeof ROUTE_METHODS[number])) {
+        throw new Error(`Invalid method: ${method}. Allowed: ${ROUTE_METHODS.join(", ")}`);
+      }
+      const rawPath = String(args.path ?? "");
+      const path = rawPath.startsWith("/") ? rawPath : "/" + rawPath;
+      if (path.includes("..")) throw new Error("path cannot contain '..'");
       await getDb().insert(routes).values({
         id,
         name:    String(args.name ?? ""),
-        method:  String(args.method ?? ""),
-        path:    String(args.path ?? ""),
+        method,
+        path,
         code:    String(args.code ?? ""),
         enabled: args.enabled === false ? 0 : 1,
         created_at: now,
         updated_at: now,
       });
-      return asJsonText({ created: true, id });
+      invalidateRoutesCache();
+      return asJsonText({ created: true, id, method, path });
     },
   });
 
@@ -299,6 +324,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     },
     handler: async (args) => {
       await getDb().delete(routes).where(eq(routes.id, String(args.id)));
+      invalidateRoutesCache();
       return asJsonText({ deleted: true, id: args.id });
     },
   });
@@ -349,6 +375,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         created_at: now,
         updated_at: now,
       });
+      invalidateJobsCache();
       return asJsonText({ created: true, id });
     },
   });
@@ -385,6 +412,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     },
     handler: async (args) => {
       await getDb().delete(jobs).where(eq(jobs.id, String(args.id)));
+      invalidateJobsCache();
       return asJsonText({ deleted: true, id: args.id });
     },
   });

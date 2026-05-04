@@ -13,6 +13,7 @@ import {
   VbCode,
   VbField,
   VbInput,
+  VbSecretInput,
   VbPageHeader,
   VbPill,
   VbStat,
@@ -1787,8 +1788,8 @@ function SmtpSection() {
               disabled={!enabled || loading} />
           </VbField>
           <VbField label="Password" hint="SMTP auth password / API key.">
-            <VbInput mono type="password" value={pass} onChange={(e) => setPass(e.target.value)}
-              placeholder="••••••••" autoComplete="new-password"
+            <VbSecretInput value={pass} onChange={(e) => setPass(e.target.value)}
+              placeholder="••••••••"
               disabled={!enabled || loading} />
           </VbField>
         </div>
@@ -2447,10 +2448,10 @@ function OAuth2Section() {
                     )}
                     {!p.hideStandardClientSecret && (
                       <VbField label="Client secret">
-                        <VbInput mono type="password"
+                        <VbSecretInput
                           value={get(`oauth2.${p.name}.client_secret`)}
                           onChange={(e) => set(`oauth2.${p.name}.client_secret`, e.target.value)}
-                          placeholder="••••••••" autoComplete="new-password"
+                          placeholder="••••••••"
                           disabled={loading} />
                       </VbField>
                     )}
@@ -3039,9 +3040,9 @@ function StorageSection() {
               label="Secret access key"
               hint="Stored encrypted at rest when VAULTBASE_ENCRYPTION_KEY is set."
             >
-              <VbInput mono type="password" value={secretAccessKey}
+              <VbSecretInput value={secretAccessKey}
                 onChange={(e) => setSecretAccessKey(e.target.value)}
-                placeholder="••••••••" autoComplete="new-password" />
+                placeholder="••••••••" />
             </VbField>
           </div>
 
@@ -3082,6 +3083,8 @@ interface NotificationProvidersResponse {
     enabled: boolean;
     app_id: string;
     api_key_set: boolean;
+    /** Present only when fetched with `?reveal=1`. */
+    api_key?: string;
   };
   fcm: {
     enabled: boolean;
@@ -3089,6 +3092,8 @@ interface NotificationProvidersResponse {
     service_account_set: boolean;
     service_account_bytes: number;
     service_account_client_email: string | null;
+    /** Present only when fetched with `?reveal=1`. */
+    service_account?: string;
   };
 }
 
@@ -3136,8 +3141,11 @@ function NotificationsSection() {
   const [fcmTestSending, setFcmTestSending] = useState(false);
 
   function refresh(): Promise<void> {
+    // `reveal=1` asks the server to include the actual secrets — admin
+    // already has full DB access so it's not a new exposure path; we
+    // gain a real reveal toggle in the UI for verifying values match.
     return api
-      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers")
+      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers?reveal=1")
       .then((res) => {
         if (res.data) {
           setCfg(res.data);
@@ -3145,9 +3153,9 @@ function NotificationsSection() {
           setOsAppId(res.data.onesignal.app_id);
           setFcmEnabled(res.data.fcm.enabled);
           setFcmProjectId(res.data.fcm.project_id);
-          // Don't pre-fill secrets (they're masked server-side anyway).
-          setOsApiKey("");
-          setFcmServiceAccount("");
+          // Pre-fill secrets so the eye toggle has something to reveal.
+          setOsApiKey(res.data.onesignal.api_key ?? "");
+          setFcmServiceAccount(res.data.fcm.service_account ?? "");
           setOsDirty(false);
           setFcmDirty(false);
         }
@@ -3163,7 +3171,7 @@ function NotificationsSection() {
       enabled: osEnabled,
       app_id: osAppId,
     };
-    if (osApiKey) body.api_key = osApiKey;  // only patch when user typed a new value
+    if (osDirty && osApiKey !== (cfg?.onesignal.api_key ?? "")) body.api_key = osApiKey; // only patch on real edits
     const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
       "/api/v1/admin/notifications/providers/onesignal",
       body,
@@ -3195,7 +3203,7 @@ function NotificationsSection() {
       enabled: fcmEnabled,
       project_id: fcmProjectId,
     };
-    if (fcmServiceAccount) body.service_account = fcmServiceAccount;
+    if (fcmDirty && fcmServiceAccount !== (cfg?.fcm.service_account ?? "")) body.service_account = fcmServiceAccount;
     const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
       "/api/v1/admin/notifications/providers/fcm",
       body,

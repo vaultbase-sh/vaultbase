@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 import { useAuth } from "../stores/auth.ts";
 import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
+import Icon from "../components/Icon.tsx";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
@@ -60,13 +62,32 @@ export default function Login() {
           </div>
           <div>
             <label className="label">Password</label>
-            <input
-              className="input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-            />
+            <div style={{ position: "relative" }}>
+              <input
+                className="input"
+                type={showPw ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                style={{ paddingRight: 36 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                disabled={!password}
+                title={showPw ? "Hide" : "Show"}
+                style={{
+                  position: "absolute",
+                  right: 8, top: "50%", transform: "translateY(-50%)",
+                  background: "transparent", border: 0,
+                  color: "var(--vb-fg-3, #888)",
+                  cursor: password ? "pointer" : "default",
+                  padding: 4, display: "flex",
+                }}
+              >
+                <Icon name={showPw ? "eyeOff" : "eye"} size={14} />
+              </button>
+            </div>
           </div>
           <button className="btn btn-primary" type="submit" disabled={loading}>
             {loading ? <span className="spinner" /> : null}

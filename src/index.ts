@@ -178,7 +178,70 @@ async function applySnapshotFromCli(path: string, mode: ApplyMode): Promise<void
   }
 }
 
+const TOP_LEVEL_HELP = `vaultbase — self-hosted backend in a single binary
+
+Usage:
+  vaultbase                       Start the HTTP server (default).
+  vaultbase <subcommand> [flags]
+
+Subcommands:
+  setup-admin                     Create or reset an admin account
+                                  --email <e> --password <p> [--force]
+
+  cluster                         Spawn N worker processes (multi-core deployments)
+                                  Set VAULTBASE_CLUSTER_WORKERS=N (default: CPU count).
+
+  mcp                             Run the MCP server over stdio.
+                                  Connect Claude Desktop / Cursor / Continue / Cline.
+                                  --token <vbat_…>           (or VAULTBASE_MCP_TOKEN env)
+                                  --read-only                Strip write tools regardless of scope.
+
+  token                           API-token management (mint / list / revoke).
+                                  vaultbase token --help for subcommands.
+
+  doctor                          Pre-flight DB checks for v0.11 auth migration.
+                                  Read-only; exits non-zero on blockers.
+
+  wipe                            Hard-reset the install (delete data dir).
+                                  --yes (perform) [--force] (override prod refusal).
+
+  backup                          Take a snapshot of the SQLite DB.
+                                  --to <path>
+
+  update                          Print update status against GitHub releases.
+
+Server flags:
+  --apply-snapshot <path>         Apply a snapshot JSON before booting.
+                                  --snapshot-mode additive|replace (default additive)
+
+  --help, -h                      Show this help.
+  --version, -v                   Print version.
+
+Environment:
+  VAULTBASE_DATA_DIR              Data directory (default: ./vaultbase_data)
+  VAULTBASE_PORT                  HTTP port (default: 8090)
+  VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
+  VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
+  VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (default: read from <dataDir>/.encryption-key)
+  VAULTBASE_CLUSTER_WORKERS       Worker count for \`vaultbase cluster\`
+  VAULTBASE_TRUSTED_PROXIES       Comma-separated peer IPs trusted for X-Forwarded-For
+  NODE_ENV / VAULTBASE_ENV        Triggers production guardrails on \`wipe\`.
+
+Docs: https://docs.vaultbase.dev
+`;
+
 async function main() {
+  // Top-level help — fast path, no DB / config load.
+  if (process.argv[2] === "--help" || process.argv[2] === "-h" || process.argv[2] === "help") {
+    process.stdout.write(TOP_LEVEL_HELP);
+    return;
+  }
+  if (process.argv[2] === "--version" || process.argv[2] === "-v" || process.argv[2] === "version") {
+    const { VAULTBASE_VERSION } = await import("./core/version.ts");
+    process.stdout.write(`vaultbase ${VAULTBASE_VERSION}\n`);
+    return;
+  }
+
   // `vaultbase cluster` — spawn N worker processes via the cluster
   // orchestrator. Lazy-import so the cluster module's top-level code (which
   // immediately spawns) only runs when actually requested.
