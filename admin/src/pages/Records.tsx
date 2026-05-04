@@ -866,18 +866,17 @@ export default function Records() {
     setSaving(true);
 
     if (collection.type === "auth") {
-      // Auth-user updates go through the admin users endpoint. Email + verified
-      // are top-level columns; everything else is shoved into the `data` blob.
+      // v0.11: auth users update via the records flow — same endpoint as
+      // any other collection. Auth-system columns (password_hash etc.)
+      // are stripped server-side from incoming patches; credential
+      // changes go through dedicated /auth/<col>/* flows.
       const payload: Record<string, unknown> = {};
-      const dataObj: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(editData)) {
-        if (k === "email") payload["email"] = v;
-        else if (k === "verified") payload["verified"] = !!v;
-        else dataObj[k] = v;
+        if (k === "verified") payload["email_verified"] = v ? 1 : 0;
+        else payload[k] = v;
       }
-      if (Object.keys(dataObj).length > 0) payload["data"] = dataObj;
       const res = await api.patch<ApiResponse<RecordRow>>(
-        `/api/v1/admin/users/${collection.name}/${String(openRec.id)}`,
+        `/api/v1/${collection.name}/${encodeURIComponent(String(openRec.id))}`,
         payload
       );
       setSaving(false);
@@ -920,9 +919,8 @@ export default function Records() {
       danger: true,
     });
     if (!ok) return;
-    const url = isAuth
-      ? `/api/v1/admin/users/${collection.name}/${id}`
-      : `/api/v1/${collection.name}/${id}`;
+    // v0.11: auth + base + view all use the records flow.
+    const url = `/api/v1/${collection.name}/${encodeURIComponent(id)}`;
     await api.delete(url);
     toast(isAuth ? "User deleted" : "Record deleted", "trash");
     setOpenRec(null);
@@ -943,13 +941,8 @@ export default function Records() {
     const ids = selected.map((r) => String(r.id));
     let failed = 0;
 
-    if (isAuth) {
-      // No batch API for auth users — sequential per-id deletes.
-      for (const id of ids) {
-        const res = await api.delete<ApiResponse<null>>(`/api/v1/admin/users/${collection.name}/${id}`);
-        if (res.error) failed++;
-      }
-    } else {
+    {
+      // v0.11: every collection (incl. auth) uses the records flow.
       // Use the atomic batch API in chunks of 100 (server cap).
       const CHUNK = 100;
       for (let i = 0; i < ids.length; i += CHUNK) {
@@ -1065,9 +1058,13 @@ export default function Records() {
       confirmLabel: "Disable MFA",
     });
     if (!ok) return;
-    const res = await api.patch<ApiResponse<RecordRow>>(
-      `/api/v1/admin/users/${collection.name}/${id}`,
-      { mfa_enabled: false }
+    // v0.11: records flow. updateRecord on auth strips most auth-system
+    // columns from the patch; `totp_enabled` + `totp_secret` are
+    // explicitly write-protected. Use the dedicated /totp/disable
+    // server-side helper instead — exposed here as an internal call.
+    const res = await api.post<ApiResponse<{ disabled: boolean }>>(
+      `/api/v1/admin/users/${encodeURIComponent(collection.name)}/${encodeURIComponent(id)}/disable-mfa`,
+      {},
     );
     if (res.error) { toast(res.error, "info"); return; }
     toast("MFA disabled");

@@ -5,6 +5,8 @@ import { getDb } from "../db/client.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks } from "../db/schema.ts";
 import { getCollection, parseFields } from "../core/collections.ts";
 import { findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
+import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
+import { getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
@@ -364,6 +366,27 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       return { data: { id: ctx.id, email: ctx.email ?? "", aud: "admin", exp: ctx.exp } };
     })
+    // Admin recovery: clear a user's TOTP secret + recovery codes. Records
+    // flow `PATCH` strips auth-system columns, so this dedicated endpoint
+    // exists for the "user lost their authenticator" admin operation.
+    .post("/admin/users/:collection/:id/disable-mfa", async ({ params, request, set }) => {
+      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
+      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+      const u = findUserById(col, params.id);
+      if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
+      const now = Math.floor(Date.now() / 1000);
+      await updateUserById(col, params.id, { totp_enabled: 0, totp_secret: null, updated_at: now });
+      // Wipe recovery codes — useless without TOTP.
+      await getDb()
+        .delete(mfaRecoveryCodes)
+        .where(and(eq(mfaRecoveryCodes.user_id, params.id), eq(mfaRecoveryCodes.collection_id, col.id)));
+      return { data: { disabled: true } };
+    })
     .post(
       "/auth/:collection/register",
       async ({ params, body, set }) => {
@@ -407,15 +430,40 @@ export function makeAuthPlugin(jwtSecret: string) {
         const now = Math.floor(Date.now() / 1000);
         const { email, password, ...extra } = body;
         void password;
+
+        // Hook lifecycle — auth signup gets the same beforeCreate /
+        // afterCreate semantics as the records flow. beforeCreate can
+        // mutate `extra` (custom fields) or throw to abort.
+        const hookData: Record<string, unknown> = { email, ...extra };
+        const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
+        try {
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
+        } catch (e) {
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: "Validation failed", code: 422, details: e.details };
+          }
+          throw e;
+        }
+        const finalExtra: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
+        delete finalExtra.email; // already a top-level column
+
         await insertUser(col, {
           id,
           email,
           password_hash: hash,
-          custom: extra as Record<string, unknown>,
-          legacyDataJson: JSON.stringify(extra),
+          custom: finalExtra,
+          legacyDataJson: JSON.stringify(finalExtra),
           created_at: now,
           updated_at: now,
         });
+
+        // Read back as a record (uniform shape with password_hash stripped)
+        // and fire afterCreate.
+        const created = await getRecord(col.name, id);
+        if (created) {
+          runAfterHook(col, "afterCreate", { record: created as unknown as Record<string, unknown>, existing: null, auth: null, helpers });
+        }
         if (isSmtpConfigured()) {
           issueAndSend("verify", { id, email }, col.id, col.name).catch((e) => {
             console.error("[auth] verification email failed for", redactEmail(email), "—", e instanceof Error ? e.message : e);
@@ -945,6 +993,17 @@ export function makeAuthPlugin(jwtSecret: string) {
         created_at: now,
         updated_at: now,
       });
+      // afterCreate hook on anonymous signup — same lifecycle as a real
+      // user, so apps that auto-provision related rows (default profile,
+      // welcome notification, etc.) keep working.
+      const created = await getRecord(col.name, id);
+      if (created) {
+        runAfterHook(col, "afterCreate", {
+          record: created as unknown as Record<string, unknown>,
+          existing: null, auth: null,
+          helpers: makeHookHelpers({ collection: col.name, event: "afterCreate" }),
+        });
+      }
       const { token: jwt } = await signAuthToken({
         payload: { id, email, collection: col.name, anonymous: true },
         audience: "user",
@@ -1255,7 +1314,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
       }
 
-      // 3. Create new user
+      // 3. Create new user — fires afterCreate on the auth collection.
       if (!userId) {
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
         const hash = await hashPassword(randomPw);
@@ -1278,6 +1337,15 @@ export function makeAuthPlugin(jwtSecret: string) {
           provider_user_id: profile.id,
           provider_email: profile.email,
         });
+        // afterCreate hook on OAuth-provisioned new user.
+        const created = await getRecord(col.name, userId);
+        if (created) {
+          runAfterHook(col, "afterCreate", {
+            record: created as unknown as Record<string, unknown>,
+            existing: null, auth: null,
+            helpers: makeHookHelpers({ collection: col.name, event: "afterCreate" }),
+          });
+        }
       }
 
       const { token } = await signAuthToken({

@@ -28,10 +28,8 @@ function captureStdio(): void {
   stdout = []; stderr = [];
   origStdoutWrite = process.stdout.write.bind(process.stdout);
   origStderrWrite = process.stderr.write.bind(process.stderr);
-  // @ts-expect-error — narrow override for the test
-  process.stdout.write = (chunk: string) => { stdout.push(typeof chunk === "string" ? chunk : String(chunk)); return true; };
-  // @ts-expect-error — narrow override for the test
-  process.stderr.write = (chunk: string) => { stderr.push(typeof chunk === "string" ? chunk : String(chunk)); return true; };
+  process.stdout.write = ((chunk: string) => { stdout.push(typeof chunk === "string" ? chunk : String(chunk)); return true; }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: string) => { stderr.push(typeof chunk === "string" ? chunk : String(chunk)); return true; }) as typeof process.stderr.write;
 }
 
 function restoreStdio(): void {

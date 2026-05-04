@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, parseFields } from "../api.ts";
+import { api, parseFields, type ApiResponse } from "../api.ts";
 import { confirm } from "../components/Confirm.tsx";
 import Icon from "../components/Icon.tsx";
 import { toast } from "../stores/toast.ts";
@@ -20,6 +20,16 @@ import NewCollectionModal from "./NewCollectionModal.tsx";
 
 type Tab = "all" | "auth" | "base" | "view";
 
+/** Compact "5m ago" / "3h ago" / "2d ago" formatter for `lastUpdated`. */
+function formatRel(unix: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unix;
+  if (diff < 0) return "just now";
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
 export default function Collections() {
   const navigate = useNavigate();
   const collections = useCollections((s) => s.list);
@@ -33,8 +43,32 @@ export default function Collections() {
   const [search, setSearch] = useState("");
   const [showNew, setShowNew] = useState(false);
 
-  function load() { invalidate(); void loadCollections(true); }
-  useEffect(() => { void loadCollections(); }, [loadCollections]);
+  // Per-collection counts + activity. Fetched separately so the page
+  // renders the collection list immediately and the stats fill in.
+  interface CollectionStats {
+    name: string;
+    type: "base" | "auth" | "view";
+    recordCount: number | null;
+    recordCountCapped: boolean;
+    lastUpdated: number | null;
+    recentWrites: number;
+  }
+  const [stats, setStats] = useState<Map<string, CollectionStats>>(new Map());
+  const [statsWindowSec, setStatsWindowSec] = useState<number>(86400);
+
+  function load() { invalidate(); void loadCollections(true); void loadStats(); }
+  useEffect(() => { void loadCollections(); void loadStats(); }, [loadCollections]);
+
+  async function loadStats(): Promise<void> {
+    const res = await api.get<ApiResponse<CollectionStats[]> & { windowSec?: number }>(
+      "/api/v1/admin/collections/stats",
+    );
+    if (!res.data) return;
+    const m = new Map<string, CollectionStats>();
+    for (const s of res.data) m.set(s.name, s);
+    setStats(m);
+    if (typeof res.windowSec === "number") setStatsWindowSec(res.windowSec);
+  }
 
   async function handleDelete(e: React.MouseEvent, id: string, name: string) {
     e.stopPropagation();
@@ -49,18 +83,30 @@ export default function Collections() {
     load();
   }
 
-  // Per-collection metadata (records, recent-activity rate, last write).
-  // The stats endpoint isn't exposed yet — these slots stay so the layout
-  // matches the design and the visual rhythm is right; values will land
-  // when the per-collection-stats endpoint does.
-  const enriched = useMemo(() => collections.map((c) => ({
-    ...c,
-    type: (c.type ?? "base") as "base" | "auth" | "view",
-    fieldCount: parseFields(c.fields).length,
-    records: null as number | null,
-    writeRate: 0,
-    lastWrite: null as string | null,
-  })), [collections]);
+  // Per-collection metadata. `stats` is loaded async via /admin/collections/stats —
+  // until then `recordCount` is null and the cell renders "—".
+  const enriched = useMemo(() => collections.map((c) => {
+    const s = stats.get(c.name);
+    const recordCount = s?.recordCount ?? null;
+    const capped = s?.recordCountCapped ?? false;
+    // ActivityBar rate is 0..1. Map recent writes against a soft ceiling so
+    // a busy collection saturates the bar without surprises. Saturate at
+    // ~3% of the window's seconds (≈2.5k writes / 24h fills).
+    const ceiling = Math.max(1, Math.floor(statsWindowSec * 0.03));
+    const writeRate = s?.recentWrites
+      ? Math.min(1, s.recentWrites / ceiling)
+      : 0;
+    const lastWrite = s?.lastUpdated ? formatRel(s.lastUpdated) : null;
+    return {
+      ...c,
+      type: (c.type ?? "base") as "base" | "auth" | "view",
+      fieldCount: parseFields(c.fields).length,
+      records: recordCount,
+      recordsCapped: capped,
+      writeRate,
+      lastWrite,
+    };
+  }), [collections, stats, statsWindowSec]);
 
   const counts = {
     all: enriched.length,
@@ -226,7 +272,11 @@ export default function Collections() {
                   fontFamily: "var(--font-mono)",
                   fontVariantNumeric: "tabular-nums",
                 }}>
-                  {c.records == null ? "—" : c.records.toLocaleString()}
+                  {c.records == null
+                    ? "—"
+                    : c.recordsCapped
+                      ? `${c.records.toLocaleString()}+`
+                      : c.records.toLocaleString()}
                 </span>
                 <ActivityBar rate={c.writeRate} lastWrite={c.lastWrite} />
                 <span style={{

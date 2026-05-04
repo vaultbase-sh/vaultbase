@@ -65,6 +65,10 @@ export interface HookRecordRuleOpts {
 export interface HookHelpers extends ExtraHookHelpers {
   slug(s: string): string;
   abort(message: string): never;
+  /** Mint a fresh UUIDv4. Same as `crypto.randomUUID()` but discoverable. */
+  uuid(): string;
+  /** Alias of `uuid()` — common name LLMs reach for when generating ids. */
+  id(): string;
   find(collection: string, id: string): Promise<Record<string, unknown> | null>;
   query(
     collection: string,
@@ -267,6 +271,12 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
     },
     abort(message: string): never {
       throw new ValidationError({ _hook: message });
+    },
+    uuid(): string {
+      return crypto.randomUUID();
+    },
+    id(): string {
+      return crypto.randomUUID();
     },
     async find(collection: string, id: string) {
       const { getRecord } = await import("./records.ts");

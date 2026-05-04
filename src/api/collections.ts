@@ -10,8 +10,10 @@ import {
   previewViewRows,
   listCollections,
   updateCollection,
+  userTableName,
   validateViewQuery,
 } from "../core/collections.ts";
+import { getRawClient } from "../db/client.ts";
 
 function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -200,5 +202,70 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       }
       await deleteCollection(params.id);
       return { data: null };
+    })
+
+    // Per-collection counts + activity. Backs the Collections page so the
+    // "records" + "activity" cells get real values. Admin-only — exposes
+    // table-level cardinality.
+    .get("/admin/collections/stats", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) {
+        set.status = 403;
+        return { error: "Forbidden", code: 403 };
+      }
+      const cols = await listCollections();
+      const client = getRawClient();
+      const now = Math.floor(Date.now() / 1000);
+      const recentWindowSec = 24 * 60 * 60;       // last 24h
+      const cutoff = now - recentWindowSec;
+      // Hard cap on count(*) — large tables stay responsive ("50k+" in UI).
+      const COUNT_CAP = 50_000;
+
+      const stats = cols.map((c) => {
+        const out = {
+          name: c.name,
+          type: c.type,
+          recordCount: null as number | null,
+          recordCountCapped: false,
+          lastUpdated: null as number | null,
+          recentWrites: 0,
+        };
+        // View collections — counts work via the underlying SELECT but
+        // skipping for now (could be huge / expensive). Activity unknowable.
+        if (c.type === "view") return out;
+        const tname = `"${userTableName(c.name).replace(/"/g, '""')}"`;
+        try {
+          // Capped count: SELECT count over a LIMIT'd subquery.
+          const r = client.prepare(
+            `SELECT count(*) AS n FROM (SELECT 1 FROM ${tname} LIMIT ?)`,
+          ).get(COUNT_CAP + 1) as { n: number } | undefined;
+          if (r) {
+            if (r.n > COUNT_CAP) {
+              out.recordCount = COUNT_CAP;
+              out.recordCountCapped = true;
+            } else {
+              out.recordCount = r.n;
+            }
+          }
+        } catch { /* table missing — leave null */ }
+        try {
+          const r = client.prepare(
+            `SELECT max(updated_at) AS m FROM ${tname}`,
+          ).get() as { m: number | null } | undefined;
+          if (r?.m != null) out.lastUpdated = r.m;
+        } catch { /* skip */ }
+        try {
+          const r = client.prepare(
+            `SELECT count(*) AS n FROM ${tname} WHERE updated_at > ?`,
+          ).get(cutoff) as { n: number } | undefined;
+          if (r) out.recentWrites = r.n;
+        } catch { /* skip */ }
+        return out;
+      });
+
+      return {
+        data: stats,
+        windowSec: recentWindowSec,
+        cap: COUNT_CAP,
+      };
     });
 }
