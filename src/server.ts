@@ -11,6 +11,7 @@ import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
 import { makeFilesPlugin, pruneFileTokenUses } from "./api/files.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
+import { makeAuthPagesPlugin } from "./admin/auth-pages.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
 import { makeAdminsPlugin } from "./api/admins.ts";
 import { makeBackupPlugin } from "./api/backup.ts";
@@ -223,6 +224,7 @@ export function createServer(config: Config) {
       .use(makeRecordsPlugin(config.jwtSecret))
     )
     .use(makeAdminPlugin())
+    .use(makeAuthPagesPlugin())
     .get("/api/health", () => ({ data: { status: "ok" } }))
     // Cluster health probe — admin proxies / load-balancers hit this. Worker
     // id (if running under cluster mode) helps debug which worker answered.
