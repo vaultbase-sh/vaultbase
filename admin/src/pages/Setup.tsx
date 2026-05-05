@@ -2,12 +2,14 @@ import { useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import Icon from "../components/Icon.tsx";
 import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
+import { useVersion } from "../stores/version.ts";
 
 type Step = "welcome" | "admin" | "done";
 
 export default function Setup() {
   const [step, setStep] = useState<Step>("welcome");
   const [adminEmail, setAdminEmail] = useState("");
+  const version = useVersion();
 
   return (
     <div className="auth-shell">
@@ -15,9 +17,11 @@ export default function Setup() {
         <div className="auth-brand">
           <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
           <div className="name">vaultbase</div>
-          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-            v0.1.0
-          </span>
+          {version && (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              v{version}
+            </span>
+          )}
         </div>
 
         <StepIndicator step={step} />

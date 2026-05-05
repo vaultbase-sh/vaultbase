@@ -225,7 +225,10 @@ export function createServer(config: Config) {
     )
     .use(makeAdminPlugin())
     .use(makeAuthPagesPlugin())
-    .get("/api/health", () => ({ data: { status: "ok" } }))
+    .get("/api/health", async () => {
+      const { VAULTBASE_VERSION } = await import("./core/version.ts");
+      return { data: { status: "ok", version: VAULTBASE_VERSION } };
+    })
     // Cluster health probe — admin proxies / load-balancers hit this. Worker
     // id (if running under cluster mode) helps debug which worker answered.
     .get("/_/health", () => ({

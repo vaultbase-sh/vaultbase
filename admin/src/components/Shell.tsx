@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import Icon from "./Icon.tsx";
 import { VaultbaseLogo } from "./VaultbaseLogo.tsx";
 import { useAuth } from "../stores/auth.ts";
+import { useVersion } from "../stores/version.ts";
 
 interface NavItem { to: string; label: string; icon: string; end?: boolean }
 interface NavSection { label: string; items: NavItem[] }
@@ -16,8 +17,6 @@ const SECTIONS: NavSection[] = [
       { to: "/_/",             label: "Dashboard",    icon: "grid", end: true },
       { to: "/_/collections",  label: "Collections",  icon: "stack" },
       { to: "/_/logs",         label: "Logs",         icon: "scroll" },
-      { to: "/_/api-preview",  label: "API preview",  icon: "play" },
-      { to: "/_/sql",          label: "SQL",          icon: "database" },
     ],
   },
   {
@@ -27,6 +26,13 @@ const SECTIONS: NavSection[] = [
       { to: "/_/flags",        label: "Feature flags", icon: "flag" },
       { to: "/_/webhooks",     label: "Webhooks",     icon: "arrowUp" },
       { to: "/_/api-tokens",   label: "API tokens",   icon: "key" },
+    ],
+  },
+  {
+    label: "Tools",
+    items: [
+      { to: "/_/api-preview",  label: "API preview",  icon: "play" },
+      { to: "/_/sql",          label: "SQL",          icon: "database" },
       { to: "/_/mcp",          label: "MCP",          icon: "zap" },
     ],
   },
@@ -42,6 +48,7 @@ const SECTIONS: NavSection[] = [
 
 export const Sidebar: React.FC = () => {
   const adminEmail = useAuth((s) => s.email);
+  const version = useVersion();
   const navigate = useNavigate();
   const initial = adminEmail ? adminEmail[0]!.toLowerCase() : "a";
   const truncatedEmail = adminEmail && adminEmail.length > 22
@@ -55,7 +62,7 @@ export const Sidebar: React.FC = () => {
           <VaultbaseLogo size={20} />
         </span>
         <div className="sb-brand-name">vaultbase</div>
-        <div className="sb-brand-version mono">v0.9.1</div>
+        {version && <div className="sb-brand-version mono">v{version}</div>}
       </div>
       {SECTIONS.map((sec) => (
         <div className="sb-section" key={sec.label}>

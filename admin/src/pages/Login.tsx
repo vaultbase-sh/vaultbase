@@ -4,6 +4,7 @@ import { api, type ApiResponse } from "../api.ts";
 import { useAuth } from "../stores/auth.ts";
 import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
 import Icon from "../components/Icon.tsx";
+import { useVersion } from "../stores/version.ts";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -12,6 +13,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const version = useVersion();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -38,6 +40,11 @@ export default function Login() {
         <div className="auth-brand">
           <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
           <div className="name">vaultbase</div>
+          {version && (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              v{version}
+            </span>
+          )}
         </div>
         <div>
           <h1 className="auth-title">Welcome back</h1>
