@@ -1,4 +1,5 @@
 import Elysia from "elysia";
+import { createHash, timingSafeEqual } from "crypto";
 import { globalMetrics, STEPS } from "../core/perf-metrics.ts";
 import { getRawClient } from "../db/client.ts";
 import { verifyAuthToken } from "../core/sec.ts";
@@ -36,6 +37,12 @@ function sqliteSnapshot(): SqliteSnapshot | null {
   }
 }
 
+/** Constant-time string compare; hashing first evens out the lengths. */
+function sameSecret(a: string, b: string): boolean {
+  const h = (v: string) => createHash("sha256").update(v).digest();
+  return timingSafeEqual(h(a), h(b));
+}
+
 export function makeMetricsPlugin(jwtSecret: string) {
   return new Elysia({ name: "metrics" })
     .get("/_/metrics", async ({ request, set }) => {
@@ -66,7 +73,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
       const required = getSetting("metrics.token", "");
       if (required) {
         const got = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
-        if (got !== required) {
+        if (!sameSecret(got, required)) {
           set.status = 401;
           set.headers["www-authenticate"] = "Bearer";
           return "";

@@ -19,6 +19,7 @@ import { makeRecordsPlugin } from "../api/records.ts";
 import { makeBatchPlugin } from "../api/batch.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { makeCollectionsPlugin } from "../api/collections.ts";
+import { ensureAuthCollection, seedAuthUser } from "./_helpers.ts";
 
 const SECRET = "test-secret-api-token-scopes";
 let tmpDir: string;
@@ -138,5 +139,34 @@ describe("collections admin check", () => {
     expect((await del()).status).toBe(200);
     await revokeToken(jti, exp);
     expect((await del()).status).toBe(403);
+  });
+});
+
+describe("auth endpoints use the central verifier", () => {
+  async function userToken(collection: string, id: string) {
+    await seedAuthUser({ collection, id });
+    return signAuthToken({ payload: { id, collection }, audience: "user", expiresInSeconds: 60, jwtSecret: SECRET });
+  }
+  const status = async (collection: string, token: string) =>
+    (await makeAuthPlugin(SECRET).handle(req("GET", `/auth/${collection}/totp/recovery/status`, token))).status;
+
+  it("rejects a logged-out user token", async () => {
+    const { token, jti, exp } = await userToken("users", "u1");
+    expect(await status("users", token)).toBe(200);
+    await revokeToken(jti, exp);
+    expect(await status("users", token)).toBe(401);
+  });
+
+  it("rejects a token from another auth collection", async () => {
+    const { token } = await userToken("users", "u1");
+    await ensureAuthCollection("staff");
+    expect(await status("staff", token)).toBe(401);
+  });
+
+  it("impersonation rejects a revoked admin token", async () => {
+    const { token, jti, exp } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    await revokeToken(jti, exp);
+    const res = await makeAuthPlugin(SECRET).handle(req("POST", "/admin/impersonate/users/u1", token));
+    expect(res.status).toBe(401);
   });
 });

@@ -92,9 +92,12 @@ describe("POST /api/auth/:collection/promote", () => {
 
   it("rejects a non-anonymous user token", async () => {
     await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+    const { seedAuthUser } = await import("./_helpers.ts");
+    await seedAuthUser({ collection: "users", id: "u1", email: "real@test.local" });
     // Sign a normal user JWT — no `anonymous: true` claim.
     const token = await new jose.SignJWT({ id: "u1", email: "real@test.local", collection: "users" })
       .setProtectedHeader({ alg: "HS256" })
+      .setIssuer("vaultbase")
       .setAudience("user")
       .setExpirationTime("1h")
       .sign(new TextEncoder().encode(SECRET));

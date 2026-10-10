@@ -60,6 +60,18 @@ function clientIpForLockout(request: Request): string | null {
   return (xff.split(",")[0] ?? "").trim() || null;
 }
 
+/**
+ * The signed-in user of `collection` behind the bearer token, through the
+ * central verifier (revocation, principal recheck). A token from another
+ * auth collection doesn't count.
+ */
+async function userSession(request: Request, jwtSecret: string, collection: string) {
+  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  if (!token) return null;
+  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
+  return ctx && ctx.collection === collection ? ctx : null;
+}
+
 function getSecret(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);
 }
@@ -614,16 +626,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isAuthFeatureEnabled("mfa")) { set.status = 422; return { error: "MFA is disabled", code: 422 }; }
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        let userId: string;
-        try {
-          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-          userId = String(payload.id ?? "");
-          if (!userId) throw new Error("missing id");
-        } catch {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        const userId = session.id;
         const db = getDb();
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
@@ -639,16 +644,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        let userId: string;
-        try {
-          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-          userId = String(payload.id ?? "");
-          if (!userId) throw new Error("missing id");
-        } catch {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        const userId = session.id;
         const db = getDb();
         const rows = await db
           .select()
@@ -672,16 +670,9 @@ export function makeAuthPlugin(jwtSecret: string) {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      let userId: string;
-      try {
-        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-        userId = String(payload.id ?? "");
-        if (!userId) throw new Error("missing id");
-      } catch {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+      const session = await userSession(request, jwtSecret, col.name);
+      if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const userId = session.id;
       const db = getDb();
       const u = findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
@@ -884,16 +875,9 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
       if (!isAuthFeatureEnabled("mfa")) { set.status = 422; return { error: "MFA is disabled", code: 422 }; }
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      let userId: string;
-      try {
-        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-        userId = String(payload.id ?? "");
-        if (!userId) throw new Error("missing id");
-      } catch {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+      const session = await userSession(request, jwtSecret, col.name);
+      if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const userId = session.id;
       const db = getDb();
       const u = findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
@@ -915,16 +899,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isAuthFeatureEnabled("mfa")) { set.status = 422; return { error: "MFA is disabled", code: 422 }; }
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        let userId: string;
-        try {
-          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-          userId = String(payload.id ?? "");
-          if (!userId) throw new Error("missing id");
-        } catch {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        const userId = session.id;
         const db = getDb();
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
@@ -944,16 +921,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        let userId: string;
-        try {
-          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-          userId = String(payload.id ?? "");
-          if (!userId) throw new Error("missing id");
-        } catch {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        const userId = session.id;
         const db = getDb();
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
@@ -1023,18 +993,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        let userId: string;
-        let isAnon = false;
-        try {
-          const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-          userId = String(payload.id ?? "");
-          if (!userId) throw new Error("missing id");
-          isAnon = payload["anonymous"] === true;
-        } catch {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        const userId = session.id;
+        const isAnon = session.anonymous === true;
         if (!isAnon) {
           set.status = 422;
           return { error: "Only anonymous accounts can be promoted", code: 422 };
@@ -1101,13 +1063,11 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post("/admin/impersonate/:collection/:userId", async ({ params, request, set }) => {
       const adminToken = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!adminToken) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      let adminId: string;
-      try {
-        const { payload } = await jose.jwtVerify(adminToken, getSecret(jwtSecret), { audience: "admin" });
-        adminId = String(payload.id ?? "");
-      } catch {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+      // Central verifier: a revoked or force-logged-out admin token must not
+      // be able to mint user sessions.
+      const adminCtx = await verifyAuthToken(adminToken, jwtSecret, { audience: "admin" });
+      if (!adminCtx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const adminId = adminCtx.id;
       if (!isAuthFeatureEnabled("impersonation")) { set.status = 422; return { error: "Impersonation is disabled", code: 422 }; }
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -1407,10 +1367,8 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!proven) {
         const headerToken = request.headers.get("authorization")?.replace("Bearer ", "");
         if (headerToken) {
-          try {
-            const { payload } = await jose.jwtVerify(headerToken, getSecret(jwtSecret), { audience: "user" });
-            if (typeof payload["id"] === "string" && payload["id"] === user.id) proven = true;
-          } catch { /* invalid token — leave proven=false */ }
+          const ctx = await verifyAuthToken(headerToken, jwtSecret, { audience: "user" });
+          if (ctx && ctx.id === user.id && ctx.collection === col.name) proven = true;
         }
       }
       if (!proven) {
@@ -1469,16 +1427,9 @@ export function makeAuthPlugin(jwtSecret: string) {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      let userId: string;
-      try {
-        const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), { audience: "user" });
-        userId = String(payload.id ?? "");
-        if (!userId) throw new Error("missing id");
-      } catch {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+      const session = await userSession(request, jwtSecret, col.name);
+      if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      const userId = session.id;
       const db = getDb();
       const u = findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }

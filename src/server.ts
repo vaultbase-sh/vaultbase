@@ -1,6 +1,7 @@
 import Elysia, { t } from "elysia";
 import type { Config } from "./config.ts";
-import { dataPrincipal, securityHeaders, verifyAuthToken } from "./core/sec.ts";
+import * as jose from "jose";
+import { dataPrincipal, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
@@ -181,26 +182,22 @@ export function createServer(config: Config) {
     // Records last_used_at + IP + UA for any request that arrived
     // bearing a vbat_-prefixed token. Pure observability — failures
     // never block a request.
-    .onAfterHandle({ as: "global" }, ({ request }) => {
+    .onAfterHandle({ as: "global" }, ({ request, server }) => {
       const auth = request.headers.get("authorization") ?? "";
       const m = /^Bearer\s+vbat_([A-Za-z0-9._\-]+)/i.exec(auth);
       if (!m) return;
-      // Decode the JWT payload (no signature verify — that already
-      // happened on the request path; we only need the jti for keying).
+      // Verify the signature before recording: an unsigned look at the jti
+      // let a forged token overwrite a real token's last-used IP / UA.
+      // Off the response path; failures are ignored.
       const jwt = m[1] ?? "";
-      const mid = jwt.split(".")[1] ?? "";
-      let jti = "";
-      try {
-        const padded = mid.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(mid.length / 4) * 4, "=");
-        const json = JSON.parse(new TextDecoder().decode(
-          Uint8Array.from(atob(padded), (c) => c.charCodeAt(0))
-        )) as Record<string, unknown>;
-        if (typeof json.jti === "string") jti = json.jti;
-      } catch { /* malformed — skip */ }
-      if (!jti) return;
-      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-      const ua = request.headers.get("user-agent");
-      recordApiTokenUsage(jti, ip, ua);
+      const peerIp = (server as { requestIP?: (r: Request) => { address: string } | null } | null)
+        ?.requestIP?.(request)?.address ?? null;
+      void jose.jwtVerify(jwt, new TextEncoder().encode(config.jwtSecret), { issuer: "vaultbase", audience: "api" })
+        .then(({ payload }) => {
+          if (typeof payload.jti !== "string") return;
+          recordApiTokenUsage(payload.jti, trustedClientIp(request, peerIp), request.headers.get("user-agent"));
+        })
+        .catch(() => { /* invalid token — nothing to record */ });
     })
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the

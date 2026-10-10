@@ -68,8 +68,9 @@ async function stagePendingMerge(
 }
 
 async function signUserJwt(userId: string, email: string): Promise<string> {
-  return await new jose.SignJWT({ id: userId, email })
+  return await new jose.SignJWT({ id: userId, email, collection: "users" })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuer("vaultbase")
     .setAudience("user")
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(JWT_SECRET));
