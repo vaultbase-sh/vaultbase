@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { Image, GIF, Frame } from "imagescript";
+import { Image, GIF } from "imagescript";
+import { GIFEncoder, applyPalette, quantize } from "gifenc";
+import { encode as jpegEncode } from "@jsquash/jpeg";
 import { decode as webpDecode, encode as webpEncode } from "@jsquash/webp";
 import { decode as avifDecode, encode as avifEncode } from "@jsquash/avif";
 
@@ -123,16 +125,56 @@ describe("generateThumbnail — AVIF", () => {
   }, 30_000); // AVIF encode is slow; give the test ample headroom.
 });
 
+// ── PNG end-to-end ────────────────────────────────────────────────────────
+
+describe("generateThumbnail — PNG", () => {
+  it("emits a compressed PNG that decodes back at the contain dims", async () => {
+    const src = await makePng(200, 100);
+    const thumb = await generateThumbnail(src, { width: 50, height: 50, fit: "contain" }, "png");
+    expect(detectFormat(thumb)).toBe("png");
+    const decoded = await Image.decode(thumb);
+    expect(decoded.width).toBe(50);
+    expect(decoded.height).toBe(25);
+    // Stored-only PNG would be ≥ 50*25*4 bytes of raw pixels.
+    expect(thumb.byteLength).toBeLessThan(50 * 25 * 4);
+  });
+});
+
+// ── JPEG end-to-end ───────────────────────────────────────────────────────
+
+describe("generateThumbnail — JPEG", () => {
+  it("decodes a 200x100 source, resizes to 50x25, emits valid JPEG", async () => {
+    const src = new Uint8Array(await jpegEncode(solidImageData(200, 100, 200, 120, 40) as Parameters<typeof jpegEncode>[0], { quality: 90 }));
+    expect(detectFormat(src)).toBe("jpeg");
+
+    const thumb = await generateThumbnail(src, { width: 50, height: 50, fit: "contain" }, "jpeg");
+    expect(detectFormat(thumb)).toBe("jpeg");
+    const decoded = await Image.decode(thumb);
+    expect(decoded.width).toBe(50);
+    expect(decoded.height).toBe(25);
+  });
+});
+
 // ── Animated GIF ──────────────────────────────────────────────────────────
+
+/**
+ * Build a GIF from solid-colour frames. imagescript's own GIF encoder is a
+ * native addon that the single-binary build stubs out, so use gifenc.
+ */
+function makeGif(width: number, height: number, colors: Array<[number, number, number]>): Uint8Array {
+  const enc = GIFEncoder();
+  for (const [r, g, b] of colors) {
+    const rgba = solidImageData(width, height, r, g, b).data;
+    const palette = quantize(rgba, 256);
+    enc.writeFrame(applyPalette(rgba, palette), width, height, { palette, delay: 100 });
+  }
+  enc.finish();
+  return enc.bytes();
+}
 
 async function makeAnimatedGif(): Promise<Uint8Array> {
   // Two 60x60 frames: solid red, then solid green; 100ms each.
-  const f1 = new Image(60, 60);
-  f1.fill(Image.rgbaToColor(255, 0, 0, 255));
-  const f2 = new Image(60, 60);
-  f2.fill(Image.rgbaToColor(0, 255, 0, 255));
-  const gif = new GIF([Frame.from(f1, 100), Frame.from(f2, 100)]);
-  return await gif.encode(95);
+  return makeGif(60, 60, [[255, 0, 0], [0, 255, 0]]);
 }
 
 describe("generateThumbnail — animated GIF", () => {
@@ -158,10 +200,7 @@ describe("generateThumbnail — animated GIF", () => {
 describe("generateThumbnail — static GIF", () => {
   it("returns non-empty bytes that respect contain dims (downgrade to PNG is fine)", async () => {
     // Single-frame "GIF" — a plain PNG converted via a 1-frame GIF.
-    const f1 = new Image(80, 40);
-    f1.fill(Image.rgbaToColor(50, 50, 200, 255));
-    const oneFrame = new GIF([Frame.from(f1, 100)]);
-    const src = await oneFrame.encode(95);
+    const src = makeGif(80, 40, [[50, 50, 200]]);
     expect(detectFormat(src)).toBe("gif");
 
     const thumb = await generateThumbnail(src, { width: 20, height: 20, fit: "contain" }, "gif");

@@ -1,13 +1,20 @@
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { Image, GIF, Frame } from "imagescript";
+import { Image, GIF } from "imagescript";
+import { GIFEncoder, applyPalette, quantize } from "gifenc";
+import { avifDecoder, avifEncoder, jpegEncoder, webpDecoder, webpEncoder } from "./codecs";
 
 /**
  * Lightweight thumbnail generator.
  *
- * Engine matrix:
- *   - PNG / JPEG / GIF (static + animated): `imagescript` (pure JS)
- *   - WebP / AVIF: `@jsquash/webp` and `@jsquash/avif` (zero-dep WASM)
+ * Engine matrix (all WASM is embedded via ./codecs):
+ *   - Decode PNG / JPEG / GIF, resize, encode PNG: `imagescript`
+ *   - Encode JPEG: `@jsquash/jpeg` (MozJPEG)
+ *   - Encode animated GIF: `gifenc` (pure JS)
+ *   - WebP / AVIF: `@jsquash/webp` and `@jsquash/avif`
+ *
+ * imagescript's own JPEG / GIF encoders are native addons that cannot ship in
+ * a single binary (see scripts/patch-imagescript.ts), so they are never called.
  *
  * On-disk cache lives at `<uploadDir>/.thumbs/<filename>__<W>x<H>[_<fit>].<ext>`
  * so repeat fetches read straight from disk without re-encoding. The fit mode
@@ -21,6 +28,8 @@ export type ThumbFormat = "jpeg" | "png" | "gif" | "webp" | "avif";
 export type ThumbFit = "contain" | "cover" | "crop";
 
 const MIN_DIM = 1;
+/** zlib level for PNG thumbs. 0 is stored-only (bigger than most originals, and imagescript can't read it back). */
+const PNG_LEVEL = 3;
 const MAX_DIM = 4096;
 
 export interface ThumbSpec {
@@ -222,12 +231,15 @@ export async function generateThumbnail(
   // PNG / JPEG path — vanilla imagescript.
   const img = await Image.decode(bytes);
   const resized = fitImage(img, spec);
-  if (format === "jpeg") return resized.encodeJPEG(85);
-  return resized.encode(0);
+  if (format === "jpeg") {
+    const encode = await jpegEncoder();
+    return new Uint8Array(await encode(imageDataFromImage(resized), { quality: 85 }));
+  }
+  return resized.encode(PNG_LEVEL);
 }
 
 async function thumbnailWebp(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Array> {
-  const { decode, encode } = await import("@jsquash/webp");
+  const [decode, encode] = await Promise.all([webpDecoder(), webpEncoder()]);
   // @jsquash takes ArrayBuffer; build a tight one in case `bytes` is a slice.
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const decoded = await decode(ab);
@@ -238,7 +250,7 @@ async function thumbnailWebp(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8A
 }
 
 async function thumbnailAvif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Array> {
-  const { decode, encode } = await import("@jsquash/avif");
+  const [decode, encode] = await Promise.all([avifDecoder(), avifEncoder()]);
   const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const decoded = await decode(ab);
   const img = imageFromImageData(decoded);
@@ -250,9 +262,10 @@ async function thumbnailAvif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8A
 /**
  * GIF thumbnailing.
  *
- * Animated source → animated thumb: decode all frames via `GIF.decode`, resize
- * each via the same fit math, preserve per-frame `duration` + `disposalMode`
- * + the GIF's `loopCount`, re-encode via `GIF.encode`.
+ * Animated source → animated thumb: decode all frames via `GIF.decode` (they
+ * come back as full, already-composited canvases), resize each via the same
+ * fit math, and re-encode with `gifenc`, keeping per-frame delays and the
+ * loop count.
  *
  * Static source (1 frame) → emit a PNG (matches the prior behavior; saves the
  * GIF encoder hit when there's only one frame anyway).
@@ -267,34 +280,35 @@ async function thumbnailGif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Ar
       // Single-frame GIF: cheaper to ship as PNG, same as the old code path.
       const single = gif[0] ?? (await Image.decode(bytes));
       const resized = fitImage(single as Image, spec);
-      return resized.encode(0);
+      return resized.encode(PNG_LEVEL);
     }
 
-    // Multi-frame: resize every frame, keep its duration + disposal flag.
-    const newFrames: Frame[] = [];
+    // imagescript: -1 = loop forever. gifenc: 0 = forever, n = n repeats.
+    const loopCount = (gif as unknown as { loopCount?: number }).loopCount ?? -1;
+    const repeat = loopCount <= 0 ? 0 : loopCount;
+    const enc = GIFEncoder();
     for (const frame of gif) {
-      const dims = fitDimensions(frame.width, frame.height, spec);
       // Frame extends Image but the typings expose an incompatible private
       // `toString` — go through `unknown` to keep the runtime polymorphism.
-      let working: Image = frame as unknown as Image;
-      if (spec.fit === "cover" || spec.fit === "crop") {
-        working = (working.clone() as Image).crop(dims.cropX, dims.cropY, dims.cropW, dims.cropH) as Image;
-      }
-      const resized = (working.clone() as Image).resize(dims.newW, dims.newH) as Image;
-      // `Frame.from` clones the bitmap and copies metadata.
-      newFrames.push(Frame.from(resized, frame.duration, 0, 0, frame.disposalMode));
+      const resized = fitImage((frame as unknown as Image).clone() as Image, spec);
+      const rgba = resized.bitmap;
+      const palette = quantize(rgba, 256, { format: "rgba4444", oneBitAlpha: true });
+      const transparentIndex = palette.findIndex((c) => c[3] === 0);
+      enc.writeFrame(applyPalette(rgba, palette, "rgba4444"), resized.width, resized.height, {
+        palette,
+        delay: frame.duration,
+        repeat,
+        ...(transparentIndex >= 0 ? { transparent: true, transparentIndex } : {}),
+      });
     }
-    // Loop count: imagescript exposes it on the GIF instance via `loopCount` in
-    // some builds; if missing default to -1 (infinite) to match standard GIF.
-    const loopCount = (gif as unknown as { loopCount?: number }).loopCount ?? -1;
-    const outGif = new GIF(newFrames, loopCount);
-    return await outGif.encode(95);
+    enc.finish();
+    return enc.bytes();
   } catch {
     // Animated decode/encode pipeline failed (imagescript's GIF support has been
     // historically finicky on certain inputs). Fall back to "first frame as PNG"
     // — same as the old behavior, never throws further.
     const img = await Image.decode(bytes);
     const resized = fitImage(img, spec);
-    return resized.encode(0);
+    return resized.encode(PNG_LEVEL);
   }
 }

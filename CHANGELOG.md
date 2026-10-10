@@ -7,6 +7,14 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+- **Image thumbnails in release binaries.** `?thumb=` returned the original file for every format, because the image codecs' WASM was not embedded in the single binary. PNG, JPEG, GIF, WebP and AVIF thumbnails are now generated and cached. The binary grows by about 10 MB.
+- JPEG thumbnails are encoded with MozJPEG; before, every JPEG thumbnail fell back to the full-size original, even in development.
+- Animated GIF thumbnails stay animated instead of becoming a still PNG of the first frame.
+- PNG thumbnails are compressed. They were written uncompressed, often larger than the source.
+
 ## [0.13.0] — 2026-10-10
 
 ### Upgrade notes

@@ -12,6 +12,8 @@
  * `import` then succeeds and the rest of imagescript (PNG / decoders /
  * resize / crop / Frame.from / WASM codecs) keeps working.
  *
+ * Also redirects imagescript's WASM loaders to the embedded copies (below).
+ *
  * Idempotent: re-running on an already-patched tree is a no-op.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -50,9 +52,28 @@ if (!existsSync(TARGET)) {
 
 const current = readFileSync(TARGET, "utf8");
 if (current.startsWith(SENTINEL)) {
-  console.log("[patch-imagescript] already patched — skipping");
-  process.exit(0);
+  console.log("[patch-imagescript] native codec already stubbed");
+} else {
+  writeFileSync(TARGET, STUB, "utf8");
+  console.log(`[patch-imagescript] patched ${TARGET}`);
 }
 
-writeFileSync(TARGET, STUB, "utf8");
-console.log(`[patch-imagescript] patched ${TARGET}`);
+// ── WASM loaders ─────────────────────────────────────────────────────────────
+// imagescript reads `../any/<name>.wasm` from disk beside its own files, which
+// does not exist inside a compiled binary. src/core/codecs.ts embeds those
+// files and publishes their paths on `globalThis.__vaultbaseImagescriptWasm`;
+// point the loaders there first, keeping the on-disk path as the fallback.
+const LOADER_FROM = "readFile(join(__dirname, `../${wasm_path}/${wasm_name}.wasm`))";
+const LOADER_TO = "readFile(globalThis.__vaultbaseImagescriptWasm?.[wasm_name] ?? join(__dirname, `../${wasm_path}/${wasm_name}.wasm`))";
+
+for (const name of ["png", "jpeg", "gif"]) {
+  const file = resolve(import.meta.dir, "..", `node_modules/imagescript/wasm/node/${name}.js`);
+  if (!existsSync(file)) continue;
+  const src = readFileSync(file, "utf8");
+  if (src.includes(LOADER_TO)) continue;
+  if (!src.includes(LOADER_FROM)) {
+    throw new Error(`[patch-imagescript] unexpected loader in ${file} — imagescript changed, update this patch`);
+  }
+  writeFileSync(file, src.replace(LOADER_FROM, LOADER_TO), "utf8");
+  console.log(`[patch-imagescript] patched ${file}`);
+}
