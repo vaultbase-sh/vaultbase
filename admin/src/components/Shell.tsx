@@ -1,7 +1,7 @@
 import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import Icon from "./Icon.tsx";
-import { VaultbaseLogo } from "./VaultbaseLogo.tsx";
+import { VaultbaseLogo, VaultbaseWordmark } from "./VaultbaseLogo.tsx";
 import { useAuth } from "../stores/auth.ts";
 import { useVersion } from "../stores/version.ts";
 
@@ -61,7 +61,7 @@ export const Sidebar: React.FC = () => {
         <span className="sb-brand-mark">
           <VaultbaseLogo size={20} />
         </span>
-        <div className="sb-brand-name">vaultbase</div>
+        <VaultbaseWordmark height={15} className="sb-brand-name" />
         {version && <div className="sb-brand-version mono">v{version}</div>}
       </div>
       {SECTIONS.map((sec) => (

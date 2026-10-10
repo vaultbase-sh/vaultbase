@@ -1,6 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
-  <path d="M16 3 5 9v14l11 6 11-6V9L16 3Z" fill="#3b82f6" stroke="#60a5fa" stroke-width="0.8"></path>
-  <path d="M16 3 5 9l11 6 11-6L16 3Z" fill="#60a5fa" opacity="0.85"></path>
-  <path d="M16 15v14" stroke="#1e3a8a" stroke-width="1" opacity="0.6"></path>
-  <path d="m11 13 5 3 5-3" stroke="#bfdbfe" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.95"></path>
-</svg>
+<svg fill="#e85a4f" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><title>Vaultbase</title><path fill="#e85a4f" d="M 34.00 81.95 H 61.93 L 104.90 175.71 V 210.87 H 93.09ZM 93.09 38.98 H 116.72 V 210.87 H 93.09ZM 222.00 146.41 A 64.46 66.61 0 1 1 93.09 146.41 A 64.46 66.61 0 1 1 222.00 146.41ZM 198.37 146.41 A 40.82 42.97 0 1 0 116.72 146.41 A 40.82 42.97 0 1 0 198.37 146.41Z"/></svg>

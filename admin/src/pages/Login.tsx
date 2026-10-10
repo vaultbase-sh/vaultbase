@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 import { useAuth } from "../stores/auth.ts";
-import { VaultbaseLogo } from "../components/VaultbaseLogo.tsx";
+import { VaultbaseLogo, VaultbaseWordmark } from "../components/VaultbaseLogo.tsx";
 import Icon from "../components/Icon.tsx";
 import { useVersion } from "../stores/version.ts";
 
@@ -39,7 +39,7 @@ export default function Login() {
       <div className="auth-card">
         <div className="auth-brand">
           <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
-          <div className="name">vaultbase</div>
+          <VaultbaseWordmark height={16} className="name" />
           {version && (
             <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
               v{version}
