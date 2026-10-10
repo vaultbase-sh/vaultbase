@@ -10,6 +10,10 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Vite's preload helper backs every lazy import(). Left unassigned,
+          // Rollup merged it into the monaco chunk, so the entry statically
+          // imported 4 MB of Monaco on every page (login included).
+          if (id.includes("vite/preload-helper")) return "vendor";
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("monaco-editor")) return "monaco";
           if (id.includes("quill")) return "quill";

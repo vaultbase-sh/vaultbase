@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { MultiSelect } from "primereact/multiselect";
 import { Editor as QuillEditor } from "primereact/editor";
+import "quill/dist/quill.snow.css"; // only this page uses the Quill editor
 import {
   api, getMemoryToken, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,

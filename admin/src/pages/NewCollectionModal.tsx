@@ -5,7 +5,7 @@ import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse,
 import { Modal, Toggle } from "../components/UI.tsx";
 import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
-import { CodeEditor, type SqlSchema } from "../components/CodeEditor.tsx";
+import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
 
 const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json"];
 
