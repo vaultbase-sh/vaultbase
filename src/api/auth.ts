@@ -1528,12 +1528,25 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (ctx.type !== "user" && ctx.type !== "admin") {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      // Signature already verified above; read the principal claims back so
+      // the new token keeps them. Dropping `collection` made every refreshed
+      // user token fail verification.
+      const prev = jose.decodeJwt(token);
+      // Impersonation sessions are time-boxed by design; refreshing would turn
+      // one into an ordinary long-lived user token and drop the audit marker.
+      if (typeof prev["impersonated_by"] === "string") {
+        set.status = 403;
+        return { error: "Impersonation tokens cannot be refreshed", code: 403 };
+      }
       const claims: jose.JWTPayload = { id: ctx.id };
       if (ctx.email) claims.email = ctx.email;
+      if (typeof prev["collection"] === "string") claims["collection"] = prev["collection"];
+      const anonymous = prev["anonymous"] === true;
+      if (anonymous) claims["anonymous"] = true;
       const { token: newToken } = await signAuthToken({
         payload: claims,
         audience: ctx.type,
-        expiresInSeconds: tokenWindowSeconds("refresh"),
+        expiresInSeconds: tokenWindowSeconds(anonymous ? "anonymous" : "refresh"),
         jwtSecret,
       });
       return { data: { token: newToken } };
