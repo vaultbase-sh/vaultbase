@@ -109,6 +109,7 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
 }
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
+import { afterCommit, withSharedWrite } from "./write-gate.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
@@ -449,7 +450,7 @@ export async function getRecord(
 
 // ── Create ──────────────────────────────────────────────────────────────────
 
-export async function createRecord(
+async function createRecordImpl(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
   auth: AuthContext | null = null
@@ -514,18 +515,21 @@ export async function createRecord(
     snapshot: result as unknown as Record<string, unknown>,
     auth,
   });
-  broadcast(col.name, { type: "create", collection: col.name, record: result }, {
-    viewRule: col.view_rule,
-    record: result as unknown as Record<string, unknown>,
+  // Inside a batch these run only after COMMIT (see write-gate.ts).
+  afterCommit(() => {
+    broadcast(col.name, { type: "create", collection: col.name, record: result }, {
+      viewRule: col.view_rule,
+      record: result as unknown as Record<string, unknown>,
+    });
+    void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
+    runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   });
-  void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
-  runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
   return result;
 }
 
 // ── Update ──────────────────────────────────────────────────────────────────
 
-export async function updateRecord(
+async function updateRecordImpl(
   collectionName: string,
   id: string,
   data: Record<string, unknown> | null | undefined,
@@ -599,15 +603,17 @@ export async function updateRecord(
     snapshot: result as unknown as Record<string, unknown>,
     auth,
   });
-  broadcast(col.name, { type: "update", collection: col.name, record: result }, {
-    viewRule: col.view_rule,
-    record: result as unknown as Record<string, unknown>,
-  });
-  void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
-  runAfterHook(col, "afterUpdate", {
-    record: result as unknown as Record<string, unknown>,
-    existing: existing as unknown as Record<string, unknown>,
-    auth, helpers,
+  afterCommit(() => {
+    broadcast(col.name, { type: "update", collection: col.name, record: result }, {
+      viewRule: col.view_rule,
+      record: result as unknown as Record<string, unknown>,
+    });
+    void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
+    runAfterHook(col, "afterUpdate", {
+      record: result as unknown as Record<string, unknown>,
+      existing: existing as unknown as Record<string, unknown>,
+      auth, helpers,
+    });
   });
   return result;
 }
@@ -718,10 +724,10 @@ async function applyCascades(
       // would be surprisingly expensive.
       for (const r of affected) {
         const rec = await getRecord(ref.collection.name, r.id);
-        if (rec) broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
+        if (rec) afterCommit(() => broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
           viewRule: ref.collection.view_rule,
           record: rec as unknown as Record<string, unknown>,
-        });
+        }));
       }
       continue;
     }
@@ -737,7 +743,7 @@ async function applyCascades(
   }
 }
 
-export async function deleteRecord(
+async function deleteRecordImpl(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null
@@ -776,16 +782,17 @@ async function deleteRecordInternal(
     auth,
   });
   // Pass the just-deleted record snapshot so per-subscriber view_rule eval still has fields.
-  broadcast(col.name, { type: "delete", collection: col.name, id }, {
-    viewRule: col.view_rule,
-    record: existing as unknown as Record<string, unknown>,
-  });
-  void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });
-
-  runAfterHook(col, "afterDelete", {
-    record: {},
-    existing: existing as unknown as Record<string, unknown>,
-    auth, helpers,
+  afterCommit(() => {
+    broadcast(col.name, { type: "delete", collection: col.name, id }, {
+      viewRule: col.view_rule,
+      record: existing as unknown as Record<string, unknown>,
+    });
+    void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });
+    runAfterHook(col, "afterDelete", {
+      record: {},
+      existing: existing as unknown as Record<string, unknown>,
+      auth, helpers,
+    });
   });
 }
 
@@ -856,4 +863,33 @@ async function expandRelations(
       await expandRelations(expanded, restPaths, targetFields);
     }
   }
+}
+
+// ── Gated entry points ──────────────────────────────────────────────────────
+// Every record write goes through the write gate so it can never land inside
+// another request's open batch transaction (see write-gate.ts).
+
+export function createRecord(
+  collectionName: string,
+  data: Record<string, unknown> | null | undefined,
+  auth: AuthContext | null = null,
+): Promise<RecordWithMeta> {
+  return withSharedWrite(() => createRecordImpl(collectionName, data, auth));
+}
+
+export function updateRecord(
+  collectionName: string,
+  id: string,
+  data: Record<string, unknown> | null | undefined,
+  auth: AuthContext | null = null,
+): Promise<RecordWithMeta> {
+  return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth));
+}
+
+export function deleteRecord(
+  collectionName: string,
+  id: string,
+  auth: AuthContext | null = null,
+): Promise<void> {
+  return withSharedWrite(() => deleteRecordImpl(collectionName, id, auth));
 }

@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection } from "../core/collections.ts";
+import { withExclusiveWrite } from "../core/write-gate.ts";
 import { AccessRuleError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
@@ -151,47 +152,53 @@ export function makeBatchPlugin(jwtSecret: string) {
       }
 
       const client = (getDb() as unknown as { $client: Database }).$client;
-      // Atomic: BEGIN ... COMMIT or ROLLBACK
-      client.exec("BEGIN");
-      const results: BatchResult[] = [];
-      try {
-        for (let i = 0; i < parsed.length; i++) {
-          const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, auth);
-          results.push(result);
+      // Atomic: BEGIN ... COMMIT or ROLLBACK. The transaction lives on the
+      // shared connection and spans awaits, so the write gate keeps every
+      // other record write (and other batches) out until it finishes.
+      return withExclusiveWrite(async (tx) => {
+        const results: BatchResult[] = [];
+        try {
+          client.exec("BEGIN");
+          for (let i = 0; i < parsed.length; i++) {
+            const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, auth);
+            results.push(result);
+          }
+          client.exec("COMMIT");
+          tx.commit(); // realtime / webhooks / after-hooks for the committed writes
+          return { data: results };
+        } catch (e) {
+          if (client.inTransaction) client.exec("ROLLBACK");
+          tx.rollback();
+          if (e instanceof RuleDeniedError) {
+            set.status = 403;
+            return { error: `Batch failed at request ${results.length}: forbidden by ${e.ruleName}`, code: 403 };
+          }
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };
+          }
+          if (e instanceof RestrictError) {
+            set.status = 409;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details };
+          }
+          if (e instanceof ReadOnlyCollectionError) {
+            set.status = 405;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 405 };
+          }
+          if (e instanceof FilterError) {
+            set.status = 400;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 400 };
+          }
+          if (e instanceof AccessRuleError) {
+            process.stderr.write(`[batch] ${e.message}\n`);
+            set.status = 403;
+            return { error: `Batch failed at request ${results.length}: forbidden by list_rule`, code: 403 };
+          }
+          const msg = e instanceof Error ? e.message : String(e);
+          set.status = 500;
+          return { error: `Batch failed at request ${results.length}: ${msg}`, code: 500 };
         }
-        client.exec("COMMIT");
-        return { data: results };
-      } catch (e) {
-        client.exec("ROLLBACK");
-        if (e instanceof RuleDeniedError) {
-          set.status = 403;
-          return { error: `Batch failed at request ${results.length}: forbidden by ${e.ruleName}`, code: 403 };
-        }
-        if (e instanceof ValidationError) {
-          set.status = 422;
-          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };
-        }
-        if (e instanceof RestrictError) {
-          set.status = 409;
-          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details };
-        }
-        if (e instanceof ReadOnlyCollectionError) {
-          set.status = 405;
-          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 405 };
-        }
-        if (e instanceof FilterError) {
-          set.status = 400;
-          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 400 };
-        }
-        if (e instanceof AccessRuleError) {
-          process.stderr.write(`[batch] ${e.message}\n`);
-          set.status = 403;
-          return { error: `Batch failed at request ${results.length}: forbidden by list_rule`, code: 403 };
-        }
-        const msg = e instanceof Error ? e.message : String(e);
-        set.status = 500;
-        return { error: `Batch failed at request ${results.length}: ${msg}`, code: 500 };
-      }
+      });
     },
     {
       body: t.Object({
