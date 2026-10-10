@@ -32,6 +32,7 @@ import { makeMcpPlugin } from "./api/mcp.ts";
 import { makeMcpAdminPlugin } from "./api/mcp-admin.ts";
 import { makeSqlPlugin } from "./api/sql.ts";
 import { startApiTokenUsageFlusher, recordApiTokenUsage, pruneExpiredApiTokens } from "./core/api-tokens.ts";
+import { pruneHistory } from "./core/maintenance.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
@@ -124,6 +125,10 @@ export function createServer(config: Config) {
   // Prune expired/long-revoked API token rows once a day.
   setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
   setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
+  // Finished jobs / webhook deliveries past retention, expired revocations
+  // and one-time auth tokens (see core/maintenance.ts).
+  setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
+  setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
   // Sweep idle SQL sandboxes hourly. They're per-admin, so a forgotten
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.

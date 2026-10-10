@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -403,17 +403,19 @@ export async function queueStats(): Promise<Array<{
   dead: number;
 }>> {
   const db = getDb();
-  const all = await db.select().from(jobsLog);
+  // Count in SQL: loading every jobs_log row into JS on each dashboard load
+  // grew without bound.
+  const counts = await db
+    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`count(*)` })
+    .from(jobsLog)
+    .groupBy(jobsLog.queue, jobsLog.status);
   const map = new Map<string, { queue: string; queued: number; running: number; succeeded: number; failed: number; dead: number }>();
-  for (const j of all) {
-    const k = j.queue;
-    if (!map.has(k)) map.set(k, { queue: k, queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0 });
-    const e = map.get(k)!;
-    if (j.status === "queued")    e.queued++;
-    if (j.status === "running")   e.running++;
-    if (j.status === "succeeded") e.succeeded++;
-    if (j.status === "failed")    e.failed++;
-    if (j.status === "dead")      e.dead++;
+  for (const { queue, status, n } of counts) {
+    if (!map.has(queue)) map.set(queue, { queue, queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0 });
+    const e = map.get(queue)!;
+    if (status === "queued" || status === "running" || status === "succeeded" || status === "failed" || status === "dead") {
+      e[status] += Number(n);
+    }
   }
   // Workers may exist with zero jobs yet — surface their queues so admins see them.
   const all_workers = await db.select({ queue: workers.queue }).from(workers);
