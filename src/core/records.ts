@@ -75,6 +75,25 @@ function makeCollectionLookup(): CollectionLookup {
     };
   };
 }
+export const DEFAULT_PER_PAGE = 30;
+/** Largest page size a client-facing endpoint may request. */
+export const MAX_PER_PAGE = 500;
+
+function positiveInt(v: number | undefined, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : fallback;
+}
+
+/**
+ * Parse client-supplied page / perPage query values: invalid → defaults,
+ * perPage capped at MAX_PER_PAGE.
+ */
+export function clientPaging(page: string | null | undefined, perPage: string | null | undefined): { page: number; perPage: number } {
+  return {
+    page: positiveInt(page ? parseInt(page, 10) : undefined, 1),
+    perPage: Math.min(positiveInt(perPage ? parseInt(perPage, 10) : undefined, DEFAULT_PER_PAGE), MAX_PER_PAGE),
+  };
+}
+
 /**
  * Load every collection a filter / rule joins to (`@collection.X`,
  * `X_via_field`) into the cache that makeCollectionLookup reads.
@@ -290,8 +309,10 @@ export async function listRecords(
   const tableRef = quoteIdent(tname);
   const client = rawClient();
 
-  const page = opts.page ?? 1;
-  const perPage = opts.perPage ?? 30;
+  // Guard against values that would reach SQL as-is: LIMIT -1 means "no
+  // limit" in SQLite, 0 gives Infinity pages, NaN fails the bind.
+  const page = positiveInt(opts.page, 1);
+  const perPage = positiveInt(opts.perPage, DEFAULT_PER_PAGE);
   const offset = (page - 1) * perPage;
 
   // Build WHERE

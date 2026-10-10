@@ -10,6 +10,7 @@ import {
   ReadOnlyCollectionError,
   FilterError,
   AccessRuleError,
+  clientPaging,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
@@ -142,8 +143,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }
 
         const opts: import("../core/records.ts").ListOptions = {
-          page: query.page ? parseInt(query.page) : 1,
-          perPage: query.perPage ? parseInt(query.perPage) : 30,
+          ...clientPaging(query.page, query.perPage),
           auth,
         };
         if (query.filter) opts.filter = query.filter;
