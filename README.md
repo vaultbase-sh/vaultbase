@@ -1,34 +1,70 @@
-# Vaultbase
+<p align="center">
+  <a href="https://vaultbase.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/vaultbase-wordmark.svg">
+      <img src="assets/vaultbase-wordmark-light.svg" alt="Vaultbase" width="340">
+    </picture>
+  </a>
+</p>
 
-Self-hosted backend in a single binary — collections, REST API, auth, realtime, file uploads, server-side hooks. TypeScript on Bun.
+<p align="center">
+  <strong>Your whole backend. One file.</strong><br>
+  Self-hosted backend in a single binary: collections, REST, auth, realtime, files, hooks, queues and MCP for AI agents.
+</p>
 
-## Quick start
+<p align="center">
+  <a href="https://github.com/vaultbase-sh/vaultbase/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/vaultbase-sh/vaultbase?style=flat-square&color=e85a4f&label=release"></a>
+  <a href="https://github.com/vaultbase-sh/vaultbase/actions/workflows/release.yml"><img alt="Release build" src="https://img.shields.io/github/actions/workflow/status/vaultbase-sh/vaultbase/release.yml?style=flat-square&label=build"></a>
+  <a href="https://github.com/vaultbase-sh/vaultbase/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/vaultbase-sh/vaultbase/total?style=flat-square&color=1b1a1a"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/github/license/vaultbase-sh/vaultbase?style=flat-square&color=1b1a1a"></a>
+  <br>
+  <a href="https://www.npmjs.com/package/@vaultbase/sdk"><img alt="@vaultbase/sdk" src="https://img.shields.io/npm/v/@vaultbase/sdk?style=flat-square&color=e85a4f&label=%40vaultbase%2Fsdk"></a>
+  <a href="https://www.npmjs.com/package/@vaultbase/mcp"><img alt="@vaultbase/mcp" src="https://img.shields.io/npm/v/@vaultbase/mcp?style=flat-square&color=e85a4f&label=%40vaultbase%2Fmcp"></a>
+  <img alt="Linux · macOS · Windows" src="https://img.shields.io/badge/platforms-linux%20%C2%B7%20macos%20%C2%B7%20windows-1b1a1a?style=flat-square">
+  <a href="https://bun.sh"><img alt="Built with Bun" src="https://img.shields.io/badge/built%20with-bun-1b1a1a?style=flat-square&logo=bun&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://vaultbase.dev">Website</a> ·
+  <a href="https://docs.vaultbase.dev">Docs</a> ·
+  <a href="https://github.com/vaultbase-sh/vaultbase/releases">Releases</a> ·
+  <a href="https://github.com/vaultbase-sh/sdk">TypeScript SDK</a> ·
+  <a href="https://github.com/vaultbase-sh/mcp">MCP bridge</a>
+</p>
+
+## Install
+
+Linux (x64, arm64, musl), as root:
 
 ```bash
-# Build
-bun install
-bun run build           # compiles admin + binary → ./vaultbase[.exe]
+curl -fsSL https://get.vaultbase.dev | sudo sh
+```
 
-# Run
+Installs the latest release to `/usr/local/bin/vaultbase`, creates a `vaultbase` service user and a systemd unit, and starts it on `:8091`. Open `http://localhost:8091/_/` for the setup wizard.
+
+- `sudo sh -s -- --verify-sig` checks the binary's cosign keyless signature first (needs `cosign` on PATH).
+- `--version vX.Y.Z`, `--port N`, `--no-start`, `--no-systemd` are also available.
+- macOS and Windows: download the binary from [Releases](https://github.com/vaultbase-sh/vaultbase/releases/latest).
+
+From source:
+
+```bash
+bun install
+bun run build           # admin UI + binary → ./vaultbase[.exe]
 ./vaultbase             # serves on :8091
-# Visit http://localhost:8091/_/  → setup wizard
 ```
 
 ## Features
 
-- **Collections** with typed fields: `text`, `number`, `bool`, `email`, `url`, `date`, `file` (multi), `relation`, `select` (multi), `json`, `autodate`, `password` (bcrypt), `editor` (rich text), `geoPoint`
-- **Per-collection real SQL tables** (not JSON blobs) — fast queries, native indexes
-- **REST API** — list/get/create/update/delete with filter, sort, expand (nested), field projection, skipTotal, batch
-- **Auth** — email + password, JWT (admin + user), token refresh, multi-admin
-- **Realtime** — WebSocket subscribe per collection, broadcast on CRUD
-- **Files** — local FS, size + MIME validation, multi-file fields
-- **Hooks page** — record event hooks (before/after × Create/Update/Delete), custom HTTP routes (`/api/custom/*`), cron jobs (UTC, with cronstrue + crontab.guru link). Monaco editor with ctx IntelliSense
-- **Logs** — JSONL files per UTC day, never deleted. JSONPath search
-- **Rate limiting** — per-IP token bucket, per-rule (path + action + audience). Editable from Settings
-- **SMTP** — full config + test button. `helpers.email()` available in hooks/routes/jobs
-- **Encrypted fields** — AES-GCM via `VAULTBASE_ENCRYPTION_KEY`
-- **Backup / restore** — SQLite snapshot download/upload
-- **Single binary** — no native deps. Embedded admin UI (gzip+base64 via Bun macro)
+- **Collections + REST** — real SQLite tables per collection (`vb_<name>`), 15 field types, base / auth / view collections. Filter, sort, expand, field projection, batch, ETag concurrency
+- **Auth** — email + password, OAuth2 with PKCE (Google, GitHub, Apple, Microsoft, Discord, GitLab and more, plus generic OIDC), OTP / magic links, MFA / TOTP, anonymous users, admin impersonation
+- **Realtime** — WebSocket + SSE; subscribe to a collection, a record, its children or `*`, checked against your API rules
+- **Files** — local disk, S3 or R2; thumbnails, MIME / size validation, protected files with one-time tokens
+- **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete
+- **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every call audited
+- **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), backups, Prometheus metrics
+- **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks
+- **One binary** — no native deps, admin UI embedded; releases are cosign-signed with CycloneDX SBOMs
 
 ## Stack
 

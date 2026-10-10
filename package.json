@@ -1,6 +1,7 @@
 {
   "name": "vaultbase",
   "version": "0.12.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",

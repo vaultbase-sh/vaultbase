@@ -219,7 +219,7 @@ Server flags:
 
 Environment:
   VAULTBASE_DATA_DIR              Data directory (default: ./vaultbase_data)
-  VAULTBASE_PORT                  HTTP port (default: 8090)
+  VAULTBASE_PORT                  HTTP port (default: 8091)
   VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
   VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (default: read from <dataDir>/.encryption-key)
