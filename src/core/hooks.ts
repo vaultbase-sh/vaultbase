@@ -8,6 +8,7 @@ import { sendEmail } from "./email.ts";
 import { recordRuleEval, type RuleOutcome } from "./request-context.ts";
 import type { AuthContext } from "./rules.ts";
 import { makeExtraHelpers, type ExtraHookHelpers } from "./hook-helpers-extra.ts";
+import { dbScopedTtlCache } from "./ttl-cache.ts";
 
 /**
  * Per-async-context store carrying the active HTTP Request through
@@ -140,7 +141,16 @@ interface CompiledHook {
   fn: (ctx: HookContext) => Promise<unknown>;
 }
 
-const compiledCache = new Map<string, CompiledHook>(); // hook id → compiled
+// hook id → compiled code, tagged with the row's updated_at so an edit made
+// through another cluster worker recompiles here once the row cache expires.
+const compiledCache = new Map<string, { version: number; hook: CompiledHook }>();
+
+// Enabled hook rows, cached briefly: these were two SELECTs on every record
+// write (before + after hook), most of a create's cost.
+const HOOK_ROWS_TTL_MS = 1000;
+const enabledHookRows = dbScopedTtlCache(HOOK_ROWS_TTL_MS, () =>
+  getDb().select().from(hooks).where(eq(hooks.enabled, 1)),
+);
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
   ...args: string[]
@@ -158,31 +168,28 @@ function compileHook(row: HookRow): CompiledHook | null {
 
 export function invalidateHookCache(): void {
   compiledCache.clear();
+  enabledHookRows.invalidate();
 }
 
 async function lookupEnabledHooks(
   collectionName: string,
   event: HookEvent
 ): Promise<CompiledHook[]> {
-  const db = getDb();
+  const rows = await enabledHookRows.get();
   // Match either the specific collection or global ('') hooks
-  const rows = await db
-    .select()
-    .from(hooks)
-    .where(and(eq(hooks.event, event), eq(hooks.enabled, 1)));
-
   const matching = rows.filter(
-    (r) => r.collection_name === "" || r.collection_name === collectionName
+    (r) => r.event === event && (r.collection_name === "" || r.collection_name === collectionName)
   );
 
   const compiled: CompiledHook[] = [];
   for (const r of matching) {
-    let entry = compiledCache.get(r.id);
-    if (!entry) {
+    const cached = compiledCache.get(r.id);
+    let hook = cached && cached.version === r.updated_at ? cached.hook : undefined;
+    if (!hook) {
       const c = compileHook(r);
-      if (c) { compiledCache.set(r.id, c); entry = c; }
+      if (c) { compiledCache.set(r.id, { version: r.updated_at, hook: c }); hook = c; }
     }
-    if (entry) compiled.push(entry);
+    if (hook) compiled.push(hook);
   }
   return compiled;
 }

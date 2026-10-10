@@ -139,7 +139,17 @@ async function clearPreparedStatementsOnSchemaChange(): Promise<void> {
 }
 
 /** Reset the in-memory collection cache. Exported for tests + DB-reset hooks. */
+/**
+ * Bumped on every schema change made in this process; lets derived caches
+ * (e.g. the incoming-relation map in records.ts) know to rebuild.
+ */
+let schemaVersion = 0;
+export function getSchemaVersion(): number {
+  return schemaVersion;
+}
+
 export function _resetCollectionCache(): void {
+  schemaVersion++;
   cache.clear();
   // Schema mutated — drop cached prepared statements (their SQL embeds table
   // / column names that may have changed).
@@ -638,6 +648,7 @@ export async function createCollection(
   const created = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
   const result = created[0];
   if (!result) throw new Error("Failed to create collection");
+  schemaVersion++;
   cache.set(result.id, result);
   cache.set(result.name, result);
   return result;
@@ -773,12 +784,14 @@ export async function updateCollection(
   const updated = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
   const result = updated[0];
   if (!result) throw new Error("Collection not found");
+  schemaVersion++;
   cache.set(result.id, result);
   cache.set(result.name, result);
   return result;
 }
 
 export async function deleteCollection(id: string): Promise<void> {
+  schemaVersion++;
   const db = getDb();
   const col = await getCollection(id);
   if (col) {

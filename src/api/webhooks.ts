@@ -6,7 +6,7 @@ import { and, desc, eq, gte } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
 import { verifyAuthToken } from "../core/sec.ts";
-import { dispatchEvent } from "../core/webhooks.ts";
+import { dispatchEvent, invalidateWebhookCache } from "../core/webhooks.ts";
 
 async function requireAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -62,6 +62,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
         custom_headers: JSON.stringify(body.custom_headers ?? {}),
         created_at: now, updated_at: now,
       });
+      invalidateWebhookCache();
       const fresh = await getDb().select().from(webhooks).where(eq(webhooks.id, id)).limit(1);
       return { data: fresh[0] };
     }, {
@@ -98,6 +99,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       if (body.timeout_ms !== undefined)      patch["timeout_ms"] = body.timeout_ms;
       if (body.custom_headers !== undefined)  patch["custom_headers"] = JSON.stringify(body.custom_headers);
       await getDb().update(webhooks).set(patch).where(eq(webhooks.id, params.id));
+      invalidateWebhookCache();
       const fresh = await getDb().select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1);
       if (fresh.length === 0) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
       return { data: fresh[0] };
@@ -121,6 +123,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       await getDb().delete(webhooks).where(eq(webhooks.id, params.id));
+      invalidateWebhookCache();
       return { data: { deleted: params.id } };
     })
 
@@ -141,10 +144,12 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       const events = JSON.parse(w.events) as string[];
       const updated = JSON.stringify(Array.from(new Set([...events, event])));
       await getDb().update(webhooks).set({ events: updated }).where(eq(webhooks.id, w.id));
+      invalidateWebhookCache();
       try {
         await dispatchEvent({ event, data: { test: true, webhook_id: w.id } });
       } finally {
         await getDb().update(webhooks).set({ events: w.events }).where(eq(webhooks.id, w.id));
+        invalidateWebhookCache();
       }
       return { data: { ok: true } };
     })

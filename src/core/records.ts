@@ -4,6 +4,7 @@ import type { Collection } from "../db/schema.ts";
 import {
   getCollection,
   getCollectionCached,
+  getSchemaVersion,
   listCollections,
   parseFields,
   userTableName,
@@ -110,6 +111,7 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
+import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
@@ -138,13 +140,6 @@ async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown>
   return encoded;
 }
 
-async function decodeAfterStorage(val: unknown, field: FieldDef): Promise<unknown> {
-  if (field.options?.encrypted && typeof val === "string" && isEncrypted(val)) {
-    const plain = await decryptValue(val);
-    return decodeValue(plain, field);
-  }
-  return decodeValue(val, field);
-}
 
 /**
  * Auth-system columns on `vb_<auth-col>` that must never appear in API
@@ -155,12 +150,11 @@ const AUTH_PRIVATE_COLUMNS = new Set([
   "password_hash", "totp_secret", "password_reset_at",
 ]);
 
-async function rowToMetaAsync(
+function buildRecord(
   row: Record<string, unknown>,
   col: Collection,
-  fields: FieldDef[]
-): Promise<RecordWithMeta> {
-  const fieldByName = new Map(fields.map((f) => [f.name, f]));
+  fieldByName: Map<string, FieldDef>,
+): RecordWithMeta {
   const out: RecordWithMeta = {
     id: String(row["id"]),
     collectionId: col.id,
@@ -175,9 +169,40 @@ async function rowToMetaAsync(
     const def = fieldByName.get(k);
     // Never expose password hashes via the API
     if (def?.type === "password") continue;
-    out[k] = def ? await decodeAfterStorage(v, def) : v;
+    out[k] = def ? decodeValue(v, def) : v;
   }
   return out;
+}
+
+/**
+ * Stored rows → API records. The field map is built once per call, and the
+ * conversion is synchronous unless the collection has encrypted fields, in
+ * which case only those values are decrypted (async) before decoding.
+ */
+async function rowsToMeta(
+  rows: Array<Record<string, unknown>>,
+  col: Collection,
+  fields: FieldDef[],
+): Promise<RecordWithMeta[]> {
+  const fieldByName = new Map(fields.map((f) => [f.name, f]));
+  const encrypted = fields.filter((f) => f.options?.encrypted).map((f) => f.name);
+  if (encrypted.length === 0) return rows.map((r) => buildRecord(r, col, fieldByName));
+  return Promise.all(rows.map(async (r) => {
+    const plain: Record<string, unknown> = { ...r };
+    for (const name of encrypted) {
+      const v = r[name];
+      if (typeof v === "string" && isEncrypted(v)) plain[name] = await decryptValue(v);
+    }
+    return buildRecord(plain, col, fieldByName);
+  }));
+}
+
+async function rowToMetaAsync(
+  row: Record<string, unknown>,
+  col: Collection,
+  fields: FieldDef[]
+): Promise<RecordWithMeta> {
+  return (await rowsToMeta([row], col, fields))[0]!;
 }
 
 export interface ListOptions {
@@ -272,28 +297,6 @@ function decodeValue(val: unknown, field: FieldDef): unknown {
     }
   }
   return val;
-}
-
-function rowToMeta(
-  row: Record<string, unknown>,
-  col: Collection,
-  fields: FieldDef[]
-): RecordWithMeta {
-  const fieldByName = new Map(fields.map((f) => [f.name, f]));
-  const out: RecordWithMeta = {
-    id: String(row["id"]),
-    collectionId: col.id,
-    collectionName: col.name,
-    created: Number(row["created_at"] ?? 0),
-    updated: Number(row["updated_at"] ?? 0),
-  };
-  for (const [k, v] of Object.entries(row)) {
-    if (k === "id" || k === "created_at" || k === "updated_at") continue;
-    if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
-    const def = fieldByName.get(k);
-    out[k] = def ? decodeValue(v, def) : v;
-  }
-  return out;
 }
 
 // ── List ─────────────────────────────────────────────────────────────────────
@@ -407,7 +410,7 @@ export async function listRecords(
     totalPages = Math.ceil(totalItems / perPage);
   }
 
-  let items = await Promise.all(rows.map((r) => rowToMetaAsync(r, col, fields)));
+  let items = await rowsToMeta(rows, col, fields);
 
   // Expand
   if (opts.expand) {
@@ -658,22 +661,33 @@ interface IncomingRef {
 }
 
 /** Find every (collection, field) pair that has a relation pointing at `targetCollectionName`. */
-async function findIncomingRefs(targetCollectionName: string): Promise<IncomingRef[]> {
-  const all = await listCollections();
-  const refs: IncomingRef[] = [];
-  for (const c of all) {
-    const fields = parseFields(c.fields);
-    for (const f of fields) {
-      if (f.type === "relation" && f.collection === targetCollectionName) {
-        refs.push({
-          collection: { id: c.id, name: c.name, view_rule: c.view_rule },
-          fieldName: f.name,
-          cascade: f.options?.cascade ?? "setNull",
-        });
-      }
+// target collection name → relations pointing at it. Rebuilding this meant
+// loading and JSON-parsing every collection several times per delete.
+const relationMap = dbScopedTtlCache(1000, async () => {
+  const byTarget = new Map<string, IncomingRef[]>();
+  for (const c of await listCollections()) {
+    for (const f of parseFields(c.fields)) {
+      if (f.type !== "relation" || !f.collection) continue;
+      const list = byTarget.get(f.collection) ?? [];
+      list.push({
+        collection: { id: c.id, name: c.name, view_rule: c.view_rule },
+        fieldName: f.name,
+        cascade: f.options?.cascade ?? "setNull",
+      });
+      byTarget.set(f.collection, list);
     }
   }
-  return refs;
+  return byTarget;
+});
+let relationMapVersion = -1;
+
+async function findIncomingRefs(targetCollectionName: string): Promise<IncomingRef[]> {
+  const version = getSchemaVersion();
+  if (version !== relationMapVersion) {
+    relationMap.invalidate();
+    relationMapVersion = version;
+  }
+  return (await relationMap.get()).get(targetCollectionName) ?? [];
 }
 
 /** Throw RestrictError if any `restrict` relation still references `id`. */
@@ -857,7 +871,7 @@ async function expandRelations(
       .prepare(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})`)
       .all(...ids) as Record<string, unknown>[];
 
-    const expanded = await Promise.all(rows.map((r) => rowToMetaAsync(r, targetCol, targetFields)));
+    const expanded = await rowsToMeta(rows, targetCol, targetFields);
     const byId = new Map(expanded.map((rec) => [rec.id, rec]));
 
     for (const item of items) {

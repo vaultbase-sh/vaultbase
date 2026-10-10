@@ -26,6 +26,7 @@ import { and, eq, lte } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
 import { assertEgressAllowed, EgressBlockedError } from "./hook-egress.ts";
+import { dbScopedTtlCache } from "./ttl-cache.ts";
 
 const TICK_INTERVAL_MS = 2000;
 const CLAIM_LIMIT = 50;
@@ -72,9 +73,19 @@ export interface DispatchOpts {
  * Subscription matching: a webhook lists patterns in `events`, where each
  * pattern is one of `*`, `<collection>.*`, or the exact event string.
  */
+// Enabled webhooks, cached briefly: dispatchEvent runs on every record write.
+const enabledWebhooks = dbScopedTtlCache(1000, async () =>
+  await getDb().select().from(webhooks).where(eq(webhooks.enabled, 1)) as WebhookRow[],
+);
+
+/** Drop the cached webhook list after creating / editing / deleting one. */
+export function invalidateWebhookCache(): void {
+  enabledWebhooks.invalidate();
+}
+
 export async function dispatchEvent(opts: DispatchOpts): Promise<{ enqueued: number }> {
   const db = getDb();
-  const rows = await db.select().from(webhooks).where(eq(webhooks.enabled, 1)) as WebhookRow[];
+  const rows = await enabledWebhooks.get();
   const now = Math.floor(Date.now() / 1000);
   let enqueued = 0;
   for (const w of rows) {
