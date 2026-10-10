@@ -3,6 +3,7 @@ import { Dropdown } from "primereact/dropdown";
 import { api, getMemoryToken, type ApiResponse, type Collection, parseFields } from "../api.ts";
 import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
+import { Toggle } from "../components/UI.tsx";
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
@@ -30,12 +31,35 @@ export default function ApiPreview() {
   const [includeAuth, setIncludeAuth] = useState(true);
   const [response, setResponse] = useState<ResponseInfo | null>(null);
   const [sending, setSending] = useState(false);
+  const [specPublic, setSpecPublic] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
       if (res.data) setCollections(res.data);
     });
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.data) setSpecPublic(res.data["api.openapi_public"] === "1");
+    });
   }, []);
+
+  async function downloadSpec() {
+    const token = getMemoryToken();
+    const r = await fetch("/api/v1/openapi.json", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const { toast } = await import("../stores/toast.ts");
+    if (!r.ok) { toast(`Spec download failed: ${r.status}`, "info"); return; }
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = "vaultbase-openapi.json"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function toggleSpecPublic(on: boolean) {
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", { "api.openapi_public": on ? "1" : "0" });
+    const { toast } = await import("../stores/toast.ts");
+    if (res.error) { toast(res.error, "info"); return; }
+    setSpecPublic(on);
+    toast(on ? "OpenAPI spec is public (admin-only collections hidden)" : "OpenAPI spec is admin-only", "check");
+  }
 
   const presets = useMemo<Preset[]>(() => {
     const base: Preset[] = [
@@ -176,6 +200,16 @@ export default function ApiPreview() {
         sub="Try any REST endpoint live against this instance. Pick a preset or build a request — see the response, copy as curl or fetch()."
         right={
           <>
+            <span
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--vb-fg-3)" }}
+              title="Serve /api/v1/openapi.json without an admin token. Admin-only collections are left out."
+            >
+              <Toggle on={specPublic} onChange={(v) => void toggleSpecPublic(v)} />
+              public spec
+            </span>
+            <VbBtn kind="ghost" size="sm" icon="download" onClick={() => void downloadSpec()}>
+              OpenAPI spec
+            </VbBtn>
             <VbBtn kind="ghost" size="sm" icon="copy" onClick={() => copy(buildCurl(), "curl")}>
               Copy curl
             </VbBtn>

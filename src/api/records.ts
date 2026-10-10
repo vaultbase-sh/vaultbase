@@ -25,6 +25,7 @@ import {
 import { parseFields } from "../core/collections.ts";
 import { parseVectorParam, VectorParseError } from "../core/vector.ts";
 import { searchVectors } from "../core/vector-search.ts";
+import { aggregateRecords, type AggregateOptions } from "../core/aggregate.ts";
 import { timeFor } from "../core/perf-metrics.ts";
 
 function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError) {
@@ -269,6 +270,45 @@ export function makeRecordsPlugin(jwtSecret: string) {
           nearVectorField: t.Optional(t.String()),
           nearLimit: t.Optional(t.String()),
           nearMinScore: t.Optional(t.String()),
+        }),
+      }
+    )
+    // Aggregates over the rows a list would return. Record ids are UUIDs, so
+    // the static `_aggregate` segment never shadows a record.
+    .get(
+      "/:collection/_aggregate",
+      async ({ params, query, request, set }) => {
+        const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        const auth = await getAuthContext(request, jwtSecret);
+        recordListRule(request, col.name, col.list_rule, auth);
+        if (col.list_rule === "" && auth?.type !== "admin") {
+          set.status = 403; return { error: "Forbidden", code: 403 };
+        }
+        const opts: AggregateOptions = { auth };
+        if (query.agg) opts.agg = query.agg;
+        if (query.groupBy) opts.groupBy = query.groupBy;
+        if (query.filter) opts.filter = query.filter;
+        if (query.search) opts.search = query.search;
+        if (query.sort) opts.sort = query.sort;
+        if (query.limit) opts.limit = Number(query.limit);
+        if (col.list_rule && auth?.type !== "admin") opts.accessRule = col.list_rule;
+        try {
+          return await timeFor(request, "db_exec", () => aggregateRecords(col, opts));
+        } catch (e) {
+          const r = listErrorResponse(set, e);
+          if (r) return r;
+          throw e;
+        }
+      },
+      {
+        query: t.Object({
+          agg: t.Optional(t.String()),
+          groupBy: t.Optional(t.String()),
+          filter: t.Optional(t.String()),
+          search: t.Optional(t.String()),
+          sort: t.Optional(t.String()),
+          limit: t.Optional(t.String()),
         }),
       }
     )

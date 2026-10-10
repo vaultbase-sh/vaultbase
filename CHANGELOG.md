@@ -14,6 +14,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Image output format and quality.** `?format=webp|jpeg|png|auto` re-encodes an image, with or without `?thumb=`. `auto` returns WebP when the browser accepts it and sets `Vary: Accept`. `?quality=1-100` applies to JPEG and WebP.
 - **One-side thumbnails.** `?thumb=800x0` or `?thumb=0x300` keeps the aspect ratio.
 - **Allowed thumbnail sizes per file field** (option `thumbs`). Non-admin requests for other sizes get the original file.
+- **Aggregations.** `GET /api/v1/:collection/_aggregate?agg=count,sum(amount)&groupBy=status` returns count / sum / avg / min / max, grouped by up to 3 fields or by time buckets (`created:month`). Scoped like a list: filter, search and the list rule all apply. SDK: `collection.aggregate()`.
+- **OpenAPI spec.** `GET /api/v1/openapi.json` describes the records, auth and files API as OpenAPI 3.1, generated from the live collections, for Swagger UI / Postman / client generators in any language. Admin-only by default; **API preview → public spec** serves it to anyone, minus admin-only collections.
 
 ### Security
 - Anyone who could read an image could request unlimited distinct thumbnail sizes, each one a fresh decode and a new cache file. A file now accumulates at most 32 cached variants from non-admin requests; beyond that the original is served.

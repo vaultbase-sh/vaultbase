@@ -16,6 +16,7 @@ import { makeAuthPagesPlugin } from "./admin/auth-pages.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
 import { makeAdminsPlugin } from "./api/admins.ts";
 import { makeBackupPlugin } from "./api/backup.ts";
+import { makeOpenApiPlugin } from "./api/openapi.ts";
 import { makeRateLimitPlugin } from "./api/ratelimit.ts";
 import { makeIndexesPlugin } from "./api/indexes.ts";
 import { makeSettingsPlugin } from "./api/settings.ts";
@@ -231,6 +232,7 @@ export function createServer(config: Config) {
       .use(makeWebhooksPlugin(config.jwtSecret))
       .use(makeNotificationsPlugin(config.jwtSecret))
       .use(makeCollectionsPlugin(config.jwtSecret))
+      .use(makeOpenApiPlugin(config.jwtSecret))
       .use(makeFilesPlugin(config.uploadDir, config.jwtSecret))
       .use(makeRecordsPlugin(config.jwtSecret))
     )
