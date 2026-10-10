@@ -241,21 +241,66 @@ export async function readLogs(opts: ReadOptions = {}): Promise<LogEntry[]> {
   const limit = opts.limit ?? 1000;
   const out: LogEntry[] = [];
   for (const date of dates) {
-    const file = join(dir, `${date}.jsonl`);
-    const text = await Bun.file(file).text().catch(() => "");
-    if (!text) continue;
-    const lines = text.split("\n");
-    // Iterate newest-first within the file
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const ln = lines[i]?.trim();
-      if (!ln) continue;
-      try {
-        out.push(JSON.parse(ln) as LogEntry);
-        if (out.length >= limit) return out;
-      } catch { /* skip malformed line */ }
+    const entries = await fileEntries(join(dir, `${date}.jsonl`));
+    // Stored oldest → newest; emit newest first.
+    for (let i = entries.length - 1; i >= 0; i--) {
+      out.push(entries[i]!);
+      if (out.length >= limit) return out;
     }
   }
   return out;
+}
+
+// ── Incremental parse cache ─────────────────────────────────────────────────
+// Log files are append-only, and the admin Logs page polls readLogs. Instead
+// of re-reading and re-parsing a whole day's file per poll, remember how far
+// each file was parsed and parse only the bytes appended since.
+
+/** Newest entries kept per file; matches the Logs API read cap. */
+const MAX_CACHED_ENTRIES_PER_FILE = 50_000;
+
+interface ParsedFile {
+  /** Bytes consumed so far (up to the last complete line). */
+  offset: number;
+  /** Parsed entries, oldest → newest, capped to the newest N. */
+  entries: LogEntry[];
+}
+
+const parsedFiles = new Map<string, ParsedFile>();
+let parsedLines = 0;
+
+/** Test hook: lines parsed since process start. */
+export function _logReaderStats(): { parsedLines: number } {
+  return { parsedLines };
+}
+
+async function fileEntries(file: string): Promise<LogEntry[]> {
+  let size: number;
+  try { size = statSync(file).size; } catch { parsedFiles.delete(file); return []; }
+
+  let cached = parsedFiles.get(file);
+  // Shrunk: truncated or replaced — start over.
+  if (cached && size < cached.offset) cached = undefined;
+  if (!cached) cached = { offset: 0, entries: [] };
+  if (size === cached.offset) { parsedFiles.set(file, cached); return cached.entries; }
+
+  const chunk = await Bun.file(file).slice(cached.offset, size).text().catch(() => "");
+  // Only consume complete lines; a partial trailing line waits for its newline.
+  const end = chunk.lastIndexOf("\n");
+  if (end === -1) { parsedFiles.set(file, cached); return cached.entries; }
+  const complete = chunk.slice(0, end + 1);
+  for (const raw of complete.split("\n")) {
+    const ln = raw.trim();
+    if (!ln) continue;
+    parsedLines++;
+    try { cached.entries.push(JSON.parse(ln) as LogEntry); } catch { /* skip malformed line */ }
+  }
+  if (cached.entries.length > MAX_CACHED_ENTRIES_PER_FILE) {
+    cached.entries.splice(0, cached.entries.length - MAX_CACHED_ENTRIES_PER_FILE);
+  }
+  cached.offset += Buffer.byteLength(complete, "utf8");
+  parsedFiles.set(file, cached);
+  return cached.entries;
 }
 
 export interface SearchResult {
