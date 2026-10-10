@@ -37,7 +37,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 type SettingsTabId =
   | "application" | "theme" | "rate-limit" | "egress" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
-  | "storage" | "backup" | "migrations" | "notifications"
+  | "storage" | "backup" | "retention" | "migrations" | "notifications"
   | "metrics" | "updates" | "danger";
 
 interface SettingsTab {
@@ -78,6 +78,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   { group: "Infrastructure", items: [
     { id: "storage",    label: "File storage",     subtitle: "local FS · S3 · Cloudflare R2" },
     { id: "backup",     label: "Backup & restore", subtitle: "SQLite snapshot" },
+    { id: "retention",  label: "Data retention",   subtitle: "job · webhook delivery history" },
     { id: "migrations", label: "Migrations",       subtitle: "schema snapshot · environment sync" },
     { id: "metrics",    label: "Health & metrics", subtitle: "Prometheus exposition" },
   ]},
@@ -247,6 +248,7 @@ export default function Settings() {
           {active === "oauth2" && <OAuth2Section />}
           {active === "storage" && <StorageSection />}
           {active === "backup" && <BackupSection />}
+          {active === "retention" && <RetentionSection />}
           {active === "migrations" && <MigrationsSection />}
           {active === "notifications" && <NotificationsSection />}
           {active === "metrics" && <MetricsSection />}
@@ -1225,6 +1227,60 @@ function HeadersPreviewCard() {
 }
 
 // ── Password policy ─────────────────────────────────────────────────────────
+function RetentionSection() {
+  const [days, setDays] = useState("30");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.data) setDays(res.data["maintenance.retention_days"] ?? "30");
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    const n = Number(days);
+    if (!Number.isInteger(n) || n < 0 || n > 3650) {
+      toast("Retention must be a whole number of days between 0 and 3650", "info");
+      return;
+    }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+      "maintenance.retention_days": String(n),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Retention saved");
+  }
+
+  return (
+    <SectionShell id="retention">
+      <VbField
+        label="Keep job and webhook history for"
+        hint="Finished queue jobs (succeeded / failed / dead) and finished webhook deliveries older than this are deleted once a day. 0 keeps them forever. Queued / running jobs and pending deliveries are never touched. Expired tokens are always cleaned up."
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <VbInput
+            mono type="number" min={0} max={3650} value={days}
+            onChange={(e) => setDays(e.target.value)} disabled={!loaded}
+            style={{ maxWidth: 120 }}
+          />
+          <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>days</span>
+        </div>
+      </VbField>
+      <div style={{
+        display: "flex", justifyContent: "flex-end",
+        paddingTop: 12, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </VbBtn>
+      </div>
+    </SectionShell>
+  );
+}
+
 function PasswordPolicySection() {
   const [minLen, setMinLen] = useState("12");
   const [reqUpper, setReqUpper] = useState(false);

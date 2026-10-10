@@ -148,6 +148,13 @@ export function validateMaxUploadSize(value: unknown): string | null {
   return null;
 }
 
+/** `maintenance.retention_days`: whole days, 0 = keep job / delivery history forever. */
+export function validateRetentionDays(value: unknown): string | null {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 3650) return "must be a whole number of days between 0 and 3650";
+  return null;
+}
+
 export function makeSettingsPlugin(jwtSecret: string) {
   return new Elysia({ name: "settings" })
     // Read all settings
@@ -173,6 +180,10 @@ export function makeSettingsPlugin(jwtSecret: string) {
           }
           if (k === "files.max_upload_size") {
             const err = validateMaxUploadSize(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+          if (k === "maintenance.retention_days") {
+            const err = validateRetentionDays(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
         }

@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { pruneHistory, RETENTION_DAYS } from "../core/maintenance.ts";
+import { setSetting, validateRetentionDays } from "../api/settings.ts";
 import { queueStats } from "../core/queues.ts";
 
 // vaultbase_jobs_log, vaultbase_webhook_deliveries, vaultbase_token_revocations
@@ -60,6 +61,37 @@ describe("pruneHistory", () => {
     await pruneHistory();
     expect(count("vaultbase_token_revocations")).toBe(1);
     expect(count("vaultbase_auth_tokens")).toBe(1);
+  });
+});
+
+describe("retention setting", () => {
+  it("maintenance.retention_days changes the window", async () => {
+    setSetting("maintenance.retention_days", "7");
+    job("8-days", "q", "succeeded", 8);
+    job("6-days", "q", "succeeded", 6);
+    await pruneHistory();
+    const ids = (getRawClient().prepare(`SELECT id FROM vaultbase_jobs_log`).all() as Array<{ id: string }>).map((r) => r.id);
+    expect(ids).toEqual(["6-days"]);
+  });
+
+  it("0 keeps job and delivery history forever, still drops expired tokens", async () => {
+    setSetting("maintenance.retention_days", "0");
+    job("ancient", "q", "succeeded", 3650);
+    const t = now();
+    getRawClient().prepare(`INSERT INTO vaultbase_token_revocations (jti, expires_at) VALUES ('gone', ?)`).run(t - 2 * DAY);
+    await pruneHistory();
+    expect(count("vaultbase_jobs_log")).toBe(1);
+    expect(count("vaultbase_token_revocations")).toBe(0);
+  });
+
+  it("validator accepts 0–3650 whole days only", () => {
+    expect(validateRetentionDays("0")).toBeNull();
+    expect(validateRetentionDays("30")).toBeNull();
+    expect(validateRetentionDays("3650")).toBeNull();
+    expect(validateRetentionDays("-1")).not.toBeNull();
+    expect(validateRetentionDays("3651")).not.toBeNull();
+    expect(validateRetentionDays("1.5")).not.toBeNull();
+    expect(validateRetentionDays("abc")).not.toBeNull();
   });
 });
 
