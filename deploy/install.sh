@@ -155,9 +155,27 @@ header "Download"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
 
-say "Fetching ${URL}..."
-curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase" "${URL}" \
-    || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
+# Prefer the xz-compressed asset (~30 MB instead of ~100 MB). Releases before
+# compressed assets existed, or hosts without `xz`, fall back to the raw
+# binary. Checksum + signature checks below run on the decompressed binary,
+# so they are identical on both paths.
+FETCHED=0
+if command -v xz >/dev/null 2>&1; then
+    say "Fetching ${URL}.xz..."
+    if curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase.xz" "${URL}.xz" 2>/dev/null; then
+        xz -dc "${TMP}/vaultbase.xz" > "${TMP}/vaultbase" \
+            || { err "Could not decompress ${URL}.xz"; exit 2; }
+        rm -f "${TMP}/vaultbase.xz"
+        FETCHED=1
+    else
+        warn "No compressed asset for ${VERSION} — downloading the raw binary."
+    fi
+fi
+if [ "${FETCHED}" -eq 0 ]; then
+    say "Fetching ${URL}..."
+    curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase" "${URL}" \
+        || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
+fi
 
 # Optional sha256 verification — works when the release ships a `.sha256`
 # alongside the binary (recommended, but tolerate absence so installs don't

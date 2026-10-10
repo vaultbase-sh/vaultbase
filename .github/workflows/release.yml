@@ -112,6 +112,20 @@ jobs:
             fi
           done
 
+      - name: Compress Linux binaries (xz)
+        # ~100 MB binaries shrink to ~30 MB. install.sh downloads the .xz when
+        # `xz` is available and falls back to the raw binary otherwise; it
+        # verifies .sha256 / .sig against the decompressed binary, so the
+        # raw assets stay the source of truth.
+        run: |
+          set -eu
+          cd releases
+          for f in vaultbase-linux-x64 vaultbase-linux-arm64 vaultbase-linux-x64-musl; do
+            xz -6 -T0 -k -f "$f"
+            xz -t "$f.xz"
+            echo "  $f: $(du -h "$f" | cut -f1) → $(du -h "$f.xz" | cut -f1)"
+          done
+
       - name: Generate SHA-256 sidecars
         run: |
           cd releases
@@ -185,16 +199,22 @@ jobs:
             releases/vaultbase-linux-x64.sig
             releases/vaultbase-linux-x64.pem
             releases/vaultbase-linux-x64.cdx.json
+            releases/vaultbase-linux-x64.xz
+            releases/vaultbase-linux-x64.xz.sha256
             releases/vaultbase-linux-arm64
             releases/vaultbase-linux-arm64.sha256
             releases/vaultbase-linux-arm64.sig
             releases/vaultbase-linux-arm64.pem
             releases/vaultbase-linux-arm64.cdx.json
+            releases/vaultbase-linux-arm64.xz
+            releases/vaultbase-linux-arm64.xz.sha256
             releases/vaultbase-linux-x64-musl
             releases/vaultbase-linux-x64-musl.sha256
             releases/vaultbase-linux-x64-musl.sig
             releases/vaultbase-linux-x64-musl.pem
             releases/vaultbase-linux-x64-musl.cdx.json
+            releases/vaultbase-linux-x64-musl.xz
+            releases/vaultbase-linux-x64-musl.xz.sha256
             releases/vaultbase-macos-x64
             releases/vaultbase-macos-x64.sha256
             releases/vaultbase-macos-x64.sig
