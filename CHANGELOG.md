@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.14.0] — 2026-10-11
 
 ### Added
 - **Scheduled backups.** Settings → Backup & restore can now take snapshots on a cron schedule (UTC, default daily 03:00), keep the newest N (default 7), and optionally copy each one to a private S3-compatible bucket. Stored snapshots can be listed, downloaded, restored and deleted from the same page or via `/api/v1/admin/backups`. In cluster mode only one worker runs each backup.
