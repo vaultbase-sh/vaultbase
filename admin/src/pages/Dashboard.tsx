@@ -70,9 +70,11 @@ export default function Dashboard() {
         title="Dashboard"
         sub="At-a-glance health of the running instance — collections, queues, recent activity."
         right={
-          <VbPill tone={broken ? "danger" : "success"} dot>
-            {broken ? `${totalDead} dead jobs` : "all systems nominal"}
-          </VbPill>
+          broken ? (
+            <VbPill tone="danger" dot>
+              {totalDead} dead jobs
+            </VbPill>
+          ) : undefined
         }
       />
       <div className="app-body">
