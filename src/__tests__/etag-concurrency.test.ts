@@ -21,16 +21,15 @@ async function withCollection() {
 }
 
 describe("ETag emission", () => {
-  it("GET /:collection/:id returns a weak ETag matching updated_at", async () => {
+  it("GET /:collection/:id returns a weak ETag of updated_at + content hash", async () => {
     await withCollection();
     const r = await createRecord("posts", { title: "x" }, null);
     const app = makeRecordsPlugin(SECRET);
     const res = await app.handle(new Request(`http://localhost/posts/${r.id}`));
     expect(res.status).toBe(200);
     const etag = res.headers.get("etag");
-    expect(etag).toMatch(/^W\/"\d+"$/);
     const u = (await getRecord("posts", r.id))!["updated"];
-    expect(etag).toBe(`W/"${u}"`);
+    expect(etag).toMatch(new RegExp(`^W/"${u}-[0-9a-z]+"$`));
   });
 
   it("PATCH echoes the new ETag on success", async () => {
@@ -46,7 +45,7 @@ describe("ETag emission", () => {
     }));
     expect(res.status).toBe(200);
     const etag = res.headers.get("etag");
-    expect(etag).toMatch(/^W\/"\d+"$/);
+    expect(etag).toMatch(/^W\/"\d+-[0-9a-z]+"$/);
   });
 });
 
@@ -74,7 +73,7 @@ describe("If-Match precondition", () => {
       body: JSON.stringify({ title: "v2" }),
     }));
     expect(res.status).toBe(412);
-    expect(res.headers.get("etag")).toMatch(/^W\/"\d+"$/);
+    expect(res.headers.get("etag")).toMatch(/^W\/"\d+-[0-9a-z]+"$/);
   });
 
   it("If-Match: * matches any existing record", async () => {
@@ -118,10 +117,10 @@ describe("If-None-Match (cheap conditional GET)", () => {
   it("returns 304 when ETag matches", async () => {
     await withCollection();
     const r = await createRecord("posts", { title: "v1" }, null);
-    const u = (await getRecord("posts", r.id))!["updated"];
     const app = makeRecordsPlugin(SECRET);
+    const first = await app.handle(new Request(`http://localhost/posts/${r.id}`));
     const res = await app.handle(new Request(`http://localhost/posts/${r.id}`, {
-      headers: { "If-None-Match": `W/"${u}"` },
+      headers: { "If-None-Match": first.headers.get("etag")! },
     }));
     expect(res.status).toBe(304);
   });
@@ -134,5 +133,26 @@ describe("If-None-Match (cheap conditional GET)", () => {
       headers: { "If-None-Match": `W/"0"` },
     }));
     expect(res.status).toBe(200);
+  });
+});
+
+// ETags used to be the whole-second updated_at, so two writes in the same
+// second produced the same tag and If-Match missed the lost update.
+describe("If-Match precision", () => {
+  it("a tag from before a same-second update is stale (412)", async () => {
+    await withCollection();
+    const r = await createRecord("posts", { title: "v1" }, null);
+    const app = makeRecordsPlugin(SECRET);
+    const first = await app.handle(new Request(`http://localhost/posts/${r.id}`));
+    const tagV1 = first.headers.get("etag")!;
+    // Someone else updates within the same second.
+    const patch = (tag: string, title: string) => app.handle(new Request(`http://localhost/posts/${r.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "If-Match": tag },
+      body: JSON.stringify({ title }),
+    }));
+    expect((await patch(tagV1, "v2")).status).toBe(200);
+    // Our stale tag must now be refused even though `updated` didn't change.
+    expect((await patch(tagV1, "v3")).status).toBe(412);
   });
 });

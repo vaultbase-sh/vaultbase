@@ -61,7 +61,16 @@ function recordEtag(record: Record<string, unknown> | null | undefined): string 
   // raw row uses `updated_at`. Accept either so we can call this with both.
   const u = record["updated"] ?? record["updated_at"];
   if (typeof u !== "number" && typeof u !== "string") return null;
-  return `W/"${u}"`;
+  // updated is whole seconds, so it alone can't tell apart two writes in the
+  // same second. Add a hash of the record's content. Callers pass the full
+  // record (never a projection) so GET and PATCH/DELETE agree.
+  return `W/"${u}-${Bun.hash(JSON.stringify(record)).toString(36)}"`;
+}
+
+/** The pre-0.12.1 tag (`W/"<updated>"`), still accepted on If-Match. */
+function legacyEtag(record: Record<string, unknown>): string | null {
+  const u = record["updated"] ?? record["updated_at"];
+  return typeof u === "number" || typeof u === "string" ? `W/"${u}"` : null;
 }
 
 /**
@@ -92,14 +101,16 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
   const requested = parseIfMatch(header);
   if (requested.length === 0) return null;
   const current = recordEtag(existing) ?? `W/""`;
+  // Clients built before the content hash was added may still send the bare
+  // updated_at tag; honour it (with its old whole-second precision).
+  const legacy = legacyEtag(existing);
   for (const tag of requested) {
     if (tag === "*") return null;
-    if (tag === current) return null;
-    // Allow a strong-form quoted updated_at (`"123"`) to match the server's
-    // weak form (`W/"123"`) — RFC 7232 says weak compare is safe for
-    // PATCH/DELETE in this scenario, so we accept either.
-    if (`W/${tag}` === current) return null;
-    if (tag === current.replace(/^W\//, "")) return null;
+    // Accept the strong form (`"…"`) for the server's weak tag too — RFC 7232
+    // weak compare is safe for PATCH/DELETE here.
+    const weak = tag.startsWith("W/") ? tag : `W/${tag}`;
+    if (weak === current) return null;
+    if (legacy && weak === legacy) return null;
   }
   return { currentEtag: current };
 }
