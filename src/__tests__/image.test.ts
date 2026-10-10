@@ -18,8 +18,7 @@ describe("parseThumbSpec", () => {
     ["100"],
     ["100x"],
     ["x100"],
-    ["100x0"],
-    ["0x100"],
+    ["0x0"],       // one side may be 0 (aspect-preserving), not both
     ["100x4097"],   // exceeds MAX_DIM
     ["100x100x100"],
     ["abc x 100"],

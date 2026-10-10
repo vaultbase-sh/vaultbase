@@ -8,11 +8,18 @@ import { getCollection, parseFields, type FieldDef } from "../core/collections.t
 import {
   detectFormat,
   canThumbnail,
+  forgetThumbVariants,
   generateThumbnail,
+  MAX_THUMB_VARIANTS,
+  noteThumbVariant,
+  parseOutputOptions,
   parseThumbSpec,
   thumbCachePath,
   thumbMime,
+  thumbSizeKey,
+  thumbVariantCount,
   type ThumbFormat,
+  type ThumbSpec,
 } from "../core/image.ts";
 import { getRecord } from "../core/records.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
@@ -600,13 +607,39 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         baseHeaders["Content-Disposition"] = `attachment; filename="${safeName}"`;
       }
 
-      const spec = parseThumbSpec(query.thumb);
-      if (!spec) {
+      const output = parseOutputOptions(query.format, query.quality, request.headers.get("accept"));
+      if (typeof output === "string") { set.status = 400; return { error: output, code: 400 }; }
+      // `format=auto` varies by Accept, whichever way it resolved.
+      if (output.auto) baseHeaders["Vary"] = "Accept";
+
+      const original = async (reason?: string) => {
         const r = await fileResponse(params.filename);
         if (!r) { set.status = 404; return { error: "File not found", code: 404 }; }
         // Layer headers on top of storage Response.
         for (const [k, v] of Object.entries(baseHeaders)) r.headers.set(k, v);
+        if (reason) r.headers.set("X-Vaultbase-Thumb", reason);
         return r;
+      };
+
+      // `?thumb=` resizes; `?format=` / `?quality=` alone re-encode at source size.
+      // `fit` may come as its own query param (`?thumb=64x64&fit=cover`).
+      const thumbRaw = query.thumb && query.fit ? `${query.thumb}&fit=${query.fit}` : query.thumb;
+      const size = thumbRaw ? parseThumbSpec(thumbRaw) : null;
+      if (query.thumb && !size) return original();
+      if (!size && !output.format && output.quality === undefined) return original();
+      const spec: ThumbSpec = size ?? { width: 0, height: 0, fit: "contain" };
+      if (output.format) spec.format = output.format;
+      if (output.quality !== undefined) spec.quality = output.quality;
+
+      // A field's thumbs list limits the sizes non-admins can ask for.
+      const allowedSizes = fieldDefForAudit?.options?.thumbs;
+      if (size && auth?.type !== "admin" && allowedSizes && allowedSizes.length > 0) {
+        const wanted = thumbSizeKey(size);
+        const ok = allowedSizes.some((s) => {
+          const p = parseThumbSpec(s);
+          return p !== null && thumbSizeKey(p) === wanted;
+        });
+        if (!ok) return original("not-allowed");
       }
 
       const cachePath = thumbCachePath(uploadDir, params.filename, spec);
@@ -619,20 +652,24 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         return new Response(cached, { headers });
       }
 
+      // Each new variant costs a decode and a cache file; cap them per file.
+      if (auth?.type !== "admin" && thumbVariantCount(uploadDir, params.filename) >= MAX_THUMB_VARIANTS) {
+        return original("limit");
+      }
+
       const buf = await readFile(params.filename);
       if (!buf) { set.status = 404; return { error: "File not found", code: 404 }; }
       const bytes = new Uint8Array(buf);
       const format = detectFormat(bytes);
       // Unknown or not resizable (AVIF): serve the original.
-      if (!format || !canThumbnail(format)) {
-        const r = await fileResponse(params.filename);
-        if (!r) return new Response(null, { status: 404 });
-        for (const [k, v] of Object.entries(baseHeaders)) r.headers.set(k, v);
-        return r;
-      }
+      if (!format || !canThumbnail(format)) return original();
 
       try {
-        const thumb = await generateThumbOnce(cachePath, () => generateThumbnail(bytes, spec, format as ThumbFormat));
+        const thumb = await generateThumbOnce(cachePath, async () => {
+          const out = await generateThumbnail(bytes, spec, format as ThumbFormat);
+          noteThumbVariant(params.filename);
+          return out;
+        });
         const outFormat = detectFormat(thumb) ?? format;
         return new Response(thumb, {
           headers: { ...baseHeaders, "Content-Type": thumbMime(outFormat) },
@@ -646,6 +683,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
     }, {
       query: t.Object({
         thumb: t.Optional(t.String()),
+        fit: t.Optional(t.String()),
+        format: t.Optional(t.String()),
+        quality: t.Optional(t.String()),
         token: t.Optional(t.String()),
       }),
     })
@@ -727,6 +767,7 @@ function deleteThumbsFor(uploadDir: string, filename: string): void {
   const dir = join(uploadDir, ".thumbs");
   if (!existsSync(dir)) return;
   const prefix = `${filename}__`;
+  forgetThumbVariants(filename);
   try {
     for (const name of readdirSync(dir)) {
       if (name.startsWith(prefix)) {

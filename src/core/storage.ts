@@ -1,6 +1,7 @@
 import { existsSync, unlinkSync, statSync, rmSync } from "fs";
 import { join, resolve, sep } from "path";
 import { getAllSettings } from "../api/settings.ts";
+import { forgetThumbVariants } from "./image.ts";
 
 /**
  * Path-traversal guard for local-mode keys. Rejects anything that resolves
@@ -225,6 +226,7 @@ export async function testStorage(): Promise<{ ok: boolean; driver: StorageDrive
 /** Wipe the thumb cache. Useful when toggling storage drivers. */
 export function clearThumbCache(): void {
   const dir = thumbCacheDir();
+  forgetThumbVariants();
   if (!existsSync(dir)) return;
   try {
     rmSync(dir, { recursive: true, force: true });

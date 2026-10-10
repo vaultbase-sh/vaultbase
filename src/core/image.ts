@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { Image, GIF } from "imagescript";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
@@ -19,10 +19,13 @@ import "./codecs";
  * a single binary (see scripts/patch-imagescript.ts), so they are never called;
  * its PNG / GIF WASM is embedded via ./codecs.
  *
- * On-disk cache lives at `<uploadDir>/.thumbs/<filename>__<W>x<H>[_<fit>].<ext>`
- * so repeat fetches read straight from disk without re-encoding. The fit mode
- * is part of the cache key so contain/cover variants don't collide. The cached
- * file is the encoded bytes in the *source* format — webp in, webp out.
+ * On-disk cache lives at `<uploadDir>/.thumbs/<filename>__<W>x<H>[_<fit>][.<fmt>][_q<N>]`
+ * so repeat fetches read straight from disk without re-encoding. Fit, output
+ * format and quality are part of the cache key so variants don't collide.
+ * Without `format` the output is in the *source* format — webp in, webp out.
+ *
+ * Output formats are jpeg / png / webp only: Bun.Image encodes AVIF through
+ * an OS encoder that Linux servers don't have.
  */
 
 export type ThumbFormat = "jpeg" | "png" | "gif" | "webp" | "avif";
@@ -35,11 +38,19 @@ const MIN_DIM = 1;
 const PNG_LEVEL = 3;
 const MAX_DIM = 4096;
 
+/** Formats a thumbnail can be re-encoded to. */
+export type OutputFormat = "jpeg" | "png" | "webp";
+
 export interface ThumbSpec {
+  /** 0 = derive from the other side's aspect ratio. Both 0 = source size. */
   width: number;
   height: number;
   /** Defaults to "contain" (preserves prior behavior when fit is omitted). */
   fit: ThumbFit;
+  /** Re-encode to this format; source format when unset. */
+  format?: OutputFormat;
+  /** 1-100, jpeg / webp only. Encoder default when unset. */
+  quality?: number;
 }
 
 /**
@@ -49,6 +60,9 @@ export interface ThumbSpec {
  *   - `WxH`              → contain (legacy)
  *   - `WxH&fit=MODE`     → fit explicit (mode in {contain, cover, crop})
  *   - `WxH_MODE`         → fit suffix shorthand (e.g. `200x200_cover`)
+ *
+ * One side may be 0 (`400x0`, `0x300`) to keep the aspect ratio; that is
+ * always a contain fit.
  */
 export function parseThumbSpec(raw: string | null | undefined): ThumbSpec | null {
   if (!raw) return null;
@@ -70,8 +84,45 @@ export function parseThumbSpec(raw: string | null | undefined): ThumbSpec | null
   if (m[3] && fitMatch) return null; // can't mix `_mode` and `&fit=`
   if (m[3]) fit = m[3] as ThumbFit;
   if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
-  if (width < MIN_DIM || width > MAX_DIM || height < MIN_DIM || height > MAX_DIM) return null;
+  const okDim = (n: number) => n === 0 || (n >= MIN_DIM && n <= MAX_DIM);
+  if (!okDim(width) || !okDim(height) || (width === 0 && height === 0)) return null;
+  // With one side derived there is nothing to crop.
+  if (width === 0 || height === 0) fit = "contain";
   return { width, height, fit };
+}
+
+/** Canonical `WxH[_fit]` form of a spec's size, used for allow-lists. */
+export function thumbSizeKey(spec: Pick<ThumbSpec, "width" | "height" | "fit">): string {
+  const fit = spec.fit === "crop" ? "cover" : spec.fit;
+  return `${spec.width}x${spec.height}${fit === "contain" ? "" : `_${fit}`}`;
+}
+
+/**
+ * Parse `?format=` / `?quality=`. `auto` picks webp when the client's
+ * Accept header allows it and keeps the source format otherwise. Returns a
+ * string error for invalid input.
+ */
+export function parseOutputOptions(
+  format: string | undefined,
+  quality: string | undefined,
+  accept: string | null,
+): { format?: OutputFormat; quality?: number; auto: boolean } | string {
+  const out: { format?: OutputFormat; quality?: number; auto: boolean } = { auto: false };
+  if (format !== undefined && format !== "") {
+    const f = format.toLowerCase();
+    if (f === "auto") {
+      out.auto = true;
+      if (accept && /image\/webp/i.test(accept)) out.format = "webp";
+    } else if (f === "jpeg" || f === "jpg") out.format = "jpeg";
+    else if (f === "png" || f === "webp") out.format = f;
+    else return "format must be one of webp, jpeg, png, auto";
+  }
+  if (quality !== undefined && quality !== "") {
+    const q = Number(quality);
+    if (!Number.isInteger(q) || q < 1 || q > 100) return "quality must be a whole number from 1 to 100";
+    out.quality = q;
+  }
+  return out;
 }
 
 /** Detect format from the first few bytes of the file. */
@@ -126,7 +177,9 @@ export function thumbCachePath(uploadDir: string, filename: string, spec: ThumbS
   // existing on-disk caches stay valid; only append the fit suffix for non-default
   // modes. `crop` and `cover` produce identical bytes so they share a cache entry.
   const fitTag = spec.fit === "contain" ? "" : `_${spec.fit === "crop" ? "cover" : spec.fit}`;
-  return join(thumbCacheDir(uploadDir), `${filename}__${spec.width}x${spec.height}${fitTag}`);
+  const fmtTag = spec.format ? `.${spec.format}` : "";
+  const qTag = spec.quality !== undefined && spec.format !== "png" ? `_q${spec.quality}` : "";
+  return join(thumbCacheDir(uploadDir), `${filename}__${spec.width}x${spec.height}${fitTag}${fmtTag}${qTag}`);
 }
 
 /** Compute the (width, height) of a single resized frame for the given fit mode. */
@@ -155,8 +208,18 @@ function fitDimensions(srcW: number, srcH: number, spec: ThumbSpec): {
     const cropY = Math.floor((srcH - cropH) / 2);
     return { newW: spec.width, newH: spec.height, cropX, cropY, cropW, cropH };
   }
-  // contain: fit-within preserving aspect ratio (legacy behavior).
+  // contain: fit-within preserving aspect ratio (legacy behavior). A 0 side
+  // follows the other side's scale; both 0 keeps the source size.
+  if (spec.width === 0 && spec.height === 0) {
+    return { newW: srcW, newH: srcH, cropX: 0, cropY: 0, cropW: srcW, cropH: srcH };
+  }
   const aspect = srcW / srcH;
+  if (spec.height === 0) {
+    return { newW: spec.width, newH: Math.max(1, Math.round(spec.width / aspect)), cropX: 0, cropY: 0, cropW: srcW, cropH: srcH };
+  }
+  if (spec.width === 0) {
+    return { newW: Math.max(1, Math.round(spec.height * aspect)), newH: spec.height, cropX: 0, cropY: 0, cropW: srcW, cropH: srcH };
+  }
   const targetAspect = spec.width / spec.height;
   let newW: number, newH: number;
   if (aspect > targetAspect) {
@@ -193,8 +256,10 @@ export function canThumbnail(format: ThumbFormat): boolean {
  *   center-cropped to the target aspect ratio first.
  * - `crop`:   alias of `cover`.
  *
- * The output bytes are always in `format` — webp in, webp out, etc. A static
- * GIF comes out as PNG. Throws for formats `canThumbnail` rejects.
+ * Without `spec.format` the output is in the source `format` — webp in, webp
+ * out, etc. A static GIF comes out as PNG; an animated GIF stays an animated
+ * GIF unless a format is requested, which renders its first frame. Throws
+ * for formats `canThumbnail` rejects.
  */
 export async function generateThumbnail(
   bytes: Uint8Array,
@@ -202,15 +267,16 @@ export async function generateThumbnail(
   format: ThumbFormat
 ): Promise<Uint8Array> {
   if (format === "avif") throw new Error("thumbnails are not supported for avif");
+  if (spec.format) return await thumbnailStill(bytes, spec, spec.format);
   if (format === "gif") return await thumbnailGif(bytes, spec);
   return await thumbnailStill(bytes, spec, format);
 }
 
-type StillFormat = "jpeg" | "png" | "webp";
+type StillFormat = OutputFormat;
 
-function encodeAs(img: Bun.Image, format: StillFormat): Promise<Uint8Array> {
-  if (format === "jpeg") return img.jpeg({ quality: 85 }).bytes();
-  if (format === "webp") return img.webp({ quality: 80 }).bytes();
+function encodeAs(img: Bun.Image, format: StillFormat, quality?: number): Promise<Uint8Array> {
+  if (format === "jpeg") return img.jpeg({ quality: quality ?? 85 }).bytes();
+  if (format === "webp") return img.webp({ quality: quality ?? 80 }).bytes();
   return img.png().bytes();
 }
 
@@ -219,7 +285,9 @@ async function thumbnailStill(bytes: Uint8Array, spec: ThumbSpec, format: StillF
   const dims = fitDimensions(width, height, spec);
 
   if (spec.fit === "contain") {
-    return encodeAs(new Bun.Image(bytes).resize(dims.newW, dims.newH, { fit: "fill" }), format);
+    const img = new Bun.Image(bytes);
+    if (dims.newW !== width || dims.newH !== height) img.resize(dims.newW, dims.newH, { fit: "fill" });
+    return encodeAs(img, format, spec.quality);
   }
 
   // cover: scale so the crop box lands exactly on W×H, then crop that small
@@ -238,7 +306,7 @@ async function thumbnailStill(bytes: Uint8Array, spec: ThumbSpec, format: StillF
     spec.height,
   );
   const png = await cropped.encode(PNG_LEVEL);
-  return format === "png" ? png : encodeAs(new Bun.Image(png), format);
+  return format === "png" ? png : encodeAs(new Bun.Image(png), format, spec.quality);
 }
 
 /**
@@ -289,4 +357,44 @@ async function thumbnailGif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Ar
     // — same as the old behavior.
     return await thumbnailStill(bytes, spec, "png");
   }
+}
+
+// ── Variant cap ─────────────────────────────────────────────────────────────
+
+/**
+ * Most distinct cached variants (size × fit × format × quality) one file may
+ * accumulate from non-admin requests. Bounds the CPU and disk an anonymous
+ * caller can burn by asking for ever-new sizes; past it, the original is
+ * served instead.
+ */
+export const MAX_THUMB_VARIANTS = 32;
+
+/** filename → cached variant count; built lazily from `.thumbs` on first use. */
+let variantCounts: Map<string, number> | null = null;
+
+export function thumbVariantCount(uploadDir: string, filename: string): number {
+  if (!variantCounts) {
+    variantCounts = new Map();
+    const dir = join(uploadDir, ".thumbs");
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) {
+        if (name.endsWith(".tmp")) continue;
+        const i = name.lastIndexOf("__");
+        if (i <= 0) continue;
+        const f = name.slice(0, i);
+        variantCounts.set(f, (variantCounts.get(f) ?? 0) + 1);
+      }
+    }
+  }
+  return variantCounts.get(filename) ?? 0;
+}
+
+export function noteThumbVariant(filename: string): void {
+  if (variantCounts) variantCounts.set(filename, (variantCounts.get(filename) ?? 0) + 1);
+}
+
+/** Forget counts after thumbs are deleted: one file, or all when omitted. */
+export function forgetThumbVariants(filename?: string): void {
+  if (filename === undefined) variantCounts = null;
+  else variantCounts?.delete(filename);
 }

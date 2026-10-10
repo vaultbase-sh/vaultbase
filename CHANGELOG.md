@@ -11,6 +11,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Added
 - **Full-text search.** Mark `text`, `editor`, `email` or `url` fields as **Searchable** (field option `searchable: true`) and query them with `?search=` on the list endpoint. Words are ANDed, the last one matches as a prefix, and matching ignores case and accents. Results are ordered by relevance unless `sort` is set. Search combines with `filter`, pagination, the list rule and `nearVector`. Backed by a SQLite FTS5 index kept in sync by triggers, so every write path updates it. Existing records are indexed when the option is turned on.
+- **Image output format and quality.** `?format=webp|jpeg|png|auto` re-encodes an image, with or without `?thumb=`. `auto` returns WebP when the browser accepts it and sets `Vary: Accept`. `?quality=1-100` applies to JPEG and WebP.
+- **One-side thumbnails.** `?thumb=800x0` or `?thumb=0x300` keeps the aspect ratio.
+- **Allowed thumbnail sizes per file field** (option `thumbs`). Non-admin requests for other sizes get the original file.
+
+### Security
+- Anyone who could read an image could request unlimited distinct thumbnail sizes, each one a fresh decode and a new cache file. A file now accumulates at most 32 cached variants from non-admin requests; beyond that the original is served.
+
+### Fixed
+- `?thumb=WxH&fit=cover` ignored `fit` when it was sent as its own query parameter (the form shown in the docs). Only the `WxH_cover` suffix worked.
 
 ## [0.14.0] — 2026-10-11
 

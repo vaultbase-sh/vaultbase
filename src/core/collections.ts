@@ -3,6 +3,7 @@ import { eq, or } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
+import { parseThumbSpec } from "./image.ts";
 
 export type FieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -74,6 +75,12 @@ export interface FieldOptions {
    * allowed together with `encrypted`.
    */
   searchable?: boolean;
+  /**
+   * File-only. Thumbnail sizes (`WxH`, `WxH_cover`, `400x0`, ...) non-admin
+   * callers may request. Other sizes get the original file. When unset any
+   * size is allowed, up to a per-file cap on generated variants.
+   */
+  thumbs?: string[];
 }
 
 export type CascadeMode = NonNullable<FieldOptions["cascade"]>;
@@ -226,7 +233,7 @@ function colDefSql(field: FieldDef): string {
 export function createUserTable(collectionName: string, fields: FieldDef[]): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
-  assertSearchable(fields);
+  assertFieldOptions(fields);
   const tname = quoteIdent(userTableName(collectionName));
   const userColDefs = fields
     .filter((f) => !f.system && f.type !== "autodate")
@@ -242,8 +249,18 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
   syncFts(rawClient(), collectionName, fields);
 }
 
-function assertSearchable(fields: FieldDef[]): void {
+function assertFieldOptions(fields: FieldDef[]): void {
   const errors = searchableErrors(fields);
+  for (const f of fields) {
+    const thumbs = f.options?.thumbs;
+    if (thumbs === undefined) continue;
+    if (f.type !== "file" || !Array.isArray(thumbs)) {
+      errors[f.name] = `'${f.name}': thumbs is a list of sizes on file fields`;
+      continue;
+    }
+    const bad = thumbs.filter((t) => typeof t !== "string" || !parseThumbSpec(t));
+    if (bad.length > 0) errors[f.name] = `'${f.name}': invalid thumb size ${bad.map((b) => JSON.stringify(b)).join(", ")} (use WxH, WxH_cover, 400x0)`;
+  }
   if (Object.keys(errors).length > 0) throw new CollectionValidationError(errors);
 }
 
@@ -483,7 +500,7 @@ export function alterUserTable(
 ): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
-  assertSearchable(newFields);
+  assertFieldOptions(newFields);
   const tname = quoteIdent(userTableName(collectionName));
   const client = rawClient();
 

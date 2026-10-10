@@ -1265,6 +1265,18 @@ function FieldOptionsBody({
               style={{ width: "100%" }}
             />
           </VbField>
+          <VbField
+            label="Thumbnail sizes"
+            hint={<>Sizes non-admins may request with <SchemaCode>?thumb=</SchemaCode>, e.g. <SchemaCode>100x100</SchemaCode>, <SchemaCode>400x300_cover</SchemaCode>, <SchemaCode>800x0</SchemaCode>. Other sizes get the original. Empty = any size, capped at 32 variants per file.</>}
+          >
+            <Chips
+              value={Array.isArray(sel.options?.["thumbs"]) ? (sel.options?.["thumbs"] as string[]) : []}
+              onChange={(e) => updateSelOptions({ thumbs: e.value && e.value.length > 0 ? e.value : undefined })}
+              placeholder="100x100 — press Enter"
+              separator=","
+              style={{ width: "100%" }}
+            />
+          </VbField>
           <OptionRow
             title="Multiple files"
             hint="Stores an array of filenames instead of a single one."
