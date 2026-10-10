@@ -62,3 +62,6 @@ shannon.yml
 
 # Local agent tooling state, not source.
 .claude-flow/
+
+# Local handoff notes
+HANDOFF.md
