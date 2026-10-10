@@ -39,6 +39,18 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Building release ${TAG}"
 
+      - name: Verify CHANGELOG entry
+        # Every release needs a "## [x.y.z]" section in CHANGELOG.md; the docs
+        # site renders it as the public changelog.
+        run: |
+          set -eu
+          ver="${{ steps.resolve-tag.outputs.tag }}"
+          ver="${ver#v}"
+          if ! grep -q "^## \[${ver}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${ver}]' section"
+            exit 1
+          fi
+
       - uses: oven-sh/setup-bun@v2
         with:
           # Pinned: the compile target embeds this exact Bun runtime, so a Bun
