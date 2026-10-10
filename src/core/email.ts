@@ -27,6 +27,9 @@ export class EmailNotConfiguredError extends Error {
 let cached: { config: SmtpConfig; transporter: Transporter; expires: number } | null = null;
 const TTL_MS = 30_000;
 
+/** Connect / greeting timeout for SMTP; the socket gets twice this. */
+export const SMTP_TIMEOUT_MS = 15_000;
+
 export function invalidateEmailCache(): void {
   cached = null;
 }
@@ -62,6 +65,11 @@ function getTransporter(): { config: SmtpConfig; transporter: Transporter } {
     port: config.port,
     secure: config.secure,
     auth: config.user ? { user: config.user, pass: config.pass } : undefined,
+    // nodemailer's defaults (2 min connect, 10 min idle socket) can hold a
+    // request open for minutes when the SMTP server hangs.
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS * 2,
   });
   cached = { config, transporter, expires: now + TTL_MS };
   return { config, transporter };
@@ -160,6 +168,23 @@ export const DEFAULT_TEMPLATES = {
       "{{link}}\n\n" +
       "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n",
   },
+  email_change: {
+    subject: "Confirm your new email address",
+    body:
+      "Hi,\n\n" +
+      "You asked to change the email address of your {{appUrl}} account to {{email}}.\n" +
+      "Click the link below to confirm:\n\n" +
+      "{{link}}\n\n" +
+      "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n",
+  },
+  invite: {
+    subject: "You're invited",
+    body:
+      "Hi,\n\n" +
+      "You've been invited to {{appUrl}}. Click the link below to choose a password and finish setting up your account:\n\n" +
+      "{{link}}\n\n" +
+      "This link expires in 7 days.\n",
+  },
   otp: {
     subject: "Your sign-in code",
     body:
@@ -176,7 +201,9 @@ export function getAppUrl(): string {
   return getAllSettings()["app.url"] ?? "";
 }
 
-export function getTemplate(kind: "verify" | "reset" | "otp"): EmailTemplate {
+export type TemplateKind = keyof typeof DEFAULT_TEMPLATES;
+
+export function getTemplate(kind: TemplateKind): EmailTemplate {
   const s = getAllSettings();
   const subjectKey = `email.${kind}.subject`;
   const bodyKey = `email.${kind}.body`;

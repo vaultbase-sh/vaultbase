@@ -77,6 +77,8 @@ function getSecret(secret: string): Uint8Array {
 }
 
 const TOKEN_TTL_SECONDS = 60 * 60; // 1 hour
+const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OTP_TTL_SECONDS = 10 * 60;   // 10 minutes
 const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
 const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
@@ -194,9 +196,17 @@ function newOtpCode(): string {
   return (buf[0]! % 1_000_000).toString().padStart(6, "0");
 }
 
-function buildLink(appUrl: string, kind: "verify" | "reset" | "otp", collection: string, token: string): string {
+const LINK_PATHS = {
+  verify: "/auth/verify",
+  reset: "/auth/reset",
+  otp: "/auth/otp",
+  email_change: "/auth/confirm-email-change",
+  invite: "/auth/invite",
+} as const;
+
+function buildLink(appUrl: string, kind: keyof typeof LINK_PATHS, collection: string, token: string): string {
   const base = appUrl.replace(/\/+$/, "");
-  const path = kind === "verify" ? "/auth/verify" : kind === "reset" ? "/auth/reset" : "/auth/otp";
+  const path = LINK_PATHS[kind];
   return `${base}${path}?token=${token}&collection=${encodeURIComponent(collection)}`;
 }
 
@@ -229,6 +239,19 @@ async function issueAndSend(
     subject: renderTemplate(tpl.subject, vars),
     text: renderTemplate(tpl.body, vars),
   });
+}
+
+/** Send a link email for a token already stored in vaultbase_auth_tokens. */
+async function sendTemplated(
+  kind: "email_change" | "invite",
+  to: string,
+  token: string,
+  collectionName: string,
+): Promise<void> {
+  const tpl = getTemplate(kind);
+  const appUrl = getAppUrl();
+  const vars = { email: to, token, link: buildLink(appUrl, kind, collectionName, token), appUrl, collection: collectionName };
+  await sendEmail({ to, subject: renderTemplate(tpl.subject, vars), text: renderTemplate(tpl.body, vars) });
 }
 
 /**
@@ -745,9 +768,158 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
         const hash = await hashPassword(body.password);
-        await updateUserById(col, tok.user_id, { password_hash: hash, updated_at: now });
+        // password_reset_at ends every session issued before the reset, so a
+        // stolen token stops working once the owner resets their password.
+        await updateUserById(col, tok.user_id, { password_hash: hash, password_reset_at: now, updated_at: now });
         await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
         return { data: { reset: true } };
+      },
+      { body: t.Object({ token: t.String(), password: t.String() }) }
+    )
+    // ── Email change ────────────────────────────────────────────────────────
+    // The signed-in user asks; a link goes to the NEW address. Confirming
+    // needs that link and the current password, so a hijacked session alone
+    // can't move the account to an attacker's mailbox.
+    .post(
+      "/auth/:collection/request-email-change",
+      async ({ params, body, request, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const session = await userSession(request, jwtSecret, col.name);
+        if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        if (session.anonymous) { set.status = 422; return { error: "Anonymous accounts can't change email; promote the account instead", code: 422 }; }
+        if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
+        const newEmail = body.newEmail.trim();
+        if (!EMAIL_RE.test(newEmail)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        const u = findUserById(col, session.id);
+        if (!u) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        if (newEmail.toLowerCase() === u.email.toLowerCase()) { set.status = 422; return { error: "That is already your email", code: 422 }; }
+        if (findUserByEmail(col, newEmail)) { set.status = 422; return { error: "Email already in use", code: 422 }; }
+
+        const db = getDb();
+        // One pending change at a time: a new request voids older links.
+        await db.delete(authTokens).where(and(eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at)));
+        const token = newToken();
+        await db.insert(authTokens).values({
+          id: token,
+          user_id: u.id,
+          collection_id: col.id,
+          purpose: "email_change",
+          payload: newEmail,
+          expires_at: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+        });
+        await sendTemplated("email_change", newEmail, token, col.name);
+        return { data: { sent: true } };
+      },
+      { body: t.Object({ newEmail: t.String() }) }
+    )
+    .post(
+      "/auth/:collection/confirm-email-change",
+      async ({ params, body, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const db = getDb();
+        const tok = (await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1))[0];
+        const now = Math.floor(Date.now() / 1000);
+        if (!tok || tok.purpose !== "email_change" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now || !tok.payload) {
+          set.status = 400; return { error: "Invalid or expired token", code: 400 };
+        }
+        const u = findUserById(col, tok.user_id);
+        const valid = u ? await Bun.password.verify(body.password, u.password_hash).catch(() => false) : false;
+        if (!u || !valid) { set.status = 401; return { error: "Invalid password", code: 401 }; }
+        const taken = findUserByEmail(col, tok.payload);
+        if (taken && taken.id !== u.id) { set.status = 422; return { error: "Email already in use", code: 422 }; }
+        // The link proves the new address; ending old sessions makes every
+        // device sign in again with it.
+        await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: now, updated_at: now });
+        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        return { data: { changed: true, email: tok.payload } };
+      },
+      { body: t.Object({ token: t.String(), password: t.String() }) }
+    )
+    // ── Invitations ─────────────────────────────────────────────────────────
+    // An admin creates the account without a usable password and emails a
+    // link; the invitee sets a password, which also verifies the address.
+    .post(
+      "/admin/users/:collection/invite",
+      async ({ params, body, request, set }) => {
+        const adminTok = request.headers.get("authorization")?.replace("Bearer ", "");
+        if (!adminTok || !(await verifyAuthToken(adminTok, jwtSecret, { audience: "admin" }))) {
+          set.status = 401; return { error: "Unauthorized", code: 401 };
+        }
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
+        const email = body.email.trim();
+        if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        if (findUserByEmail(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
+
+        const data: Record<string, unknown> = { ...(body.data ?? {}) };
+        delete data["email"];
+        delete data["password"];
+        const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
+        const hookData: Record<string, unknown> = { email, ...data };
+        try {
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
+        } catch (e) {
+          if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
+          throw e;
+        }
+        const custom: Record<string, unknown> = { ...hookData };
+        delete custom["email"];
+        const id = crypto.randomUUID();
+        const now = Math.floor(Date.now() / 1000);
+        // Unknown random password: the account can't sign in until the
+        // invitee picks one (or resets it).
+        await insertUser(col, {
+          id,
+          email,
+          password_hash: await hashPassword(crypto.randomUUID() + crypto.randomUUID()),
+          custom,
+          legacyDataJson: JSON.stringify(custom),
+          created_at: now,
+          updated_at: now,
+        });
+        const created = await getRecord(col.name, id);
+        if (created) runAfterHook(col, "afterCreate", { record: created as unknown as Record<string, unknown>, existing: null, auth: null, helpers });
+
+        const token = newToken();
+        await getDb().insert(authTokens).values({
+          id: token, user_id: id, collection_id: col.id, purpose: "invite", expires_at: now + INVITE_TTL_SECONDS,
+        });
+        try {
+          await sendTemplated("invite", email, token, col.name);
+        } catch (e) {
+          set.status = 502;
+          return { error: `User created but the invitation email failed: ${e instanceof Error ? e.message : String(e)}`, code: 502, details: { id } };
+        }
+        return { data: { id, email } };
+      },
+      { body: t.Object({ email: t.String(), data: t.Optional(t.Record(t.String(), t.Any())) }) }
+    )
+    .post(
+      "/auth/:collection/accept-invite",
+      async ({ params, body, set }) => {
+        const col = await getCollection(params.collection);
+        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+        if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
+        const db = getDb();
+        const tok = (await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1))[0];
+        const now = Math.floor(Date.now() / 1000);
+        if (!tok || tok.purpose !== "invite" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
+          set.status = 400; return { error: "Invalid or expired invitation", code: 400 };
+        }
+        if (!findUserById(col, tok.user_id)) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
+        await updateUserById(col, tok.user_id, {
+          password_hash: await hashPassword(body.password), email_verified: 1, password_reset_at: now, updated_at: now,
+        });
+        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        return { data: { accepted: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
     )

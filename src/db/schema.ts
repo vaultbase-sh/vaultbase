@@ -64,6 +64,8 @@ export const authTokens = sqliteTable("vaultbase_auth_tokens", {
   code: text("code"),
   /** Failed attempts for OTP/MFA brute-force protection. */
   attempts: integer("attempts").notNull().default(0),
+  /** Purpose-specific data, e.g. the new address for `email_change`. */
+  payload: text("payload"),
   expires_at: integer("expires_at").notNull(),
   used_at: integer("used_at"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),

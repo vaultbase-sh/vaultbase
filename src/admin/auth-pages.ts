@@ -2,7 +2,7 @@ import Elysia from "elysia";
 
 /**
  * Built-in HTML pages for the email-link auth flows: password reset, email
- * verification and OTP / magic-link login. The link emails point at
+ * verification, OTP / magic-link login, email change and invitations. The link emails point at
  * `{app.url}/auth/{kind}?token=...&collection=...`. Without a frontend at
  * `app.url`, these tokens would have nowhere to land — so vaultbase ships
  * minimal self-contained pages that POST to the existing JSON API.
@@ -122,6 +122,20 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * JSON for an inline <script>. `token` and `collection` come from the query
+ * string, so `<` (a `</script>` breakout), `>`, `&` and the JS line
+ * separators are escaped.
+ */
+function js(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function pageShell(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -159,8 +173,8 @@ function resetPage(token: string, collection: string): string {
 </form>
 <script>
 (function () {
-  var token = ${JSON.stringify(token)};
-  var collection = ${JSON.stringify(collection)};
+  var token = ${js(token)};
+  var collection = ${js(collection)};
   var form = document.getElementById('form');
   var msg = document.getElementById('msg');
   var btn = document.getElementById('submit');
@@ -221,6 +235,106 @@ function resetPage(token: string, collection: string): string {
   return pageShell("Reset your password", body);
 }
 
+interface PasswordPageOpts {
+  title: string;
+  sub: string;
+  button: string;
+  busy: string;
+  /** API path after /api/v1/auth/<collection>/ */
+  endpoint: string;
+  /** Ask twice and check they match (setting a new password). */
+  confirm: boolean;
+  /** Key in the response's `data` that signals success. */
+  okKey: string;
+  done: string;
+}
+
+/** Token + password form posting `{ token, password }`; invite and email change. */
+function passwordPage(token: string, collection: string, o: PasswordPageOpts): string {
+  const second = o.confirm ? /* html */ `
+  <div class="field">
+    <label for="pw2">Confirm password</label>
+    <input id="pw2" type="password" autocomplete="new-password" required minlength="8" />
+    <button type="button" class="reveal" data-target="pw2" aria-label="Show password">${REVEAL_SVG_EYE}</button>
+  </div>` : "";
+  const body = /* html */ `
+<h1>${escapeHtml(o.title)}</h1>
+<p class="sub">${escapeHtml(o.sub)}</p>
+<div id="msg"></div>
+<form id="form" autocomplete="off">
+  <div class="field">
+    <label for="pw">${o.confirm ? "New password" : "Current password"}</label>
+    <input id="pw" type="password" autocomplete="${o.confirm ? "new-password" : "current-password"}" required ${o.confirm ? 'minlength="8"' : ""} />
+    <button type="button" class="reveal" data-target="pw" aria-label="Show password">${REVEAL_SVG_EYE}</button>
+  </div>${second}
+  <button type="submit" id="submit" class="primary">${escapeHtml(o.button)}</button>
+</form>
+<script>
+(function () {
+  var token = ${js(token)};
+  var collection = ${js(collection)};
+  var opts = ${js({ endpoint: o.endpoint, confirm: o.confirm, okKey: o.okKey, done: o.done, button: o.button, busy: o.busy })};
+  var form = document.getElementById('form');
+  var msg = document.getElementById('msg');
+  var btn = document.getElementById('submit');
+
+  document.querySelectorAll('.reveal').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var input = document.getElementById(b.dataset.target);
+      if (!input) return;
+      var showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      b.innerHTML = showing ? ${js(REVEAL_SVG_EYE)} : ${js(REVEAL_SVG_EYE_OFF)};
+    });
+  });
+
+  function show(kind, text) {
+    msg.className = 'msg ' + kind;
+    msg.textContent = text;
+  }
+
+  if (!token || !collection) {
+    show('error', 'Missing token or collection. Use the link from the email.');
+    btn.disabled = true;
+    return;
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var pw = document.getElementById('pw').value;
+    if (opts.confirm) {
+      if (pw !== document.getElementById('pw2').value) { show('error', 'Passwords do not match.'); return; }
+      if (pw.length < 8) { show('error', 'Password must be at least 8 characters.'); return; }
+    }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> ' + opts.busy;
+    try {
+      var res = await fetch('/api/v1/auth/' + encodeURIComponent(collection) + '/' + opts.endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: token, password: pw }),
+      });
+      var json = await res.json().catch(function () { return {}; });
+      if (res.ok && json && json.data && json.data[opts.okKey]) {
+        show('success', opts.done);
+        form.style.display = 'none';
+      } else {
+        show('error', (json && json.error) || ('Request failed (' + res.status + ').'));
+        btn.disabled = false;
+        btn.textContent = opts.button;
+      }
+    } catch (err) {
+      show('error', 'Network error. Please try again.');
+      btn.disabled = false;
+      btn.textContent = opts.button;
+    }
+  });
+})();
+</script>
+`;
+  return pageShell(o.title, body);
+}
+
 function verifyPage(token: string, collection: string): string {
   const body = /* html */ `
 <h1>Verify your email</h1>
@@ -231,8 +345,8 @@ function verifyPage(token: string, collection: string): string {
 </div>
 <script>
 (function () {
-  var token = ${JSON.stringify(token)};
-  var collection = ${JSON.stringify(collection)};
+  var token = ${js(token)};
+  var collection = ${js(collection)};
   var msg = document.getElementById('msg');
   var loading = document.getElementById('loading');
 
@@ -283,8 +397,8 @@ function otpPage(token: string, collection: string): string {
 </div>
 <script>
 (function () {
-  var token = ${JSON.stringify(token)};
-  var collection = ${JSON.stringify(collection)};
+  var token = ${js(token)};
+  var collection = ${js(collection)};
   var msg = document.getElementById('msg');
   var loading = document.getElementById('loading');
   var result = document.getElementById('result');
@@ -330,27 +444,47 @@ function otpPage(token: string, collection: string): string {
   return pageShell("Sign in", body);
 }
 
+/**
+ * Serve a page with a per-response nonce. The global CSP (`script-src
+ * 'self'`) blocks inline scripts, which these pages are built from, so each
+ * response carries its own policy allowing only its nonce.
+ */
+function htmlPage(set: { headers: Record<string, string | number> }, html: string): string {
+  const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+  set.headers["content-type"] = "text/html; charset=utf-8";
+  set.headers["cache-control"] = "no-store";
+  set.headers["Content-Security-Policy"] =
+    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+  return html.replace(/<script>/g, `<script nonce="${nonce}">`);
+}
+
+type Query = Record<string, string | undefined>;
+const tokenOf = (q: Query) => String(q["token"] ?? "");
+const collectionOf = (q: Query) => String(q["collection"] ?? "users");
+
 export function makeAuthPagesPlugin() {
   return new Elysia({ name: "auth-pages" })
-    .get("/auth/reset", ({ query, set }) => {
-      const token = String(query.token ?? "");
-      const collection = String(query.collection ?? "users");
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      set.headers["cache-control"] = "no-store";
-      return resetPage(token, collection);
-    })
-    .get("/auth/verify", ({ query, set }) => {
-      const token = String(query.token ?? "");
-      const collection = String(query.collection ?? "users");
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      set.headers["cache-control"] = "no-store";
-      return verifyPage(token, collection);
-    })
-    .get("/auth/otp", ({ query, set }) => {
-      const token = String(query.token ?? "");
-      const collection = String(query.collection ?? "users");
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      set.headers["cache-control"] = "no-store";
-      return otpPage(token, collection);
-    });
+    .get("/auth/reset", ({ query, set }) => htmlPage(set, resetPage(tokenOf(query), collectionOf(query))))
+    .get("/auth/verify", ({ query, set }) => htmlPage(set, verifyPage(tokenOf(query), collectionOf(query))))
+    .get("/auth/otp", ({ query, set }) => htmlPage(set, otpPage(tokenOf(query), collectionOf(query))))
+    .get("/auth/confirm-email-change", ({ query, set }) => htmlPage(set, passwordPage(tokenOf(query), collectionOf(query), {
+      title: "Confirm your new email",
+      sub: "Enter your current password to switch your account to this email address.",
+      button: "Confirm email change",
+      busy: "Confirming...",
+      endpoint: "confirm-email-change",
+      confirm: false,
+      okKey: "changed",
+      done: "Email changed. Sign in again with your new address.",
+    })))
+    .get("/auth/invite", ({ query, set }) => htmlPage(set, passwordPage(tokenOf(query), collectionOf(query), {
+      title: "Accept your invitation",
+      sub: "Choose a password to finish setting up your account.",
+      button: "Set password",
+      busy: "Saving...",
+      endpoint: "accept-invite",
+      confirm: true,
+      okKey: "accepted",
+      done: "Your account is ready. You can now sign in.",
+    })));
 }

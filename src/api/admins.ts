@@ -70,7 +70,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
         const target = await db.select().from(admin).where(eq(admin.id, params.id)).limit(1);
         if (target.length === 0) { set.status = 404; return { error: "Admin not found", code: 404 }; }
 
-        const update: { email?: string; password_hash?: string } = {};
+        const update: { email?: string; password_hash?: string; password_reset_at?: number } = {};
         if (body.email !== undefined) {
           // Check email uniqueness
           const dup = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
@@ -84,6 +84,8 @@ export function makeAdminsPlugin(jwtSecret: string) {
           const pwErr = await validatePassword(body.password);
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
           update.password_hash = await Bun.password.hash(body.password, HASH_OPTS);
+          // End that admin's existing sessions (a leaked token stops working).
+          update.password_reset_at = Math.floor(Date.now() / 1000);
         }
         if (Object.keys(update).length === 0) {
           return { data: { id: params.id, email: target[0]!.email } };

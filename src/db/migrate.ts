@@ -63,6 +63,7 @@ export async function runMigrations() {
   `);
   try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN code TEXT`); } catch { /* exists */ }
   try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN payload TEXT`); } catch { /* exists */ }
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_user ON vaultbase_auth_tokens(user_id, purpose)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_code ON vaultbase_auth_tokens(code, purpose)`);
 

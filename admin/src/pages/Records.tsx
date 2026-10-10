@@ -809,6 +809,7 @@ export default function Records() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
   const [selected, setSelected] = useState<RecordRow[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -1116,11 +1117,11 @@ export default function Records() {
   };
 
   const recordCount = collection ? `${total.toLocaleString()} records` : "—";
-  const newBtnLabel = collection?.type === "auth" ? "New user"
+  const newBtnLabel = collection?.type === "auth" ? "Invite user"
     : collection?.type === "view" ? "Read-only"
     : "New record";
   const newBtnTitle = collection?.type === "auth"
-    ? "Users register via POST /api/v1/auth/<collection>/register"
+    ? "Create the user and email them a link to set a password (needs SMTP)"
     : collection?.type === "view" ? "View collections are read-only"
     : undefined;
 
@@ -1169,8 +1170,8 @@ export default function Records() {
               kind="primary"
               size="sm"
               icon="plus"
-              onClick={() => setShowNew(true)}
-              disabled={!collection || collection.type === "auth" || collection.type === "view"}
+              onClick={() => (collection?.type === "auth" ? setShowInvite(true) : setShowNew(true))}
+              disabled={!collection || collection.type === "view"}
               title={newBtnTitle}
             >
               {newBtnLabel}
@@ -1453,6 +1454,15 @@ export default function Records() {
         )}
       </Drawer>
 
+      {collection?.type === "auth" && (
+        <InviteUserModal
+          open={showInvite}
+          onClose={() => setShowInvite(false)}
+          collectionName={collection.name}
+          onInvited={(email) => { toast(`Invitation sent to ${email}`, "check"); loadRecords(1); setPage(1); }}
+        />
+      )}
+
       {/* New record modal */}
       {collection && (
         <NewRecordModal
@@ -1464,5 +1474,57 @@ export default function Records() {
         />
       )}
     </>
+  );
+}
+
+function InviteUserModal({ open, onClose, collectionName, onInvited }: {
+  open: boolean;
+  onClose: () => void;
+  collectionName: string;
+  onInvited: (email: string) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function send() {
+    if (!email.trim()) return;
+    setSending(true);
+    const res = await api.post<ApiResponse<{ id: string; email: string }>>(
+      `/api/v1/admin/users/${encodeURIComponent(collectionName)}/invite`,
+      { email: email.trim() },
+    );
+    setSending(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    setEmail("");
+    onClose();
+    onInvited(res.data?.email ?? email.trim());
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Invite user · ${collectionName}`}
+      width={440}
+      footer={
+        <>
+          <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={() => void send()} disabled={sending || !email.trim()}>
+            {sending ? "Sending…" : "Send invitation"}
+          </VbBtn>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <VbInput
+          mono type="email" placeholder="person@example.com" value={email} autoFocus
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void send(); }}
+        />
+        <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+          Creates the user without a password and emails a link (valid 7 days) to set one. Users can still sign up themselves via <code>/auth/{collectionName}/register</code>.
+        </div>
+      </div>
+    </Modal>
   );
 }
