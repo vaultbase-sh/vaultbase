@@ -193,6 +193,10 @@ export async function enqueue(
     status: "queued",
     scheduled_at,
     enqueued_at: now,
+    // Per-job overrides; runJob falls back to the worker's settings when null.
+    retry_max: typeof opts.retries === "number" ? Math.max(0, Math.floor(opts.retries)) : null,
+    retry_backoff: opts.backoff === "fixed" || opts.backoff === "exponential" ? opts.backoff : null,
+    retry_delay_ms: typeof opts.retryDelayMs === "number" ? Math.max(0, Math.floor(opts.retryDelayMs)) : null,
   });
   return { jobId: id, deduped: false };
 }
@@ -301,11 +305,15 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
     const msg = e instanceof ValidationError
       ? `ValidationError: ${e.message}`
       : (e instanceof Error ? (e.stack ?? e.message) : String(e));
-    const willRetry = job.attempt < worker.retry_max;
+    // Per-job overrides from enqueue() win over the worker's defaults.
+    const retryMax = job.retry_max ?? worker.retry_max;
+    const backoff = job.retry_backoff ?? worker.retry_backoff;
+    const baseDelayMs = job.retry_delay_ms ?? worker.retry_delay_ms;
+    const willRetry = job.attempt < retryMax;
     if (willRetry) {
-      const delayMs = worker.retry_backoff === "exponential"
-        ? worker.retry_delay_ms * Math.pow(2, job.attempt - 1)
-        : worker.retry_delay_ms;
+      const delayMs = backoff === "exponential"
+        ? baseDelayMs * Math.pow(2, job.attempt - 1)
+        : baseDelayMs;
       const next = Math.floor((Date.now() + delayMs) / 1000);
       // Re-queue: bump attempt, set status back to queued with a fresh
       // schedule. Keeping the same row preserves the audit trail; a fresh

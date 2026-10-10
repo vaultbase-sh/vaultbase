@@ -231,3 +231,33 @@ describe("queues", () => {
     expect(bSucceeded).toBe(true);
   });
 });
+
+// enqueue() accepted retries / backoff / retryDelayMs (documented on
+// helpers.enqueue) but never stored them, so only the worker's defaults
+// ever applied.
+describe("queues — per-job retry overrides", () => {
+  it("retries overrides the worker's retry_max", async () => {
+    await insertWorker({ queue: "flaky", code: `throw new Error("boom")`, retry_max: 5, retry_delay_ms: 10 });
+    const r = await enqueue("flaky", null, { retries: 1 });
+    startQueueScheduler();
+    await waitForStatus(r.jobId, "dead");
+    expect((await getJob(r.jobId))!.attempt).toBe(1);
+  });
+
+  it("backoff / retryDelayMs override the worker's schedule", async () => {
+    await insertWorker({ queue: "slowretry", code: `throw new Error("boom")`, retry_max: 3, retry_delay_ms: 10 });
+    const r = await enqueue("slowretry", null, { retries: 3, backoff: "fixed", retryDelayMs: 120_000 });
+    startQueueScheduler();
+    // First failure re-queues with the job's own 120 s delay, not the worker's 10 ms.
+    const t0 = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 100; i++) {
+      const j = await getJob(r.jobId);
+      if (j?.attempt === 2 && j.status === "queued") break;
+      await sleep(40);
+    }
+    const j = (await getJob(r.jobId))!;
+    expect(j.attempt).toBe(2);
+    expect(j.status).toBe("queued");
+    expect(j.scheduled_at).toBeGreaterThanOrEqual(t0 + 110);
+  });
+});

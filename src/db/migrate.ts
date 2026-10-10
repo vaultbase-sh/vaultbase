@@ -230,6 +230,10 @@ export async function runMigrations() {
       finished_at INTEGER
     )
   `);
+  // v0.12: per-job retry overrides from enqueue() (null = worker defaults).
+  for (const col of ["retry_max INTEGER", "retry_backoff TEXT", "retry_delay_ms INTEGER"]) {
+    try { client.exec(`ALTER TABLE vaultbase_jobs_log ADD COLUMN ${col}`); } catch { /* exists */ }
+  }
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_status ON vaultbase_jobs_log(queue, status, scheduled_at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_unique ON vaultbase_jobs_log(unique_key, status)`);
 

@@ -312,6 +312,10 @@ export const jobsLog = sqliteTable("vaultbase_jobs_log", {
   enqueued_at: integer("enqueued_at").notNull().default(sql`(unixepoch())`),
   started_at: integer("started_at"),
   finished_at: integer("finished_at"),
+  /** Per-job retry overrides from enqueue(); null = use the worker defaults. */
+  retry_max: integer("retry_max"),
+  retry_backoff: text("retry_backoff"),
+  retry_delay_ms: integer("retry_delay_ms"),
 });
 
 export const settings = sqliteTable("vaultbase_settings", {
