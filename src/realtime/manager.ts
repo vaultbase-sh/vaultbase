@@ -56,6 +56,8 @@ const WILDCARD = "*";
  * "wins" — the most recent send target is what fires.
  */
 const subs = new Map<string, Map<string, WSLike>>();
+/** connection id → topics it holds (reverse index of `subs`). */
+const topicsByConn = new Map<string, Set<string>>();
 const wsAuth = new Map<string, WSAuth>();
 
 /** Pull the persistent connection id off `ws.data` (set by the WS open handler). */
@@ -120,9 +122,25 @@ export function subscribe(ws: WSLike, topics: string[]): string[] {
     let inner = subs.get(t);
     if (!inner) { inner = new Map(); subs.set(t, inner); }
     inner.set(id, ws);
+    let own = topicsByConn.get(id);
+    if (!own) { own = new Set(); topicsByConn.set(id, own); }
+    own.add(t);
     accepted.push(t);
   }
   return accepted;
+}
+
+/** Remove one connection from one topic; drop the topic once nobody listens. */
+function leaveTopic(id: string, topic: string): boolean {
+  const inner = subs.get(topic);
+  const removed = inner?.delete(id) ?? false;
+  if (inner && inner.size === 0) subs.delete(topic);
+  const own = topicsByConn.get(id);
+  if (own) {
+    own.delete(topic);
+    if (own.size === 0) topicsByConn.delete(id);
+  }
+  return removed;
 }
 
 export function unsubscribe(ws: WSLike, topics: string[]): string[] {
@@ -131,28 +149,30 @@ export function unsubscribe(ws: WSLike, topics: string[]): string[] {
   for (const raw of topics) {
     const t = normalizeTopic(raw);
     if (!t) continue;
-    if (subs.get(t)?.delete(id)) removed.push(t);
+    if (leaveTopic(id, t)) removed.push(t);
   }
   return removed;
 }
 
 /** Every topic this WS is currently subscribed to. Cheap introspection for debugging. */
 export function listSubsFor(ws: WSLike): string[] {
-  const id = connId(ws);
-  const out: string[] = [];
-  for (const [topic, inner] of subs.entries()) {
-    if (inner.has(id)) out.push(topic);
-  }
-  out.sort();
-  return out;
+  return [...(topicsByConn.get(connId(ws)) ?? [])].sort();
+}
+
+/** Leave every topic this connection holds (only its own, not all topics). */
+function leaveAll(id: string): void {
+  for (const t of [...(topicsByConn.get(id) ?? [])]) leaveTopic(id, t);
 }
 
 export function disconnectAll(ws: WSLike): void {
   const id = connId(ws);
-  for (const inner of subs.values()) {
-    inner.delete(id);
-  }
+  leaveAll(id);
   wsAuth.delete(id);
+}
+
+/** Test hook: number of live topics. */
+export function _topicCount(): number {
+  return subs.size;
 }
 
 /**
@@ -197,6 +217,7 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
   // Dedup: a connection subscribed to both "posts" and "*" should still receive
   // the event once.
   const sent = new Set<string>();
+  const dead: string[] = [];
   for (const topic of targets) {
     if (!topic) continue;
     const inner = subs.get(topic);
@@ -208,10 +229,12 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
       try {
         ws.send(payload);
       } catch {
-        inner.delete(id);
+        dead.push(id);
       }
     }
   }
+  // A socket that can't be written to is gone: drop it from every topic.
+  for (const id of dead) leaveAll(id);
 }
 
 /**
@@ -225,10 +248,12 @@ export function broadcastSystem(topic: string, message: object): void {
   const inner = subs.get(topic);
   if (!inner) return;
   const payload = JSON.stringify(message);
+  const dead: string[] = [];
   for (const [id, ws] of inner) {
     try { ws.send(payload); }
-    catch { inner.delete(id); }
+    catch { dead.push(id); }
   }
+  for (const id of dead) leaveAll(id);
 }
 
 // ── SSE client registry ─────────────────────────────────────────────────────
@@ -267,13 +292,14 @@ export function setSSESubscriptions(clientId: string, topics: string[]): boolean
   const adapter = sseClients.get(clientId);
   if (!adapter) return false;
   const id = connId(adapter);
-  // Remove from every topic, then re-add the new set.
-  for (const inner of subs.values()) inner.delete(id);
+  // Leave its current topics, then add the new set.
+  leaveAll(id);
   subscribe(adapter, topics);
   return true;
 }
 
 export function _reset(): void {
   subs.clear();
+  topicsByConn.clear();
   sseClients.clear();
 }
