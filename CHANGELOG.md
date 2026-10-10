@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+- **Scheduled backups.** Settings → Backup & restore can now take snapshots on a cron schedule (UTC, default daily 03:00), keep the newest N (default 7), and optionally copy each one to a private S3-compatible bucket. Stored snapshots can be listed, downloaded, restored and deleted from the same page or via `/api/v1/admin/backups`. In cluster mode only one worker runs each backup.
+
+### Fixed
+- `GET /admin/backup` streamed the live database file, which could miss recent writes still in the WAL. It now returns a `VACUUM INTO` snapshot.
+- The S3 storage secret (`s3.secret_access_key`) was stored in plaintext even with `VAULTBASE_ENCRYPTION_KEY` set. It's encrypted on the next save.
+- Restore could fail on Windows with `EBUSY` because the old database handle wasn't released.
+
 ## [0.13.2] — 2026-10-10
 
 ### Upgrade notes

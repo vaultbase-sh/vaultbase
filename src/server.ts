@@ -34,6 +34,7 @@ import { makeMcpAdminPlugin } from "./api/mcp-admin.ts";
 import { makeSqlPlugin } from "./api/sql.ts";
 import { startApiTokenUsageFlusher, recordApiTokenUsage, pruneExpiredApiTokens } from "./core/api-tokens.ts";
 import { pruneHistory } from "./core/maintenance.ts";
+import { setBackupsDir, startBackupScheduler } from "./core/backups.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
@@ -113,6 +114,7 @@ export function createServer(config: Config) {
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
   setSandboxDir(`${config.dataDir}/sandboxes`);
+  setBackupsDir(`${config.dataDir}/backups`);
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
@@ -122,6 +124,7 @@ export function createServer(config: Config) {
   startUpdateCheckScheduler();
   startWebhookDispatcher();
   startFileTokenUsesPrune();
+  startBackupScheduler();
   startApiTokenUsageFlusher();
   // Prune expired/long-revoked API token rows once a day.
   setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();

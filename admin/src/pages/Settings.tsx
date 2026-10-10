@@ -77,7 +77,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   ]},
   { group: "Infrastructure", items: [
     { id: "storage",    label: "File storage",     subtitle: "local FS · S3 · Cloudflare R2" },
-    { id: "backup",     label: "Backup & restore", subtitle: "SQLite snapshot" },
+    { id: "backup",     label: "Backup & restore", subtitle: "Scheduled snapshots" },
     { id: "retention",  label: "Data retention",   subtitle: "job · webhook delivery history" },
     { id: "migrations", label: "Migrations",       subtitle: "schema snapshot · environment sync" },
     { id: "metrics",    label: "Health & metrics", subtitle: "Prometheus exposition" },
@@ -1636,31 +1636,151 @@ function UpdatesSection() {
 }
 
 // ── Backup / restore ─────────────────────────────────────────────────────────
+interface StoredBackup { name: string; size: number; created_at: number }
+interface BackupStatus {
+  enabled: boolean; cron: string; keep: number; s3: boolean;
+  next_run_at: number | null; last_run_at: number | null; last_error: string | null;
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < MB) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / MB).toFixed(1)} MB`;
+}
+
+function fmtTime(sec: number | null): string {
+  return sec ? new Date(sec * 1000).toLocaleString() : "—";
+}
+
+async function downloadAuthed(url: string, fallbackName: string): Promise<void> {
+  const token = getMemoryToken();
+  try {
+    const r = await fetch(url, {
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`Failed: ${r.status}`);
+    const m = (r.headers.get("content-disposition") ?? "").match(/filename="([^"]+)"/);
+    const blobUrl = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = blobUrl; a.download = m?.[1] ?? fallbackName; a.click();
+    URL.revokeObjectURL(blobUrl);
+    toast("Backup downloaded", "download");
+  } catch (e) {
+    toast(`Download failed: ${e instanceof Error ? e.message : String(e)}`, "info");
+  }
+}
+
 function BackupSection() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [items, setItems] = useState<StoredBackup[]>([]);
+  const [status, setStatus] = useState<BackupStatus | null>(null);
 
-  function handleDownload() {
-    const token = getMemoryToken();
-    fetch("/api/v1/admin/backup", {
-      credentials: "same-origin",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(`Failed: ${r.status}`);
-        const cd = r.headers.get("content-disposition") ?? "";
-        const m = cd.match(/filename="([^"]+)"/);
-        const filename = m?.[1] ?? "vaultbase-backup.db";
-        return r.blob().then((blob) => ({ blob, filename }));
-      })
-      .then(({ blob, filename }) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = filename; a.click();
-        URL.revokeObjectURL(url);
-        toast("Backup downloaded", "download");
-      })
-      .catch((e) => toast(`Backup failed: ${e instanceof Error ? e.message : String(e)}`, "info"));
+  const [enabled, setEnabled] = useState(false);
+  const [cron, setCron] = useState("0 3 * * *");
+  const [keep, setKeep] = useState("7");
+  const [s3, setS3] = useState(false);
+  const [endpoint, setEndpoint] = useState("");
+  const [bucket, setBucket] = useState("");
+  const [region, setRegion] = useState("auto");
+  const [accessKeyId, setAccessKeyId] = useState("");
+  const [secretAccessKey, setSecretAccessKey] = useState("");
+  const [prefix, setPrefix] = useState("vaultbase-backups/");
+
+  async function refresh() {
+    const res = await api.get<ApiResponse<{ items: StoredBackup[]; status: BackupStatus }>>("/api/v1/admin/backups");
+    if (res.data) { setItems(res.data.items); setStatus(res.data.status); }
+  }
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.data) {
+        const s = res.data;
+        setEnabled(s["backups.enabled"] === "1");
+        setCron(s["backups.cron"] ?? "0 3 * * *");
+        setKeep(s["backups.keep"] ?? "7");
+        setS3(s["backups.s3.enabled"] === "1");
+        setEndpoint(s["backups.s3.endpoint"] ?? "");
+        setBucket(s["backups.s3.bucket"] ?? "");
+        setRegion(s["backups.s3.region"] ?? "auto");
+        setAccessKeyId(s["backups.s3.access_key_id"] ?? "");
+        setSecretAccessKey(s["backups.s3.secret_access_key"] ?? "");
+        setPrefix(s["backups.s3.prefix"] ?? "vaultbase-backups/");
+      }
+      setLoaded(true);
+    });
+    void refresh();
+  }, []);
+
+  async function save() {
+    const n = Number(keep);
+    if (!Number.isInteger(n) || n < 1 || n > 1000) {
+      toast("Keep must be a whole number between 1 and 1000", "info");
+      return;
+    }
+    if (s3 && (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim())) {
+      toast("S3 copy needs a bucket, access key ID and secret", "info");
+      return;
+    }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+      "backups.enabled": enabled ? "1" : "0",
+      "backups.cron": cron.trim(),
+      "backups.keep": String(n),
+      "backups.s3.enabled": s3 ? "1" : "0",
+      "backups.s3.endpoint": endpoint,
+      "backups.s3.bucket": bucket,
+      "backups.s3.region": region,
+      "backups.s3.access_key_id": accessKeyId,
+      "backups.s3.secret_access_key": secretAccessKey,
+      "backups.s3.prefix": prefix,
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Backup settings saved");
+    void refresh();
+  }
+
+  async function backupNow() {
+    setRunning(true);
+    const res = await api.post<ApiResponse<StoredBackup>>("/api/v1/admin/backups", {});
+    setRunning(false);
+    if (res.error) toast(res.error, "info");
+    else toast(`Created ${res.data?.name}`, "check");
+    void refresh();
+  }
+
+  async function removeBackup(name: string) {
+    const ok = await confirm({
+      title: "Delete backup",
+      message: `Delete "${name}" from this server? Copies in S3 are not touched.`,
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<unknown>>(`/api/v1/admin/backups/${encodeURIComponent(name)}`);
+    if (res.error) toast(res.error, "info");
+    void refresh();
+  }
+
+  async function restoreStored(name: string) {
+    const ok = await confirm({
+      title: "Restore from backup",
+      message: `Restore from "${name}"?\n\nThis will REPLACE all current data with this snapshot. The current database is kept next to it as a .bak file.`,
+      danger: true,
+      confirmLabel: "Restore",
+    });
+    if (!ok) return;
+    setRestoring(true);
+    const res = await api.post<ApiResponse<unknown>>(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`, {});
+    setRestoring(false);
+    if (res.error) { toast(`Restore failed: ${res.error}`, "info"); return; }
+    toast("Restored. Reloading…", "check");
+    setTimeout(() => window.location.reload(), 800);
   }
 
   async function handleRestore(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1703,20 +1823,135 @@ function BackupSection() {
   }
 
   return (
-    <SectionShell id="backup">
+    <SectionShell
+      id="backup"
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} />
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-success)" : "var(--vb-fg-3)",
+          }}>{enabled ? "scheduled" : "manual only"}</span>
+        </span>
+      }
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.6fr", gap: 14 }}>
+        <VbField
+          label="Schedule"
+          hint={<>Cron expression, UTC. <VbCode>0 3 * * *</VbCode> runs daily at 03:00.</>}
+        >
+          <VbInput mono value={cron} onChange={(e) => setCron(e.target.value)} disabled={!loaded} />
+        </VbField>
+        <VbField label="Keep" hint="Newest snapshots kept, on disk and in S3.">
+          <VbInput mono type="number" min={1} max={1000} value={keep}
+            onChange={(e) => setKeep(e.target.value)} disabled={!loaded} />
+        </VbField>
+      </div>
+
       <VbField
-        label="Download backup"
-        hint={<>Downloads the live <VbCode>data.db</VbCode> file. Uploaded files are not included.</>}
+        label="Copy to S3"
+        hint="Upload each snapshot to an S3-compatible bucket. Use a private bucket, not a public file storage bucket: snapshots contain password hashes and secrets."
+        right={<Toggle on={s3} onChange={setS3} />}
+      >
+        {s3 && (
+          <div style={{ display: "grid", gap: 14 }}>
+            <VbField
+              label="Endpoint"
+              hint={<>R2: <VbCode>{`https://<account-id>.r2.cloudflarestorage.com`}</VbCode>. AWS S3: leave blank.</>}
+            >
+              <VbInput mono value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
+            </VbField>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 0.6fr 1fr", gap: 14 }}>
+              <VbField label="Bucket">
+                <VbInput mono value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="vaultbase-backups" />
+              </VbField>
+              <VbField label="Region">
+                <VbInput mono value={region} onChange={(e) => setRegion(e.target.value)} placeholder="auto" />
+              </VbField>
+              <VbField label="Key prefix">
+                <VbInput mono value={prefix} onChange={(e) => setPrefix(e.target.value)} />
+              </VbField>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <VbField label="Access key ID">
+                <VbInput mono value={accessKeyId} onChange={(e) => setAccessKeyId(e.target.value)} autoComplete="off" />
+              </VbField>
+              <VbField label="Secret access key" hint="Stored encrypted at rest when VAULTBASE_ENCRYPTION_KEY is set.">
+                <VbSecretInput value={secretAccessKey} onChange={(e) => setSecretAccessKey(e.target.value)} placeholder="••••••••" />
+              </VbField>
+            </div>
+          </div>
+        )}
+      </VbField>
+
+      <div style={{
+        display: "flex", justifyContent: "flex-end",
+        paddingTop: 12, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </VbBtn>
+      </div>
+
+      <VbField
+        label="Stored backups"
+        hint={<>
+          {status && <>
+            Last run: {fmtTime(status.last_run_at)}
+            {status.enabled && <> · next: {fmtTime(status.next_run_at)}</>}
+            {status.last_error && <span style={{ color: "var(--vb-status-danger)" }}> · last error: {status.last_error}</span>}
+            <br />
+          </>}
+          Kept in <VbCode>{"<data dir>/backups"}</VbCode>. Uploaded files are not included.
+        </>}
+        right={
+          <VbBtn kind="ghost" size="sm" icon="plus" onClick={backupNow} disabled={running}>
+            {running ? "Backing up…" : "Back up now"}
+          </VbBtn>
+        }
+      >
+        {items.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>No stored backups yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 6 }}>
+            {items.map((b) => (
+              <div key={b.name} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "6px 10px",
+                border: "1px solid var(--vb-border)", borderRadius: 6, fontSize: 12,
+              }}>
+                <span style={{ fontFamily: "var(--font-mono)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{b.name}</span>
+                <span style={{ color: "var(--vb-fg-3)", fontVariantNumeric: "tabular-nums" }}>{fmtSize(b.size)}</span>
+                <VbBtn kind="ghost" size="sm" icon="download"
+                  onClick={() => void downloadAuthed(`/api/v1/admin/backups/${encodeURIComponent(b.name)}`, b.name)}>
+                  Download
+                </VbBtn>
+                <VbBtn kind="ghost" size="sm" icon="upload" disabled={restoring}
+                  onClick={() => void restoreStored(b.name)}>
+                  Restore
+                </VbBtn>
+                <VbBtn kind="ghost" size="sm" icon="trash" onClick={() => void removeBackup(b.name)}>
+                  Delete
+                </VbBtn>
+              </div>
+            ))}
+          </div>
+        )}
+      </VbField>
+
+      <VbField
+        label="Download current database"
+        hint="A consistent snapshot of the live database, taken now and not stored on the server."
       >
         <div>
-          <VbBtn kind="ghost" size="sm" icon="download" onClick={handleDownload}>
+          <VbBtn kind="ghost" size="sm" icon="download"
+            onClick={() => void downloadAuthed("/api/v1/admin/backup", "vaultbase-backup.db")}>
             Download .db
           </VbBtn>
         </div>
       </VbField>
 
       <VbField
-        label="Restore from backup"
+        label="Restore from file"
         hint="Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged)."
         right={<VbPill tone="warning" dot>destructive</VbPill>}
       >

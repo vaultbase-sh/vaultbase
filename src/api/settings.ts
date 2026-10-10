@@ -9,6 +9,8 @@ import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { validateBackupKeep } from "../core/backups.ts";
+import { validateCron } from "../core/jobs.ts";
 import {
   encryptValueSync,
   decryptValueSync,
@@ -40,6 +42,7 @@ const ENCRYPTED_KEY_SUFFIXES: readonly string[] = [
   ".private_key",
   ".privatekey",
   ".access_key",
+  "_access_key",
   ".accesskey",
   ".service_account",
   ".token",
@@ -184,6 +187,14 @@ export function makeSettingsPlugin(jwtSecret: string) {
           }
           if (k === "maintenance.retention_days") {
             const err = validateRetentionDays(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+          if (k === "backups.keep") {
+            const err = validateBackupKeep(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+          if (k === "backups.cron") {
+            const err = validateCron(String(v).trim());
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
         }
