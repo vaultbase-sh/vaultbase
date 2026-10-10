@@ -421,6 +421,22 @@ export async function runMigrations() {
   for (const { name } of tables) {
     try { ensureTimestampIndexes(client, name); } catch { /* table missing — skip */ }
   }
+
+  // ── v0.15: full-text index for `searchable` fields ──
+  // No-op when the index already matches; (re)builds it otherwise.
+  const { syncFts } = await import("../core/fts.ts");
+  const ftsRows = client
+    .prepare(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`)
+    .all() as Array<{ name: string; fields: string }>;
+  for (const { name, fields } of ftsRows) {
+    try {
+      const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
+        .filter((f) => !f.implicit);
+      syncFts(client, name, parsed);
+    } catch (e) {
+      console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
+    }
+  }
 }
 
 /**

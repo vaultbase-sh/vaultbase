@@ -7,6 +7,11 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+- **Full-text search.** Mark `text`, `editor`, `email` or `url` fields as **Searchable** (field option `searchable: true`) and query them with `?search=` on the list endpoint. Words are ANDed, the last one matches as a prefix, and matching ignores case and accents. Results are ordered by relevance unless `sort` is set. Search combines with `filter`, pagination, the list rule and `nearVector`. Backed by a SQLite FTS5 index kept in sync by triggers, so every write path updates it. Existing records are indexed when the option is turned on.
+
 ## [0.14.0] — 2026-10-11
 
 ### Added

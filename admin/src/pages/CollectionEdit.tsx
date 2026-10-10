@@ -1088,9 +1088,17 @@ function FieldOptionsBody({
             title="Encrypt at rest"
             hint={<>AES-GCM. Disables filtering &amp; uniqueness on this field. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
             on={!!sel.options?.["encrypted"]}
-            onChange={(v) => updateSelOptions({ encrypted: v })}
+            onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined } : { encrypted: false })}
           />
         </>
+      )}
+      {(sel.type === "text" || sel.type === "email" || sel.type === "url" || sel.type === "editor") && (
+        <OptionRow
+          title="Searchable"
+          hint={<>Include in full-text search: <SchemaCode>?search=</SchemaCode> on the list endpoint. Not available for encrypted fields.</>}
+          on={!!sel.options?.["searchable"]}
+          onChange={(v) => updateSelOptions(v ? { searchable: true, encrypted: undefined } : { searchable: undefined })}
+        />
       )}
       {sel.type === "json" && (
         <OptionRow

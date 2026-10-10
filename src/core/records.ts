@@ -13,6 +13,7 @@ import {
 } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { maybeRecordHistory } from "./record-history.ts";
+import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 
 /**
  * Build a lookup the rule SQL compiler uses for joined-collection view_rule
@@ -214,6 +215,8 @@ export interface ListOptions {
   expand?: string;
   fields?: string;
   skipTotal?: boolean;
+  /** Full-text query over the collection's `searchable` fields. */
+  search?: string;
   accessRule?: string;
   auth?: AuthContext | null;
 }
@@ -311,7 +314,7 @@ type Binding = string | number | bigint | boolean | null | Uint8Array;
  */
 export async function compileListWhere(
   col: Collection,
-  opts: Pick<ListOptions, "filter" | "accessRule" | "auth">,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search">,
 ): Promise<{ whereSql: string; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
   const whereParts: string[] = [];
@@ -353,8 +356,28 @@ export async function compileListWhere(
     whereParts.push(compiled.sql);
     whereParams.push(...(compiled.params as Binding[]));
   }
+  const match = searchMatch(col, opts.search);
+  if (match) {
+    whereParts.push(`${quoteIdent(tname)}.rowid IN (SELECT rowid FROM ${quoteIdent(match.table)} WHERE ${quoteIdent(match.table)} MATCH ?)`);
+    whereParams.push(match.query);
+  }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
   return { whereSql, whereParams };
+}
+
+/**
+ * Resolve `?search=` to an FTS5 query against the collection's index.
+ * Null when the input is blank; FilterError when the collection has no
+ * searchable fields.
+ */
+function searchMatch(col: Collection, search: string | undefined): { table: string; query: string } | null {
+  if (search === undefined) return null;
+  const query = toFtsQuery(search);
+  if (!query) return null;
+  if (col.type === "view" || !hasFts(rawClient(), col.name)) {
+    throw new FilterError(`collection '${col.name}' has no searchable fields`);
+  }
+  return { table: ftsTableName(col.name), query };
 }
 
 export async function listRecords(
@@ -376,6 +399,10 @@ export async function listRecords(
   const offset = (page - 1) * perPage;
 
   const { whereSql, whereParams } = await compileListWhere(col, opts);
+  // A search with no explicit sort orders by relevance (bm25): the SELECT
+  // joins the match set itself, so it skips the search clause in WHERE.
+  const match = opts.sort === undefined ? searchMatch(col, opts.search) : null;
+  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null }) : null;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
   // updated_at, so skip the default sort there — caller can opt in by passing
@@ -411,18 +438,34 @@ export async function listRecords(
   }
   const orderSql = orderClauses.length > 0 ? `ORDER BY ${orderClauses.join(", ")}` : "";
 
-  // Execute SELECT — prepared statement cached by SQL string shape.
-  const selectSql = `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
-  const rows = preparedAll(client, selectSql, [...whereParams, perPage, offset]) as Record<string, unknown>[];
+  const fts = match ? quoteIdent(match.table) : "";
+  const selectSql = match && rankedWhere
+    ? `SELECT ${tableRef}.* FROM ${tableRef}
+         JOIN (SELECT rowid AS vb_fts_rowid, rank AS vb_fts_rank FROM ${fts} WHERE ${fts} MATCH ?) AS vb_fts
+           ON vb_fts.vb_fts_rowid = ${tableRef}.rowid
+         ${rankedWhere.whereSql} ORDER BY vb_fts.vb_fts_rank LIMIT ? OFFSET ?`
+    : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
+  const selectParams = match && rankedWhere
+    ? [match.query, ...rankedWhere.whereParams, perPage, offset]
+    : [...whereParams, perPage, offset];
 
-  // Total count (optional)
+  let rows: Record<string, unknown>[];
   let totalItems = -1;
   let totalPages = -1;
-  if (!opts.skipTotal) {
-    const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
-    const cnt = preparedGet(client, countSql, whereParams) as { c: number } | undefined;
-    totalItems = cnt?.c ?? 0;
-    totalPages = Math.ceil(totalItems / perPage);
+  try {
+    // Execute SELECT — prepared statement cached by SQL string shape.
+    rows = preparedAll(client, selectSql, selectParams) as Record<string, unknown>[];
+    if (!opts.skipTotal) {
+      const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
+      const cnt = preparedGet(client, countSql, whereParams) as { c: number } | undefined;
+      totalItems = cnt?.c ?? 0;
+      totalPages = Math.ceil(totalItems / perPage);
+    }
+  } catch (e) {
+    // toFtsQuery quotes every term, but report anything FTS5 still rejects
+    // as a bad request rather than a 500.
+    if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
+    throw e;
   }
 
   let items = await rowsToMeta(rows, col, fields);

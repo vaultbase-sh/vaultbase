@@ -160,6 +160,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.sort) opts.sort = query.sort;
         if (query.expand) opts.expand = query.expand;
         if (query.fields) opts.fields = query.fields;
+        if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
         // Apply expression rule as access filter (admins bypass)
         if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
@@ -210,6 +211,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
             ranked = await searchVectors(col, vecField.name, queryVec, {
               ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
               ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}),
+              ...(opts.search !== undefined ? { search: opts.search } : {}),
               auth: opts.auth ?? null,
               limit,
               ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
@@ -262,6 +264,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           expand: t.Optional(t.String()),
           fields: t.Optional(t.String()),
           skipTotal: t.Optional(t.String()),
+          search: t.Optional(t.String()),
           nearVector: t.Optional(t.String()),
           nearVectorField: t.Optional(t.String()),
           nearLimit: t.Optional(t.String()),

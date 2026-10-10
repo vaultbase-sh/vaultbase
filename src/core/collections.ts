@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { eq, or } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
+import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
 
 export type FieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -67,6 +68,12 @@ export interface FieldOptions {
    * shorter / longer arrays fail validation.
    */
   dimensions?: number;
+  /**
+   * text / editor / email / url. Include the field in the collection's
+   * full-text index, queried with `?search=` on the list endpoint. Not
+   * allowed together with `encrypted`.
+   */
+  searchable?: boolean;
 }
 
 export type CascadeMode = NonNullable<FieldOptions["cascade"]>;
@@ -219,6 +226,7 @@ function colDefSql(field: FieldDef): string {
 export function createUserTable(collectionName: string, fields: FieldDef[]): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
+  assertSearchable(fields);
   const tname = quoteIdent(userTableName(collectionName));
   const userColDefs = fields
     .filter((f) => !f.system && f.type !== "autodate")
@@ -231,6 +239,12 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
   ];
   rawClient().exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
   ensureTimestampIndexes(rawClient(), collectionName);
+  syncFts(rawClient(), collectionName, fields);
+}
+
+function assertSearchable(fields: FieldDef[]): void {
+  const errors = searchableErrors(fields);
+  if (Object.keys(errors).length > 0) throw new CollectionValidationError(errors);
 }
 
 /**
@@ -251,6 +265,7 @@ export function ensureTimestampIndexes(client: Database, collectionName: string)
 export function dropUserTable(collectionName: string): void {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
+  dropFts(rawClient(), collectionName);
   rawClient().exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
@@ -468,6 +483,7 @@ export function alterUserTable(
 ): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
+  assertSearchable(newFields);
   const tname = quoteIdent(userTableName(collectionName));
   const client = rawClient();
 
@@ -493,6 +509,11 @@ export function alterUserTable(
       throw e;
     }
   };
+
+  // The search index triggers reference their columns, which blocks DROP
+  // COLUMN; drop the index first and let syncFts below recreate it.
+  const indexed = ftsColumns(client, collectionName) ?? [];
+  if (indexed.some((c) => !newByName.has(c))) dropFts(client, collectionName);
 
   // Drop fields removed in new
   for (const oldName of oldByName.keys()) {
@@ -544,6 +565,8 @@ export function alterUserTable(
       );
     }
   }
+
+  syncFts(client, collectionName, newFields);
 }
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
@@ -694,6 +717,8 @@ async function renameCollectionStorage(
       dropUserView(oldName);
       createUserView(newName, viewQuery);
     } else {
+      // The search index is named after the collection; rebuilt below.
+      dropFts(client, oldName);
       client.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
@@ -713,6 +738,7 @@ async function renameCollectionStorage(
     client.prepare(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`).run(newName, oldName);
     client.prepare(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`).run(newName, oldName);
   })();
+  if (type !== "view") syncFts(client, newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
   await clearPreparedStatementsOnSchemaChange();
