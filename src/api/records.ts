@@ -23,7 +23,8 @@ import {
   type HistoryListResponse,
 } from "../core/record-history.ts";
 import { parseFields } from "../core/collections.ts";
-import { parseVectorParam, topK, VectorParseError } from "../core/vector.ts";
+import { parseVectorParam, VectorParseError } from "../core/vector.ts";
+import { searchVectors } from "../core/vector-search.ts";
 import { timeFor } from "../core/perf-metrics.ts";
 
 function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError) {
@@ -199,41 +200,42 @@ export function makeRecordsPlugin(jwtSecret: string) {
           // Pull a working window. We can't ORDER BY similarity in SQL (yet),
           // so the safe approach is to fetch up to MAX_CANDIDATES rows under
           // the existing access scope and rank in-process.
-          const MAX_CANDIDATES = 10_000;
-          let candidatePage: Awaited<ReturnType<typeof listRecords>>;
+          // Rank from the parsed-vector cache (see core/vector-search.ts), then
+          // load full records for the top K only, through listRecords so
+          // fields / expand / the access rule apply exactly as on a list.
+          const nearLimit = parseInt(query.nearLimit ?? "", 10);
+          const limit = Number.isFinite(nearLimit) ? Math.max(1, Math.min(1000, nearLimit)) : 10;
+          const minScore = query.nearMinScore ? parseFloat(query.nearMinScore) : undefined;
+          let ranked: Array<{ id: string; score: number }>;
+          let page: Awaited<ReturnType<typeof listRecords>> | null = null;
           try {
-            candidatePage = await listRecords(params.collection, {
-              ...opts,
-              page: 1,
-              perPage: MAX_CANDIDATES,
-              skipTotal: true,
+            ranked = await searchVectors(col, vecField.name, queryVec, {
+              ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
+              ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}),
+              auth: opts.auth ?? null,
+              limit,
+              ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
             });
+            if (ranked.length > 0) {
+              const idFilter = ranked.map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
+              page = await listRecords(params.collection, {
+                ...opts,
+                filter: opts.filter ? `(${opts.filter}) && (${idFilter})` : idFilter,
+                page: 1,
+                perPage: ranked.length,
+                skipTotal: true,
+              });
+            }
           } catch (e) {
             const r = listErrorResponse(set, e);
             if (r) return r;
             throw e;
           }
-
-          const candidates = candidatePage.data
-            .map((r) => {
-              const v = r[query.nearVectorField as string];
-              return Array.isArray(v) ? { id: r.id as string, vector: v as number[], record: r } : null;
-            })
-            .filter((x): x is { id: string; vector: number[]; record: typeof candidatePage.data[number] } => x !== null);
-
-          const limit = query.nearLimit ? Math.max(1, Math.min(1000, parseInt(query.nearLimit))) : 10;
-          const ranked = topK({
-            query: queryVec,
-            candidates: candidates.map((c) => ({ id: c.id, vector: c.vector })),
-            limit,
-            ...(query.nearMinScore ? { minScore: parseFloat(query.nearMinScore) } : {}),
-          });
-          const byId = new Map(candidates.map((c) => [c.id, c.record]));
+          const byId = new Map((page?.data ?? []).map((r) => [r.id, r]));
           const data = ranked
             .map((m) => {
               const rec = byId.get(m.id);
-              if (!rec) return null;
-              return { ...rec, _score: m.score };
+              return rec ? { ...rec, _score: m.score } : null;
             })
             .filter(Boolean);
           return {

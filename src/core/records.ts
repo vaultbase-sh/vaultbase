@@ -112,6 +112,7 @@ import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
+import { invalidateRecordVectors } from "./vector-cache.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
@@ -301,26 +302,18 @@ function decodeValue(val: unknown, field: FieldDef): unknown {
 
 // ── List ─────────────────────────────────────────────────────────────────────
 
-export async function listRecords(
-  collectionName: string,
-  opts: ListOptions = {}
-): Promise<ListResult> {
-  const col = await getCollection(collectionName);
-  if (!col) throw new Error(`Collection '${collectionName}' not found`);
+type Binding = string | number | bigint | boolean | null | Uint8Array;
 
-  const fields = parseFields(col.fields);
+/**
+ * WHERE clause for a list query: the caller's filter AND the collection's
+ * access rule, both compiled fail-closed. Shared with vector search so it
+ * scopes candidates exactly like a list does.
+ */
+export async function compileListWhere(
+  col: Collection,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth">,
+): Promise<{ whereSql: string; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
-  const tableRef = quoteIdent(tname);
-  const client = rawClient();
-
-  // Guard against values that would reach SQL as-is: LIMIT -1 means "no
-  // limit" in SQLite, 0 gives Infinity pages, NaN fails the bind.
-  const page = positiveInt(opts.page, 1);
-  const perPage = positiveInt(opts.perPage, DEFAULT_PER_PAGE);
-  const offset = (page - 1) * perPage;
-
-  // Build WHERE
-  type Binding = string | number | bigint | boolean | null | Uint8Array;
   const whereParts: string[] = [];
   const whereParams: Binding[] = [];
 
@@ -361,6 +354,28 @@ export async function listRecords(
     whereParams.push(...(compiled.params as Binding[]));
   }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
+  return { whereSql, whereParams };
+}
+
+export async function listRecords(
+  collectionName: string,
+  opts: ListOptions = {}
+): Promise<ListResult> {
+  const col = await getCollection(collectionName);
+  if (!col) throw new Error(`Collection '${collectionName}' not found`);
+
+  const fields = parseFields(col.fields);
+  const tname = userTableName(col.name);
+  const tableRef = quoteIdent(tname);
+  const client = rawClient();
+
+  // Guard against values that would reach SQL as-is: LIMIT -1 means "no
+  // limit" in SQLite, 0 gives Infinity pages, NaN fails the bind.
+  const page = positiveInt(opts.page, 1);
+  const perPage = positiveInt(opts.perPage, DEFAULT_PER_PAGE);
+  const offset = (page - 1) * perPage;
+
+  const { whereSql, whereParams } = await compileListWhere(col, opts);
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
   // updated_at, so skip the default sort there — caller can opt in by passing
@@ -598,6 +613,9 @@ async function updateRecordImpl(
   if (setCols.length > 1) {
     client.prepare(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`).run(...setVals, id);
   }
+  // updated_at has 1 s resolution; drop the cached vector so a same-second
+  // re-search sees the new value.
+  invalidateRecordVectors(col.id, id);
 
   const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
@@ -800,6 +818,7 @@ async function deleteRecordInternal(
 
   const tableRef = quoteIdent(userTableName(col.name));
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
+  invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
     op: "delete",
     snapshot: existing as unknown as Record<string, unknown>,
