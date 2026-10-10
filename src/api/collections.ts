@@ -137,6 +137,11 @@ export function makeCollectionsPlugin(jwtSecret: string) {
             set.status = 400;
             return { error: `A collection with that name already exists`, code: 400 };
           }
+          // Rename: name taken / not a valid identifier.
+          if (e instanceof Error && /already exists|^invalid collection name/i.test(e.message)) {
+            set.status = 400;
+            return { error: e.message, code: 400 };
+          }
           throw e;
         }
       },

@@ -449,9 +449,31 @@ export function alterUserTable(
   const oldByName = new Map(oldFields.filter((f) => !f.system && f.type !== "autodate").map((f) => [f.name, f]));
   const newByName = new Map(newFields.filter((f) => !f.system && f.type !== "autodate").map((f) => [f.name, f]));
 
+  const table = userTableName(collectionName);
+  // Unique constraints added after table creation live in a named index
+  // (SQLite can't ADD COLUMN ... UNIQUE). Columns created as UNIQUE with the
+  // table use SQLite's inline constraint instead, which can't be dropped.
+  const uniqueIndex = (field: string) => quoteIdent(`uq_${table}_${field}`);
+  const hasUniqueIndex = (field: string) =>
+    !!client.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`).get(`uq_${table}_${field}`);
+  const addUniqueIndex = (field: string) => {
+    try {
+      client.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
+    } catch (e) {
+      if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
+        throw new CollectionValidationError({
+          [field]: `Can't make '${field}' unique: existing records have duplicate values`,
+        });
+      }
+      throw e;
+    }
+  };
+
   // Drop fields removed in new
   for (const oldName of oldByName.keys()) {
     if (!newByName.has(oldName)) {
+      // SQLite refuses to drop an indexed column.
+      if (hasUniqueIndex(oldName)) client.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
       client.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
     }
   }
@@ -460,10 +482,30 @@ export function alterUserTable(
   for (const [newName, newField] of newByName) {
     if (!oldByName.has(newName)) {
       const def = colDefSql(newField);
-      // SQLite ADD COLUMN can't enforce NOT NULL without DEFAULT or empty table.
-      // Strip NOT NULL on add — app-level validation handles required-on-create.
-      const safeDef = def.replace(/ NOT NULL/, "");
+      // SQLite ADD COLUMN can't enforce NOT NULL without DEFAULT or empty
+      // table, and rejects UNIQUE outright. Strip both: required is enforced
+      // at app level, unique by an index.
+      const safeDef = def.replace(/ NOT NULL/, "").replace(/ UNIQUE/, "");
       client.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
+      if (newField.options?.unique) addUniqueIndex(newName);
+    }
+  }
+
+  // unique toggled on an existing field
+  for (const [name, newField] of newByName) {
+    const oldField = oldByName.get(name);
+    if (!oldField || oldField.type !== newField.type) continue;
+    const was = !!oldField.options?.unique;
+    const now = !!newField.options?.unique;
+    if (now && !was && !hasUniqueIndex(name)) addUniqueIndex(name);
+    if (!now && was) {
+      if (hasUniqueIndex(name)) {
+        client.exec(`DROP INDEX ${uniqueIndex(name)}`);
+      } else {
+        throw new CollectionValidationError({
+          [name]: `'${name}' was created as unique; drop and re-add the field to remove the constraint`,
+        });
+      }
     }
   }
 
@@ -586,6 +628,74 @@ export async function createCollection(
   return result;
 }
 
+/**
+ * Move a collection's storage and everything that points at it by name to
+ * `newName`: the table (or view), the auth email index, relation fields in
+ * other collections, hooks and record history. Free-text references (rules,
+ * webhook event patterns, API token scopes) are left for the operator.
+ */
+async function renameCollectionStorage(
+  before: Collection,
+  newName: string,
+  type: string,
+  viewQuery: string | null | undefined,
+): Promise<void> {
+  assertSqlIdent(newName, "collection");
+  const db = getDb();
+  const clash = await db.select({ id: collections.id }).from(collections)
+    .where(eq(collections.name, newName)).limit(1);
+  if (clash.length > 0) throw new Error(`A collection named '${newName}' already exists`);
+
+  const oldName = before.name;
+  const all = await db.select().from(collections);
+  const relationUpdates: Array<{ id: string; name: string; fields: string }> = [];
+  for (const c of all) {
+    let fields: FieldDef[];
+    try { fields = parseFields(c.fields); } catch { continue; }
+    let changed = false;
+    for (const f of fields) {
+      if (f.type === "relation" && f.collection === oldName) { f.collection = newName; changed = true; }
+    }
+    if (changed) relationUpdates.push({ id: c.id, name: c.name, fields: JSON.stringify(fields) });
+  }
+
+  const client = rawClient();
+  const oldTable = userTableName(oldName);
+  const newTable = userTableName(newName);
+  client.transaction(() => {
+    if (type === "view") {
+      if (!viewQuery) throw new Error("View collections require a view_query");
+      dropUserView(oldName);
+      createUserView(newName, viewQuery);
+    } else {
+      client.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
+      // Unique-field indexes are named after the table (see alterUserTable).
+      const prefix = `uq_${oldTable}_`;
+      const uniqueIdx = client
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name LIKE ? ESCAPE '\\'`)
+        .all(newTable, `${prefix.replace(/[\\_%]/g, "\\$&")}%`) as Array<{ name: string }>;
+      for (const { name } of uniqueIdx) {
+        const field = name.slice(prefix.length);
+        client.exec(`DROP INDEX ${quoteIdent(name)}`);
+        client.exec(`CREATE UNIQUE INDEX ${quoteIdent(`uq_${newTable}_${field}`)} ON ${quoteIdent(newTable)}(${quoteIdent(field)})`);
+      }
+      if (type === "auth") {
+        client.exec(`DROP INDEX IF EXISTS ${quoteIdent(`idx_${oldTable}_email`)}`);
+        client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdent(`idx_${newTable}_email`)} ON ${quoteIdent(newTable)}(email)`);
+      }
+    }
+    const setFields = client.prepare(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`);
+    for (const u of relationUpdates) setFields.run(u.fields, u.id);
+    client.prepare(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`).run(newName, oldName);
+    client.prepare(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`).run(newName, oldName);
+  })();
+
+  for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
+  await clearPreparedStatementsOnSchemaChange();
+  const { invalidateHookCache } = await import("./hooks.ts");
+  invalidateHookCache();
+}
+
 export async function updateCollection(
   id: string,
   data: Partial<Omit<NewCollection, "id" | "created_at">>
@@ -600,6 +710,14 @@ export async function updateCollection(
 
   const effectiveType = data.type ?? before.type;
 
+  // Rename first so every later step (view rebuild, field DDL) targets the
+  // new table.
+  let currentName = before.name;
+  if (data.name !== undefined && data.name !== before.name) {
+    await renameCollectionStorage(before, data.name, effectiveType, data.view_query ?? before.view_query);
+    currentName = data.name;
+  }
+
   // View collections: drop & recreate the SQLite VIEW if the query changed,
   // then re-derive fields when the caller didn't provide them. Skip the
   // table-altering path entirely — views have no real columns.
@@ -609,8 +727,8 @@ export async function updateCollection(
     const queryChanged = data.view_query !== undefined && data.view_query !== before.view_query;
     if (queryChanged) {
       validateViewQuery(newQuery);
-      dropUserView(before.name);
-      createUserView(before.name, newQuery);
+      dropUserView(currentName);
+      createUserView(currentName, newQuery);
       // Re-infer fields if the caller didn't supply explicit field defs.
       if (data.fields === undefined) {
         const inferred = inferViewFields(newQuery);
@@ -628,7 +746,7 @@ export async function updateCollection(
     const newFields = ensureImplicitFields(effectiveType, [...carryOver, ...incoming]);
     // Real table only sees non-implicit fields.
     alterUserTable(
-      before.name,
+      currentName,
       oldFields.filter((f) => !f.implicit),
       newFields.filter((f) => !f.implicit)
     );
