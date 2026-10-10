@@ -109,7 +109,7 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
 }
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
-import { afterCommit, withSharedWrite } from "./write-gate.ts";
+import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
 import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
@@ -676,8 +676,26 @@ async function findIncomingRefs(targetCollectionName: string): Promise<IncomingR
   return refs;
 }
 
+/** Throw RestrictError if any `restrict` relation still references `id`. */
+async function checkRestrict(targetColName: string, id: string): Promise<void> {
+  const refs = await findIncomingRefs(targetColName);
+  const client = rawClient();
+  for (const ref of refs) {
+    if (ref.cascade !== "restrict") continue;
+    const refTable = quoteIdent(userTableName(ref.collection.name));
+    const row = client
+      .prepare(`SELECT "id" FROM ${refTable} WHERE ${quoteIdent(ref.fieldName)} = ? LIMIT 1`)
+      .get(id);
+    if (row) {
+      throw new RestrictError({
+        [ref.collection.name]: `${ref.collection.name}.${ref.fieldName} still references this record`,
+      });
+    }
+  }
+}
+
 /**
- * Apply cascade behavior to all incoming references before deleting `id`.
+ * Apply setNull / cascade behavior to all incoming references before deleting `id`.
  * `visited` prevents infinite loops on circular cascades.
  */
 async function applyCascades(
@@ -697,18 +715,6 @@ async function applyCascades(
   for (const ref of refs) {
     const refTable = quoteIdent(userTableName(ref.collection.name));
     const fieldQ = quoteIdent(ref.fieldName);
-
-    if (ref.cascade === "restrict") {
-      const row = client
-        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ? LIMIT 1`)
-        .get(id);
-      if (row) {
-        throw new RestrictError({
-          [ref.collection.name]: `${ref.collection.name}.${ref.fieldName} still references this record`,
-        });
-      }
-      continue;
-    }
 
     if (ref.cascade === "setNull") {
       const affected = client
@@ -764,8 +770,10 @@ async function deleteRecordInternal(
   const existing = await getRecord(collectionName, id);
   if (!existing) return;
 
-  // Resolve incoming refs first — restrict throws here, before any hook runs.
-  await applyCascades(col.name, id, auth, visited);
+  // Order matters: restrict refs (no side effects) → beforeDelete hook (may
+  // abort) → cascades → delete. Cascading before the hook left children
+  // deleted when the hook refused.
+  await checkRestrict(col.name, id);
 
   const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeDelete", {
@@ -773,6 +781,8 @@ async function deleteRecordInternal(
     existing: existing as unknown as Record<string, unknown>,
     auth, helpers,
   });
+
+  await applyCascades(col.name, id, auth, visited);
 
   const tableRef = quoteIdent(userTableName(col.name));
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
@@ -886,10 +896,58 @@ export function updateRecord(
   return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth));
 }
 
-export function deleteRecord(
+/**
+ * A delete that cascades touches several rows and awaits hooks in between, so
+ * it runs in a transaction: its own (taking the gate exclusively, like a
+ * batch), or a savepoint inside an enclosing batch. A plain delete with
+ * nothing to cascade is a single statement and stays on the shared path.
+ */
+export async function deleteRecord(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null,
 ): Promise<void> {
-  return withSharedWrite(() => deleteRecordImpl(collectionName, id, auth));
+  const col = await getCollection(collectionName);
+  const cascades = col
+    ? (await findIncomingRefs(col.name)).some((r) => r.cascade !== "restrict")
+    : false;
+  const run = () => deleteRecordImpl(collectionName, id, auth);
+  if (!cascades) return withSharedWrite(run);
+
+  const mode = gateMode();
+  if (mode === "exclusive") return inSavepoint(run);
+  // Nested inside another ordinary write (e.g. a hook deleting a record):
+  // taking the gate exclusively here would wait on ourselves. Runs without
+  // a transaction; hook-before-cascade ordering still applies.
+  if (mode === "shared") return run();
+
+  const client = rawClient();
+  return withExclusiveWrite(async (tx) => {
+    try {
+      client.exec("BEGIN");
+      await run();
+      client.exec("COMMIT");
+      tx.commit();
+    } catch (e) {
+      if (client.inTransaction) client.exec("ROLLBACK");
+      tx.rollback();
+      throw e;
+    }
+  });
+}
+
+let savepointSeq = 0;
+
+async function inSavepoint(fn: () => Promise<void>): Promise<void> {
+  const name = `vb_delete_${++savepointSeq}`;
+  const client = rawClient();
+  client.exec(`SAVEPOINT ${name}`);
+  try {
+    await fn();
+    client.exec(`RELEASE ${name}`);
+  } catch (e) {
+    client.exec(`ROLLBACK TO ${name}`);
+    client.exec(`RELEASE ${name}`);
+    throw e;
+  }
 }

@@ -95,6 +95,13 @@ export async function withExclusiveWrite<T>(
   }
 }
 
+/** Which gate the current async context holds, if any. */
+export function gateMode(): "exclusive" | "shared" | null {
+  const ctx = als.getStore();
+  if (!ctx) return null;
+  return ctx.exclusive ? "exclusive" : "shared";
+}
+
 /** Run now, or after COMMIT when called inside a batch. */
 export function afterCommit(effect: () => void): void {
   const ctx = als.getStore();
