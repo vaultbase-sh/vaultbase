@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection } from "../core/collections.ts";
-import { createRecord, deleteRecord, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -180,6 +180,15 @@ export function makeBatchPlugin(jwtSecret: string) {
         if (e instanceof ReadOnlyCollectionError) {
           set.status = 405;
           return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 405 };
+        }
+        if (e instanceof FilterError) {
+          set.status = 400;
+          return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 400 };
+        }
+        if (e instanceof AccessRuleError) {
+          process.stderr.write(`[batch] ${e.message}\n`);
+          set.status = 403;
+          return { error: `Batch failed at request ${results.length}: forbidden by list_rule`, code: 403 };
         }
         const msg = e instanceof Error ? e.message : String(e);
         set.status = 500;

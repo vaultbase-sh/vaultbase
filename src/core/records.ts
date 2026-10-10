@@ -75,6 +75,19 @@ function makeCollectionLookup(): CollectionLookup {
     };
   };
 }
+/**
+ * Load every collection a filter / rule joins to (`@collection.X`,
+ * `X_via_field`) into the cache that makeCollectionLookup reads.
+ */
+async function warmReferencedCollections(exprs: (string | undefined)[]): Promise<void> {
+  const names = new Set<string>();
+  for (const expr of exprs) {
+    if (!expr) continue;
+    for (const m of expr.matchAll(/@collection\.([A-Za-z0-9_]+)/g)) names.add(m[1]!);
+    for (const m of expr.matchAll(/\b([A-Za-z0-9_]+?)_via_/g)) names.add(m[1]!);
+  }
+  for (const name of names) await getCollection(name);
+}
 import type { AuthContext } from "./rules.ts";
 import { broadcast } from "../realtime/manager.ts";
 import { dispatchEvent } from "./webhooks.ts";
@@ -290,16 +303,37 @@ export async function listRecords(
   // and validate back-relation ref fields.
   const lookup = makeCollectionLookup();
   const filterOpts = { auth: opts.auth ?? null, lookup, hostIdField: "id" } as const;
+  // The compiler resolves joined collections synchronously from the cache;
+  // load them first so valid rules don't fail on a cold cache.
+  await warmReferencedCollections([opts.filter, opts.accessRule]);
 
   if (opts.filter) {
     let compiled;
-    try { compiled = parseFilter(opts.filter, tname, filterOpts); } catch { compiled = null; }
-    if (compiled) { whereParts.push(compiled.sql); whereParams.push(...(compiled.params as Binding[])); }
+    try {
+      compiled = parseFilter(opts.filter, tname, filterOpts);
+    } catch (e) {
+      throw new FilterError(e instanceof Error ? e.message : String(e));
+    }
+    // The parser returns null on a syntax error; only a blank filter is "no filter".
+    if (!compiled) {
+      if (opts.filter.trim() !== "") throw new FilterError("could not parse expression");
+    } else {
+      whereParts.push(compiled.sql);
+      whereParams.push(...(compiled.params as Binding[]));
+    }
   }
   if (opts.accessRule) {
+    // Fail closed: an access rule that can't be compiled must never be
+    // skipped, or the query runs without it and returns every row.
     let compiled;
-    try { compiled = parseFilter(opts.accessRule, tname, filterOpts); } catch { compiled = null; }
-    if (compiled) { whereParts.push(compiled.sql); whereParams.push(...(compiled.params as Binding[])); }
+    try {
+      compiled = parseFilter(opts.accessRule, tname, filterOpts);
+    } catch (e) {
+      throw new AccessRuleError(col.name, e instanceof Error ? e.message : String(e));
+    }
+    if (!compiled) throw new AccessRuleError(col.name, "rule compiled to nothing");
+    whereParts.push(compiled.sql);
+    whereParams.push(...(compiled.params as Binding[]));
   }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
 
@@ -570,6 +604,23 @@ export class RestrictError extends Error {
 export class ReadOnlyCollectionError extends Error {
   constructor(collectionName: string) {
     super(`Collection '${collectionName}' is read-only (view collection)`);
+  }
+}
+
+/** A user-supplied `filter` that does not compile. Maps to HTTP 400. */
+export class FilterError extends Error {
+  constructor(reason: string) {
+    super(`Invalid filter: ${reason}`);
+  }
+}
+
+/**
+ * A collection access rule that cannot be compiled. Fails closed (HTTP 403):
+ * dropping the rule would hand non-admins every row.
+ */
+export class AccessRuleError extends Error {
+  constructor(collectionName: string, reason: string) {
+    super(`Access rule for '${collectionName}' could not be evaluated: ${reason}`);
   }
 }
 

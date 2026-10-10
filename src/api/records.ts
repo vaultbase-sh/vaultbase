@@ -8,6 +8,8 @@ import {
   getRecord,
   listRecords,
   ReadOnlyCollectionError,
+  FilterError,
+  AccessRuleError,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
@@ -26,6 +28,24 @@ import { timeFor } from "../core/perf-metrics.ts";
 function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError) {
   set.status = 405;
   return { error: err.message, code: 405 };
+}
+
+/**
+ * Map list-query failures to HTTP: bad user filter → 400; access rule that
+ * can't be evaluated → 403 (fail closed). Rule details stay in the server
+ * log, not the response. Returns null for anything else.
+ */
+function listErrorResponse(set: { status?: number | string }, e: unknown) {
+  if (e instanceof FilterError) {
+    set.status = 400;
+    return { error: e.message, code: 400 };
+  }
+  if (e instanceof AccessRuleError) {
+    process.stderr.write(`[records] ${e.message}\n`);
+    set.status = 403;
+    return { error: "Forbidden", code: 403 };
+  }
+  return null;
 }
 
 /**
@@ -169,12 +189,19 @@ export function makeRecordsPlugin(jwtSecret: string) {
           // so the safe approach is to fetch up to MAX_CANDIDATES rows under
           // the existing access scope and rank in-process.
           const MAX_CANDIDATES = 10_000;
-          const candidatePage = await listRecords(params.collection, {
-            ...opts,
-            page: 1,
-            perPage: MAX_CANDIDATES,
-            skipTotal: true,
-          });
+          let candidatePage: Awaited<ReturnType<typeof listRecords>>;
+          try {
+            candidatePage = await listRecords(params.collection, {
+              ...opts,
+              page: 1,
+              perPage: MAX_CANDIDATES,
+              skipTotal: true,
+            });
+          } catch (e) {
+            const r = listErrorResponse(set, e);
+            if (r) return r;
+            throw e;
+          }
 
           const candidates = candidatePage.data
             .map((r) => {
@@ -207,7 +234,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
           };
         }
 
-        return await timeFor(request, "db_exec", () => listRecords(params.collection, opts));
+        try {
+          return await timeFor(request, "db_exec", () => listRecords(params.collection, opts));
+        } catch (e) {
+          const r = listErrorResponse(set, e);
+          if (r) return r;
+          throw e;
+        }
       },
       {
         query: t.Object({
