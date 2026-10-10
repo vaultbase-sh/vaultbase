@@ -214,7 +214,7 @@ setInterval(() => {
   for (const [k, b] of buckets) {
     if (b.lastRefill < cutoff) buckets.delete(k);
   }
-}, 60_000);
+}, 60_000).unref?.();
 
 export function makeRateLimitPlugin() {
   return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, ({ request, server, set }) => {

@@ -5,7 +5,9 @@ import { embedAdminFiles } from "./embed.ts" with { type: "macro" };
 
 // EMBEDDED is a literal object inlined by the macro at compile time.
 // Maps "index.html" / "assets/index-XYZ.js" → base64 content.
-const EMBEDDED: Record<string, string> = embedAdminFiles();
+// Wrapped in a call on purpose: bound to a bare const, the minifier inlines
+// a full copy of the literal at every reference (3× the admin payload).
+const EMBEDDED: Record<string, string> = Object.freeze(embedAdminFiles());
 const HAS_EMBEDDED = Object.keys(EMBEDDED).length > 0;
 
 const MIME_TYPES: Record<string, string> = {
