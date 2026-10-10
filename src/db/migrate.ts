@@ -133,6 +133,10 @@ export async function runMigrations() {
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+  // Every file / thumbnail GET looks up by filename; tokens and deletes by
+  // record + field.
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_files_filename ON vaultbase_files(filename)`);
+  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_files_record ON vaultbase_files(collection_id, record_id, field_name)`);
 
   // Logs are now stored as JSONL files (see core/file-logger.ts).
   // Drop legacy DB-backed logs table if upgrading from an older install.
@@ -403,6 +407,16 @@ export async function runMigrations() {
   // has a home in its per-collection table.
   v0_11PrepAuthTables(client);
   v0_11FinalizeAuthMigration(client);
+
+  // ── v0.12: created_at / updated_at indexes on record tables ──
+  // New tables get them in createUserTable; backfill existing ones.
+  const { ensureTimestampIndexes } = await import("../core/collections.ts");
+  const tables = client
+    .prepare(`SELECT name FROM vaultbase_collections WHERE type != 'view'`)
+    .all() as Array<{ name: string }>;
+  for (const { name } of tables) {
+    try { ensureTimestampIndexes(client, name); } catch { /* table missing — skip */ }
+  }
 }
 
 /**

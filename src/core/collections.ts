@@ -220,6 +220,21 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
     `"updated_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
   ];
   rawClient().exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
+  ensureTimestampIndexes(rawClient(), collectionName);
+}
+
+/**
+ * created_at / updated_at indexes for a record table. The default list sort
+ * is -created_at; without them every page is a full scan + temp B-tree.
+ * Idempotent; also run at boot for tables created before this existed.
+ */
+export function ensureTimestampIndexes(client: Database, collectionName: string): void {
+  const table = userTableName(collectionName);
+  for (const col of ["created_at", "updated_at"]) {
+    client.exec(
+      `CREATE INDEX IF NOT EXISTS ${quoteIdent(`idx_${table}_${col}`)} ON ${quoteIdent(table)}(${quoteIdent(col)})`,
+    );
+  }
 }
 
 /** Drop the per-collection user table. */
@@ -669,19 +684,17 @@ async function renameCollectionStorage(
       createUserView(newName, viewQuery);
     } else {
       client.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
-      // Unique-field indexes are named after the table (see alterUserTable).
-      const prefix = `uq_${oldTable}_`;
-      const uniqueIdx = client
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name LIKE ? ESCAPE '\\'`)
-        .all(newTable, `${prefix.replace(/[\\_%]/g, "\\$&")}%`) as Array<{ name: string }>;
-      for (const { name } of uniqueIdx) {
-        const field = name.slice(prefix.length);
+      // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
+      // SQLite moves them with the table but keeps their names; recreate each
+      // under the new name from its stored definition.
+      const indexes = client
+        .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`)
+        .all(newTable) as Array<{ name: string; sql: string }>;
+      for (const { name, sql } of indexes) {
+        if (!name.includes(oldTable)) continue;
+        const renamed = name.replace(oldTable, newTable);
         client.exec(`DROP INDEX ${quoteIdent(name)}`);
-        client.exec(`CREATE UNIQUE INDEX ${quoteIdent(`uq_${newTable}_${field}`)} ON ${quoteIdent(newTable)}(${quoteIdent(field)})`);
-      }
-      if (type === "auth") {
-        client.exec(`DROP INDEX IF EXISTS ${quoteIdent(`idx_${oldTable}_email`)}`);
-        client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdent(`idx_${newTable}_email`)} ON ${quoteIdent(newTable)}(email)`);
+        client.exec(sql.replace(name, renamed));
       }
     }
     const setFields = client.prepare(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`);
