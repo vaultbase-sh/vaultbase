@@ -7,6 +7,26 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.13.2] — 2026-10-10
+
+### Upgrade notes
+
+- **API tokens are limited to their scopes on the data API.** Records, batch, files, realtime and custom routes used to treat every API token as the admin who created it. Now `admin` keeps full access, `read` can read but not write, `write` can write under collection rules (as a non-admin), and any other scope (e.g. only `mcp:*`) is treated as anonymous. Give a token `read`, `write` or `admin` if it calls these endpoints.
+- **API tokens can't be refreshed** (`401` on `/auth/refresh`).
+- **File download tokens are not sessions.** They work only on the file download they were issued for.
+
+### Security
+- An API token with any scope could act as full admin on records and files, and `/auth/refresh` turned it into an unscoped admin session.
+- Sign in with Apple trusted the `id_token` without verifying it. It is now checked against Apple's keys (signature, issuer, audience, expiry).
+- Logged-out or deleted users' tokens still worked on the TOTP, recovery-code, email-verify, promote and OAuth2 link/unlink endpoints, and a token from one auth collection was accepted on another's. All now use the central token check.
+- Revoked or force-logged-out admin tokens still worked for collection create / update / delete and for impersonation.
+- Custom routes accepted revoked tokens.
+- A forged API token could overwrite a real token's last-used IP and user agent.
+- The `/metrics` bearer token is compared in constant time.
+
+### Changed
+- Removed the UPX compression scripts (UPX-packed binaries crash on start). `--help` no longer claims the encryption key can come from a file.
+
 ## [0.13.1] — 2026-10-10
 
 ### Upgrade notes
