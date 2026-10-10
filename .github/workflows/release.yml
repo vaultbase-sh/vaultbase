@@ -189,11 +189,19 @@ jobs:
           done
           ls -la *.sig *.pem
 
+      - name: Prepare release notes
+        # release-notes/<tag>.md (upgrade notes, highlights) goes above the
+        # auto-generated commit list. Empty when the file doesn't exist.
+        run: |
+          f="release-notes/${{ steps.resolve-tag.outputs.tag }}.md"
+          if [ -f "$f" ]; then cp "$f" release-body.md; else : > release-body.md; fi
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.resolve-tag.outputs.tag }}
           name: ${{ steps.resolve-tag.outputs.tag }}
+          body_path: release-body.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
