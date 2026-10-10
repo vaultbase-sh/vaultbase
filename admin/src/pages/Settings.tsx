@@ -2903,6 +2903,13 @@ function DiffLine({ name, suffix, muted }: { name: string; suffix?: string; mute
 }
 
 // ── File storage (local / S3 / R2) ──────────────────────────────────────────
+// Mirrors files.max_upload_size on the server (bytes). The ceiling is Bun's
+// default request body limit; anything larger never reaches the handler.
+const MB = 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_MB = 50;
+const MIN_UPLOAD_MB = 0.01;
+const MAX_UPLOAD_MB = 128;
+
 function StorageSection() {
   const [driver, setDriver] = useState<"local" | "s3">("local");
   const [endpoint, setEndpoint] = useState("");
@@ -2911,6 +2918,7 @@ function StorageSection() {
   const [accessKeyId, setAccessKeyId] = useState("");
   const [secretAccessKey, setSecretAccessKey] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
+  const [maxUploadMb, setMaxUploadMb] = useState(String(DEFAULT_MAX_UPLOAD_MB));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -2927,6 +2935,10 @@ function StorageSection() {
         setAccessKeyId(s["s3.access_key_id"] ?? "");
         setSecretAccessKey(s["s3.secret_access_key"] ?? "");
         setPublicUrl(s["s3.public_url"] ?? "");
+        const bytes = parseInt(s["files.max_upload_size"] ?? "", 10);
+        if (Number.isFinite(bytes) && bytes > 0) {
+          setMaxUploadMb(String(Math.round((bytes / MB) * 100) / 100));
+        }
       }
       setLoading(false);
     });
@@ -2950,8 +2962,14 @@ function StorageSection() {
       if (!accessKeyId.trim())     { toast("Access key id required", "info"); return; }
       if (!secretAccessKey.trim()) { toast("Secret access key required", "info"); return; }
     }
+    const mb = parseFloat(maxUploadMb);
+    if (!Number.isFinite(mb) || mb < MIN_UPLOAD_MB || mb > MAX_UPLOAD_MB) {
+      toast(`Max upload size must be between ${MIN_UPLOAD_MB} and ${MAX_UPLOAD_MB} MB`, "info");
+      return;
+    }
     setSaving(true);
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+      "files.max_upload_size": String(Math.round(mb * MB)),
       "storage.driver": driver,
       "s3.endpoint": endpoint,
       "s3.bucket": bucket,
@@ -2990,6 +3008,20 @@ function StorageSection() {
         </span>
       )}
     >
+      <VbField
+        label="Max upload size"
+        hint={`Per upload request, in MB. Larger uploads are rejected with 413. A file field's own max size still applies on top. Range ${MIN_UPLOAD_MB}–${MAX_UPLOAD_MB} MB (the server's request body limit).`}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <VbInput
+            mono type="number" min={MIN_UPLOAD_MB} max={MAX_UPLOAD_MB} step="any"
+            value={maxUploadMb} onChange={(e) => setMaxUploadMb(e.target.value)}
+            disabled={loading} style={{ maxWidth: 120 }}
+          />
+          <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>MB</span>
+        </div>
+      </VbField>
+
       <VbField label="Driver" hint="Switching drivers does not migrate existing files. Plan accordingly.">
         <Dropdown
           value={driver}

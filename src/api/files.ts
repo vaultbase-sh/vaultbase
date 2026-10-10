@@ -18,7 +18,7 @@ import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
-import { getSetting } from "./settings.ts";
+import { getSetting, MAX_UPLOAD_BYTES, MIN_UPLOAD_BYTES } from "./settings.ts";
 import {
   extractBearer,
   isAllowedUploadMime,
@@ -293,7 +293,8 @@ const MULTIPART_SLACK_BYTES = 64 * 1024;
 
 export function maxUploadBytes(): number {
   const n = parseInt(getSetting("files.max_upload_size", String(DEFAULT_MAX_UPLOAD_BYTES)), 10);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_UPLOAD_BYTES;
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_UPLOAD_BYTES;
+  return Math.min(Math.max(n, MIN_UPLOAD_BYTES), MAX_UPLOAD_BYTES);
 }
 
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {

@@ -6,7 +6,7 @@ import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
-import { setSetting } from "../api/settings.ts";
+import { setSetting, validateMaxUploadSize } from "../api/settings.ts";
 import { setUploadDir, invalidateStorageCache } from "../core/storage.ts";
 import { makeFilesPlugin, maxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES } from "../api/files.ts";
 import { seedAuthUser, signUserJwt } from "./_helpers.ts";
@@ -77,6 +77,21 @@ describe("upload size limits", () => {
     const stored = readFileSync(join(dir, r.body.data!.filename));
     expect(stored.length).toBe(512);
     expect(stored.every((b) => b === 7)).toBe(true);
+  });
+
+  it("settings validator accepts 1 KB–128 MB whole bytes only", () => {
+    expect(validateMaxUploadSize(String(10 * 1024 * 1024))).toBeNull();
+    expect(validateMaxUploadSize("1024")).toBeNull();
+    expect(validateMaxUploadSize(String(128 * 1024 * 1024))).toBeNull();
+    expect(validateMaxUploadSize("1023")).not.toBeNull();
+    expect(validateMaxUploadSize(String(128 * 1024 * 1024 + 1))).not.toBeNull();
+    expect(validateMaxUploadSize("abc")).not.toBeNull();
+    expect(validateMaxUploadSize("1.5")).not.toBeNull();
+  });
+
+  it("an out-of-range stored value is clamped", () => {
+    setSetting("files.max_upload_size", String(10 * 1024 * 1024 * 1024));
+    expect(maxUploadBytes()).toBe(128 * 1024 * 1024);
   });
 
   it("a smaller per-field maxSize still applies (422)", async () => {

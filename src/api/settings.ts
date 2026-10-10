@@ -135,6 +135,19 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
+/** Bounds for `files.max_upload_size` (bytes). 128 MB is Bun's default request body limit. */
+export const MIN_UPLOAD_BYTES = 1024;
+export const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
+
+export function validateMaxUploadSize(value: unknown): string | null {
+  const n = Number(value);
+  if (!Number.isInteger(n)) return "must be a whole number of bytes";
+  if (n < MIN_UPLOAD_BYTES || n > MAX_UPLOAD_BYTES) {
+    return `must be between ${MIN_UPLOAD_BYTES} and ${MAX_UPLOAD_BYTES} bytes`;
+  }
+  return null;
+}
+
 export function makeSettingsPlugin(jwtSecret: string) {
   return new Elysia({ name: "settings" })
     // Read all settings
@@ -156,6 +169,10 @@ export function makeSettingsPlugin(jwtSecret: string) {
         for (const [k, v] of Object.entries(body)) {
           if (isAuthWindowKey(k)) {
             const err = validateWindowSeconds(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+          if (k === "files.max_upload_size") {
+            const err = validateMaxUploadSize(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
         }
