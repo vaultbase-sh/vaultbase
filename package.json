@@ -13,7 +13,6 @@
     "build:landing": "cd landing && bun run build",
     "patch:deps": "bun scripts/patch-imagescript.ts",
     "build": "bun run patch:deps && bun run build:admin && bun build --compile --minify --sourcemap=none src/index.ts --outfile vaultbase",
-    "build:compress": "bun run build && upx --best --lzma vaultbase",
     "build:all": "bun run patch:deps && bun run build:admin && bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:linux-x64-musl && bun run build:macos-x64 && bun run build:macos-arm64 && bun run build:windows-x64",
     "build:linux-x64": "bun run patch:deps && bun build --compile --target=bun-linux-x64       --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-linux-x64",
     "build:linux-arm64": "bun run patch:deps && bun build --compile --target=bun-linux-arm64     --minify --sourcemap=none src/index.ts --outfile releases/vaultbase-linux-arm64",
@@ -27,8 +26,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun src/db/migrate.ts",
-    "db:reset": "bun src/scripts/reset.ts",
-    "compress": "upx --best --lzma releases/vaultbase-linux-arm64"
+    "db:reset": "bun src/scripts/reset.ts"
   },
   "dependencies": {
     "cron-parser": "^5.5.0",

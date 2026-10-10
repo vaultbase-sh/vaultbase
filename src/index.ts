@@ -222,7 +222,7 @@ Environment:
   VAULTBASE_PORT                  HTTP port (default: 8091)
   VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
-  VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (default: read from <dataDir>/.encryption-key)
+  VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (required to use encrypted fields)
   VAULTBASE_CLUSTER_WORKERS       Worker count for \`vaultbase cluster\`
   VAULTBASE_TRUSTED_PROXIES       Comma-separated peer IPs trusted for X-Forwarded-For
   NODE_ENV / VAULTBASE_ENV        Triggers production guardrails on \`wipe\`.
