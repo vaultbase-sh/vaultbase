@@ -7,23 +7,23 @@
 #
 # Usage:
 #
-#   curl -fsSL https://get.vaultbase.dev | sh
+#   curl -fsSL https://get.vaultbase.dev | sudo sh
 #
 #   # Pin a specific version
-#   curl -fsSL https://get.vaultbase.dev | sh -s -- --version v0.1.8
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --version v0.1.8
 #
 #   # Override the listen port
-#   curl -fsSL https://get.vaultbase.dev | sh -s -- --port 9000
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --port 9000
 #
 #   # Install but do not start (useful when running behind a reverse proxy
 #   # you want to configure first)
-#   curl -fsSL https://get.vaultbase.dev | sh -s -- --no-start
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --no-start
 #
 #   # Verify cosign keyless signature before installing (requires `cosign`
 #   # on PATH — install from https://docs.sigstore.dev/cosign/installation/).
 #   # Confirms the binary was built and signed by the project's GitHub
 #   # Actions runner via the Sigstore Fulcio chain.
-#   curl -fsSL https://get.vaultbase.dev | sh -s -- --verify-sig
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --verify-sig
 #
 # Re-running the script upgrades the binary in place. Existing data dir,
 # JWT secret, and admin accounts are preserved.

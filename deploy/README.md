@@ -5,7 +5,7 @@ Drop-in templates for production deployment.
 ## One-shot install (Linux)
 
 ```bash
-curl -fsSL https://get.vaultbase.dev | sh
+curl -fsSL https://get.vaultbase.dev | sudo sh
 ```
 
 What it does:

@@ -1,0 +1,11 @@
+# Cloudflare Worker behind get.vaultbase.dev.
+# Deploy: cd deploy/get-worker && bunx wrangler deploy
+name = "twilight-dawn-aa65"
+main = "src/index.js"
+compatibility_date = "2026-04-30"
+workers_dev = true
+preview_urls = false
+
+routes = [
+  { pattern = "get.vaultbase.dev", custom_domain = true },
+]
