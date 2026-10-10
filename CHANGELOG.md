@@ -7,6 +7,28 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Upgrade notes
+
+- **Orphaned files are now deleted.** An hourly sweep removes stored files (and their thumbnails) whose record or collection is gone, whose field was dropped, or that the record's field no longer names, once they are 24 hours old. Collections with record history are skipped. Set `files.orphan_cleanup` to `0` to keep the old behaviour.
+- **Request-log files follow data retention.** Daily `logs/*.jsonl` files older than `maintenance.retention_days` (default 30) are deleted. Set it to `0` to keep everything.
+- **Changing an admin's password signs that admin out everywhere**, including the session that made the change.
+
+### Added
+- **Email change.** `POST /auth/:collection/request-email-change` emails a link to the new address; `confirm-email-change` applies it with the current password, marks it verified and ends existing sessions. SDK: `vb.auth.<collection>.requestEmailChange()` / `.confirmEmailChange()`.
+- **Invitations.** `POST /admin/users/:collection/invite` creates a user without a usable password and emails a 7-day link; `accept-invite` sets the password and verifies the email. Admin: **Records → Invite user** on auth collections. SDK: `vb.auth.admin.invite()`, `vb.auth.<collection>.acceptInvite()`.
+- Hosted pages for both flows at `/auth/confirm-email-change` and `/auth/invite`.
+
+### Security
+- Confirming a password reset didn't end existing sessions, so a stolen token kept working after the owner reset their password. It now does, as does an admin password change.
+- The hosted auth pages put the `token` / `collection` query values into an inline script unescaped. The site CSP blocked the injection, but see below.
+
+### Fixed
+- The hosted `/auth/reset`, `/auth/verify` and `/auth/otp` pages never worked in a browser: the site-wide CSP (`script-src 'self'`) blocked their inline scripts, leaving a form or spinner that did nothing. Each page now sends its own CSP with a per-response nonce.
+- SMTP had no timeouts, so a hung mail server could hold a request open for minutes. Connect and greeting now time out after 15 s.
+- Very long request paths and hook log messages are truncated in the log (2 KB / 8 KB).
+
 ## [0.15.0] — 2026-10-11
 
 ### Upgrade notes

@@ -5,6 +5,7 @@
  */
 import { getRawClient } from "../db/client.ts";
 import { getSetting } from "../api/settings.ts";
+import { pruneLogFiles } from "./file-logger.ts";
 
 /**
  * Default for `maintenance.retention_days`: finished jobs and webhook
@@ -24,6 +25,7 @@ export interface PruneResult {
   webhookDeliveries: number;
   tokenRevocations: number;
   authTokens: number;
+  logFiles: number;
 }
 
 export async function pruneHistory(): Promise<PruneResult> {
@@ -49,5 +51,7 @@ export async function pruneHistory(): Promise<PruneResult> {
     tokenRevocations: run(`DELETE FROM vaultbase_token_revocations WHERE expires_at < ?`, expiredCutoff),
     // Verify / reset / OTP tokens are useless once expired, used or not.
     authTokens: run(`DELETE FROM vaultbase_auth_tokens WHERE expires_at < ?`, expiredCutoff),
+    // Daily request-log files follow the same retention.
+    logFiles: days === 0 ? 0 : pruneLogFiles(days),
   };
 }

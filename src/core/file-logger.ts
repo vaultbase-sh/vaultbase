@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync, appendFileSync, unlinkSync } from "fs";
 import { appendFile as appendFileAsync } from "fs/promises";
 import { join } from "path";
 import { JSONPath } from "jsonpath-plus";
@@ -153,9 +153,21 @@ export function drainLogBufferSync(): void {
   writer.flushSync();
 }
 
+/** Longest `path` (URL incl. query) and hook `message` kept in a log line. */
+export const MAX_LOG_PATH = 2048;
+export const MAX_LOG_MESSAGE = 8192;
+
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}… [${s.length - max} more chars]` : s;
+}
+
 export function appendLogEntry(entry: LogEntry): void {
   const dir = logsDir();
   if (!dir) return;
+  // A huge query string or a hook logging a whole payload would otherwise
+  // bloat the file and every reader that parses it.
+  if (entry.path.length > MAX_LOG_PATH) entry = { ...entry, path: clip(entry.path, MAX_LOG_PATH) };
+  if (entry.message && entry.message.length > MAX_LOG_MESSAGE) entry = { ...entry, message: clip(entry.message, MAX_LOG_MESSAGE) };
   const date = entry.ts.slice(0, 10); // ISO YYYY-MM-DD
   const file = join(dir, `${date}.jsonl`);
   writer.enqueue(file, JSON.stringify(entry) + "\n");
@@ -196,6 +208,23 @@ export function appendHookLog(input: HookLogInput): void {
     hook_name: name,
   };
   appendLogEntry(entry);
+}
+
+/**
+ * Delete daily log files older than `days` (UTC dates). Returns how many
+ * were removed. Today's file is never touched.
+ */
+export function pruneLogFiles(days: number): number {
+  const dir = logsDir();
+  if (!dir || !existsSync(dir) || days <= 0) return 0;
+  const cutoff = utcDate(new Date(Date.now() - days * 24 * 60 * 60 * 1000));
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    const m = /^(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name);
+    if (!m || m[1]! >= cutoff) continue;
+    try { unlinkSync(join(dir, name)); removed++; } catch { /* in use / gone */ }
+  }
+  return removed;
 }
 
 /** List available log file dates (sorted desc — newest first). */

@@ -1257,8 +1257,8 @@ function RetentionSection() {
   return (
     <SectionShell id="retention">
       <VbField
-        label="Keep job and webhook history for"
-        hint="Finished queue jobs (succeeded / failed / dead) and finished webhook deliveries older than this are deleted once a day. 0 keeps them forever. Queued / running jobs and pending deliveries are never touched. Expired tokens are always cleaned up."
+        label="Keep job, webhook and request-log history for"
+        hint="Finished queue jobs (succeeded / failed / dead), finished webhook deliveries and daily request-log files older than this are deleted once a day. 0 keeps them forever. Queued / running jobs and pending deliveries are never touched. Expired tokens are always cleaned up."
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <VbInput
