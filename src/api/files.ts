@@ -1,6 +1,6 @@
 import { and, eq, lt } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import { existsSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join, resolve, sep } from "path";
 import { getDb } from "../db/client.ts";
 import { auditLog, files, fileTokenUses } from "../db/schema.ts";
@@ -284,6 +284,36 @@ function safeExt(originalName: string): string {
   if (dot < 0) return "bin";
   const ext = originalName.slice(dot + 1).toLowerCase();
   return SAFE_EXT_RE.test(ext) ? ext : "bin";
+}
+
+// Thumbnails being generated right now, by cache path. Concurrent misses for
+// the same thumb share one decode / resize instead of each doing it.
+const thumbsInFlight = new Map<string, Promise<Uint8Array>>();
+let thumbsGenerated = 0;
+
+/** Test hook: thumbnails actually generated since process start. */
+export function _thumbStats(): { generated: number } {
+  return { generated: thumbsGenerated };
+}
+
+async function generateThumbOnce(cachePath: string, make: () => Promise<Uint8Array>): Promise<Uint8Array> {
+  const pending = thumbsInFlight.get(cachePath);
+  if (pending) return pending;
+  const job = (async () => {
+    thumbsGenerated++;
+    const thumb = await make();
+    // Write then rename, so a concurrent cache hit never reads a half-written file.
+    const tmp = `${cachePath}.${crypto.randomUUID()}.tmp`;
+    await Bun.write(tmp, thumb);
+    renameSync(tmp, cachePath);
+    return thumb;
+  })();
+  thumbsInFlight.set(cachePath, job);
+  try {
+    return await job;
+  } finally {
+    thumbsInFlight.delete(cachePath);
+  }
 }
 
 /** Default cap on one upload request (setting `files.max_upload_size`, bytes). */
@@ -596,8 +626,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }
 
       try {
-        const thumb = await generateThumbnail(bytes, spec, format as ThumbFormat);
-        await Bun.write(cachePath, thumb);
+        const thumb = await generateThumbOnce(cachePath, () => generateThumbnail(bytes, spec, format as ThumbFormat));
         const outFormat = detectFormat(thumb) ?? format;
         return new Response(thumb, {
           headers: { ...baseHeaders, "Content-Type": thumbMime(outFormat) },
