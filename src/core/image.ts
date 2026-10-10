@@ -2,19 +2,22 @@ import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { Image, GIF } from "imagescript";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
-import { avifDecoder, avifEncoder, jpegEncoder, webpDecoder, webpEncoder } from "./codecs";
+import "./codecs";
 
 /**
  * Lightweight thumbnail generator.
  *
- * Engine matrix (all WASM is embedded via ./codecs):
- *   - Decode PNG / JPEG / GIF, resize, encode PNG: `imagescript`
- *   - Encode JPEG: `@jsquash/jpeg` (MozJPEG)
- *   - Encode animated GIF: `gifenc` (pure JS)
- *   - WebP / AVIF: `@jsquash/webp` and `@jsquash/avif`
+ * Engine matrix:
+ *   - JPEG / PNG / WebP / static GIF: `Bun.Image` (native decode, resize, encode)
+ *   - Crop for `cover` fit: `imagescript`, on the already-shrunk image only
+ *     (Bun.Image has no crop)
+ *   - Animated GIF: `imagescript` decode + resize, `gifenc` encode
+ *   - AVIF: not thumbnailed — served as the original. Bun.Image can't read AVIF
+ *     on Linux without an OS codec, and bundling one costs ~4.5 MB.
  *
  * imagescript's own JPEG / GIF encoders are native addons that cannot ship in
- * a single binary (see scripts/patch-imagescript.ts), so they are never called.
+ * a single binary (see scripts/patch-imagescript.ts), so they are never called;
+ * its PNG / GIF WASM is embedded via ./codecs.
  *
  * On-disk cache lives at `<uploadDir>/.thumbs/<filename>__<W>x<H>[_<fit>].<ext>`
  * so repeat fetches read straight from disk without re-encoding. The fit mode
@@ -176,36 +179,9 @@ function fitImage(img: Image, spec: ThumbSpec): Image {
   return img.resize(dims.newW, dims.newH) as Image;
 }
 
-/** Build an imagescript Image from a decoded ImageData. */
-function imageFromImageData(id: { data: Uint8ClampedArray | Uint8Array; width: number; height: number }): Image {
-  const out = new Image(id.width, id.height);
-  // imagescript's Image.bitmap is a Uint8ClampedArray of RGBA in row-major order —
-  // the same layout as web ImageData, so a straight set() is correct.
-  out.bitmap.set(id.data as Uint8ClampedArray);
-  return out;
-}
-
-/**
- * The shape `@jsquash/*` encoders consume — a structural subset of the DOM
- * ImageData. We avoid pulling in the DOM lib by defining it locally.
- */
-interface ImageDataLike {
-  data: Uint8ClampedArray;
-  width: number;
-  height: number;
-  colorSpace?: "srgb" | "display-p3";
-}
-
-/** Convert an imagescript Image back into a plain ImageData-shaped object. */
-function imageDataFromImage(img: Image): ImageDataLike {
-  // Construct an ImageData-shaped literal — the @jsquash encoders only read
-  // .data/.width/.height and tolerate the colorSpace field.
-  return {
-    data: new Uint8ClampedArray(img.bitmap.buffer, img.bitmap.byteOffset, img.bitmap.byteLength),
-    width: img.width,
-    height: img.height,
-    colorSpace: "srgb",
-  };
+/** Whether `generateThumbnail` handles this format; others are served as the original. */
+export function canThumbnail(format: ThumbFormat): boolean {
+  return format !== "avif";
 }
 
 /**
@@ -217,46 +193,52 @@ function imageDataFromImage(img: Image): ImageDataLike {
  *   center-cropped to the target aspect ratio first.
  * - `crop`:   alias of `cover`.
  *
- * The output bytes are always in `format` — webp in, webp out, etc.
+ * The output bytes are always in `format` — webp in, webp out, etc. A static
+ * GIF comes out as PNG. Throws for formats `canThumbnail` rejects.
  */
 export async function generateThumbnail(
   bytes: Uint8Array,
   spec: ThumbSpec,
   format: ThumbFormat
 ): Promise<Uint8Array> {
-  if (format === "webp") return await thumbnailWebp(bytes, spec);
-  if (format === "avif") return await thumbnailAvif(bytes, spec);
-  if (format === "gif")  return await thumbnailGif(bytes, spec);
+  if (format === "avif") throw new Error("thumbnails are not supported for avif");
+  if (format === "gif") return await thumbnailGif(bytes, spec);
+  return await thumbnailStill(bytes, spec, format);
+}
 
-  // PNG / JPEG path — vanilla imagescript.
-  const img = await Image.decode(bytes);
-  const resized = fitImage(img, spec);
-  if (format === "jpeg") {
-    const encode = await jpegEncoder();
-    return new Uint8Array(await encode(imageDataFromImage(resized), { quality: 85 }));
+type StillFormat = "jpeg" | "png" | "webp";
+
+function encodeAs(img: Bun.Image, format: StillFormat): Promise<Uint8Array> {
+  if (format === "jpeg") return img.jpeg({ quality: 85 }).bytes();
+  if (format === "webp") return img.webp({ quality: 80 }).bytes();
+  return img.png().bytes();
+}
+
+async function thumbnailStill(bytes: Uint8Array, spec: ThumbSpec, format: StillFormat): Promise<Uint8Array> {
+  const { width, height } = await new Bun.Image(bytes).metadata();
+  const dims = fitDimensions(width, height, spec);
+
+  if (spec.fit === "contain") {
+    return encodeAs(new Bun.Image(bytes).resize(dims.newW, dims.newH, { fit: "fill" }), format);
   }
-  return resized.encode(PNG_LEVEL);
-}
 
-async function thumbnailWebp(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Array> {
-  const [decode, encode] = await Promise.all([webpDecoder(), webpEncoder()]);
-  // @jsquash takes ArrayBuffer; build a tight one in case `bytes` is a slice.
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const decoded = await decode(ab);
-  const img = imageFromImageData(decoded);
-  const resized = fitImage(img, spec);
-  const out = await encode(imageDataFromImage(resized));
-  return new Uint8Array(out);
-}
-
-async function thumbnailAvif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Array> {
-  const [decode, encode] = await Promise.all([avifDecoder(), avifEncoder()]);
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const decoded = await decode(ab);
-  const img = imageFromImageData(decoded);
-  const resized = fitImage(img, spec);
-  const out = await encode(imageDataFromImage(resized));
-  return new Uint8Array(out);
+  // cover: scale so the crop box lands exactly on W×H, then crop that small
+  // image. Bun.Image can't crop, so the crop runs in imagescript — on a
+  // thumbnail-sized bitmap, never the full-size source.
+  const scale = spec.width / dims.cropW;
+  const scaledW = Math.max(spec.width, Math.round(width * scale));
+  const scaledH = Math.max(spec.height, Math.round(height * scale));
+  const scaled = await Image.decode(
+    await new Bun.Image(bytes).resize(scaledW, scaledH, { fit: "fill" }).png().bytes(),
+  );
+  const cropped = scaled.crop(
+    Math.floor((scaledW - spec.width) / 2),
+    Math.floor((scaledH - spec.height) / 2),
+    spec.width,
+    spec.height,
+  );
+  const png = await cropped.encode(PNG_LEVEL);
+  return format === "png" ? png : encodeAs(new Bun.Image(png), format);
 }
 
 /**
@@ -278,9 +260,7 @@ async function thumbnailGif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Ar
     const gif = await GIF.decode(bytes);
     if (gif.length <= 1) {
       // Single-frame GIF: cheaper to ship as PNG, same as the old code path.
-      const single = gif[0] ?? (await Image.decode(bytes));
-      const resized = fitImage(single as Image, spec);
-      return resized.encode(PNG_LEVEL);
+      return await thumbnailStill(bytes, spec, "png");
     }
 
     // imagescript: -1 = loop forever. gifenc: 0 = forever, n = n repeats.
@@ -306,9 +286,7 @@ async function thumbnailGif(bytes: Uint8Array, spec: ThumbSpec): Promise<Uint8Ar
   } catch {
     // Animated decode/encode pipeline failed (imagescript's GIF support has been
     // historically finicky on certain inputs). Fall back to "first frame as PNG"
-    // — same as the old behavior, never throws further.
-    const img = await Image.decode(bytes);
-    const resized = fitImage(img, spec);
-    return resized.encode(PNG_LEVEL);
+    // — same as the old behavior.
+    return await thumbnailStill(bytes, spec, "png");
   }
 }

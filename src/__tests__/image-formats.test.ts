@@ -1,11 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { Image, GIF } from "imagescript";
 import { GIFEncoder, applyPalette, quantize } from "gifenc";
-import { encode as jpegEncode } from "@jsquash/jpeg";
-import { decode as webpDecode, encode as webpEncode } from "@jsquash/webp";
-import { decode as avifDecode, encode as avifEncode } from "@jsquash/avif";
 
 import {
+  canThumbnail,
   detectFormat,
   generateThumbnail,
   thumbMime,
@@ -30,7 +28,6 @@ function solidImageData(w: number, h: number, r: number, g: number, b: number): 
     data[i * 4 + 2] = b;
     data[i * 4 + 3] = 255;
   }
-  // Plain literal — both jsquash and our pipeline only read .data/.width/.height.
   return { data, width: w, height: h, colorSpace: "srgb" };
 }
 
@@ -41,17 +38,35 @@ async function makePng(width: number, height: number): Promise<Uint8Array> {
   return await img.encode(1);
 }
 
+/** Re-encode a PNG fixture into another format with Bun's native codecs. */
+async function convert(png: Uint8Array, format: "jpeg" | "webp"): Promise<Uint8Array> {
+  const img = new Bun.Image(png);
+  return format === "jpeg" ? await img.jpeg({ quality: 90 }).bytes() : await img.webp().bytes();
+}
+
+async function dims(bytes: Uint8Array): Promise<string> {
+  const m = await new Bun.Image(bytes).metadata();
+  return `${m.width}x${m.height}`;
+}
+
+/** Minimal ISO-BMFF header with the `avif` major brand — enough for sniffing. */
+function avifHeader(): Uint8Array {
+  const buf = new Uint8Array(32);
+  buf.set([0, 0, 0, 0x20], 0);
+  buf.set([0x66, 0x74, 0x79, 0x70], 4);          // "ftyp"
+  buf.set([0x61, 0x76, 0x69, 0x66], 8);          // "avif"
+  return buf;
+}
+
 // ── detectFormat: WebP / AVIF magic bytes ─────────────────────────────────
 
 describe("detectFormat — webp + avif", () => {
   it("recognizes a real WebP buffer", async () => {
-    const buf = await webpEncode(solidImageData(8, 8, 255, 0, 0));
-    expect(detectFormat(new Uint8Array(buf))).toBe("webp");
+    expect(detectFormat(await convert(await makePng(8, 8), "webp"))).toBe("webp");
   });
 
-  it("recognizes a real AVIF buffer", async () => {
-    const buf = await avifEncode(solidImageData(8, 8, 0, 255, 0));
-    expect(detectFormat(new Uint8Array(buf))).toBe("avif");
+  it("recognizes an AVIF header", () => {
+    expect(detectFormat(avifHeader())).toBe("avif");
   });
 
   it("rejects RIFF without WEBP fourcc", () => {
@@ -82,47 +97,35 @@ describe("thumbMime", () => {
   });
 });
 
-// ── WebP end-to-end ────────────────────────────────────────────────────────
+// ── AVIF: served as the original ──────────────────────────────────────────
 
-describe("generateThumbnail — WebP", () => {
-  it("decodes a 200x200 source, resizes to ~50x50, emits valid WebP", async () => {
-    const src = new Uint8Array(await webpEncode(solidImageData(200, 200, 220, 30, 30)));
-    expect(detectFormat(src)).toBe("webp");
-
-    const thumb = await generateThumbnail(src, { width: 50, height: 50, fit: "contain" }, "webp");
-    expect(thumb.byteLength).toBeGreaterThan(0);
-    expect(detectFormat(thumb)).toBe("webp");
-
-    const decoded = await webpDecode(thumb.buffer.slice(thumb.byteOffset, thumb.byteOffset + thumb.byteLength) as ArrayBuffer);
-    expect(decoded.width).toBe(50);
-    expect(decoded.height).toBe(50);
+describe("AVIF", () => {
+  it("is not thumbnailed", async () => {
+    expect(canThumbnail("avif")).toBe(false);
+    await expect(generateThumbnail(avifHeader(), { width: 16, height: 16, fit: "contain" }, "avif")).rejects.toThrow();
   });
 
-  it("cover fit produces exact target dims for non-square source", async () => {
-    const src = new Uint8Array(await webpEncode(solidImageData(120, 60, 30, 60, 220)));
-    const thumb = await generateThumbnail(src, { width: 40, height: 40, fit: "cover" }, "webp");
-    const decoded = await webpDecode(thumb.buffer.slice(thumb.byteOffset, thumb.byteOffset + thumb.byteLength) as ArrayBuffer);
-    expect(decoded.width).toBe(40);
-    expect(decoded.height).toBe(40);
+  it("every other format is", () => {
+    for (const f of ["jpeg", "png", "gif", "webp"] as const) expect(canThumbnail(f)).toBe(true);
   });
 });
 
-// ── AVIF end-to-end ───────────────────────────────────────────────────────
+// ── WebP end-to-end ────────────────────────────────────────────────────────
 
-describe("generateThumbnail — AVIF", () => {
-  it("decodes a 32x32 source, resizes to 16x16, emits valid AVIF", async () => {
-    // Keep the encode small — AVIF encoding is the slow leg of these tests.
-    const src = new Uint8Array(await avifEncode(solidImageData(32, 32, 30, 200, 30)));
-    expect(detectFormat(src)).toBe("avif");
+describe("generateThumbnail — WebP", () => {
+  it("decodes a 200x200 source, resizes to 50x50, emits valid WebP", async () => {
+    const src = await convert(await makePng(200, 200), "webp");
+    const thumb = await generateThumbnail(src, { width: 50, height: 50, fit: "contain" }, "webp");
+    expect(detectFormat(thumb)).toBe("webp");
+    expect(await dims(thumb)).toBe("50x50");
+  });
 
-    const thumb = await generateThumbnail(src, { width: 16, height: 16, fit: "contain" }, "avif");
-    expect(thumb.byteLength).toBeGreaterThan(0);
-    expect(detectFormat(thumb)).toBe("avif");
-
-    const decoded = await avifDecode(thumb.buffer.slice(thumb.byteOffset, thumb.byteOffset + thumb.byteLength) as ArrayBuffer);
-    expect(decoded.width).toBe(16);
-    expect(decoded.height).toBe(16);
-  }, 30_000); // AVIF encode is slow; give the test ample headroom.
+  it("cover fit produces exact target dims for non-square source", async () => {
+    const src = await convert(await makePng(120, 60), "webp");
+    const thumb = await generateThumbnail(src, { width: 40, height: 40, fit: "cover" }, "webp");
+    expect(detectFormat(thumb)).toBe("webp");
+    expect(await dims(thumb)).toBe("40x40");
+  });
 });
 
 // ── PNG end-to-end ────────────────────────────────────────────────────────
@@ -144,14 +147,29 @@ describe("generateThumbnail — PNG", () => {
 
 describe("generateThumbnail — JPEG", () => {
   it("decodes a 200x100 source, resizes to 50x25, emits valid JPEG", async () => {
-    const src = new Uint8Array(await jpegEncode(solidImageData(200, 100, 200, 120, 40) as Parameters<typeof jpegEncode>[0], { quality: 90 }));
+    const src = await convert(await makePng(200, 100), "jpeg");
     expect(detectFormat(src)).toBe("jpeg");
-
     const thumb = await generateThumbnail(src, { width: 50, height: 50, fit: "contain" }, "jpeg");
     expect(detectFormat(thumb)).toBe("jpeg");
-    const decoded = await Image.decode(thumb);
-    expect(decoded.width).toBe(50);
-    expect(decoded.height).toBe(25);
+    expect(await dims(thumb)).toBe("50x25");
+  });
+
+  it("cover fit crops a landscape source to an exact square", async () => {
+    const src = await convert(await makePng(300, 100), "jpeg");
+    const thumb = await generateThumbnail(src, { width: 60, height: 60, fit: "cover" }, "jpeg");
+    expect(detectFormat(thumb)).toBe("jpeg");
+    expect(await dims(thumb)).toBe("60x60");
+  });
+
+  it("applies EXIF orientation, so a rotated phone photo keeps its shape", async () => {
+    // 400x200 pixels tagged Orientation=6 (rotate 90° CW) → displays as 200x400.
+    const base = await convert(await makePng(400, 200), "jpeg");
+    const tiff = [0x49, 0x49, 0x2a, 0x00, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0];
+    const payload = [...new TextEncoder().encode("Exif"), 0, 0, ...tiff];
+    const len = payload.length + 2;
+    const src = new Uint8Array([0xff, 0xd8, 0xff, 0xe1, len >> 8, len & 255, ...payload, ...base.slice(2)]);
+    const thumb = await generateThumbnail(src, { width: 100, height: 100, fit: "contain" }, "jpeg");
+    expect(await dims(thumb)).toBe("50x100");
   });
 });
 

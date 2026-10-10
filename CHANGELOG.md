@@ -9,9 +9,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **AVIF uploads are no longer resized.** `?thumb=` on an AVIF file returns the original. AVIF files are still stored and served as before.
+
 ### Fixed
-- **Image thumbnails in release binaries.** `?thumb=` returned the original file for every format, because the image codecs' WASM was not embedded in the single binary. PNG, JPEG, GIF, WebP and AVIF thumbnails are now generated and cached. The binary grows by about 10 MB.
-- JPEG thumbnails are encoded with MozJPEG; before, every JPEG thumbnail fell back to the full-size original, even in development.
+- **Image thumbnails in release binaries.** `?thumb=` returned the original file for every format, because the image codecs were not part of the single binary. Thumbnails now use Bun's built-in image engine for JPEG, PNG, WebP and still GIFs, and are generated and cached as intended. Large photos thumbnail in milliseconds instead of most of a second.
+- JPEG thumbnails respect EXIF orientation, so phone photos come out upright.
 - Animated GIF thumbnails stay animated instead of becoming a still PNG of the first frame.
 - PNG thumbnails are compressed. They were written uncompressed, often larger than the source.
 

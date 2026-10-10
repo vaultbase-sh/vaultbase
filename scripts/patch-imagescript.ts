@@ -66,7 +66,7 @@ if (current.startsWith(SENTINEL)) {
 const LOADER_FROM = "readFile(join(__dirname, `../${wasm_path}/${wasm_name}.wasm`))";
 const LOADER_TO = "readFile(globalThis.__vaultbaseImagescriptWasm?.[wasm_name] ?? join(__dirname, `../${wasm_path}/${wasm_name}.wasm`))";
 
-for (const name of ["png", "jpeg", "gif"]) {
+for (const name of ["png", "gif"]) {
   const file = resolve(import.meta.dir, "..", `node_modules/imagescript/wasm/node/${name}.js`);
   if (!existsSync(file)) continue;
   const src = readFileSync(file, "utf8");

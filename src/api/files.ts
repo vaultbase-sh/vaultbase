@@ -7,6 +7,7 @@ import { auditLog, files, fileTokenUses } from "../db/schema.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
 import {
   detectFormat,
+  canThumbnail,
   generateThumbnail,
   parseThumbSpec,
   thumbCachePath,
@@ -618,7 +619,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       if (!buf) { set.status = 404; return { error: "File not found", code: 404 }; }
       const bytes = new Uint8Array(buf);
       const format = detectFormat(bytes);
-      if (!format) {
+      // Unknown or not resizable (AVIF): serve the original.
+      if (!format || !canThumbnail(format)) {
         const r = await fileResponse(params.filename);
         if (!r) return new Response(null, { status: 404 });
         for (const [k, v] of Object.entries(baseHeaders)) r.headers.set(k, v);
