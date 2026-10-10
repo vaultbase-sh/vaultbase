@@ -6,11 +6,13 @@ import { setSetting } from "../api/settings.ts";
 import {
   buildAppleClientSecret,
   buildAuthorizeUrl,
+  fetchProviderProfileFromExchange,
   isProviderEnabled,
   listEnabledProviders,
   PROVIDERS,
   providerRequiresPkce,
   _clearAppleSecretCache,
+  _setAppleKeysForTests,
 } from "../core/oauth2.ts";
 
 beforeEach(async () => {
@@ -19,7 +21,67 @@ beforeEach(async () => {
   _clearAppleSecretCache();
 });
 
-afterEach(() => closeDb());
+afterEach(() => {
+  _setAppleKeysForTests(null);
+  closeDb();
+});
+
+// ── Apple id_token verification ─────────────────────────────────────────────
+
+describe("Apple id_token", () => {
+  const CLIENT_ID = "com.example.signin";
+  let signingKey: jose.KeyLike;
+
+  beforeEach(async () => {
+    const pair = await jose.generateKeyPair("RS256", { extractable: true });
+    signingKey = pair.privateKey;
+    const jwk = { ...(await jose.exportJWK(pair.publicKey)), kid: "k1", alg: "RS256" };
+    _setAppleKeysForTests(jose.createLocalJWKSet({ keys: [jwk] }));
+    setSetting("oauth2.apple.client_id", CLIENT_ID);
+  });
+
+  function token(over: { iss?: string; aud?: string; exp?: string | number; key?: jose.KeyLike; claims?: Record<string, unknown> } = {}) {
+    return new jose.SignJWT({ email: "a@example.com", email_verified: "true", ...over.claims })
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(over.iss ?? "https://appleid.apple.com")
+      .setAudience(over.aud ?? CLIENT_ID)
+      .setSubject("001234.abcd")
+      .setIssuedAt()
+      .setExpirationTime(over.exp ?? "5m")
+      .sign(over.key ?? signingKey);
+  }
+
+  const profileFor = (idToken: string) =>
+    fetchProviderProfileFromExchange("apple", { access_token: "", raw: { id_token: idToken } });
+
+  it("accepts a token signed by Apple for this client", async () => {
+    const p = await profileFor(await token());
+    expect(p).toEqual({ id: "001234.abcd", email: "a@example.com", emailVerified: true });
+  });
+
+  it("rejects a token signed by another key", async () => {
+    const { privateKey } = await jose.generateKeyPair("RS256");
+    await expect(profileFor(await token({ key: privateKey }))).rejects.toThrow();
+  });
+
+  it("rejects a token for another app", async () => {
+    await expect(profileFor(await token({ aud: "com.attacker.app" }))).rejects.toThrow();
+  });
+
+  it("rejects a token from another issuer", async () => {
+    await expect(profileFor(await token({ iss: "https://evil.example" }))).rejects.toThrow();
+  });
+
+  it("rejects an expired token", async () => {
+    await expect(profileFor(await token({ exp: Math.floor(Date.now() / 1000) - 3600 }))).rejects.toThrow();
+  });
+
+  it("rejects an unsigned token", async () => {
+    const unsigned = new jose.UnsecuredJWT({ email: "a@example.com" })
+      .setIssuer("https://appleid.apple.com").setAudience(CLIENT_ID).setSubject("x").setExpirationTime("5m").encode();
+    await expect(profileFor(unsigned)).rejects.toThrow();
+  });
+});
 
 // ── Apple ───────────────────────────────────────────────────────────────────
 

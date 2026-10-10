@@ -319,22 +319,31 @@ async function oidcProfile(token: string): Promise<NormalizedProfile> {
   return profile;
 }
 
+const APPLE_ISSUER = "https://appleid.apple.com";
+
+let appleKeys: jose.JWTVerifyGetKey | null = null;
+
+/** Test hook: verify Apple id_tokens against these keys instead of Apple's JWKS. */
+export function _setAppleKeysForTests(keys: jose.JWTVerifyGetKey | null): void {
+  appleKeys = keys;
+}
+
 /**
- * Decode an `id_token` (JWT) payload without verifying its signature.
- * v1 trade-off: Apple's signing keys rotate via JWKS; we accept the IdP-issued
- * JWT at face value because it arrives over a TLS-protected back-channel
- * directly from Apple. TODO: switch to jwtVerify against the JWKS endpoint
- * (`https://appleid.apple.com/auth/keys`) when we can afford the dependency
- * footprint of remote key fetching + caching.
+ * Verify an Apple `id_token`: signature against Apple's published JWKS (jose
+ * caches the keys and refetches on rotation), issuer, audience = our Services
+ * ID, and expiry. The token arrives over the server-to-server token exchange,
+ * but verifying it means a forged token is rejected however it got here.
  */
-function decodeIdTokenUnverified(idToken: string): Record<string, unknown> {
-  const parts = idToken.split(".");
-  if (parts.length < 2) throw new Error("Invalid id_token");
-  const payload = parts[1]!;
-  // base64url → base64 → JSON
-  const padded = payload.replace(/-/g, "+").replace(/_/g, "/").padEnd(payload.length + ((4 - payload.length % 4) % 4), "=");
-  const json = atob(padded);
-  return JSON.parse(json) as Record<string, unknown>;
+async function verifyAppleIdToken(idToken: string, clientId: string): Promise<jose.JWTPayload> {
+  if (!clientId) throw new Error("Apple OAuth2 is not configured (missing client_id)");
+  appleKeys ??= jose.createRemoteJWKSet(new URL(`${APPLE_ISSUER}/auth/keys`));
+  const { payload } = await jose.jwtVerify(idToken, appleKeys, {
+    issuer: APPLE_ISSUER,
+    audience: clientId,
+    algorithms: ["RS256"],
+    clockTolerance: 60,
+  });
+  return payload;
 }
 
 async function appleProfileFromTokenResponse(
@@ -344,9 +353,10 @@ async function appleProfileFromTokenResponse(
   if (typeof idToken !== "string" || !idToken) {
     throw new Error("Apple did not return an id_token");
   }
-  const claims = decodeIdTokenUnverified(idToken);
+  const claims = await verifyAppleIdToken(idToken, getAppleConfig().client_id);
+  if (typeof claims.sub !== "string" || !claims.sub) throw new Error("Apple id_token has no subject");
   const profile: NormalizedProfile = {
-    id: String(claims["sub"] ?? ""),
+    id: claims.sub,
     email: typeof claims["email"] === "string" ? (claims["email"] as string) : "",
     emailVerified: claims["email_verified"] === true || claims["email_verified"] === "true",
   };
