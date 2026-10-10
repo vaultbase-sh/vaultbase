@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { CronExpressionParser } from "cron-parser";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
@@ -159,13 +159,28 @@ export async function runJob(jobId: string): Promise<{ ok: boolean; error?: stri
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 
-async function scheduleTick(): Promise<void> {
+/** Jobs started by this process that haven't finished yet. */
+const runningJobs = new Set<string>();
+
+async function scheduleTick(): Promise<Promise<unknown>[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const rows = await db.select().from(jobs).where(eq(jobs.enabled, 1));
+  const started: Promise<unknown>[] = [];
   for (const r of rows) {
     if (r.next_run_at !== null && r.next_run_at <= now) {
-      void runJob(r.id);
+      if (runningJobs.has(r.id)) continue; // still running from an earlier slot
+      // Claim the slot: move next_run_at on only if no other tick or cluster
+      // worker already did. Exactly one claimant runs each slot.
+      let next: number;
+      try { next = nextRunFromCron(r.cron, now); } catch { continue; }
+      const claim = await db.update(jobs)
+        .set({ next_run_at: next, updated_at: now })
+        .where(and(eq(jobs.id, r.id), eq(jobs.next_run_at, r.next_run_at)))
+        .returning({ id: jobs.id });
+      if (claim.length === 0) continue;
+      runningJobs.add(r.id);
+      started.push(runJob(r.id).finally(() => runningJobs.delete(r.id)));
     } else if (r.next_run_at === null) {
       // Newly created or never run — initialize next_run_at
       try {
@@ -174,6 +189,12 @@ async function scheduleTick(): Promise<void> {
       } catch { /* invalid cron — skip */ }
     }
   }
+  return started;
+}
+
+/** Test hook: one scheduler pass, resolving when the jobs it started finish. */
+export async function _jobsTickOnce(): Promise<void> {
+  await Promise.all(await scheduleTick());
 }
 
 export function startScheduler(): void {
