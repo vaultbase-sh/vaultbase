@@ -18,6 +18,7 @@ import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
+import { getSetting } from "./settings.ts";
 import {
   extractBearer,
   isAllowedUploadMime,
@@ -285,6 +286,16 @@ function safeExt(originalName: string): string {
   return SAFE_EXT_RE.test(ext) ? ext : "bin";
 }
 
+/** Default cap on one upload request (setting `files.max_upload_size`, bytes). */
+export const DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+/** Multipart framing (boundaries, part headers) on top of the file bytes. */
+const MULTIPART_SLACK_BYTES = 64 * 1024;
+
+export function maxUploadBytes(): number {
+  const n = parseInt(getSetting("files.max_upload_size", String(DEFAULT_MAX_UPLOAD_BYTES)), 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_UPLOAD_BYTES;
+}
+
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
     .post("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
@@ -309,8 +320,22 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         }
       }
 
+      // The multipart body is buffered in memory while parsing, so refuse
+      // oversized requests from Content-Length before reading it.
+      const cap = maxUploadBytes();
+      const declared = Number(request.headers.get("content-length") ?? NaN);
+      if (Number.isFinite(declared) && declared > cap + MULTIPART_SLACK_BYTES) {
+        set.status = 413;
+        return { error: `Upload too large (max ${cap} bytes)`, code: 413 };
+      }
+
       const formData = await request.formData();
       const fileEntries = (formData.getAll("file") as unknown[]).filter((v): v is File => v instanceof File);
+      const total = fileEntries.reduce((n, f) => n + f.size, 0);
+      if (total > cap) {
+        set.status = 413;
+        return { error: `Upload too large (max ${cap} bytes)`, code: 413 };
+      }
       if (fileEntries.length === 0) {
         set.status = 400;
         return { error: "No file uploaded", code: 400 };
@@ -371,7 +396,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         const id = crypto.randomUUID();
         const filename = `${id}.${ext}`;
         const fileMime = file.type || "application/octet-stream";
-        await writeFile(filename, await file.arrayBuffer(), fileMime);
+        // Pass the File (a Blob) straight through: no second in-memory copy.
+        await writeFile(filename, file, fileMime);
         await db.insert(files).values({
           id,
           collection_id: col.id,
