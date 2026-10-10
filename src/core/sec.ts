@@ -30,6 +30,10 @@ export interface VerifiedAuth extends AuthContext {
    * initiated session. Used for audit-log labelling + scope enforcement.
    */
   viaApiToken?: boolean;
+  /** User tokens: the auth collection the user belongs to. */
+  collection?: string;
+  /** User tokens: an anonymous (guest) session. */
+  anonymous?: boolean;
 }
 
 export const ISSUER = "vaultbase";
@@ -90,6 +94,9 @@ export async function verifyAuthToken(
     const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
     if (aud !== "user" && aud !== "admin" && aud !== "file" && aud !== "api") return null;
     if (opts.audience && aud !== opts.audience) return null;
+    // File tokens are download grants, not sessions: only a caller that asks
+    // for them explicitly gets one back.
+    if (!opts.audience && aud === "file") return null;
 
     if (typeof payload.jti === "string" && (await isRevoked(payload.jti))) return null;
 
@@ -150,6 +157,10 @@ export async function verifyAuthToken(
     if (typeof payload.jti === "string") ctx.jti = payload.jti;
     if (typeof payload.exp === "number") ctx.exp = payload.exp;
     if (typeof payload.iat === "number") ctx.iat = payload.iat;
+    if (aud === "user") {
+      if (typeof payload["collection"] === "string") ctx.collection = payload["collection"];
+      if (payload["anonymous"] === true) ctx.anonymous = true;
+    }
 
     if (recheck) {
       const db = getDb();
@@ -183,6 +194,35 @@ export async function verifyAuthToken(
   } catch {
     return null;
   }
+}
+
+/**
+ * The principal a verified token acts as on the data API (records, files,
+ * batch, realtime). User and admin sessions pass through. API tokens follow
+ * their scopes: `admin` is the minting admin; `read` gets admin-level reads;
+ * `write` gets mutations as a non-admin principal, so collection rules still
+ * apply; anything else is treated as anonymous. Never more than anonymous for
+ * a token without the scope, so a narrow token can't escalate.
+ */
+export function dataPrincipal(ctx: VerifiedAuth | null, access: "read" | "write"): AuthContext | null {
+  if (!ctx || (ctx.type !== "user" && ctx.type !== "admin")) return null;
+  if (ctx.viaApiToken) {
+    const scopes = ctx.scopes ?? [];
+    const asAdmin = scopes.includes("admin") || (access === "read" && scopes.includes("read"));
+    if (!asAdmin) {
+      return access === "write" && scopes.includes("write")
+        ? { id: `api:${ctx.jti ?? ""}`, type: "user" }
+        : null;
+    }
+  }
+  const out: AuthContext = { id: ctx.id, type: ctx.type };
+  if (ctx.email) out.email = ctx.email;
+  return out;
+}
+
+/** Read vs write for `dataPrincipal`, from the HTTP method. */
+export function accessFor(request: Request): "read" | "write" {
+  return request.method === "GET" || request.method === "HEAD" ? "read" : "write";
 }
 
 /** Mint a fresh signed JWT with `iss`, `jti`, and standard claims wired in. */

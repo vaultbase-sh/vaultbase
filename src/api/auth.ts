@@ -1525,7 +1525,9 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret);
       if (!ctx) { set.status = 401; return { error: "Token expired or invalid", code: 401 }; }
-      if (ctx.type !== "user" && ctx.type !== "admin") {
+      // API tokens are not sessions: refreshing one would mint an admin JWT
+      // free of the token's scopes.
+      if ((ctx.type !== "user" && ctx.type !== "admin") || ctx.viaApiToken) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       // Signature already verified above; read the principal claims back so

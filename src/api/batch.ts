@@ -7,7 +7,7 @@ import { AccessRuleError, clientPaging, createRecord, deleteRecord, FilterError,
 import { ValidationError } from "../core/validate.ts";
 import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { dataPrincipal, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 
 interface BatchRequest {
@@ -23,15 +23,16 @@ interface BatchResult {
 
 const MAX_BATCH = 100;
 
-async function extractAuth(request: Request, jwtSecret: string): Promise<AuthContext | null> {
+async function extractAuth(request: Request, jwtSecret: string): Promise<VerifiedAuth | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
-  // Centralized verifier — fixes N-1 admin-token-bypass. Accept user or admin.
-  const ctx = await verifyAuthToken(token, jwtSecret);
-  if (!ctx || (ctx.type !== "user" && ctx.type !== "admin")) return null;
-  const out: AuthContext = { id: ctx.id, type: ctx.type };
-  if (ctx.email) out.email = ctx.email;
-  return out;
+  // Centralized verifier — fixes N-1 admin-token-bypass. The principal is
+  // resolved per op, so an API token's scopes apply to each one.
+  return await verifyAuthToken(token, jwtSecret);
+}
+
+function principalFor(ctx: VerifiedAuth | null, op: ParsedOp): AuthContext | null {
+  return dataPrincipal(ctx, op.kind === "list" || op.kind === "get" ? "read" : "write");
 }
 
 interface ParsedOp {
@@ -160,7 +161,7 @@ export function makeBatchPlugin(jwtSecret: string) {
         try {
           client.exec("BEGIN");
           for (let i = 0; i < parsed.length; i++) {
-            const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, auth);
+            const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, principalFor(auth, parsed[i]!));
             results.push(result);
           }
           client.exec("COMMIT");

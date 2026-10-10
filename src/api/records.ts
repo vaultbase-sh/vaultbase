@@ -1,6 +1,6 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { accessFor, dataPrincipal, verifyAuthToken } from "../core/sec.ts";
 import { getCollection } from "../core/collections.ts";
 import {
   createRecord,
@@ -131,11 +131,9 @@ async function getAuthContext(
     // Centralized verifier — fixes N-1 admin-token-bypass. Accepts user or
     // admin (records API serves both); checks signature, audience, expiry,
     // issuer, jti revocation, and password_reset_at.
+    // API tokens act within their scopes (see `dataPrincipal`).
     const ctx = await verifyAuthToken(token, jwtSecret);
-    if (!ctx || (ctx.type !== "user" && ctx.type !== "admin")) return null;
-    const out: AuthContext = { id: ctx.id, type: ctx.type };
-    if (ctx.email) out.email = ctx.email;
-    return out;
+    return dataPrincipal(ctx, accessFor(request));
   });
 }
 

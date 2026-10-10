@@ -1,6 +1,6 @@
 import Elysia, { t } from "elysia";
 import type { Config } from "./config.ts";
-import { securityHeaders, verifyAuthToken } from "./core/sec.ts";
+import { dataPrincipal, securityHeaders, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
@@ -68,11 +68,11 @@ interface ClientMessage {
 }
 
 async function verifyTokenForWS(token: string, jwtSecret: string): Promise<WSAuth | null> {
-  const ctx = await verifyAuthToken(token, jwtSecret);
-  if (!ctx) return null;
-  if (ctx.type !== "user" && ctx.type !== "admin") return null;
-  const out: WSAuth = { id: ctx.id, type: ctx.type };
-  if (ctx.email) out.email = ctx.email;
+  // Subscriptions only read; API tokens need the `read` (or `admin`) scope.
+  const p = dataPrincipal(await verifyAuthToken(token, jwtSecret), "read");
+  if (!p) return null;
+  const out: WSAuth = { id: p.id, type: p.type };
+  if (p.email) out.email = p.email;
   return out;
 }
 

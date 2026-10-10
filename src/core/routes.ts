@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import * as jose from "jose";
+import { accessFor, dataPrincipal, verifyAuthToken } from "./sec.ts";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -11,20 +11,9 @@ import type { AuthContext } from "./rules.ts";
 async function extractAuth(request: Request, jwtSecret: string): Promise<AuthContext | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
-  try {
-    const secret = new TextEncoder().encode(jwtSecret);
-    const { payload } = await jose.jwtVerify(token, secret);
-    const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
-    if (aud !== "user" && aud !== "admin") return null;
-    const ctx: AuthContext = {
-      id: payload["id"] as string,
-      type: aud as "user" | "admin",
-    };
-    if (typeof payload["email"] === "string") ctx.email = payload["email"];
-    return ctx;
-  } catch {
-    return null;
-  }
+  // Central verifier: issuer, revocation and principal checks apply here
+  // too; API tokens act within their scopes.
+  return dataPrincipal(await verifyAuthToken(token, jwtSecret), accessFor(request));
 }
 
 /**

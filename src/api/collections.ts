@@ -1,5 +1,5 @@
 import Elysia, { t } from "elysia";
-import * as jose from "jose";
+import { verifyAuthToken } from "../core/sec.ts";
 import {
   CollectionValidationError,
   createCollection,
@@ -15,14 +15,11 @@ import {
 } from "../core/collections.ts";
 import { getRawClient } from "../db/client.ts";
 
-function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
+async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return Promise.resolve(false);
-  const secret = new TextEncoder().encode(jwtSecret);
-  return jose
-    .jwtVerify(token, secret, { audience: "admin" })
-    .then(() => true)
-    .catch(() => false);
+  if (!token) return false;
+  // Central verifier, so revoked / force-logged-out admin tokens fail here too.
+  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 export function makeCollectionsPlugin(jwtSecret: string) {

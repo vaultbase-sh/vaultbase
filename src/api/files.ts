@@ -21,6 +21,7 @@ import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../co
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import { getSetting, MAX_UPLOAD_BYTES, MIN_UPLOAD_BYTES } from "./settings.ts";
 import {
+  dataPrincipal,
   extractBearer,
   isAllowedUploadMime,
   isSafeToRenderInline,
@@ -30,13 +31,15 @@ import {
   verifyAuthToken,
 } from "../core/sec.ts";
 
+/** API tokens act within their scopes (see `dataPrincipal`). */
 async function getAuthContext(
   request: Request,
-  jwtSecret: string
+  jwtSecret: string,
+  access: "read" | "write"
 ): Promise<AuthContext | null> {
   const token = extractBearer(request);
   if (!token) return null;
-  return await verifyAuthToken(token, jwtSecret);
+  return dataPrincipal(await verifyAuthToken(token, jwtSecret), access);
 }
 
 async function isFileProtected(filename: string): Promise<boolean> {
@@ -331,7 +334,7 @@ export function maxUploadBytes(): number {
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
     .post("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
-      const auth = await getAuthContext(request, jwtSecret);
+      const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
 
       const col = await getCollection(params.collection);
@@ -453,7 +456,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         if (!isValidStorageFilename(params.filename)) {
           set.status = 400; return { error: "Invalid filename", code: 400 };
         }
-        const auth = await getAuthContext(request, jwtSecret);
+        // Minting a download token is a read of the file.
+        const auth = await getAuthContext(request, jwtSecret, "read");
 
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -512,7 +516,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const meta = await fileMetaOf(params.filename);
       const peerIp = peerIpOf(server, request);
       const clientIp = trustedClientIp(request, peerIp);
-      const auth = await getAuthContext(request, jwtSecret);
+      const auth = await getAuthContext(request, jwtSecret, "read");
 
       let allowed = false;
       let via: "rule" | "token" = "rule";
@@ -646,7 +650,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }),
     })
     .delete("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
-      const auth = await getAuthContext(request, jwtSecret);
+      const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -679,7 +683,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       return { data: { deleted: rows.length } };
     })
     .delete("/files/:collection/:recordId/:field/:filename", async ({ params, request, set }) => {
-      const auth = await getAuthContext(request, jwtSecret);
+      const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       if (!isValidStorageFilename(params.filename)) {
         set.status = 400; return { error: "Invalid filename", code: 400 };
