@@ -29,6 +29,10 @@ import { assertEgressAllowed, EgressBlockedError } from "./hook-egress.ts";
 
 const TICK_INTERVAL_MS = 2000;
 const CLAIM_LIMIT = 50;
+/** Upper bound on one delivery attempt, whatever timeout_ms says. */
+const MAX_TIMEOUT_MS = 120_000;
+/** Claim lease; must outlast the longest possible attempt. */
+const CLAIM_LEASE_SECONDS = MAX_TIMEOUT_MS / 1000 + 60;
 
 let tickHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -118,7 +122,7 @@ export function stopWebhookDispatcher(): void {
   if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
 }
 
-async function tick(): Promise<void> {
+async function tick(): Promise<Promise<void>[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const due = await db
@@ -126,9 +130,30 @@ async function tick(): Promise<void> {
     .from(webhookDeliveries)
     .where(and(eq(webhookDeliveries.status, "pending"), lte(webhookDeliveries.scheduled_at, now)))
     .limit(CLAIM_LIMIT) as DeliveryRow[];
+  const started: Promise<void>[] = [];
   for (const d of due) {
-    void deliverOne(d);
+    // Claim before sending: push scheduled_at out by a lease so overlapping
+    // ticks (and other cluster workers) skip this row while it's in flight.
+    // Completion always rewrites the row; if the process dies mid-delivery
+    // the lease expires and the delivery is retried (at-least-once).
+    const claim = await db
+      .update(webhookDeliveries)
+      .set({ scheduled_at: now + CLAIM_LEASE_SECONDS })
+      .where(and(
+        eq(webhookDeliveries.id, d.id),
+        eq(webhookDeliveries.status, "pending"),
+        eq(webhookDeliveries.scheduled_at, d.scheduled_at),
+      ))
+      .returning({ id: webhookDeliveries.id });
+    if (claim.length === 0) continue;
+    started.push(deliverOne(d).catch(() => { /* recorded on the row */ }));
   }
+  return started;
+}
+
+/** Test hook: one dispatcher pass, resolving when its deliveries finish. */
+export async function _webhookTickOnce(): Promise<void> {
+  await Promise.all(await tick());
 }
 
 async function deliverOne(d: DeliveryRow): Promise<void> {
@@ -188,7 +213,7 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
   };
 
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), Math.max(1000, w.timeout_ms));
+  const timer = setTimeout(() => ac.abort(), Math.min(Math.max(1000, w.timeout_ms), MAX_TIMEOUT_MS));
   let res: Response | null = null;
   let err: Error | null = null;
   try {
