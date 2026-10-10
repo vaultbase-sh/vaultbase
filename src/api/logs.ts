@@ -124,9 +124,37 @@ export async function listLogs(opts: ListLogsOptions) {
   };
 }
 
+// Verified token → log attribution. Re-verifying the JWT (HMAC) for every
+// logged request cost ~20 µs; tokens are reused across many requests. Only
+// signature-verified tokens are stored, entries expire with the token, and
+// the map is bounded. Access control never reads this — handlers do their
+// own full verification.
+const ATTRIBUTION_CACHE_MAX = 1000;
+const attributionCache = new Map<string, { ctx: AuthLogContext; exp: number }>();
+
 export async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLogContext | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
+  const cached = attributionCache.get(token);
+  if (cached) {
+    if (cached.exp > Date.now() / 1000) return cached.ctx;
+    attributionCache.delete(token);
+  }
+  const ctx = await verifyForAttribution(token, secret);
+  if (ctx) {
+    if (attributionCache.size >= ATTRIBUTION_CACHE_MAX) {
+      attributionCache.delete(attributionCache.keys().next().value!); // oldest
+    }
+    attributionCache.set(token, ctx);
+    return ctx.ctx;
+  }
+  return null;
+}
+
+async function verifyForAttribution(
+  token: string,
+  secret: Uint8Array,
+): Promise<{ ctx: AuthLogContext; exp: number } | null> {
   try {
     // For attribution on the request-log entry we do NOT need the full
     // recheck-principal pass — even a revoked-since-this-request token
@@ -141,7 +169,8 @@ export async function extractAuth(request: Request, secret: Uint8Array): Promise
     };
     if (typeof payload["email"] === "string") ctx.email = payload["email"];
     if (typeof payload["impersonated_by"] === "string") ctx.impersonated_by = payload["impersonated_by"];
-    return ctx;
+    // Tokens without exp get exp 0, so they are re-verified every time.
+    return { ctx, exp: typeof payload.exp === "number" ? payload.exp : 0 };
   } catch {
     return null;
   }
