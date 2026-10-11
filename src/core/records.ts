@@ -510,7 +510,7 @@ export async function listRecords(
   // Expand
   if (opts.expand) {
     const expandPaths = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
-    await expandRelations(items, expandPaths, fields);
+    await expandRelations(items, expandPaths, fields, opts.auth ?? null);
   }
 
   // Field projection
@@ -941,7 +941,8 @@ function parseExpandTree(paths: string[]): Map<string, string[]> {
 async function expandRelations(
   items: RecordWithMeta[],
   expandPaths: string[],
-  schema: FieldDef[]
+  schema: FieldDef[],
+  auth: AuthContext | null,
 ): Promise<void> {
   if (items.length === 0 || expandPaths.length === 0) return;
   const client = rawClient();
@@ -956,6 +957,28 @@ async function expandRelations(
     const targetFields = parseFields(targetCol.fields);
     const targetTable = quoteIdent(userTableName(targetCol.name));
 
+    // Enforce the target's view_rule. Without it, expand was a read-rule
+    // bypass: anyone who could read a record with a relation got every
+    // related row, including records the view rule would have hidden.
+    // `null` = public, `""` = admin-only, anything else = an expression
+    // compiled against the target table — the same three-way semantics the
+    // SQL compiler already applies to `@collection.*` joins.
+    const view = targetCol.view_rule;
+    let ruleSql = "";
+    const ruleParams: Binding[] = [];
+    if (view === "") {
+      if (auth?.type !== "admin") continue; // admin-only; nothing to expand
+    } else if (view !== null && auth?.type !== "admin") {
+      const compiled = parseFilter(view, userTableName(targetCol.name), {
+        auth,
+        lookup: makeCollectionLookup(),
+        hostPrivateField: (n) => privateFieldNames(targetCol).has(n),
+      });
+      if (!compiled) continue;            // rule compiled to nothing → deny
+      ruleSql = ` AND (${compiled.sql})`;
+      ruleParams.push(...(compiled.params as Binding[]));
+    }
+
     const ids = [
       ...new Set(
         items
@@ -967,8 +990,8 @@ async function expandRelations(
 
     const placeholders = ids.map(() => "?").join(", ");
     const rows = client
-      .prepare(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})`)
-      .all(...ids) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})${ruleSql}`)
+      .all(...ids, ...ruleParams) as Record<string, unknown>[];
 
     const expanded = await rowsToMeta(rows, targetCol, targetFields);
     const byId = new Map(expanded.map((rec) => [rec.id, rec]));
@@ -983,7 +1006,7 @@ async function expandRelations(
 
     // Recurse: expand the remaining paths on the just-loaded target records
     if (restPaths.length > 0) {
-      await expandRelations(expanded, restPaths, targetFields);
+      await expandRelations(expanded, restPaths, targetFields, auth);
     }
   }
 }
