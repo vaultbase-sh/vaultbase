@@ -7,6 +7,15 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+- **The installer detects the platform.** `curl -fsSL https://get.vaultbase.dev | sh` now works on macOS (Intel and Apple silicon, including from a Rosetta shell) as well as Linux. On macOS it installs the binary only. New `--install-dir` flag.
+- **Windows installer.** `irm https://get.vaultbase.dev/install.ps1 | iex` downloads the Windows binary, checks it against `SHA256SUMS`, installs it to `%LOCALAPPDATA%\Programs\Vaultbase` and adds it to the user `PATH`.
+
+### Fixed
+- On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
+
 ## [0.16.0] — 2026-10-11
 
 ### Upgrade notes

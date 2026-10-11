@@ -2,14 +2,18 @@
 
 Drop-in templates for production deployment.
 
-## One-shot install (Linux)
+## One-shot install (Linux, macOS)
 
 ```bash
 curl -fsSL https://get.vaultbase.dev | sudo sh
 ```
 
 What it does:
-- Detects arch (x64 / arm64) + libc (glibc / musl).
+- Detects the OS (Linux / macOS), arch (x64 / arm64) and, on Linux, libc
+  (glibc / musl). On Alpine it installs `libstdc++` and `libgcc`, which the
+  musl build needs.
+- On macOS it only installs the binary to `/usr/local/bin` (or
+  `--install-dir`) and stops there. Everything below is Linux only.
 - Downloads the matching binary from the latest GitHub release, verifies
   its SHA-256.
 - Creates the `vaultbase` system user and `/var/lib/vaultbase` data dir.
@@ -27,7 +31,32 @@ sh -s -- --version v0.1.8     # pin a specific release
 sh -s -- --port 9000          # listen on a non-default port
 sh -s -- --no-start           # install but don't start (configure proxy first)
 sh -s -- --no-systemd         # skip unit install (containers, runit, ...)
+sh -s -- --install-dir DIR    # put the binary somewhere else
 ```
+
+## One-shot install (Windows)
+
+```powershell
+irm https://get.vaultbase.dev/install.ps1 | iex
+```
+
+[`install.ps1`](install.ps1) downloads `vaultbase-windows-x64.exe`, checks
+it against `SHA256SUMS`, installs it to `%LOCALAPPDATA%\Programs\Vaultbase`
+and adds that folder to the user `PATH`. No admin rights, no service.
+Options (`-Version`, `-InstallDir`, `-VerifySig`, `-NoPath`) need the
+script-block form:
+
+```powershell
+& ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.16.0
+```
+
+## get.vaultbase.dev
+
+[`get-worker/`](get-worker) is the Cloudflare Worker behind the domain. It
+serves `install.sh` at `/` and `/install.sh`, and `install.ps1` at
+`/install.ps1` (and at `/` for PowerShell user agents), always from the
+latest release tag. Redeploy it with `bunx wrangler deploy` after changing
+it; installer changes go live with the next release.
 
 ## Bootstrap admin (no web wizard)
 

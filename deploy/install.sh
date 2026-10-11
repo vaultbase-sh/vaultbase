@@ -1,9 +1,14 @@
 #!/bin/sh
-# Vaultbase one-shot installer.
+# Vaultbase one-shot installer for Linux and macOS.
 #
-# Downloads the appropriate prebuilt binary from GitHub releases, installs it
-# to /usr/local/bin, creates the `vaultbase` system user + data dir, drops a
-# hardened systemd unit, and starts the service.
+# Detects the OS, CPU architecture and libc, then downloads the matching
+# prebuilt binary from GitHub releases and installs it to /usr/local/bin.
+#
+#   Linux:   also creates the `vaultbase` system user + data dir, drops a
+#            hardened systemd unit, and starts the service.
+#   macOS:   installs the binary only; run `vaultbase` yourself.
+#   Windows: use the PowerShell installer instead:
+#            irm https://get.vaultbase.dev/install.ps1 | iex
 #
 # Usage:
 #
@@ -24,6 +29,10 @@
 #   # Confirms the binary was built and signed by the project's GitHub
 #   # Actions runner via the Sigstore Fulcio chain.
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --verify-sig
+#
+#   # Install the binary somewhere else (no root needed on macOS if you can
+#   # write there)
+#   curl -fsSL https://get.vaultbase.dev | sh -s -- --install-dir ~/.local/bin
 #
 # Re-running the script upgrades the binary in place. Existing data dir,
 # JWT secret, and admin accounts are preserved.
@@ -72,8 +81,10 @@ while [ $# -gt 0 ]; do
         --no-start)   NO_START=1; shift ;;
         --no-systemd) NO_SYSTEMD=1; shift ;;
         --verify-sig) VERIFY_SIG=1; shift ;;
+        --install-dir)   INSTALL_DIR="${2:-}"; shift 2 || die "--install-dir needs a value" ;;
+        --install-dir=*) INSTALL_DIR="${1#*=}"; shift ;;
         --help|-h)
-            sed -n '3,30p' "$0" 2>/dev/null || true
+            sed -n '3,40p' "$0" 2>/dev/null || true
             exit 0 ;;
         *)            die "Unknown flag: $1" ;;
     esac
@@ -82,40 +93,86 @@ done
 # ── Pre-flight ──────────────────────────────────────────────────────────────
 header "Pre-flight"
 
-if [ "$(id -u)" -ne 0 ]; then
-    die "This installer must run as root. Re-run with sudo."
-fi
-
-# OS check — Linux only for now. macOS uses launchd, not systemd; document
-# manual install separately.
+# OS check. Release assets are named vaultbase-<os>-<arch>.
+OS=""
 case "$(uname -s)" in
-    Linux) ok "OS: Linux" ;;
-    *)     die "Unsupported OS: $(uname -s). Linux only for now." ;;
+    Linux)  OS="linux"; ok "OS: Linux" ;;
+    Darwin) OS="macos"; ok "OS: macOS" ;;
+    MINGW*|MSYS*|CYGWIN*)
+        die "On Windows, run this in PowerShell instead: irm https://get.vaultbase.dev/install.ps1 | iex" ;;
+    *)      die "Unsupported OS: $(uname -s). Supported: Linux, macOS (Windows: install.ps1)." ;;
 esac
 
 # Arch detection.
-ARCH=""
+CPU=""
 case "$(uname -m)" in
-    x86_64|amd64)   ARCH="linux-x64" ;;
-    aarch64|arm64)  ARCH="linux-arm64" ;;
-    *)              die "Unsupported architecture: $(uname -m). Supported: x86_64, aarch64." ;;
+    x86_64|amd64)   CPU="x64" ;;
+    aarch64|arm64)  CPU="arm64" ;;
+    *)              die "Unsupported architecture: $(uname -m). Supported: x86_64, aarch64 / arm64." ;;
 esac
 
+# A shell running under Rosetta reports x86_64 on Apple silicon. Use the
+# native arm64 build instead.
+if [ "${OS}" = "macos" ] && [ "${CPU}" = "x64" ] \
+    && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ]; then
+    CPU="arm64"
+    ok "Rosetta shell on Apple silicon — using the native arm64 build"
+fi
+ARCH="${OS}-${CPU}"
+
 # Detect Alpine / musl — Bun ships separate musl binaries.
-if [ -f /etc/alpine-release ] || (ldd --version 2>&1 | grep -qi musl); then
+MUSL=0
+if [ "${OS}" = "linux" ] && { [ -f /etc/alpine-release ] || (ldd --version 2>&1 | grep -qi musl); }; then
+    MUSL=1
     if [ "${ARCH}" = "linux-x64" ]; then
         ARCH="linux-x64-musl"
         ok "Detected musl libc — using ${ARCH} build"
+    else
+        die "No musl build for ${CPU} yet. On arm64, use a glibc distro (Debian, Ubuntu) or a glibc container image."
     fi
 fi
 ok "Architecture: ${ARCH}"
 
-for cmd in curl install id useradd; do
-    command -v "${cmd}" >/dev/null 2>&1 || die "Missing required tool: ${cmd}"
-done
+# Linux sets up a system user and a service, so it needs root. macOS only
+# installs the binary, so it needs root only when INSTALL_DIR isn't writable.
+if [ "${OS}" = "linux" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        die "This installer must run as root on Linux. Re-run with sudo."
+    fi
+    for cmd in curl install id useradd; do
+        command -v "${cmd}" >/dev/null 2>&1 || die "Missing required tool: ${cmd}"
+    done
+    # The musl binary links against libstdc++ and libgcc, which Alpine
+    # doesn't ship by default.
+    if [ "${MUSL}" -eq 1 ] && [ ! -e /usr/lib/libstdc++.so.6 ]; then
+        if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache -q libstdc++ libgcc >/dev/null \
+                || die "Could not install libstdc++ and libgcc. Run: apk add libstdc++ libgcc"
+            ok "Installed libstdc++ and libgcc"
+        else
+            die "The musl build needs libstdc++ and libgcc. Install them and re-run."
+        fi
+    fi
+else
+    for cmd in curl install; do
+        command -v "${cmd}" >/dev/null 2>&1 || die "Missing required tool: ${cmd}"
+    done
+    if [ -d "${INSTALL_DIR}" ]; then
+        [ -w "${INSTALL_DIR}" ] \
+            || die "Can't write to ${INSTALL_DIR}. Re-run with sudo, or pass --install-dir <dir>."
+    else
+        [ -w "$(dirname "${INSTALL_DIR}")" ] \
+            || die "Can't create ${INSTALL_DIR}. Re-run with sudo, or pass --install-dir <dir>."
+    fi
+    if [ "${PORT}" != "${DEFAULT_PORT}" ] || [ "${NO_START}" -eq 1 ]; then
+        warn "--port and --no-start only apply on Linux; ignoring them."
+    fi
+    # Nothing to set up beyond the binary on macOS.
+    NO_SYSTEMD=1
+fi
 
 # Detect whether systemd is the init system. Containers often run without it.
-if [ "${NO_SYSTEMD}" -eq 0 ]; then
+if [ "${OS}" = "linux" ] && [ "${NO_SYSTEMD}" -eq 0 ]; then
     if [ ! -d /run/systemd/system ]; then
         warn "systemd not detected (no /run/systemd/system). Skipping unit install."
         warn "You will need to run vaultbase under your own supervisor (runit, s6, supervisord, ...)."
@@ -159,8 +216,9 @@ trap 'rm -rf "${TMP}"' EXIT INT TERM
 # compressed assets existed, or hosts without `xz`, fall back to the raw
 # binary. Checksum + signature checks below run on the decompressed binary,
 # so they are identical on both paths.
+# Only the Linux binaries are published as .xz.
 FETCHED=0
-if command -v xz >/dev/null 2>&1; then
+if [ "${OS}" = "linux" ] && command -v xz >/dev/null 2>&1; then
     say "Fetching ${URL}.xz..."
     if curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase.xz" "${URL}.xz" 2>/dev/null; then
         xz -dc "${TMP}/vaultbase.xz" > "${TMP}/vaultbase" \
@@ -216,6 +274,39 @@ fi
 
 chmod 0755 "${TMP}/vaultbase"
 
+# ── macOS: install the binary and stop ─────────────────────────────────────
+if [ "${OS}" = "macos" ]; then
+    header "Install binary"
+
+    install -d -m 0755 "${INSTALL_DIR}"
+    install -m 0755 "${TMP}/vaultbase" "${INSTALL_DIR}/vaultbase.new"
+    mv -f "${INSTALL_DIR}/vaultbase.new" "${INSTALL_DIR}/vaultbase"
+    ok "Installed ${INSTALL_DIR}/vaultbase"
+
+    case ":${PATH}:" in
+        *":${INSTALL_DIR}:"*) RUN="vaultbase" ;;
+        *)  RUN="${INSTALL_DIR}/vaultbase"
+            warn "${INSTALL_DIR} is not on your PATH." ;;
+    esac
+
+    header "Done"
+    cat <<EOF
+
+  Vaultbase ${VERSION} installed to ${INSTALL_DIR}/vaultbase.
+
+  Next steps:
+
+    1. Start it. Data goes in ./vaultbase_data unless VAULTBASE_DATA_DIR is set:
+         ${RUN}
+
+    2. Open http://localhost:${DEFAULT_PORT}/_/ to create your admin account.
+
+  Re-run this script any time to upgrade the binary in place.
+
+EOF
+    exit 0
+fi
+
 # ── User + dirs ─────────────────────────────────────────────────────────────
 header "Service user + directories"
 
@@ -264,6 +355,7 @@ fi
 # ── Install binary (atomic) ─────────────────────────────────────────────────
 header "Install binary"
 
+install -d -m 0755 "${INSTALL_DIR}"
 install -m 0755 -o root -g root "${TMP}/vaultbase" "${INSTALL_DIR}/vaultbase.new"
 mv -f "${INSTALL_DIR}/vaultbase.new" "${INSTALL_DIR}/vaultbase"
 ok "Installed ${INSTALL_DIR}/vaultbase"
@@ -323,6 +415,8 @@ AmbientCapabilities=
 [Install]
 WantedBy=multi-user.target
 UNIT
+    # Point the unit at --install-dir when it isn't the default.
+    sed -i "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/vaultbase|" "${UNIT_FILE}"
     chmod 0644 "${UNIT_FILE}"
     ok "Wrote ${UNIT_FILE}"
 
