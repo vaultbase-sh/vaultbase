@@ -179,15 +179,20 @@ export async function deleteFile(key: string): Promise<void> {
 /** Returns a Response that streams/serves the file. Falls back to fetching bytes for S3. */
 export async function fileResponse(key: string): Promise<Response | null> {
   const cfg = getConfig();
+  // Both drivers hand back an opaque byte stream. Bun otherwise derives
+  // Content-Type from the stored filename's extension, and that name is
+  // ultimately attacker-influenced. Callers that have validated a type set it
+  // themselves (see the file-serving route).
+  const OPAQUE = { "content-type": "application/octet-stream" } as const;
   if (cfg.driver === "s3") {
     const buf = await readFile(key);
     if (!buf) return null;
-    return new Response(buf);
+    return new Response(buf, { headers: OPAQUE });
   }
   let path: string;
   try { path = safeLocalPath(cfg.uploadDir, key); } catch { return null; }
   if (!existsSync(path)) return null;
-  return new Response(Bun.file(path));
+  return new Response(Bun.file(path), { headers: OPAQUE });
 }
 
 /** Public URL for an object, if the storage driver supports it (S3 with public_url). null otherwise. */

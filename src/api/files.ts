@@ -288,13 +288,30 @@ function safeJoin(uploadDir: string, key: string): string | null {
   return full;
 }
 
-const SAFE_EXT_RE = /^[a-z0-9]{1,12}$/i;
+/**
+ * Storage extension for a validated MIME type.
+ *
+ * The extension used to come from `file.name`, which is client-controlled:
+ * uploading `x.html` declared as `image/png` stored `<uuid>.html`, and the
+ * storage driver then inferred `Content-Type: text/html` from that name — so
+ * the file executed as a page on the API's own origin. Nothing reads the
+ * stored extension, so anything unrecognised can safely become `.bin`; the
+ * caller's filename is preserved in `original_name` either way.
+ */
+const EXT_FOR_MIME: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/avif": "avif",
+  "image/gif": "gif",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "application/json": "json",
+};
 
-function safeExt(originalName: string): string {
-  const dot = originalName.lastIndexOf(".");
-  if (dot < 0) return "bin";
-  const ext = originalName.slice(dot + 1).toLowerCase();
-  return SAFE_EXT_RE.test(ext) ? ext : "bin";
+function storageExt(mime: string): string {
+  return EXT_FOR_MIME[mime.trim().toLowerCase()] ?? "bin";
 }
 
 // Thumbnails being generated right now, by cache path. Concurrent misses for
@@ -434,10 +451,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const now = Math.floor(Date.now() / 1000);
       const uploaded: Array<{ id: string; filename: string; originalName: string; size: number; mimeType: string }> = [];
       for (const file of fileEntries) {
-        const ext = safeExt(file.name);
-        const id = crypto.randomUUID();
-        const filename = `${id}.${ext}`;
         const fileMime = file.type || "application/octet-stream";
+        const id = crypto.randomUUID();
+        const filename = `${id}.${storageExt(fileMime)}`;
         // Pass the File (a Blob) straight through: no second in-memory copy.
         await writeFile(filename, file, fileMime);
         await db.insert(files).values({
@@ -601,6 +617,13 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const baseHeaders: Record<string, string> = {
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
+        // Set explicitly rather than inherited from the storage driver, which
+        // infers it from the stored filename. `nosniff` does not help when the
+        // declared type genuinely *is* text/html.
+        "Content-Type": inlineSafe && meta ? meta.mime_type : "application/octet-stream",
+        // Defence in depth: even with a correct type, nothing served from here
+        // may execute, load subresources, or reach back into this origin.
+        "Content-Security-Policy": "sandbox; default-src 'none'",
       };
       if (!inlineSafe) {
         const safeName = (meta?.original_name ?? params.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
