@@ -102,9 +102,41 @@ describe("queueStats", () => {
     job("c", "emails", "dead", 1);
     job("d", "thumbs", "running", null);
     const stats = await queueStats();
-    expect(stats).toEqual([
-      { queue: "emails", queued: 1, running: 0, succeeded: 1, failed: 0, dead: 1 },
-      { queue: "thumbs", queued: 0, running: 1, succeeded: 0, failed: 0, dead: 0 },
+    expect(stats.map((s) => [s.queue, s.queued, s.running, s.succeeded, s.failed, s.dead])).toEqual([
+      ["emails", 1, 0, 1, 0, 1],
+      ["thumbs", 0, 1, 0, 0, 0],
     ]);
+  });
+
+  it("scopes the *_window counters to the window, leaving all-time counts alone", async () => {
+    job("recent-ok",  "emails", "succeeded", 1);   // finished 1d ago
+    job("old-ok",     "emails", "succeeded", 10);  // finished 10d ago
+    job("recent-dead", "emails", "dead", 1);
+    job("old-dead",    "emails", "dead", 10);
+
+    const wide = (await queueStats(30 * DAY))[0]!;
+    expect(wide.succeeded).toBe(2);
+    expect(wide.succeeded_window).toBe(2);
+    expect(wide.dead_window).toBe(2);
+
+    const narrow = (await queueStats(2 * DAY))[0]!;
+    expect(narrow.succeeded).toBe(2);          // all-time is unchanged
+    expect(narrow.succeeded_window).toBe(1);   // only the 1d-old job
+    expect(narrow.dead_window).toBe(1);
+  });
+
+  it("reports the oldest still-queued job, and null when the queue is idle", async () => {
+    const t = now();
+    getRawClient().prepare(
+      `INSERT INTO vaultbase_jobs_log (id, queue, status, payload, scheduled_at, enqueued_at) VALUES (?, ?, 'queued', '{}', ?, ?)`,
+    ).run("older", "emails", t, t - 600);
+    getRawClient().prepare(
+      `INSERT INTO vaultbase_jobs_log (id, queue, status, payload, scheduled_at, enqueued_at) VALUES (?, ?, 'queued', '{}', ?, ?)`,
+    ).run("newer", "emails", t, t - 60);
+    job("done", "thumbs", "succeeded", 1);
+
+    const byQueue = Object.fromEntries((await queueStats()).map((s) => [s.queue, s]));
+    expect(byQueue["emails"]!.oldest_queued_at).toBe(t - 600);
+    expect(byQueue["thumbs"]!.oldest_queued_at).toBeNull();
   });
 });

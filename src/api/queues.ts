@@ -188,11 +188,17 @@ export function makeQueuesPlugin(jwtSecret: string) {
       return { data: null };
     })
 
-    .get("/admin/queues/stats", async ({ request, set }) => {
+    .get("/admin/queues/stats", async ({ request, query, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
-      const data = await queueStats();
-      return { data };
+      // `window` scopes the *_window counters (dashboard range picker).
+      // Clamped so a caller can't ask for an unbounded scan.
+      const raw = Number.parseInt(String(query.window ?? ""), 10);
+      const windowSec = Number.isFinite(raw) && raw > 0
+        ? Math.min(raw, 30 * 86_400)
+        : 86_400;
+      const data = await queueStats(windowSec);
+      return { data, windowSec };
     });
 }

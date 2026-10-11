@@ -394,33 +394,85 @@ export async function listJobsLog(opts: JobsLogQuery = {}) {
  * Dashboard counts per queue. Single SELECT with COUNT(... CASE ...) so the
  * jobs page can render cards without a roundtrip per status.
  */
-export async function queueStats(): Promise<Array<{
+export interface QueueStatRow {
   queue: string;
+  /** All-time counts. Unchanged for existing callers. */
   queued: number;
   running: number;
   succeeded: number;
   failed: number;
   dead: number;
-}>> {
+  /** Counts restricted to the last `windowSec`, keyed off `finished_at`. */
+  succeeded_window: number;
+  failed_window: number;
+  dead_window: number;
+  /** `enqueued_at` of the oldest still-queued job, or null when idle. */
+  oldest_queued_at: number | null;
+}
+
+/**
+ * Per-queue counters for the dashboard.
+ *
+ * `windowSec` adds the `*_window` counts and leaves the all-time ones alone,
+ * so the range picker can scope "failed in the last 24h" without changing what
+ * existing callers read. Defaults to 24h.
+ */
+export async function queueStats(windowSec = 86_400): Promise<QueueStatRow[]> {
   const db = getDb();
+  const cutoff = Math.floor(Date.now() / 1000) - Math.max(60, windowSec);
+
+  const blank = (queue: string): QueueStatRow => ({
+    queue,
+    queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0,
+    succeeded_window: 0, failed_window: 0, dead_window: 0,
+    oldest_queued_at: null,
+  });
+
   // Count in SQL: loading every jobs_log row into JS on each dashboard load
   // grew without bound.
   const counts = await db
     .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`count(*)` })
     .from(jobsLog)
     .groupBy(jobsLog.queue, jobsLog.status);
-  const map = new Map<string, { queue: string; queued: number; running: number; succeeded: number; failed: number; dead: number }>();
+  const map = new Map<string, QueueStatRow>();
   for (const { queue, status, n } of counts) {
-    if (!map.has(queue)) map.set(queue, { queue, queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0 });
+    if (!map.has(queue)) map.set(queue, blank(queue));
     const e = map.get(queue)!;
     if (status === "queued" || status === "running" || status === "succeeded" || status === "failed" || status === "dead") {
       e[status] += Number(n);
     }
   }
+
+  // Windowed terminal counts. `finished_at` is only set once a job settles, so
+  // rows still in flight are correctly excluded.
+  const windowed = await db
+    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`count(*)` })
+    .from(jobsLog)
+    .where(sql`${jobsLog.finished_at} is not null and ${jobsLog.finished_at} >= ${cutoff}`)
+    .groupBy(jobsLog.queue, jobsLog.status);
+  for (const { queue, status, n } of windowed) {
+    if (!map.has(queue)) map.set(queue, blank(queue));
+    const e = map.get(queue)!;
+    if (status === "succeeded") e.succeeded_window += Number(n);
+    else if (status === "failed") e.failed_window += Number(n);
+    else if (status === "dead") e.dead_window += Number(n);
+  }
+
+  // Oldest still-queued job per queue — drives the "OLDEST" backlog column.
+  const oldest = await db
+    .select({ queue: jobsLog.queue, at: sql<number>`min(${jobsLog.enqueued_at})` })
+    .from(jobsLog)
+    .where(eq(jobsLog.status, "queued"))
+    .groupBy(jobsLog.queue);
+  for (const { queue, at } of oldest) {
+    if (!map.has(queue)) map.set(queue, blank(queue));
+    map.get(queue)!.oldest_queued_at = at === null ? null : Number(at);
+  }
+
   // Workers may exist with zero jobs yet — surface their queues so admins see them.
   const all_workers = await db.select({ queue: workers.queue }).from(workers);
   for (const w of all_workers) {
-    if (!map.has(w.queue)) map.set(w.queue, { queue: w.queue, queued: 0, running: 0, succeeded: 0, failed: 0, dead: 0 });
+    if (!map.has(w.queue)) map.set(w.queue, blank(w.queue));
   }
   return [...map.values()].sort((a, b) => a.queue.localeCompare(b.queue));
 }

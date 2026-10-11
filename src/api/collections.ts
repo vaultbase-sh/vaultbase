@@ -209,7 +209,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     // Per-collection counts + activity. Backs the Collections page so the
     // "records" + "activity" cells get real values. Admin-only — exposes
     // table-level cardinality.
-    .get("/admin/collections/stats", async ({ request, set }) => {
+    .get("/admin/collections/stats", async ({ request, query, set }) => {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
@@ -217,7 +217,13 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       const cols = await listCollections();
       const client = getRawClient();
       const now = Math.floor(Date.now() / 1000);
-      const recentWindowSec = 24 * 60 * 60;       // last 24h
+      // `window` drives `recentWrites` (dashboard range picker). Defaults to
+      // 24h, which is what this endpoint always used; clamped to 30d so a
+      // caller can't widen it into a full-table scan.
+      const rawWindow = Number.parseInt(String(query.window ?? ""), 10);
+      const recentWindowSec = Number.isFinite(rawWindow) && rawWindow > 0
+        ? Math.min(rawWindow, 30 * 86_400)
+        : 24 * 60 * 60;
       const cutoff = now - recentWindowSec;
       // Hard cap on count(*) — large tables stay responsive ("50k+" in UI).
       const COUNT_CAP = 50_000;
