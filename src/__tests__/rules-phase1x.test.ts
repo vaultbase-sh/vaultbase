@@ -32,7 +32,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
     // We can't easily eval this in single-record mode (it returns null), but
     // SQL compilation should produce a recognizable subquery.
     const lookup: CollectionLookup = (n) => n === "comments"
-      ? { viewRule: null, hasField: (f) => f === "post" }
+      ? { viewRule: null, hasField: (f) => f === "post", isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`comments_via_post:length > 0`, "vb_posts", { auth: USER, lookup });
     expect(r).not.toBeNull();
@@ -43,7 +43,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
 
   it("inherits the joined collection's view_rule (non-admin)", () => {
     const lookup: CollectionLookup = (n) => n === "comments"
-      ? { viewRule: 'visibility = "public"', hasField: (f) => f === "post" || f === "visibility" }
+      ? { viewRule: 'visibility = "public"', hasField: (f) => f === "post" || f === "visibility", isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`comments_via_post:length > 0`, "vb_posts", { auth: USER, lookup });
     // The compiled SQL must reference the inherited rule.
@@ -53,7 +53,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
 
   it("inherits admin-only view_rule → forces 1=0 for non-admin", () => {
     const lookup: CollectionLookup = (n) => n === "comments"
-      ? { viewRule: "", hasField: (f) => f === "post" }
+      ? { viewRule: "", hasField: (f) => f === "post", isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`comments_via_post:length > 0`, "vb_posts", { auth: USER, lookup });
     expect(r?.sql).toContain("1=0");
@@ -61,7 +61,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
 
   it("admin auth bypasses joined view_rule", () => {
     const lookup: CollectionLookup = (n) => n === "comments"
-      ? { viewRule: "", hasField: (f) => f === "post" }
+      ? { viewRule: "", hasField: (f) => f === "post", isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`comments_via_post:length > 0`, "vb_posts", { auth: ADMIN, lookup });
     expect(r?.sql).not.toContain("1=0");
@@ -69,7 +69,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
 
   it("rejects unknown ref field via lookup", () => {
     const lookup: CollectionLookup = (n) => n === "comments"
-      ? { viewRule: null, hasField: () => false }
+      ? { viewRule: null, hasField: () => false, isPrivateField: () => false, isFilterable: () => true }
       : null;
     expect(() => parseFilter(`comments_via_post = "x"`, "vb_posts", { auth: USER, lookup })).toThrow();
   });
@@ -94,7 +94,7 @@ describe("Phase 1.x — @collection.* view_rule inheritance", () => {
 
   it("non-admin WITH lookup that exposes a view_rule → inherits", () => {
     const lookup: CollectionLookup = (n) => n === "posts"
-      ? { viewRule: 'published = true', hasField: () => true }
+      ? { viewRule: 'published = true', hasField: () => true, isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`@collection.posts.title = "x"`, "vb_users", { auth: USER, lookup });
     expect(r?.sql).toContain('"vb_posts"."published" = ?');
@@ -104,6 +104,7 @@ describe("Phase 1.x — @collection.* view_rule inheritance", () => {
     const lookup: CollectionLookup = () => ({
       viewRule: `@collection.posts.title = "x"`,
       hasField: () => true,
+      isPrivateField: () => false, isFilterable: () => true,
     });
     // A view_rule that recursively references @collection.posts will exceed
     // MAX_JOIN_DEPTH and fall through to the parser's null-on-throw.

@@ -9,9 +9,9 @@ import {
   parseFields,
   userTableName,
   type CascadeMode,
-  type FieldDef,
-} from "./collections.ts";
+  type FieldDef, AUTH_PRIVATE_COLUMNS, privateFieldNames } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
+import { tableColumns } from "./users-table.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 
@@ -60,6 +60,34 @@ export function invalidatePreparedStatements(): void {
   STMT_CACHE.clear();
 }
 
+/**
+ * Columns a caller may reference in a filter: whatever the table physically
+ * has, minus the private ones.
+ *
+ * Taken from the table rather than the declared schema on purpose. The two
+ * disagree — an auth collection's implicit `verified` field has no column (the
+ * column is `email_verified`), while `email_verified`, `totp_enabled` and
+ * `is_anonymous` are real columns that never appear in `fields`. Asking the
+ * table is the only answer that is right for every collection type.
+ */
+function filterableColumns(col: Collection): ReadonlySet<string> {
+  const priv = privateFieldNames(col);
+  const out = new Set<string>();
+  try {
+    for (const name of tableColumns(col.name)) {
+      if (!priv.has(name)) out.add(name);
+    }
+  } catch {
+    // Table missing (mid-migration, or a view whose query is broken). Fall
+    // back to the declared schema so a transient error can't open the gate.
+    try {
+      for (const f of parseFields(col.fields)) if (!priv.has(f.name)) out.add(f.name);
+    } catch { /* unparseable — leave empty, which denies */ }
+    out.add("id"); out.add("created_at"); out.add("updated_at");
+  }
+  return out;
+}
+
 function makeCollectionLookup(): CollectionLookup {
   return (name: string) => {
     const col = getCollectionCached(name);
@@ -71,9 +99,13 @@ function makeCollectionLookup(): CollectionLookup {
     } catch {
       fieldNames = new Set();
     }
+    const priv = privateFieldNames(col);
+    const cols = filterableColumns(col);
     return {
       viewRule: col.view_rule,
       hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
+      isPrivateField: (n) => priv.has(n),
+      isFilterable: (n) => cols.has(n),
     };
   };
 }
@@ -148,9 +180,6 @@ async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown>
  * responses. Stripped on every row projection regardless of caller.
  * Mirrors the contract enforced by /admin/users/:col in v0.10.
  */
-const AUTH_PRIVATE_COLUMNS = new Set([
-  "password_hash", "totp_secret", "password_reset_at",
-]);
 
 function buildRecord(
   row: Record<string, unknown>,
@@ -323,7 +352,15 @@ export async function compileListWhere(
   // Lookup callback so the SQL compiler can inherit joined-collection rules
   // and validate back-relation ref fields.
   const lookup = makeCollectionLookup();
-  const filterOpts = { auth: opts.auth ?? null, lookup, hostIdField: "id" } as const;
+  const hostPrivate = privateFieldNames(col);
+  const hostCols = filterableColumns(col);
+  const filterOpts = {
+    auth: opts.auth ?? null,
+    lookup,
+    hostIdField: "id",
+    hostPrivateField: (n: string) => hostPrivate.has(n),
+    hostFilterable: (n: string) => hostCols.has(n),
+  } as const;
   // The compiler resolves joined collections synchronously from the cache;
   // load them first so valid rules don't fail on a cold cache.
   await warmReferencedCollections([opts.filter, opts.accessRule]);

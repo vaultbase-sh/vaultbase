@@ -4,6 +4,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
 import { createRecord, listRecords } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 // page / perPage reached SQL unchecked: perPage=-1 became LIMIT -1 (whole
 // table), perPage=0 gave totalPages=Infinity, page=abc bound NaN to OFFSET
@@ -14,7 +15,7 @@ const SECRET = "test-secret-paging";
 beforeEach(async () => {
   initDb(":memory:");
   await runMigrations();
-  await createCollection({ name: "items", fields: JSON.stringify([{ name: "n", type: "number" }]) });
+  await createPublicCollection({ name: "items", fields: JSON.stringify([{ name: "n", type: "number" }]) });
   for (let i = 0; i < 40; i++) await createRecord("items", { n: i });
 });
 

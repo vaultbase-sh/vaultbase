@@ -8,6 +8,7 @@ import { invalidateHookCache } from "../core/hooks.ts";
 import { makeBatchPlugin } from "../api/batch.ts";
 import { _reset as resetRealtime, setSSESubscriptions } from "../realtime/manager.ts";
 import { openSSEStream } from "../realtime/sse.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 // /batch ran BEGIN ... COMMIT on the single shared connection and awaited
 // hooks in between, so writes from other requests landed inside the batch's
@@ -21,8 +22,8 @@ const SECRET = "test-secret-batch-isolation";
 beforeEach(async () => {
   initDb(":memory:");
   await runMigrations();
-  await createCollection({ name: "slow", fields: JSON.stringify([{ name: "v", type: "text" }]) });
-  await createCollection({
+  await createPublicCollection({ name: "slow", fields: JSON.stringify([{ name: "v", type: "text" }]) });
+  await createPublicCollection({
     name: "posts",
     fields: JSON.stringify([{ name: "title", type: "text", required: true }]),
   });

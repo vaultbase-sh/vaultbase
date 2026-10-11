@@ -19,6 +19,10 @@ import {
 } from "../components/Vb.tsx";
 import { Toggle } from "../components/UI.tsx";
 import { RuleEditor } from "../components/RuleEditor.tsx";
+import {
+  AUTH_ONLY_EXPR, describeRule, fromRuleSet, toRuleSet,
+  type RuleOpId, type RuleSet, type RuleValue,
+} from "../lib/rules.ts";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -46,11 +50,7 @@ const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
   geoPoint: "Latitude / longitude coordinates.",
 };
 
-interface Rules {
-  list: string; view: string; create: string; update: string; delete: string;
-}
-
-type RuleOpId = keyof Rules;
+type Rules = RuleSet;
 
 interface RulePreset {
   id: "public" | "auth" | "admin" | "custom";
@@ -58,14 +58,16 @@ interface RulePreset {
   desc: string;
   icon: string;
   color: string;
-  /** Sentinel value that selects this preset. `null` = field-derived (custom). */
-  value: string | null;
+  /** The rule state this preset selects. `null` = keep the current expression. */
+  value: RuleValue | null;
 }
 
+// "Public" is `null` on the wire and "Admin only" is `""` — the two are
+// opposites server-side, so neither may be represented by a bare empty string.
 const RULE_PRESETS: RulePreset[] = [
-  { id: "public", label: "Public",     desc: "Anyone, no auth",        icon: "globe",  color: "#22c55e", value: "" },
-  { id: "auth",   label: "Auth only",  desc: "Any signed-in user",     icon: "user",   color: "#1f8af2", value: '@request.auth.id != ""' },
-  { id: "admin",  label: "Admin only", desc: "Restrict to superusers", icon: "lock",   color: "#f59e0b", value: '@request.auth.type = "admin"' },
+  { id: "public", label: "Public",     desc: "Anyone, no auth",        icon: "globe",  color: "#22c55e", value: { mode: "public", expr: "" } },
+  { id: "auth",   label: "Auth only",  desc: "Any signed-in user",     icon: "user",   color: "#1f8af2", value: { mode: "expr", expr: AUTH_ONLY_EXPR } },
+  { id: "admin",  label: "Admin only", desc: "Restrict to superusers", icon: "lock",   color: "#f59e0b", value: { mode: "admin", expr: "" } },
   { id: "custom", label: "Custom",     desc: "Write your own",         icon: "code",   color: "#a78bfa", value: null },
 ];
 
@@ -77,11 +79,10 @@ const RULE_OPS: Array<{ id: RuleOpId; label: string; verb: string }> = [
   { id: "delete", label: "Delete", verb: "delete records" },
 ];
 
-function inferPresetId(value: string): RulePreset["id"] {
-  for (const p of RULE_PRESETS) {
-    if (p.value !== null && p.value === value) return p.id;
-  }
-  return "custom";
+function inferPresetId(value: RuleValue): RulePreset["id"] {
+  if (value.mode === "public") return "public";
+  if (value.mode === "admin") return "admin";
+  return value.expr === AUTH_ONLY_EXPR ? "auth" : "custom";
 }
 
 function presetById(id: RulePreset["id"]): RulePreset {
@@ -97,7 +98,7 @@ export default function CollectionEdit() {
   const [collection, setCollection] = useState<Collection | null>(null);
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
-  const [rules, setRules] = useState<Rules>({ list: "", view: "", create: "", update: "", delete: "" });
+  const [rules, setRules] = useState<Rules>(() => toRuleSet({}));
   const [saving, setSaving] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
   const [viewQuery, setViewQuery] = useState("");
@@ -176,13 +177,9 @@ export default function CollectionEdit() {
       setCollection(res.data);
       setFields(parseFields(res.data.fields));
       setViewQuery(res.data.view_query ?? "");
-      setRules({
-        list: res.data.list_rule ?? "",
-        view: res.data.view_rule ?? "",
-        create: res.data.create_rule ?? "",
-        update: res.data.update_rule ?? "",
-        delete: res.data.delete_rule ?? "",
-      });
+      // `?? ""` here used to make `null` (public) and `""` (admin-only)
+      // indistinguishable in the editor.
+      setRules(toRuleSet(res.data));
     });
   }, [collId]);
 
@@ -229,11 +226,8 @@ export default function CollectionEdit() {
       const queryChanged = viewQuery.trim() !== (collection.view_query ?? "");
       const payload: Record<string, unknown> = {
         view_query: viewQuery.trim(),
-        list_rule: rules.list || null,
-        view_rule: rules.view || null,
-        create_rule: rules.create || null,
-        update_rule: rules.update || null,
-        delete_rule: rules.delete || null,
+        // `|| null` here used to turn every admin-only rule public on save.
+        ...fromRuleSet(rules),
       };
       if (!queryChanged) payload["fields"] = fields.filter((f) => !f.system);
       const res = await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, payload);
@@ -264,11 +258,7 @@ export default function CollectionEdit() {
     setSaving(true);
     await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, {
       fields: userFields,
-      list_rule: rules.list || null,
-      view_rule: rules.view || null,
-      create_rule: rules.create || null,
-      update_rule: rules.update || null,
-      delete_rule: rules.delete || null,
+      ...fromRuleSet(rules),
     });
     setSaving(false);
     toast("Changes saved");
@@ -389,13 +379,9 @@ export default function CollectionEdit() {
                     Access rules
                   </h2>
                   <p style={{ margin: 0, fontSize: 12, color: "var(--vb-fg-2)", lineHeight: 1.55 }}>
-                    Filter expressions evaluated server-side per request. Pick a preset or write a custom rule. An empty rule means{" "}
-                    <code style={{
-                      fontFamily: "var(--font-mono)", fontSize: "0.86em",
-                      padding: "1px 5px", borderRadius: 4,
-                      background: "var(--vb-code-bg)", color: "var(--vb-code-fg)",
-                    }}>null</code>{" "}
-                    on save — i.e. <strong style={{ color: "var(--vb-fg)" }}>public</strong>.
+                    Filter expressions evaluated server-side per request. Pick a preset or write a custom rule.{" "}
+                    <strong style={{ color: "var(--vb-fg)" }}>Public</strong> means anyone, no auth.{" "}
+                    <strong style={{ color: "var(--vb-fg)" }}>Admin only</strong> restricts the operation to superusers.
                   </p>
                 </div>
               </div>
@@ -416,13 +402,19 @@ export default function CollectionEdit() {
                       expanded={expanded}
                       onToggle={() => setExpandedRule(expanded ? null : opId)}
                       onPreset={(p) => {
-                        if (p.value !== null) {
-                          setRules((prev) => ({ ...prev, [opId]: p.value as string }));
-                        } else if (presetId !== "custom") {
-                          setRules((prev) => ({ ...prev, [opId]: prev[opId] }));
-                        }
+                        setRules((prev) => {
+                          const cur = prev[opId];
+                          // "Custom" keeps whatever expression is already there
+                          // and just switches the mode to expr.
+                          const next: RuleValue = p.value === null
+                            ? { mode: "expr", expr: cur.expr }
+                            : { ...p.value, expr: p.value.expr || cur.expr };
+                          return { ...prev, [opId]: next };
+                        });
                       }}
-                      onChange={(v) => setRules((prev) => ({ ...prev, [opId]: v }))}
+                      onChange={(expr) =>
+                        setRules((prev) => ({ ...prev, [opId]: { mode: "expr", expr } }))
+                      }
                       schemaFields={fields}
                     />
                   );
@@ -1399,7 +1391,7 @@ function RuleCard({
   op, value, preset, expanded, onToggle, onPreset, onChange, schemaFields,
 }: {
   op: { id: RuleOpId; label: string; verb: string };
-  value: string;
+  value: RuleValue;
   preset: RulePreset;
   expanded: boolean;
   onToggle: () => void;
@@ -1407,7 +1399,8 @@ function RuleCard({
   onChange: (v: string) => void;
   schemaFields: FieldDef[];
 }) {
-  const isEmpty = value === "";
+  // "Dimmed" now means "not a custom expression", not "empty string".
+  const isEmpty = value.mode !== "expr";
   return (
     <div className="rule-card-v1">
       <div
@@ -1427,7 +1420,7 @@ function RuleCard({
           <Icon name={preset.icon} size={10} /> {preset.label}
         </span>
         <span className={`summary${isEmpty ? " empty" : ""}`}>
-          {isEmpty ? "// public — no rule" : value}
+          {describeRule(value)}
         </span>
       </div>
       {expanded && (
@@ -1449,7 +1442,7 @@ function RuleCard({
             <Icon name="code" size={11} /> Custom rule expression
           </label>
           <RuleEditor
-            value={value}
+            value={value.expr}
             onChange={onChange}
             schemaFields={schemaFields}
             placeholder={op.id === "list" ? '@request.auth.id != ""' : ""}

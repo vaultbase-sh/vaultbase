@@ -11,6 +11,7 @@ import {
   topK,
   VectorParseError,
 } from "../core/vector.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-vector";
 
@@ -27,7 +28,7 @@ const FIELDS = [
 ];
 
 async function setupCollection() {
-  return await createCollection({ name: "docs", fields: JSON.stringify(FIELDS) });
+  return await createPublicCollection({ name: "docs", fields: JSON.stringify(FIELDS) });
 }
 
 describe("cosineSimilarity", () => {
@@ -131,7 +132,7 @@ describe("vector field validation", () => {
     await expect(validateRecord(col, { title: "x", embedding: [1, 2, "three", 4] }, "create")).rejects.toThrow(ValidationError);
   });
   it("rejects schema with bad dimensions", async () => {
-    const bad = await createCollection({
+    const bad = await createPublicCollection({
       name: "bad",
       fields: JSON.stringify([{ name: "v", type: "vector", required: false, options: { dimensions: 0 } }]),
     });

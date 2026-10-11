@@ -40,7 +40,35 @@ export interface RequestContextLike {
  * `{ viewRule: null }` for collections with public view access.
  */
 export interface CollectionLookup {
-  (collectionName: string): { viewRule: string | null; hasField: (name: string) => boolean } | null;
+  (collectionName: string): {
+    viewRule: string | null;
+    hasField: (name: string) => boolean;
+    /**
+     * Columns that must never be referenced from a filter — password hashes,
+     * TOTP secrets, and any user-declared `password` field. Stripping them
+     * from output is not enough on its own: a comparison against a hidden
+     * column leaks it through the row count, one character at a time.
+     */
+    isPrivateField: (name: string) => boolean;
+    /**
+     * Whether the column exists and may be filtered on. Unknown and private
+     * columns raise the *same* error, so the schema can't be probed by
+     * comparing responses.
+     */
+    isFilterable: (name: string) => boolean;
+  } | null;
+}
+
+/**
+ * Raised for a reference to a column the caller may not filter on — whether
+ * because it is hidden or because it does not exist. One message for both, so
+ * a caller cannot tell them apart and map out the schema.
+ */
+export class PrivateFieldError extends Error {
+  constructor(public readonly field: string) {
+    super(`unknown field: ${field}`);
+    this.name = "PrivateFieldError";
+  }
 }
 
 /**
@@ -54,6 +82,14 @@ export interface ParseFilterOpts {
   lookup?: CollectionLookup;
   /** The id-field of the host table (default "id") — needed for back-relation join. */
   hostIdField?: string;
+  /** Privacy predicate for the host collection's own columns. */
+  hostPrivateField?: (name: string) => boolean;
+  /**
+   * Allow-list of the host collection's filterable columns. Omitted means
+   * "don't validate" — rule evaluation without a collection context still
+   * compiles, and the private-field guard above applies regardless.
+   */
+  hostFilterable?: (name: string) => boolean;
 }
 
 export function parseFilter(
@@ -92,6 +128,8 @@ export function compileToSql(
     request: opts.request ?? null,
     lookup: opts.lookup,
     hostIdField: opts.hostIdField ?? "id",
+    hostPrivateField: opts.hostPrivateField ?? (() => false),
+    hostFilterable: opts.hostFilterable,
     params: [],
     /** Track recursion depth on @collection.* / _via_ joins to bound work. */
     joinDepth: 0,
@@ -108,6 +146,10 @@ interface CompileCtx {
   hostIdField: string;
   params: unknown[];
   joinDepth: number;
+  /** Privacy predicate for whichever table `tableName` currently points at. */
+  hostPrivateField: (name: string) => boolean;
+  /** Allow-list for the same table, or undefined to skip validation. */
+  hostFilterable: ((name: string) => boolean) | undefined;
 }
 
 const MAX_JOIN_DEPTH = 4;
@@ -301,6 +343,10 @@ function compileOperand(op: Operand, ctx: CompileCtx): string {
 
 function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCtx): string {
   if (!IDENT_RE.test(op.name)) throw new Error(`invalid field name: ${op.name}`);
+  // Private first, then existence — both raise the same error, so the order
+  // only matters for readability.
+  if (ctx.hostPrivateField(op.name)) throw new PrivateFieldError(op.name);
+  if (ctx.hostFilterable && !ctx.hostFilterable(op.name)) throw new PrivateFieldError(op.name);
   const baseCol = `${escapeIdent(ctx.tableName)}.${escapeIdent(op.name)}`;
   if (op.path.length === 0 && !op.modifier) return baseCol;
 
@@ -324,6 +370,11 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
     const head = op.path[0]!;
+    // `@collection.users.password_hash` is the same oracle as a local ref.
+    const targetMeta = ctx.lookup?.(op.collection);
+    if (targetMeta && (targetMeta.isPrivateField(head) || !targetMeta.isFilterable(head))) {
+      throw new PrivateFieldError(head);
+    }
     let inner = `${escapeIdent(targetTable)}.${escapeIdent(head)}`;
     for (let i = 1; i < op.path.length; i++) {
       inner = `json_extract(${inner}, '$.${op.path[i]}')`;
@@ -349,7 +400,12 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
         const innerAst = parseExpression(meta.viewRule);
         if (innerAst) {
           // Recursively compile against the target table; share params.
-          const innerCtx: CompileCtx = { ...ctx, tableName: targetTable };
+          const innerCtx: CompileCtx = {
+            ...ctx,
+            tableName: targetTable,
+            hostPrivateField: (n) => ctx.lookup?.(op.collection)?.isPrivateField(n) ?? false,
+            hostFilterable: (n) => ctx.lookup?.(op.collection)?.isFilterable(n) ?? true,
+          };
           const sql = compileNode(innerAst, innerCtx);
           // copy back joinDepth so siblings see the work
           ctx.joinDepth = innerCtx.joinDepth;
@@ -403,6 +459,15 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       if (!meta.hasField(op.refField)) {
         throw new Error(`back-relation ref field '${op.refField}' not on '${op.targetCollection}'`);
       }
+      if (meta.isPrivateField(op.refField)) throw new PrivateFieldError(op.refField);
+      // `posts_via_author.password_hash` selects the column out of the joined
+      // table, so the path head needs the same guard as a direct reference.
+      if (op.path.length > 0) {
+        const head = op.path[0]!;
+        if (meta.isPrivateField(head) || !meta.isFilterable(head)) {
+          throw new PrivateFieldError(head);
+        }
+      }
       // Inherit view_rule on the joined collection.
       if (meta.viewRule === "") {
         if (ctx.auth?.type !== "admin") {
@@ -411,7 +476,12 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       } else if (meta.viewRule !== null) {
         const innerAst = parseExpression(meta.viewRule);
         if (innerAst) {
-          const innerCtx: CompileCtx = { ...ctx, tableName: targetTable };
+          const innerCtx: CompileCtx = {
+            ...ctx,
+            tableName: targetTable,
+            hostPrivateField: (n) => ctx.lookup?.(op.targetCollection)?.isPrivateField(n) ?? false,
+            hostFilterable: (n) => ctx.lookup?.(op.targetCollection)?.isFilterable(n) ?? true,
+          };
           const ruleSql = compileNode(innerAst, innerCtx);
           ctx.joinDepth = innerCtx.joinDepth;
           where += ` AND (${ruleSql})`;

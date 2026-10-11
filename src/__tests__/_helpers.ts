@@ -24,6 +24,28 @@ export async function ensureAuthCollection(name: string): Promise<NonNullable<Aw
   return col;
 }
 
+/**
+ * Create a collection the records API will serve to anonymous callers.
+ *
+ * Rules default to admin-only (`""`) since the public-by-default fix, so a
+ * test that exercises the API without auth has to ask for public access
+ * explicitly — `null` means public (see `evaluateRule` in core/rules.ts).
+ * Anything the caller passes wins, so fixtures that set their own rules are
+ * unaffected.
+ */
+export async function createPublicCollection(
+  init: Parameters<typeof createCollection>[0],
+): Promise<Awaited<ReturnType<typeof createCollection>>> {
+  return createCollection({
+    list_rule: null,
+    view_rule: null,
+    create_rule: null,
+    update_rule: null,
+    delete_rule: null,
+    ...init,
+  });
+}
+
 /** Insert an auth user directly into `vb_<col>`. Returns the row id. */
 export async function seedAuthUser(opts: {
   collection: string;

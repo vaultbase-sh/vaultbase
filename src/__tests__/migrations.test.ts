@@ -39,7 +39,10 @@ async function buildSnapshot(): Promise<CollectionSnapshot[]> {
     type: (c.type ?? "base") as "base" | "auth" | "view",
     fields: parseFields(c.fields),
     ...(c.view_query ? { view_query: c.view_query } : {}),
-    ...(c.list_rule  ? { list_rule:  c.list_rule  } : {}),
+    // Carry the rule verbatim. Dropping it when falsy loses the difference
+    // between `""` (admin-only) and `null` (public), which is exactly the
+    // distinction the snapshot has to round-trip.
+    list_rule: c.list_rule,
   }));
 }
 

@@ -54,12 +54,13 @@ export function makeCollectionsPlugin(jwtSecret: string) {
             name: body.name,
             type,
             fields: JSON.stringify(body.fields ?? []),
-            create_rule: body.create_rule ?? null,
-            update_rule: body.update_rule ?? null,
-            delete_rule: body.delete_rule ?? null,
           };
-          // Only forward list/view rules if explicitly provided so view-collection
-          // safe defaults (admin-only) kick in when omitted.
+          // Forward each rule only when the caller actually sent one. `?? null`
+          // here used to turn "omitted" into "public" before createCollection's
+          // defaults could apply. An explicit `null` still means public.
+          if (body.create_rule !== undefined) init.create_rule = body.create_rule;
+          if (body.update_rule !== undefined) init.update_rule = body.update_rule;
+          if (body.delete_rule !== undefined) init.delete_rule = body.delete_rule;
           if (body.list_rule !== undefined) init.list_rule = body.list_rule;
           if (body.view_rule !== undefined) init.view_rule = body.view_rule;
           if (body.view_query !== undefined) init.view_query = body.view_query;
