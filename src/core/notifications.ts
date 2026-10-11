@@ -548,11 +548,15 @@ export async function bootstrapNotificationCollections(): Promise<{
         { name: "read_at", type: "date" },
       ]),
       // Owner-scoped: every user sees only their own notifications.
-      // Update is allowed so clients can mark-as-read.
+      // Update exists so clients can mark-as-read, so the owner field is
+      // pinned shut — otherwise a user could move their own notification into
+      // someone else's inbox, with a title of their choosing. The update rule
+      // is also evaluated against the resulting record (see checkUpdateRule),
+      // which blocks the same move on installs created before this line.
       list_rule: "user = @request.auth.id",
       view_rule: "user = @request.auth.id",
       create_rule: "",                          // admin-only direct create (server uses raw SQL)
-      update_rule: "user = @request.auth.id",
+      update_rule: "user = @request.auth.id && @request.body.user:isset = false",
       delete_rule: "user = @request.auth.id",
     });
     created.push("notifications");

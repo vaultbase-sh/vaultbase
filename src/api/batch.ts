@@ -5,7 +5,7 @@ import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
 import { AccessRuleError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
-import { checkRuleOrThrow, recordListRule, RuleDeniedError } from "./_rules.ts";
+import { checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { dataPrincipal, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
@@ -83,7 +83,11 @@ async function dispatchOp(
 
   switch (op.kind) {
     case "create": {
-      checkRuleOrThrow(request, "create_rule", col.name, col.create_rule, auth, (body ?? {}) as Record<string, unknown>);
+      checkRuleOrThrow(
+        request, "create_rule", col.name, col.create_rule, auth,
+        (body ?? {}) as Record<string, unknown>,
+        buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
+      );
       const rec = await createRecord(op.collection, body as Record<string, unknown>, auth);
       return { status: 201, body: rec };
     }
@@ -114,7 +118,13 @@ async function dispatchOp(
     case "update": {
       const existing = await getRecord(op.collection, op.id!);
       if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
-      checkRuleOrThrow(request, "update_rule", col.name, col.update_rule, auth, existing as unknown as Record<string, unknown>);
+      if (!checkUpdateRule(
+        request, col.name, col.update_rule, auth,
+        existing as unknown as Record<string, unknown>,
+        (body ?? {}) as Record<string, unknown>,
+      )) {
+        throw new RuleDeniedError("update_rule");
+      }
       const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth);
       return { status: 200, body: rec };
     }

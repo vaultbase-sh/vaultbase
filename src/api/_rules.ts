@@ -106,6 +106,59 @@ export function checkRule(
   return allowed;
 }
 
+/**
+ * Update rules are evaluated twice: against the record as it stands, and
+ * against the record the patch would produce.
+ *
+ * Checking only the prior state lets an owner hand a record to somebody else —
+ * `owner = @request.auth.id` passes against the existing row, and nothing
+ * re-checks the row the write actually creates. The built-in `notifications`
+ * rule had exactly this shape, so a user could move their own notification
+ * into another user's inbox with a title of their choosing.
+ *
+ * Logged as one evaluation; `reason` says which side refused.
+ */
+export function checkUpdateRule(
+  request: Request,
+  collectionName: string,
+  rule: string | null,
+  auth: AuthContext | null,
+  existing: Record<string, unknown>,
+  body: Record<string, unknown> | null,
+): boolean {
+  let outcome: RuleOutcome;
+  let reason: string;
+  let allowed: boolean;
+  if (rule === null) {
+    allowed = true; outcome = "allow"; reason = "public";
+  } else if (auth?.type === "admin") {
+    allowed = true; outcome = "allow"; reason = "admin bypass";
+  } else if (rule === "") {
+    allowed = false; outcome = "deny"; reason = "admin only";
+  } else {
+    const ctx = buildRequestContext(request, body, existing);
+    // The patch is a partial: anything it omits keeps its current value.
+    const merged = { ...existing, ...(body ?? {}) };
+    const onExisting = evaluateRule(rule, auth, existing, ctx);
+    const onMerged = onExisting ? evaluateRule(rule, auth, merged, ctx) : false;
+    allowed = onExisting && onMerged;
+    outcome = allowed ? "allow" : "deny";
+    reason = allowed
+      ? "rule passed on current and resulting record"
+      : onExisting
+        ? "rule failed on the resulting record"
+        : "rule failed on the current record";
+  }
+  recordRuleEval(request, {
+    rule: "update_rule",
+    collection: collectionName,
+    expression: rule,
+    outcome,
+    reason,
+  });
+  return allowed;
+}
+
 /** Convenience: check then throw RuleDeniedError on failure. */
 export function checkRuleOrThrow(
   request: Request,
