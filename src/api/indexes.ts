@@ -122,13 +122,29 @@ export function makeIndexesPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       const idxName = params.indexName;
-      // Sanity check: only allow our prefixes
-      if (!idxName.startsWith("idx_") && !idxName.startsWith("uniq_")) {
-        set.status = 422;
-        return { error: "Refusing to drop index outside vaultbase prefix", code: 422 };
+
+      // Bind the drop to the named collection. The old handler checked only an
+      // `idx_`/`uniq_` prefix and then interpolated the raw name into SQL — so
+      // one collection's index UI could drop *any* prefixed index DB-wide
+      // (e.g. uniq_vaultbase_admin_email, breaking admin-email uniqueness), and
+      // a name containing a `"` could break out of the identifier and, via
+      // Bun's multi-statement exec(), run stacked SQL.
+      const col = await getCollection(params.name);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+
+      // Only drop an index that actually belongs to this collection's table.
+      // listIndexes already filters to user-created idx_/uniq_ indexes.
+      const owned = listIndexes(userTableName(col.name)).some((i) => i.name === idxName);
+      if (!owned) {
+        set.status = 404;
+        return { error: `Index '${idxName}' not found on collection '${col.name}'`, code: 404 };
       }
+
       try {
-        rawClient().exec(`DROP INDEX IF EXISTS "${idxName}"`);
+        // Escape the identifier even though it is now a verified real index
+        // name — defence in depth against the quote-breakout path.
+        const safe = idxName.replace(/"/g, '""');
+        rawClient().exec(`DROP INDEX IF EXISTS "${safe}"`);
         return { data: null };
       } catch (e) {
         set.status = 500;

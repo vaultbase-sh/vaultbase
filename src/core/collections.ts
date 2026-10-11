@@ -382,6 +382,15 @@ export function validateViewQuery(query: string): void {
   if (!/^select\b/i.test(stripped.trim())) throw new Error("View query must begin with SELECT");
   const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex|load_extension|with|recursive)\b/i;
   if (banned.test(stripped)) throw new Error("View query may only SELECT");
+  // `\bpragma\b` above misses the table-valued function forms —
+  // `pragma_table_info(...)`, `pragma_database_list()` — because `_` is a word
+  // character, so there is no boundary after "pragma". Those functions, and the
+  // `sqlite_*` metadata tables, disclose the schema and the DB's absolute file
+  // path to anyone who can read the resulting view. No legitimate view
+  // references them.
+  if (/\b(pragma_|sqlite_)/i.test(stripped)) {
+    throw new Error("View query may not reference SQLite metadata");
+  }
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */
