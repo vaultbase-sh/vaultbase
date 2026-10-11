@@ -63,10 +63,34 @@ const WORKER_TEMPLATE = `// Worker — processes jobs from a named queue.
 //   ctx.attempt  — 1-indexed attempt (incremented on retry)
 //   ctx.queue    — queue name
 //   ctx.jobId    — job id (vaultbase_jobs_log row)
-//   ctx.helpers  — slug, abort, find, query, fetch, log, email, enqueue,
-//                  recordRule
+//   ctx.helpers — core:
+//     .slug(s)  .uuid()  .id()  .abort(msg)        // abort → 422
+//     .find(coll, id)    .query(coll, { filter, sort, perPage })
+//     .fetch(url, init)  .log(...args)
+//     .email({ to, subject, body })                // via configured SMTP
+//     .enqueue(queue, payload, { delay, uniqueKey, retries, backoff })
+//     .notify(userId, { title, body, data }, { providers, inbox, push })
+//                                                  // in-app inbox + OneSignal/FCM
+//     .recordRule({ ... })                         // annotate the request log
+//   ctx.helpers — namespaces:
+//     .db        .query/.queryOne/.exec/.execMulti  (raw SQL)
+//     .http      .request/.getJson/.postJson
+//     .security  .hash/.randomString/.randomBytes/.aesEncrypt/.aesDecrypt
+//     .fs        .read/.write/.append/.exists/.stat/.list/.mkdir
+//     .flags     .isEnabled/.getString/.getNumber/.getJson
+//     .webhooks  .dispatch(event, data)
+//     .mails     .send({ ... })        .cron    .add/.remove/.list
+//     .template  .render/.escapeHtml   .path    .join/.basename/.dirname/.ext
+//     .util      .sleep/.unmarshal     .os      .env/.cwd/.platform/.arch
 
 ctx.helpers.log("processing", ctx.queue, "job", ctx.jobId, "attempt", ctx.attempt);
+
+// Example: tell the user their job finished (in-app inbox + push).
+// await ctx.helpers.notify(ctx.payload.userId, {
+//   title: "Export ready",
+//   body: "Your CSV export has finished.",
+//   data: { jobId: ctx.jobId },
+// });
 
 // Throw to fail (worker will retry per retry_max + backoff). Return any value
 // to mark the job succeeded.
@@ -113,8 +137,26 @@ interface CronJob {
 
 const JOB_TEMPLATE = `// Cron job — runs on schedule (UTC).
 // Available context:
-//   ctx.helpers     — slug, abort, find, query, fetch, log, email
 //   ctx.scheduledAt — unix seconds when this run was scheduled
+//   ctx.helpers — core:
+//     .slug(s)  .uuid()  .id()  .abort(msg)        // abort → 422
+//     .find(coll, id)    .query(coll, { filter, sort, perPage })
+//     .fetch(url, init)  .log(...args)
+//     .email({ to, subject, body })                // via configured SMTP
+//     .enqueue(queue, payload, { delay, uniqueKey, retries, backoff })
+//     .notify(userId, { title, body, data }, { providers, inbox, push })
+//                                                  // in-app inbox + OneSignal/FCM
+//     .recordRule({ ... })                         // annotate the request log
+//   ctx.helpers — namespaces:
+//     .db        .query/.queryOne/.exec/.execMulti  (raw SQL)
+//     .http      .request/.getJson/.postJson
+//     .security  .hash/.randomString/.randomBytes/.aesEncrypt/.aesDecrypt
+//     .fs        .read/.write/.append/.exists/.stat/.list/.mkdir
+//     .flags     .isEnabled/.getString/.getNumber/.getJson
+//     .webhooks  .dispatch(event, data)
+//     .mails     .send({ ... })        .cron    .add/.remove/.list
+//     .template  .render/.escapeHtml   .path    .join/.basename/.dirname/.ext
+//     .util      .sleep/.unmarshal     .os      .env/.cwd/.platform/.arch
 
 ctx.helpers.log("Job tick at", new Date(ctx.scheduledAt * 1000).toISOString());
 
@@ -138,9 +180,27 @@ const ROUTE_TEMPLATE = `// Available context:
 //   ctx.query       — query string params
 //   ctx.body        — parsed JSON body (or text/null)
 //   ctx.auth        — { id, type, email } or null
-//   ctx.helpers     — slug, abort, find, query, fetch, log, email
 //   ctx.set.status  — set response status
 //   ctx.set.headers — set response headers
+//   ctx.helpers — core:
+//     .slug(s)  .uuid()  .id()  .abort(msg)        // abort → 422
+//     .find(coll, id)    .query(coll, { filter, sort, perPage })
+//     .fetch(url, init)  .log(...args)
+//     .email({ to, subject, body })                // via configured SMTP
+//     .enqueue(queue, payload, { delay, uniqueKey, retries, backoff })
+//     .notify(userId, { title, body, data }, { providers, inbox, push })
+//                                                  // in-app inbox + OneSignal/FCM
+//     .recordRule({ ... })                         // annotate the request log
+//   ctx.helpers — namespaces:
+//     .db        .query/.queryOne/.exec/.execMulti  (raw SQL)
+//     .http      .request/.getJson/.postJson
+//     .security  .hash/.randomString/.randomBytes/.aesEncrypt/.aesDecrypt
+//     .fs        .read/.write/.append/.exists/.stat/.list/.mkdir
+//     .flags     .isEnabled/.getString/.getNumber/.getJson
+//     .webhooks  .dispatch(event, data)
+//     .mails     .send({ ... })        .cron    .add/.remove/.list
+//     .template  .render/.escapeHtml   .path    .join/.basename/.dirname/.ext
+//     .util      .sleep/.unmarshal     .os      .env/.cwd/.platform/.arch
 
 // Example: GET /users/:id/profile
 const user = await ctx.helpers.find("users", ctx.params.id);
@@ -166,18 +226,37 @@ const HOOK_TEMPLATE = `// Available context:
 //   ctx.record    — record being processed (mutable in before* hooks)
 //   ctx.existing  — existing record (only in beforeUpdate / beforeDelete)
 //   ctx.auth      — { id, type, email } or null
-//   ctx.helpers   — utilities:
-//     .slug(s)
-//     .abort(message)        // throws → 422 error
-//     .find(coll, id)
-//     .query(coll, { filter, sort, perPage })
-//     .fetch(url, init)
-//     .log(...args)
-//     .email({ to, subject, body })  // pending SMTP
+//   ctx.helpers — core:
+//     .slug(s)  .uuid()  .id()  .abort(msg)        // abort → 422
+//     .find(coll, id)    .query(coll, { filter, sort, perPage })
+//     .fetch(url, init)  .log(...args)
+//     .email({ to, subject, body })                // via configured SMTP
+//     .enqueue(queue, payload, { delay, uniqueKey, retries, backoff })
+//     .notify(userId, { title, body, data }, { providers, inbox, push })
+//                                                  // in-app inbox + OneSignal/FCM
+//     .recordRule({ ... })                         // annotate the request log
+//   ctx.helpers — namespaces:
+//     .db        .query/.queryOne/.exec/.execMulti  (raw SQL)
+//     .http      .request/.getJson/.postJson
+//     .security  .hash/.randomString/.randomBytes/.aesEncrypt/.aesDecrypt
+//     .fs        .read/.write/.append/.exists/.stat/.list/.mkdir
+//     .flags     .isEnabled/.getString/.getNumber/.getJson
+//     .webhooks  .dispatch(event, data)
+//     .mails     .send({ ... })        .cron    .add/.remove/.list
+//     .template  .render/.escapeHtml   .path    .join/.basename/.dirname/.ext
+//     .util      .sleep/.unmarshal     .os      .env/.cwd/.platform/.arch
 
 if (!ctx.record.slug && ctx.record.title) {
   ctx.record.slug = ctx.helpers.slug(ctx.record.title);
 }
+
+// Example: notify the author when their post is published.
+// if (ctx.record.published && !ctx.existing?.published) {
+//   await ctx.helpers.notify(ctx.record.author, {
+//     title: "Post published",
+//     body: ctx.record.title,
+//   });
+// }
 `;
 
 const HOOKS_TABS: VbTab<Tab>[] = [
