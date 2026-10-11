@@ -50,6 +50,17 @@ export interface ApplyOptions {
   mode: ApplyMode;
 }
 
+/**
+ * A rule a snapshot doesn't carry means "not specified", which
+ * `createCollection` materialises as admin-only (`""`). Both sides of every
+ * comparison have to normalise the same way, or applying a rule-less snapshot
+ * would create the collection and then report it as drifted forever.
+ * A snapshot that carries an explicit `null` still means public.
+ */
+function ruleOf(v: string | null | undefined): string | null {
+  return v === undefined ? "" : v;
+}
+
 /** Thrown when the snapshot input is structurally invalid. */
 export class SnapshotShapeError extends Error {
   constructor(message: string) {
@@ -73,11 +84,11 @@ export function isCollectionInSync(
   if (!existing) return false;
   if (existing.type !== snap.type) return false;
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) return false;
-  if ((existing.list_rule ?? null)   !== (snap.list_rule ?? null))   return false;
-  if ((existing.view_rule ?? null)   !== (snap.view_rule ?? null))   return false;
-  if ((existing.create_rule ?? null) !== (snap.create_rule ?? null)) return false;
-  if ((existing.update_rule ?? null) !== (snap.update_rule ?? null)) return false;
-  if ((existing.delete_rule ?? null) !== (snap.delete_rule ?? null)) return false;
+  if (ruleOf(existing.list_rule) !== ruleOf(snap.list_rule))   return false;
+  if (ruleOf(existing.view_rule) !== ruleOf(snap.view_rule))   return false;
+  if (ruleOf(existing.create_rule) !== ruleOf(snap.create_rule)) return false;
+  if (ruleOf(existing.update_rule) !== ruleOf(snap.update_rule)) return false;
+  if (ruleOf(existing.delete_rule) !== ruleOf(snap.delete_rule)) return false;
   return fieldsEqual(parseFields(existing.fields), snap.fields);
 }
 
@@ -114,11 +125,11 @@ export function describeCollectionChanges(existing: ExistingCollection, snap: Co
   }
 
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) changes.push("view_query changed");
-  if ((existing.list_rule ?? null)   !== (snap.list_rule ?? null))   changes.push("list_rule changed");
-  if ((existing.view_rule ?? null)   !== (snap.view_rule ?? null))   changes.push("view_rule changed");
-  if ((existing.create_rule ?? null) !== (snap.create_rule ?? null)) changes.push("create_rule changed");
-  if ((existing.update_rule ?? null) !== (snap.update_rule ?? null)) changes.push("update_rule changed");
-  if ((existing.delete_rule ?? null) !== (snap.delete_rule ?? null)) changes.push("delete_rule changed");
+  if (ruleOf(existing.list_rule) !== ruleOf(snap.list_rule))   changes.push("list_rule changed");
+  if (ruleOf(existing.view_rule) !== ruleOf(snap.view_rule))   changes.push("view_rule changed");
+  if (ruleOf(existing.create_rule) !== ruleOf(snap.create_rule)) changes.push("create_rule changed");
+  if (ruleOf(existing.update_rule) !== ruleOf(snap.update_rule)) changes.push("update_rule changed");
+  if (ruleOf(existing.delete_rule) !== ruleOf(snap.delete_rule)) changes.push("delete_rule changed");
 
   return changes;
 }
@@ -238,11 +249,15 @@ export async function applySnapshot(
           type: c.type,
           fields: JSON.stringify(c.fields ?? []),
           view_query: c.view_query ?? null,
-          list_rule: c.list_rule ?? null,
-          view_rule: c.view_rule ?? null,
-          create_rule: c.create_rule ?? null,
-          update_rule: c.update_rule ?? null,
-          delete_rule: c.delete_rule ?? null,
+          // Same reasoning as createCollection: a snapshot that omits a rule
+          // must not restore it as public. Leaving these undefined lets the
+          // admin-only default apply; a snapshot with an explicit null still
+          // restores a public rule.
+          ...(c.list_rule   !== undefined ? { list_rule:   c.list_rule }   : {}),
+          ...(c.view_rule   !== undefined ? { view_rule:   c.view_rule }   : {}),
+          ...(c.create_rule !== undefined ? { create_rule: c.create_rule } : {}),
+          ...(c.update_rule !== undefined ? { update_rule: c.update_rule } : {}),
+          ...(c.delete_rule !== undefined ? { delete_rule: c.delete_rule } : {}),
         });
         result.created.push(c.name);
       } catch (e) {

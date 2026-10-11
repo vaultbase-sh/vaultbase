@@ -16,7 +16,7 @@ import { setSetting } from "../api/settings.ts";
 import { makeFilesPlugin } from "../api/files.ts";
 import { sweepOrphanFiles, GRACE_SECONDS } from "../core/file-sweep.ts";
 import { appendLogEntry, drainLogBufferSync, pruneLogFiles, setLogsDir, MAX_LOG_PATH } from "../core/file-logger.ts";
-import { seedAuthUser, signUserJwt } from "./_helpers.ts";
+import { seedAuthUser, signUserJwt, createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-file-sweep";
 let dir: string;
@@ -41,7 +41,7 @@ afterEach(() => {
 const later = () => Math.floor(Date.now() / 1000) + GRACE_SECONDS + 60;
 
 async function setup(opts: { history?: boolean; multiple?: boolean } = {}) {
-  const col = await createCollection({
+  const col = await createPublicCollection({
     name: "pics",
     fields: JSON.stringify([{ name: "img", type: "file", options: opts.multiple ? { multiple: true } : {} }, { name: "title", type: "text" }]),
   });

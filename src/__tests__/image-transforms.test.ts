@@ -17,7 +17,7 @@ import { MAX_THUMB_VARIANTS, detectFormat, parseOutputOptions, parseThumbSpec } 
 import { signAuthToken } from "../core/sec.ts";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
-import { seedAuthUser, signUserJwt } from "./_helpers.ts";
+import { seedAuthUser, signUserJwt, createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-image-transforms";
 let dir: string;
@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 async function upload(field: FieldDef = { name: "img", type: "file" }): Promise<{ app: ReturnType<typeof makeFilesPlugin>; filename: string }> {
-  await createCollection({ name: "pics", fields: JSON.stringify([field]) });
+  await createPublicCollection({ name: "pics", fields: JSON.stringify([field]) });
   const recordId = (await createRecord("pics", {})).id;
   const app = makeFilesPlugin(dir, SECRET);
   const png = await new Image(400, 200).fill(0x3366ccff).encode();
@@ -143,7 +143,7 @@ describe("limits", () => {
   });
 
   it("rejects invalid sizes in the field's thumbs list", async () => {
-    await expect(createCollection({ name: "bad", fields: JSON.stringify([{ name: "img", type: "file", options: { thumbs: ["big"] } }]) })).rejects.toThrow();
+    await expect(createPublicCollection({ name: "bad", fields: JSON.stringify([{ name: "img", type: "file", options: { thumbs: ["big"] } }]) })).rejects.toThrow();
   });
 
   it("caps generated variants per file", async () => {

@@ -16,7 +16,7 @@ import {
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
-import { checkRule, recordListRule } from "./_rules.ts";
+import { checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import {
   getHistoryAt,
   listRecordHistory,
@@ -339,7 +339,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const auth = await getAuthContext(request, jwtSecret);
         // For create, rule evaluates against the incoming body
-        if (!checkRule(request, "create_rule", col.name, col.create_rule, auth, (body ?? {}) as Record<string, unknown>)) {
+        // The body is what the rule is about on a create — without it
+        // `@request.body.role:isset = false` passes unconditionally.
+        if (!checkRule(
+          request, "create_rule", col.name, col.create_rule, auth,
+          (body ?? {}) as Record<string, unknown>,
+          buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
+        )) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
@@ -364,7 +370,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
         const auth = await getAuthContext(request, jwtSecret);
         const existing = await getRecord(params.collection, params.id);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, existing as unknown as Record<string, unknown>)) {
+        if (!checkUpdateRule(
+          request, col.name, col.update_rule, auth,
+          existing as unknown as Record<string, unknown>,
+          (body ?? {}) as Record<string, unknown>,
+        )) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }

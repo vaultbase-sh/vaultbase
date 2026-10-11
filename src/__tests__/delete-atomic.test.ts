@@ -6,6 +6,7 @@ import { createCollection } from "../core/collections.ts";
 import { createRecord, deleteRecord, getRecord, RestrictError } from "../core/records.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
 import { makeBatchPlugin } from "../api/batch.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 // deleteRecord applied cascades (deleting / nulling children) before the
 // beforeDelete hook ran and outside any transaction. A hook that aborted the
@@ -15,15 +16,15 @@ import { makeBatchPlugin } from "../api/batch.ts";
 beforeEach(async () => {
   initDb(":memory:");
   await runMigrations();
-  await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
-  await createCollection({
+  await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+  await createPublicCollection({
     name: "comments",
     fields: JSON.stringify([
       { name: "body", type: "text" },
       { name: "post", type: "relation", collection: "posts", options: { cascade: "cascade" } },
     ]),
   });
-  await createCollection({
+  await createPublicCollection({
     name: "flags",
     fields: JSON.stringify([
       { name: "comment", type: "relation", collection: "comments", options: { cascade: "restrict" } },

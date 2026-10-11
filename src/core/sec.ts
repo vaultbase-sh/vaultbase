@@ -382,9 +382,47 @@ export async function hmacRecoveryCode(code: string, jwtSecret: string): Promise
 }
 
 /**
+ * Whether a request demonstrably originated from this site, or from something
+ * that is not a browser at all.
+ *
+ * `Sec-Fetch-Site` is computed by the browser and survives reverse proxying,
+ * so it is the primary signal. `none` means a user-initiated navigation (a
+ * typed URL or a bookmark), which is not a cross-site attack. When the header
+ * is absent the client is not a modern browser: fall back to comparing
+ * `Origin` against the request's own host, and allow when there is no `Origin`
+ * either — a non-browser client does not attach cookies by accident.
+ *
+ * `same-site` is deliberately *not* accepted. The cookies below are host-only
+ * (no `Domain=`), so a sibling subdomain never receives them anyway, and
+ * treating a subdomain as trusted would turn any XSS there into admin access
+ * here.
+ */
+export function isSameOriginRequest(request: Request): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site) return site === "same-origin" || site === "none";
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === new URL(request.url).host;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Extract a bearer token from `Authorization: Bearer …` OR the
  * `vaultbase_admin_token` / `vaultbase_user_token` cookie. Cookie path lets
  * the admin SPA migrate off `localStorage` without changing every API call.
+ *
+ * The cookie is only honoured on a same-origin request. It is ambient
+ * authority — the browser attaches it to *any* request to this host, including
+ * one a third-party page caused — and it is accepted on `/admin/sql/run`,
+ * `/admin/api-tokens` and `/admin/mcp`. `SameSite=Lax` blocks cross-site form
+ * posts but still rides along on top-level GET navigations, so the check is
+ * made here rather than relied upon from the cookie attribute alone.
+ *
+ * `Authorization` needs no such check: a cross-site page cannot set that
+ * header without a CORS preflight the server never approves.
  *
  * Also strips the `vbat_` API-token prefix when present so downstream
  * callers always see a raw JWT — the prefix is purely for log-scanner /
@@ -399,6 +437,7 @@ export function extractBearer(request: Request): string | null {
   }
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return null;
+  if (!isSameOriginRequest(request)) return null;
   for (const part of cookieHeader.split(";")) {
     const [k, v] = part.trim().split("=");
     if (k === "vaultbase_admin_token" || k === "vaultbase_user_token") {

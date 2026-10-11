@@ -9,7 +9,7 @@ import { createCollection } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 import { setUploadDir, invalidateStorageCache, clearThumbCache } from "../core/storage.ts";
 import { makeFilesPlugin, _thumbStats } from "../api/files.ts";
-import { seedAuthUser, signUserJwt } from "./_helpers.ts";
+import { seedAuthUser, signUserJwt, createPublicCollection } from "./_helpers.ts";
 
 // Concurrent requests for the same uncached thumbnail each decoded and
 // resized the image and overwrote the cache file.
@@ -26,7 +26,7 @@ beforeEach(async () => {
   setUploadDir(dir);
   invalidateStorageCache();
   clearThumbCache();
-  await createCollection({
+  await createPublicCollection({
     name: "pics",
     fields: JSON.stringify([{ name: "img", type: "file" }]),
   });

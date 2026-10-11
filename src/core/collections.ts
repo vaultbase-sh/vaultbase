@@ -189,6 +189,39 @@ export function parseFields(raw: string): FieldDef[] {
 
 // ── Table naming ────────────────────────────────────────────────────────────
 /** User collections live in tables named `vb_<name>` to avoid colliding with internal `vaultbase_*` tables. */
+/**
+ * Columns on an auth collection that must never be exposed in a response or
+ * referenced from a filter expression.
+ *
+ * Output-stripping alone is not enough: a filter like
+ * `password_hash > "$argon2id$...M"` never returns the column, but the row
+ * count tells the caller whether the comparison held, so the hash can be
+ * binary-searched one character at a time. The same applies to TOTP secrets.
+ */
+export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
+  "password_hash",
+  "totp_secret",
+  "password_reset_at",
+]);
+
+/**
+ * Every column on `col` that is off-limits to both output and filters: the
+ * auth secrets above, plus any user-declared `password` field on any
+ * collection type.
+ */
+export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
+  const out = new Set<string>();
+  if (col.type === "auth") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
+  try {
+    for (const f of parseFields(col.fields)) {
+      if (f.type === "password") out.add(f.name);
+    }
+  } catch {
+    // Unparseable schema — the auth secrets above still apply.
+  }
+  return out;
+}
+
 export function userTableName(collectionName: string): string {
   return `vb_${collectionName}`;
 }
@@ -349,6 +382,15 @@ export function validateViewQuery(query: string): void {
   if (!/^select\b/i.test(stripped.trim())) throw new Error("View query must begin with SELECT");
   const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex|load_extension|with|recursive)\b/i;
   if (banned.test(stripped)) throw new Error("View query may only SELECT");
+  // `\bpragma\b` above misses the table-valued function forms —
+  // `pragma_table_info(...)`, `pragma_database_list()` — because `_` is a word
+  // character, so there is no boundary after "pragma". Those functions, and the
+  // `sqlite_*` metadata tables, disclose the schema and the DB's absolute file
+  // path to anyone who can read the resulting view. No legitimate view
+  // references them.
+  if (/\b(pragma_|sqlite_)/i.test(stripped)) {
+    throw new Error("View query may not reference SQLite metadata");
+  }
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */
@@ -662,10 +704,17 @@ export async function createCollection(
   const row: NewCollection = {
     ...data,
     id,
-    // View collections default to admin-only access; SQL has unrestricted
-    // reach so opening the API by default would be a footgun.
-    list_rule: type === "view" && data.list_rule === undefined ? "" : data.list_rule,
-    view_rule: type === "view" && data.view_rule === undefined ? "" : data.view_rule,
+    // Rules default to admin-only. `null` means public and `""` means
+    // admin-only (see evaluateRule in core/rules.ts), so an omitted rule used
+    // to store NULL and silently publish the collection — an auth collection
+    // created from the admin UI exposed every user's email, and let anyone
+    // PATCH or DELETE them. A caller that genuinely wants a public rule has to
+    // pass `null` explicitly.
+    list_rule:   data.list_rule   === undefined ? "" : data.list_rule,
+    view_rule:   data.view_rule   === undefined ? "" : data.view_rule,
+    create_rule: data.create_rule === undefined ? "" : data.create_rule,
+    update_rule: data.update_rule === undefined ? "" : data.update_rule,
+    delete_rule: data.delete_rule === undefined ? "" : data.delete_rule,
     fields: JSON.stringify(fields),
     created_at: now,
     updated_at: now,

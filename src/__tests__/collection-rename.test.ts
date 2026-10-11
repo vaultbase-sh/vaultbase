@@ -37,7 +37,9 @@ describe("collection rename", () => {
   });
 
   it("repoints relation fields and hooks that referenced the old name", async () => {
-    const posts = await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    // view_rule: null so the anonymous expand below is allowed — rules now
+    // default to admin-only, and expand enforces the target's view rule.
+    const posts = await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]), view_rule: null });
     await createCollection({
       name: "comments",
       fields: JSON.stringify([{ name: "post", type: "relation", collection: "posts" }]),

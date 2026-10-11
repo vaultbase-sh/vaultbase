@@ -9,7 +9,7 @@ import { createRecord } from "../core/records.ts";
 import { setSetting, validateMaxUploadSize } from "../api/settings.ts";
 import { setUploadDir, invalidateStorageCache } from "../core/storage.ts";
 import { makeFilesPlugin, maxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES } from "../api/files.ts";
-import { seedAuthUser, signUserJwt } from "./_helpers.ts";
+import { seedAuthUser, signUserJwt, createPublicCollection } from "./_helpers.ts";
 
 // Uploads are buffered in memory while the multipart body is parsed, so an
 // unbounded file field let any user with create/update rights exhaust RAM.
@@ -27,7 +27,7 @@ beforeEach(async () => {
   await runMigrations();
   setUploadDir(dir);
   invalidateStorageCache();
-  await createCollection({
+  await createPublicCollection({
     name: "posts",
     fields: JSON.stringify([
       { name: "title", type: "text" },

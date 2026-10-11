@@ -4,6 +4,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
 import { createRecord, getRecord } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-etag-concurrency";
 
@@ -17,7 +18,7 @@ afterEach(() => closeDb());
 const FIELDS = [{ name: "title", type: "text" }];
 
 async function withCollection() {
-  await createCollection({ name: "posts", fields: JSON.stringify(FIELDS) });
+  await createPublicCollection({ name: "posts", fields: JSON.stringify(FIELDS) });
 }
 
 describe("ETag emission", () => {

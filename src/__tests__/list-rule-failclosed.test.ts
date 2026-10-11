@@ -4,6 +4,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { createCollection, _resetCollectionCache } from "../core/collections.ts";
 import { createRecord, listRecords, AccessRuleError, FilterError } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
+import { createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-list-rule";
 
@@ -19,8 +20,8 @@ const TEAM_RULE = "@collection.teams.owner = @request.auth.id";
 beforeEach(async () => {
   initDb(":memory:");
   await runMigrations();
-  await createCollection({ name: "teams", fields: JSON.stringify([{ name: "owner", type: "text" }]) });
-  await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+  await createPublicCollection({ name: "teams", fields: JSON.stringify([{ name: "owner", type: "text" }]) });
+  await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
   await createRecord("teams", { owner: OWNER.id });
   await createRecord("posts", { title: "one" });
   await createRecord("posts", { title: "two" });
@@ -56,7 +57,7 @@ describe("list access rule — fail closed", () => {
 
 describe("list endpoint — HTTP status", () => {
   it("broken list_rule → 403, no rows leaked", async () => {
-    await createCollection({
+    await createPublicCollection({
       name: "secrets",
       fields: JSON.stringify([{ name: "v", type: "text" }]),
       list_rule: "@collection.missing.owner = @request.auth.id",

@@ -64,7 +64,9 @@ describe("bootstrapNotificationCollections", () => {
     const notif = (await getCollection("notifications"))!;
     expect(notif.list_rule).toBe("user = @request.auth.id");
     expect(notif.view_rule).toBe("user = @request.auth.id");
-    expect(notif.update_rule).toBe("user = @request.auth.id");
+    // The owner field is pinned shut so a user cannot move their own
+    // notification into someone else's inbox with a title of their choosing.
+    expect(notif.update_rule).toBe("user = @request.auth.id && @request.body.user:isset = false");
     const fields = parseFields(notif.fields).map((f) => f.name).sort();
     // Field set; created_at/updated_at are added implicitly by createUserTable.
     expect(fields).toEqual(["body", "data", "read_at", "title", "type", "user"]);
