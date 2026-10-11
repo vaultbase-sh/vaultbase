@@ -7,6 +7,42 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Upgrade notes
+
+- **A fresh install now gates the first-admin endpoint.** `install.sh` generates a
+  `VAULTBASE_SETUP_KEY` into `/etc/vaultbase/vaultbase.env`, so `POST /api/v1/admin/setup`
+  requires an `X-Setup-Key` header. Bootstrap with `vaultbase setup-admin`, which ignores
+  the key. The browser setup page at `/_/` cannot send the header — to use it instead,
+  comment the key out, restart, create the account, then uncomment it. Existing installs
+  are untouched: the key is only written when the env file is created.
+- **Re-running the installer now restarts the service.** Previously the binary was replaced
+  but the running process kept serving the old one until someone restarted it by hand.
+
+### Added
+- **The installer detects the platform.** `curl -fsSL https://get.vaultbase.dev | sh` now works on macOS (Intel and Apple silicon, including from a Rosetta shell) as well as Linux. On macOS it installs the binary only. New `--install-dir` flag.
+- **Windows installer.** `irm https://get.vaultbase.dev/install.ps1 | iex` downloads the Windows binary, checks it against `SHA256SUMS`, installs it to `%LOCALAPPDATA%\Programs\Vaultbase` and adds it to the user `PATH`.
+- **Queue stats are windowed.** `GET /admin/queues/stats` accepts `?window=<seconds>` (default 24h, clamped to 30d) and each queue now also reports `succeeded_window`, `failed_window`, `dead_window` and `oldest_queued_at`. The all-time `queued` / `running` / `succeeded` / `failed` / `dead` counters are unchanged, so existing callers are unaffected.
+- **Collection stats are windowed.** `GET /admin/collections/stats` accepts the same `?window=` parameter, driving `recentWrites`. It previously hardcoded 24 hours.
+- **Redesigned admin.** New first-run setup wizard, sign-in screen and dashboard, and a
+  token layer that applies the design system across the rest of the admin. The dashboard
+  is rebuilt around four live tables — dead jobs, per-queue backlog, top collections and
+  recent requests — with a 1h / 24h / 7d range picker backed by the windowed endpoints above.
+- The installer grants `CAP_NET_BIND_SERVICE` when `--port` is below 1024, instead of writing a unit that cannot bind.
+
+### Fixed
+- On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
+- **The installer works on stock Alpine.** It no longer requires `useradd` (from the `shadow` package, absent on Alpine) and falls back to busybox `adduser` / `addgroup`. It also installs `xz` when missing, so musl hosts download the ~30 MB compressed asset instead of the ~100 MB raw binary.
+- **`--version`, `--port` or `--install-dir` as the final argument** no longer aborts with `shift: can't shift that many` and exit 2. This hit dash — `/bin/sh` on Debian and Ubuntu, i.e. the documented `curl … | sudo sh` path.
+- **A service that fails to start no longer swallows the installer's output.** The summary, the `journalctl` hint and the generated setup key are printed either way; the installer exits non-zero so a wrapper still notices.
+- **The installer re-asserts `/etc/vaultbase/vaultbase.env` ownership and mode on every run.** An env file left at `0644` kept the JWT signing key and setup key readable by every local user; re-running is the documented repair path and now actually repairs it.
+- **A pre-existing `vaultbase` user with a different primary group** no longer aborts the install with `install: invalid group 'vaultbase'`. The group is created independently of the user, and failures name the fix.
+- The installer validates `--port` (1–65535) and requires `--install-dir` to be absolute, rejecting paths under `/home` or `/root` that `ProtectHome=yes` would hide from the service.
+- On an upgrade the installer no longer claims `--port` was ignored when it was never passed, and no longer tells you to bootstrap an admin that already exists.
+- **The hook editor advertises the real helper surface.** All four scaffolds (record hook, custom route, cron job, queue worker) listed between six and nine helpers and no namespaces; `notify`, `enqueue`, `recordRule`, `uuid`/`id` and all twelve namespaces (`db`, `http`, `security`, `fs`, `flags`, `webhooks`, `mails`, `cron`, `template`, `path`, `util`, `os`) were invisible from the editor.
+- Documented `helpers.uuid()` / `helpers.id()`, `helpers.flags.*` and `helpers.webhooks.dispatch()`, which the hooks reference omitted.
+
 ## [0.16.0] — 2026-10-11
 
 ### Upgrade notes

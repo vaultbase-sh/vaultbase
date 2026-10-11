@@ -1,0 +1,468 @@
+/* Admin auth screens — implements `Vaultbase Setup.dc.html` and
+ * `Vaultbase Login.dc.html` from the "Vaultbase redesign scope" project.
+ *
+ * One stylesheet for both: they are the same card, header and controls, and
+ * the login board introduced the canonical password-group and error-line
+ * patterns that setup now shares.
+ *
+ * The token block is a copy of the project's `tokens.css`, deliberately scoped
+ * to `.vb-auth` rather than `:root`. globals.css already defines --vb-fg,
+ * --vb-fg-2, --vb-fg-3 and --vb-accent with different values, and ~290 call
+ * sites (Settings, Hooks, Vb, CollectionEdit, Records, Webhooks, Flags…) read
+ * them. Hoisting these to :root would silently recolour all of those, so the
+ * redesign stays contained to these two screens until the rest of the admin is
+ * migrated. Promoting it later is a copy-paste of this block.
+ *
+ * Card widths come from the boards: setup is 640 (it carries a 3-column
+ * stepper and a six-row feature list), login is 460.
+ */
+
+.vb-auth {
+  /* Surfaces, darkest → lightest */
+  --vb-surface-inset: #08090a;
+  --vb-surface: #0d0e10;
+  --vb-surface-hover: #141518;
+
+  /* Hairlines, faintest → strongest */
+  --vb-line: #1f2125;
+  --vb-line-card: #24262a;
+  --vb-line-mock: #2a2c31;
+  --vb-line-strong: #33363b;
+
+  /* Text, brightest → dimmest */
+  --vb-fg: #edebe8;
+  --vb-fg-3: #a9a7a2;
+  --vb-fg-4: #8c8a86;
+  --vb-fg-5: #7c7a76; /* 4.5:1 */
+
+  /* Accent and status */
+  --vb-accent: #e85a4f;
+  --vb-accent-hover: #f06f64;
+  --vb-on-accent: #0d0e10;
+  --vb-ok: #7fcb8e;
+
+  /* Type */
+  --vb-font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --vb-font-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --vb-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Shape and motion — the design system is square-cornered. */
+  --vb-radius: 0px;
+  --vb-transition: 150ms;
+
+  /* Per-card rhythm, overridden by the width modifiers below. */
+  --pad-x: 40px;
+
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 24px 20px;
+  background: var(--vb-surface);
+  color: var(--vb-fg);
+  font-family: var(--vb-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Animated grid + packet field. Sits behind the card, never takes clicks. */
+.vb-auth__bg {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.vb-auth__card {
+  position: relative;
+  width: 640px;
+  max-width: 100%;
+  background: var(--vb-surface);
+  border: 1px solid var(--vb-line-card);
+}
+.vb-auth__card--sm {
+  width: 460px;
+  --pad-x: 32px;
+}
+
+/* ── Header: mark + version ───────────────────────────────────────────────── */
+.vb-auth__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px var(--pad-x);
+  border-bottom: 1px solid var(--vb-line-card);
+}
+.vb-auth__mark { display: block; }
+.vb-auth__ver {
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  color: var(--vb-fg-4);
+}
+
+/* ── Stepper (setup only) ─────────────────────────────────────────────────── */
+.vb-auth__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--vb-line-card);
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.vb-auth__step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px var(--pad-x);
+  color: var(--vb-fg-5);
+}
+.vb-auth__step + .vb-auth__step { border-left: 1px solid var(--vb-line-card); }
+.vb-auth__step--done { color: var(--vb-fg-3); }
+.vb-auth__step--active {
+  color: var(--vb-fg);
+  box-shadow: inset 0 -2px 0 var(--vb-accent);
+}
+.vb-auth__stepnum { color: var(--vb-fg-5); }
+.vb-auth__step--active .vb-auth__stepnum { color: var(--vb-accent); }
+.vb-auth__step--done .vb-auth__stepnum { color: var(--vb-ok); }
+
+/* ── Body ─────────────────────────────────────────────────────────────────── */
+.vb-auth__body {
+  padding: 36px var(--pad-x) 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+.vb-auth__card--sm .vb-auth__body { padding: 40px var(--pad-x) 32px; gap: 32px; }
+
+.vb-auth__intro {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vb-auth__h1 {
+  margin: 0;
+  font-family: var(--vb-font-display);
+  font-weight: 400;
+  font-size: 48px;
+  line-height: 1;
+  letter-spacing: -0.015em;
+}
+.vb-auth__h1 em { font-style: italic; }
+.vb-auth__dot { color: var(--vb-accent); }
+.vb-auth__lead {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--vb-fg-3);
+  text-wrap: pretty;
+}
+.vb-auth__card--sm .vb-auth__lead { font-size: 15px; }
+.vb-auth__lead .mono {
+  font-family: var(--vb-font-mono);
+  color: var(--vb-fg);
+}
+
+/* ── Feature list (setup step 1) ──────────────────────────────────────────── */
+.vb-auth__features { display: flex; flex-direction: column; }
+.vb-auth__feature {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--vb-line);
+  font-size: 15px;
+}
+.vb-auth__feature svg { stroke: var(--vb-accent); }
+
+/* ── Form ─────────────────────────────────────────────────────────────────── */
+.vb-auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.vb-auth__card--sm .vb-auth__form { gap: 18px; }
+
+.vb-auth__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vb-auth__label {
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  color: var(--vb-fg-4);
+  letter-spacing: 0.06em;
+}
+.vb-auth__input {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--vb-line-strong);
+  background: var(--vb-surface-inset);
+  padding: 12px 16px;
+  font-family: var(--vb-font-mono);
+  font-size: 14px;
+  color: var(--vb-fg);
+  transition: border-color var(--vb-transition);
+}
+.vb-auth__card--sm .vb-auth__input { padding: 14px 16px; }
+.vb-auth__input::placeholder { color: var(--vb-fg-5); }
+.vb-auth__input:focus-visible { border-color: var(--vb-accent); }
+.vb-auth__input:disabled { color: var(--vb-fg-4); }
+.vb-auth__input--bad { border-color: var(--vb-accent); }
+
+/* Password group: input and reveal share one border, the button is a 48px
+ * cell divided by a hairline. From the login board. */
+.vb-auth__pw {
+  display: flex;
+  border: 1px solid var(--vb-line-strong);
+  background: var(--vb-surface-inset);
+  transition: border-color var(--vb-transition);
+}
+.vb-auth__pw:focus-within { border-color: var(--vb-accent); }
+.vb-auth__pw--bad { border-color: var(--vb-accent); }
+.vb-auth__pw .vb-auth__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+}
+.vb-auth__pw .vb-auth__input:focus-visible { border: 0; }
+.vb-auth__reveal {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  flex: none;
+  border-left: 1px solid var(--vb-line-card);
+  color: var(--vb-fg-4);
+  cursor: pointer;
+  transition: color var(--vb-transition), background var(--vb-transition);
+}
+.vb-auth__reveal:hover:not(:disabled) {
+  color: var(--vb-fg);
+  background: var(--vb-surface-hover);
+}
+.vb-auth__reveal:focus-visible { color: var(--vb-fg); background: var(--vb-surface-hover); }
+.vb-auth__reveal:disabled { cursor: default; }
+
+/* ── Error line ───────────────────────────────────────────────────────────── */
+.vb-auth__err {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  color: var(--vb-accent-hover);
+}
+.vb-auth__err::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--vb-accent);
+  transform: translateY(-1px);
+}
+
+/* ── URL table (setup step 3) ─────────────────────────────────────────────── */
+.vb-auth__urls {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vb-line-strong);
+  background: var(--vb-surface-inset);
+  font-family: var(--vb-font-mono);
+  font-size: 13px;
+}
+.vb-auth__url {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+}
+.vb-auth__url + .vb-auth__url { border-top: 1px solid var(--vb-line); }
+.vb-auth__urlkey { color: var(--vb-fg-4); flex-shrink: 0; }
+.vb-auth__urlval {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.vb-auth__urlval span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-auth__copy {
+  display: flex;
+  flex-shrink: 0;
+  background: none;
+  border: 0;
+  padding: 2px;
+  color: var(--vb-fg-5);
+  cursor: pointer;
+}
+.vb-auth__copy:hover { color: var(--vb-fg); }
+
+/* ── Actions ──────────────────────────────────────────────────────────────── */
+.vb-auth__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vb-auth__split {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+}
+.vb-auth__btn {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--vb-accent);
+  color: var(--vb-on-accent);
+  padding: 14px 22px;
+  font-family: var(--vb-font-sans);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--vb-transition);
+}
+.vb-auth__card--sm .vb-auth__btn { padding: 16px 22px; }
+.vb-auth__btn:hover:not(:disabled) { background: var(--vb-accent-hover); }
+.vb-auth__btn:focus-visible { outline: 1px solid var(--vb-fg); outline-offset: 2px; }
+.vb-auth__btn:disabled { cursor: wait; }
+.vb-auth__btn .arrow { font-family: var(--vb-font-mono); }
+
+/* Ghost: setup's Back. */
+.vb-auth__btn--ghost {
+  background: none;
+  border: 1px solid var(--vb-line-mock);
+  color: var(--vb-fg-3);
+  font-weight: 400;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color var(--vb-transition), color var(--vb-transition);
+}
+.vb-auth__btn--ghost:hover:not(:disabled) {
+  background: none;
+  border-color: var(--vb-accent);
+  color: var(--vb-fg);
+}
+
+/* Blocked: the 429 lockout. Outline rather than accent — nothing to press. */
+.vb-auth__btn--blocked,
+.vb-auth__btn--blocked:hover {
+  background: none;
+  border: 1px solid var(--vb-line-mock);
+  color: var(--vb-fg-5);
+  cursor: not-allowed;
+  padding: 15px 22px; /* 1px less, the border makes up the difference */
+}
+
+/* Setup's disabled-until-valid primary. Distinct from --blocked: this one is
+ * waiting on the operator, not refusing them. */
+.vb-auth__btn--primary-off,
+.vb-auth__btn--primary-off:hover {
+  background: var(--vb-accent);
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vb-auth__foot {
+  font-size: 14px;
+  color: var(--vb-fg-4);
+  text-align: center;
+}
+.vb-auth__foot a {
+  color: var(--vb-fg);
+  text-decoration: none;
+  border-bottom: 1px solid var(--vb-accent);
+  padding-bottom: 1px;
+}
+.vb-auth__foot a:hover { color: var(--vb-accent); }
+
+/* Round spinner — the one curve the design system allows, from the login
+ * board's submitting state. */
+.vb-auth__spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid rgba(13, 14, 16, 0.3);
+  border-top-color: var(--vb-on-accent);
+  border-radius: 50%;
+  animation: vb-auth-spin 700ms linear infinite;
+}
+@keyframes vb-auth-spin { to { transform: rotate(360deg); } }
+
+/* ── Short viewports (1280x800 and friends, ~670 usable once browser chrome
+ *    is gone). The boards are drawn taller than a real viewport, so trim the
+ *    rhythm rather than let the card scroll. Composition is unchanged. ────── */
+@media (max-height: 760px) {
+  .vb-auth { padding: 12px 20px; }
+  .vb-auth__head { padding: 14px var(--pad-x); }
+  .vb-auth__body,
+  .vb-auth__card--sm .vb-auth__body { padding: 28px var(--pad-x) 24px; gap: 22px; }
+  .vb-auth__h1 { font-size: 42px; }
+  .vb-auth__feature { padding: 7px 0; }
+  .vb-auth__actions { gap: 12px; }
+}
+
+/* ── Very short viewports (1280x720, ~590 usable). Last tier. ────────────── */
+@media (max-height: 640px) {
+  .vb-auth { padding: 8px 16px; }
+  .vb-auth__head { padding: 12px 32px; }
+  .vb-auth__step { padding: 10px 32px; }
+  .vb-auth__body,
+  .vb-auth__card--sm .vb-auth__body { padding: 24px 32px 20px; gap: 18px; }
+  .vb-auth__h1 { font-size: 38px; }
+  .vb-auth__feature { padding: 6px 0; }
+}
+
+/* ── Tall viewports get the boards' original rhythm. Setup was drawn on a
+ *    1200x960 board and login on 1200x700; the values above are the compact
+ *    tier, these are the drawn ones, restored when there is room. ─────────── */
+@media (min-height: 900px) {
+  .vb-auth__head { padding: 20px var(--pad-x); }
+  .vb-auth__step { padding: 14px var(--pad-x); }
+  .vb-auth__body { padding: 48px var(--pad-x) 40px; gap: 36px; }
+  .vb-auth__card--sm .vb-auth__body { padding: 40px var(--pad-x) 32px; gap: 32px; }
+  .vb-auth__intro { gap: 12px; }
+  .vb-auth__h1 { font-size: 56px; }
+  .vb-auth__card--sm .vb-auth__h1 { font-size: 48px; }
+  .vb-auth__feature { padding: 13px 0; }
+  .vb-auth__form { gap: 20px; }
+  .vb-auth__card--sm .vb-auth__form { gap: 18px; }
+  .vb-auth__input { padding: 14px 16px; }
+  .vb-auth__url { padding: 14px 18px; }
+  .vb-auth__actions { gap: 20px; }
+  .vb-auth__btn { padding: 16px 22px; }
+}
+
+/* ── Narrow viewports. The boards are 1200px wide; this keeps them usable on
+ *    a phone without changing the desktop composition. ──────────────────── */
+@media (max-width: 640px) {
+  .vb-auth { padding: 0; place-items: start stretch; }
+  .vb-auth__card { border-left: 0; border-right: 0; }
+  .vb-auth__card--sm { width: 100%; }
+  .vb-auth__head,
+  .vb-auth__step { padding-left: 20px; padding-right: 20px; }
+  .vb-auth__body,
+  .vb-auth__card--sm .vb-auth__body { padding: 32px 20px 28px; gap: 28px; }
+  .vb-auth__h1,
+  .vb-auth__card--sm .vb-auth__h1 { font-size: 38px; }
+  .vb-auth__step { gap: 8px; letter-spacing: 0; font-size: 11px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vb-auth__spinner { animation: none; }
+}

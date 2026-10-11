@@ -34,17 +34,23 @@
 
 ## Install
 
-Linux (x64, arm64, musl), as root:
+Linux or macOS (detects x64 / arm64, and glibc / musl on Linux):
 
 ```bash
 curl -fsSL https://get.vaultbase.dev | sudo sh
 ```
 
-Installs the latest release to `/usr/local/bin/vaultbase`, creates a `vaultbase` service user and a systemd unit, and starts it on `:8091`. Open `http://localhost:8091/_/` for the setup wizard.
+Windows, in PowerShell:
+
+```powershell
+irm https://get.vaultbase.dev/install.ps1 | iex
+```
+
+On Linux it installs the latest release to `/usr/local/bin/vaultbase`, creates a `vaultbase` service user and a systemd unit, and starts it on `:8091`. On macOS it installs the binary to `/usr/local/bin` and you run `vaultbase` yourself. On Windows it installs to `%LOCALAPPDATA%\Programs\Vaultbase` and adds it to your `PATH`. Open `http://localhost:8091/_/` for the setup wizard.
 
 - `sudo sh -s -- --verify-sig` checks the binary's cosign keyless signature first (needs `cosign` on PATH).
-- `--version vX.Y.Z`, `--port N`, `--no-start`, `--no-systemd` are also available.
-- macOS and Windows: download the binary from [Releases](https://github.com/vaultbase-sh/vaultbase/releases/latest).
+- `--version vX.Y.Z`, `--port N`, `--no-start`, `--no-systemd`, `--install-dir DIR` are also available.
+- Or download a binary from [Releases](https://github.com/vaultbase-sh/vaultbase/releases/latest).
 
 From source:
 

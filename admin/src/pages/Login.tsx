@@ -1,10 +1,18 @@
+/**
+ * Admin sign-in — implements `Vaultbase Login.dc.html` from the "Vaultbase
+ * redesign scope" project (boards 1a idle / 1b submitting / 1c 401 / 1d 429).
+ *
+ * Styling is shared with Setup in ../styles/auth.css; see the comment at the
+ * top of that file for why the design tokens are not hoisted to :root.
+ */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ApiResponse } from "../api.ts";
 import { useAuth } from "../stores/auth.ts";
-import { VaultbaseLogo, VaultbaseWordmark } from "../components/VaultbaseLogo.tsx";
-import Icon from "../components/Icon.tsx";
+import AuthBackdrop from "../components/AuthBackdrop.tsx";
+import AuthMark from "../components/AuthMark.tsx";
 import { useVersion } from "../stores/version.ts";
+import "../styles/auth.css";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -12,11 +20,20 @@ export default function Login() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  /**
+   * Board 1d. The server answers 429 while a lockout window is open, so the
+   * form is dead until it expires — the board disables the fields and swaps
+   * the button to an outline rather than leaving an accent control that
+   * refuses. (Lockout is off unless an operator sets
+   * `auth.lockout.max_attempts`; the default is 0.)
+   */
+  const [lockedOut, setLockedOut] = useState(false);
   const navigate = useNavigate();
   const version = useVersion();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading || lockedOut) return;
     setError("");
     setLoading(true);
     const res = await api.post<ApiResponse<{ token: string }>>("/api/v1/admin/auth/login", {
@@ -29,79 +46,114 @@ export default function Login() {
       setMemoryToken(res.data.token);
       await useAuth.getState().signIn();
       navigate("/_/");
-    } else {
-      setError(res.error ?? "Invalid credentials");
+      return;
     }
+    if (res.code === 429) setLockedOut(true);
+    setError(res.error ?? "Invalid credentials");
   }
 
+  const disabled = loading || lockedOut;
+
   return (
-    <div className="auth-shell">
-      <div className="auth-card">
-        <div className="auth-brand">
-          <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
-          <VaultbaseWordmark height={16} className="name" />
-          {version && (
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              v{version}
-            </span>
-          )}
+    <div className="vb-auth">
+      <AuthBackdrop clearing={0.4} maxPackets={9} />
+      <div className="vb-auth__card vb-auth__card--sm">
+        <div className="vb-auth__head">
+          <AuthMark />
+          <span className="vb-auth__ver">{version ? `v${version}` : " "}</span>
         </div>
-        <div>
-          <h1 className="auth-title">Welcome back</h1>
-          <p className="auth-subtitle">Sign in to manage your collections, records and rules.</p>
-        </div>
-        <form className="auth-form" onSubmit={handleSubmit}>
-          {error && (
-            <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6, border: "0.5px solid rgba(248,113,113,0.3)" }}>
-              {error}
-            </div>
-          )}
-          <div>
-            <label className="label">Email</label>
-            <input
-              className="input"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              autoFocus
-            />
+
+        <form className="vb-auth__body" onSubmit={handleSubmit}>
+          <div className="vb-auth__intro">
+            <h1 className="vb-auth__h1">
+              Welcome <em>back</em>
+              <span className="vb-auth__dot">.</span>
+            </h1>
+            <p className="vb-auth__lead">Sign in to manage your collections, records and rules.</p>
           </div>
-          <div>
-            <label className="label">Password</label>
-            <div style={{ position: "relative" }}>
+
+          <div className="vb-auth__form">
+            <label className="vb-auth__field">
+              <span className="vb-auth__label">EMAIL</span>
               <input
-                className="input"
-                type={showPw ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                style={{ paddingRight: 36 }}
+                className={"vb-auth__input" + (error && !lockedOut ? " vb-auth__input--bad" : "")}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="username"
+                disabled={lockedOut}
+                autoFocus
               />
-              <button
-                type="button"
-                onClick={() => setShowPw((v) => !v)}
-                disabled={!password}
-                title={showPw ? "Hide" : "Show"}
-                style={{
-                  position: "absolute",
-                  right: 8, top: "50%", transform: "translateY(-50%)",
-                  background: "transparent", border: 0,
-                  color: "var(--vb-fg-3, #888)",
-                  cursor: password ? "pointer" : "default",
-                  padding: 4, display: "flex",
-                }}
-              >
-                <Icon name={showPw ? "eyeOff" : "eye"} size={14} />
-              </button>
-            </div>
+            </label>
+
+            <label className="vb-auth__field">
+              <span className="vb-auth__label">PASSWORD</span>
+              <span className={"vb-auth__pw" + (error && !lockedOut ? " vb-auth__pw--bad" : "")}>
+                <input
+                  className="vb-auth__input"
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  disabled={lockedOut}
+                />
+                <button
+                  type="button"
+                  className="vb-auth__reveal"
+                  onClick={() => setShowPw((v) => !v)}
+                  disabled={lockedOut || !password}
+                  title={showPw ? "Hide password" : "Show password"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                >
+                  <EyeIcon off={showPw} />
+                </button>
+              </span>
+            </label>
           </div>
-          <button className="btn btn-primary" type="submit" disabled={loading}>
-            {loading ? <span className="spinner" /> : null}
-            {loading ? "Signing in…" : "Sign in"}
-          </button>
+
+          <div className="vb-auth__actions">
+            {error && (
+              <div className="vb-auth__err" role="alert">
+                <span>{error}</span>
+              </div>
+            )}
+            <button
+              type="submit"
+              className={"vb-auth__btn" + (lockedOut ? " vb-auth__btn--blocked" : "")}
+              disabled={disabled}
+            >
+              <span>{loading ? "Signing in…" : "Sign in"}</span>
+              {loading ? (
+                <span className="vb-auth__spinner" />
+              ) : (
+                <span className="arrow">&rarr;</span>
+              )}
+            </button>
+          </div>
         </form>
       </div>
     </div>
+  );
+}
+
+/** The board's eye, with the struck-through variant for the revealed state. */
+function EyeIcon({ off }: { off: boolean }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="square"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+      {off && <path d="M3 3l18 18" />}
+    </svg>
   );
 }

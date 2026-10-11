@@ -1,0 +1,210 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * ADMIN THEME — the redesign applied to the whole app.
+ *
+ * Loaded AFTER globals.css, so it only overrides token values and a handful of
+ * shared primitives. globals.css itself is untouched.
+ *
+ * Why this works as one file: the pages are 97% tokenised already — 923
+ * `var(--…)` reads against 26 hardcoded hex values — and never name a font
+ * family directly, only `var(--font-mono)`. So re-pointing the token layer
+ * converts colour and type across all ~16k lines of page code at once.
+ *
+ * What it does NOT convert is per-page layout: 1118 inline `style={{}}` blocks
+ * still carry their own padding, gaps and borders, and 113 of them hardcode a
+ * `borderRadius` literal that CSS can't reach. The radius reset below handles
+ * the latter bluntly; the former is per-page work.
+ *
+ * ── HOW TO REVERT ───────────────────────────────────────────────────────────
+ *   Remove the `import "./styles/theme-next.css";` line from src/App.tsx.
+ *   That's it — every value below is an override, nothing was edited in place.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* ── Surfaces, darkest → lightest (tokens.css) ─────────────────────────── */
+  --vb-bg-0: #08090a;   /* page ground */
+  --vb-bg-1: #0d0e10;   /* primary surface */
+  --vb-bg-2: #0d0e10;   /* nav, cards */
+  --vb-bg-3: #141518;   /* inputs, soft buttons */
+  --vb-bg-4: #15161a;   /* hover / highlight */
+
+  --bg-code:    #08090a;
+  --bg-app:     #0d0e10;
+  --bg-sidebar: #0d0e10;
+  --bg-panel:   #0d0e10;
+  --bg-panel-2: #15161a;
+  --bg-input:   #08090a;
+  --bg-row:          #0d0e10;
+  --bg-row-hover:    #141518;
+  --bg-row-selected: rgba(232, 90, 79, 0.10);
+
+  --surfaceColor:     #0d0e10;
+  --surfaceAlt1Color: #141518;
+  --surfaceAlt2Color: #0d0e10;
+  --surfaceAlt3Color: #15161a;
+  --surfaceAlt4Color: #24262a;
+  --surfaceAlt5Color: #33363b;
+  --primaryColor:     #0d0e10;
+  --primaryAlt1Color: #141518;
+  --primaryAlt2Color: #15161a;
+  --inputColor:       #08090a;
+  --inputFocusColor:  #08090a;
+
+  --bg-deep:    #0d0e10;
+  --bg-base:    #0d0e10;
+  --bg-surface: #0d0e10;
+  --bg-raised:  #15161a;
+
+  /* ── Hairlines, faintest → strongest ───────────────────────────────────── */
+  --vb-border:   #1f2125;
+  --vb-border-2: #24262a;
+
+  --border-subtle:  #1a1c1f;
+  --border-default: #24262a;
+  --border-strong:  #33363b;
+  --border-hover:   #33363b;
+  --border-focus:   #e85a4f;
+  --border-selected: #e85a4f;
+  --inputBorderColor: #33363b;
+
+  /* ── Text, brightest → dimmest ─────────────────────────────────────────── */
+  --vb-fg:   #edebe8;
+  --vb-fg-2: #c9c7c2;
+  --vb-fg-3: #a9a7a2;
+  --vb-fg-4: #8c8a86;
+  --vb-fg-5: #7c7a76;
+
+  --text-primary:   #edebe8;
+  --text-secondary: #a9a7a2;
+  --text-tertiary:  #8c8a86;
+  --text-muted:     #7c7a76;
+
+  --surfaceTxtColor:         #edebe8;
+  --surfaceTxtHintColor:     #a9a7a2;
+  --surfaceTxtDisabledColor: #7c7a76;
+
+  /* ── Accent + status ───────────────────────────────────────────────────── */
+  --vb-accent:      #e85a4f;
+  --vb-accent-h:    #f06f64;
+  --vb-accent-soft: rgba(232, 90, 79, 0.16);
+
+  --accent:        #e85a4f;
+  --accent-hover:  #f06f64;
+  --accent-light:  #f06f64;
+  --accent-soft:   rgba(232, 90, 79, 0.12);
+  --accent-soft-2: rgba(232, 90, 79, 0.18);
+
+  --success: #7fcb8e;
+  --warning: #f0b056;
+  --danger:  #f06f64;
+  --info:    #c9c7c2;
+
+  --vb-status-success: #7fcb8e;
+  --vb-status-warning: #f0b056;
+  --vb-status-danger:  #f06f64;
+
+  --successColor: #7fcb8e;
+  --warningColor: #f0b056;
+  --dangerColor:  #f06f64;
+  --infoColor:    #c9c7c2;
+
+  /* ── Type — the design system's three families ─────────────────────────── */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* ── Shape — the system is square ──────────────────────────────────────── */
+  --r-xs: 0px;
+  --r-sm: 0px;
+  --r-md: 0px;
+  --r-lg: 0px;
+  --r-pill: 0px;
+  --border-radius: 0px;
+
+  /* Borders before shadows: the design system doesn't float things. */
+  --shadow-e1: none;
+  --shadow-e2: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-e3: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --boxShadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  --scrollbarColor: #33363b;
+  --primary-color: #e85a4f;
+}
+
+/* ── Radius reset ───────────────────────────────────────────────────────────
+ * 113 inline `borderRadius: N` literals live in page code where CSS can't
+ * reach them, so this squares everything inside the app shell. Elements that
+ * genuinely need a circle opt out below. Blunt on purpose — it is the thing
+ * that makes the promotion read as one design rather than two.
+ * ───────────────────────────────────────────────────────────────────────── */
+.app *:not(.spinner):not(.vb-spinner):not([data-round]),
+.app *:not(.spinner):not(.vb-spinner):not([data-round])::before,
+.app *:not(.spinner):not(.vb-spinner):not([data-round])::after {
+  border-radius: 0 !important;
+}
+/* Round things that must stay round. */
+.app .spinner,
+.app .vb-spinner,
+.app [data-round] { border-radius: 50% !important; }
+/* Status dots read as squares in this system — that is intended, and the
+ * dashboard board draws them that way. */
+
+/* ── Shared primitives ──────────────────────────────────────────────────── */
+body { font-family: var(--font-sans); }
+
+.app .btn,
+.app .btn-primary,
+.app .btn-ghost {
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.app .btn-primary { background: var(--vb-accent); color: #0d0e10; border-color: var(--vb-accent); }
+.app .btn-primary:hover:not(:disabled) { background: var(--vb-accent-h); border-color: var(--vb-accent-h); }
+
+.app .input,
+.app input[type="text"],
+.app input[type="email"],
+.app input[type="password"],
+.app input[type="search"],
+.app input[type="number"],
+.app textarea,
+.app select {
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  border-color: var(--border-strong);
+}
+.app .input:focus,
+.app .input:focus-visible,
+.app textarea:focus,
+.app select:focus { border-color: var(--vb-accent); outline: none; }
+
+/* Mono uppercase field labels, as drawn on every board. */
+.app .label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vb-fg-4);
+  font-weight: 400;
+}
+
+/* Table headers follow the dashboard board: mono, 11px, wide tracking. */
+.app thead th,
+.app .table-head,
+.app .th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vb-fg-4);
+  font-weight: 400;
+}
+
+/* Numeric cells line up. */
+.app .mono,
+.app .mono-cell,
+.app code,
+.app pre { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* The topbar matches the dashboard board's 48px band. */
+.app .topbar { height: 48px; min-height: 48px; border-bottom: 1px solid var(--vb-border); }
