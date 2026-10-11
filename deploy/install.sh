@@ -17,7 +17,8 @@
 #   # Pin a specific version
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --version v0.1.8
 #
-#   # Override the listen port
+#   # Override the listen port. Only applies to a fresh install — once
+#   # /etc/vaultbase/vaultbase.env exists it is authoritative.
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --port 9000
 #
 #   # Install but do not start (useful when running behind a reverse proxy
@@ -34,8 +35,9 @@
 #   # write there)
 #   curl -fsSL https://get.vaultbase.dev | sh -s -- --install-dir ~/.local/bin
 #
-# Re-running the script upgrades the binary in place. Existing data dir,
-# JWT secret, and admin accounts are preserved.
+# Re-running the script upgrades the binary in place and restarts the service
+# if it was running. Existing data dir, config file, JWT secret, setup key and
+# admin accounts are preserved.
 #
 # Exit codes:
 #   0   success
@@ -61,6 +63,18 @@ PORT="${DEFAULT_PORT}"
 NO_START=0
 NO_SYSTEMD=0
 VERIFY_SIG=0
+# PORT is pre-seeded with the default, so it cannot tell us whether --port was
+# actually passed. Track that separately or an upgrade warns about a flag the
+# operator never typed.
+PORT_SET=0
+
+# Set during pre-flight / install, read later on the Linux path.
+ADDUSER_KIND=""
+WAS_ACTIVE=0
+SETUP_KEY=""
+FRESH_INSTALL=0
+BIND_CAPS=""
+START_FAILED=0
 
 # ── Output helpers ──────────────────────────────────────────────────────────
 say()    { printf '%s\n' "$*"; }
@@ -71,22 +85,75 @@ header() { printf '\n\033[1m── %s ──────────────
 
 die()    { err "$*"; exit 1; }
 
+# Printed by --help. The header comment above is not reachable when the
+# script is piped into `sh` ($0 is not a readable file), so the text lives
+# here instead.
+usage() {
+    cat <<'USAGE'
+Vaultbase installer for Linux and macOS.
+
+  curl -fsSL https://get.vaultbase.dev | sudo sh
+
+Flags:
+  --version <vX.Y.Z>   Pin a release instead of installing the latest.
+  --port <n>           Listen port (Linux only, fresh installs only).
+  --no-start           Install and enable the unit, but do not start it.
+  --no-systemd         Install the binary only; skip the unit entirely.
+  --verify-sig         Verify the cosign keyless signature (needs `cosign`).
+  --install-dir <dir>  Install the binary somewhere other than /usr/local/bin.
+  --help, -h           Show this text.
+
+On Windows, use the PowerShell installer:
+  irm https://get.vaultbase.dev/install.ps1 | iex
+
+Re-running upgrades the binary in place and restarts the service. The data
+dir, config file, JWT secret and admin accounts are preserved.
+USAGE
+}
+
 # ── Arg parsing ─────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version)    VERSION="${2:-}"; shift 2 || die "--version needs a value" ;;
+        # `shift 2` when only one argument remains is a FATAL error in dash
+        # (/bin/sh on Debian + Ubuntu), so the `|| die` never runs there and
+        # the script dies with "shift: can't shift that many" and exit 2.
+        # Check the count first instead.
+        --version)    [ $# -ge 2 ] || die "--version needs a value"
+                      VERSION="$2"; shift 2 ;;
         --version=*)  VERSION="${1#*=}"; shift ;;
-        --port)       PORT="${2:-}"; shift 2 || die "--port needs a value" ;;
-        --port=*)     PORT="${1#*=}"; shift ;;
+        --port)       [ $# -ge 2 ] || die "--port needs a value"
+                      PORT="$2"; PORT_SET=1; shift 2 ;;
+        --port=*)     PORT="${1#*=}"; PORT_SET=1; shift ;;
         --no-start)   NO_START=1; shift ;;
         --no-systemd) NO_SYSTEMD=1; shift ;;
         --verify-sig) VERIFY_SIG=1; shift ;;
-        --install-dir)   INSTALL_DIR="${2:-}"; shift 2 || die "--install-dir needs a value" ;;
+        --install-dir)   [ $# -ge 2 ] || die "--install-dir needs a value"
+                      INSTALL_DIR="$2"; shift 2 ;;
         --install-dir=*) INSTALL_DIR="${1#*=}"; shift ;;
-        --help|-h)
-            sed -n '3,40p' "$0" 2>/dev/null || true
-            exit 0 ;;
+        --help|-h)    usage; exit 0 ;;
         *)            die "Unknown flag: $1" ;;
+    esac
+done
+
+# --port lands in the env file and in the final output, and the server runs it
+# through parseInt — a non-numeric value would silently become NaN.
+case "${PORT}" in
+    ''|*[!0-9]*) die "--port must be a number (got: '${PORT}')" ;;
+esac
+if [ "${PORT}" -lt 1 ] || [ "${PORT}" -gt 65535 ]; then
+    die "--port must be between 1 and 65535 (got: ${PORT})"
+fi
+
+[ -n "${INSTALL_DIR}" ] || die "--install-dir needs a non-empty path"
+case "${INSTALL_DIR}" in
+    /*) ;;
+    *)  die "--install-dir must be an absolute path (got: ${INSTALL_DIR})" ;;
+esac
+# Strip trailing slashes so ${INSTALL_DIR}/vaultbase never doubles up.
+while :; do
+    case "${INSTALL_DIR}" in
+        */) INSTALL_DIR="${INSTALL_DIR%/}" ;;
+        *)  break ;;
     esac
 done
 
@@ -139,9 +206,19 @@ if [ "${OS}" = "linux" ]; then
     if [ "$(id -u)" -ne 0 ]; then
         die "This installer must run as root on Linux. Re-run with sudo."
     fi
-    for cmd in curl install id useradd; do
+    for cmd in curl install id; do
         command -v "${cmd}" >/dev/null 2>&1 || die "Missing required tool: ${cmd}"
     done
+    # `useradd` comes from the `shadow` package and is absent on a stock
+    # Alpine install — which is exactly where the musl build is used. Busybox
+    # provides `adduser` / `addgroup` instead, with different flags.
+    if command -v useradd >/dev/null 2>&1; then
+        ADDUSER_KIND="useradd"
+    elif command -v adduser >/dev/null 2>&1 && command -v addgroup >/dev/null 2>&1; then
+        ADDUSER_KIND="busybox"
+    else
+        die "Need \`useradd\` (shadow) or \`adduser\`+\`addgroup\` (busybox) to create the service user. On Alpine: apk add shadow"
+    fi
     # The musl binary links against libstdc++ and libgcc, which Alpine
     # doesn't ship by default.
     if [ "${MUSL}" -eq 1 ] && [ ! -e /usr/lib/libstdc++.so.6 ]; then
@@ -152,6 +229,12 @@ if [ "${OS}" = "linux" ]; then
         else
             die "The musl build needs libstdc++ and libgcc. Install them and re-run."
         fi
+    fi
+    # Alpine's base image ships no `xz`, so without this every musl install
+    # downloads the ~100 MB raw binary instead of the ~30 MB compressed one.
+    # Non-fatal: the download path falls back to the raw asset.
+    if ! command -v xz >/dev/null 2>&1 && command -v apk >/dev/null 2>&1; then
+        apk add --no-cache -q xz >/dev/null 2>&1 && ok "Installed xz (smaller download)" || true
     fi
 else
     for cmd in curl install; do
@@ -164,7 +247,7 @@ else
         [ -w "$(dirname "${INSTALL_DIR}")" ] \
             || die "Can't create ${INSTALL_DIR}. Re-run with sudo, or pass --install-dir <dir>."
     fi
-    if [ "${PORT}" != "${DEFAULT_PORT}" ] || [ "${NO_START}" -eq 1 ]; then
+    if [ "${PORT_SET}" -eq 1 ] || [ "${NO_START}" -eq 1 ]; then
         warn "--port and --no-start only apply on Linux; ignoring them."
     fi
     # Nothing to set up beyond the binary on macOS.
@@ -178,6 +261,16 @@ if [ "${OS}" = "linux" ] && [ "${NO_SYSTEMD}" -eq 0 ]; then
         warn "You will need to run vaultbase under your own supervisor (runit, s6, supervisord, ...)."
         NO_SYSTEMD=1
     fi
+fi
+
+# ProtectHome=yes in the unit makes /home and /root invisible to the service,
+# so an ExecStart under either can never start. Catch it here rather than
+# after the unit is written and `systemctl start` fails with status=203.
+if [ "${OS}" = "linux" ] && [ "${NO_SYSTEMD}" -eq 0 ]; then
+    case "${INSTALL_DIR}" in
+        /home/*|/root|/root/*)
+            die "--install-dir ${INSTALL_DIR} is incompatible with the hardened systemd unit: ProtectHome=yes hides it from the service. Use a path outside /home and /root, or pass --no-systemd." ;;
+    esac
 fi
 
 # ── Resolve version ─────────────────────────────────────────────────────────
@@ -310,27 +403,82 @@ fi
 # ── User + dirs ─────────────────────────────────────────────────────────────
 header "Service user + directories"
 
+# `nologin` is /usr/sbin/nologin on Debian + RHEL and /sbin/nologin on Alpine.
+NOLOGIN="/bin/false"
+for candidate in /usr/sbin/nologin /sbin/nologin; do
+    if [ -x "${candidate}" ]; then NOLOGIN="${candidate}"; break; fi
+done
+
+# Create the group up front, independently of the user. A `vaultbase` user
+# that already exists under a different primary group (a distro package, or
+# `useradd -g nogroup`) used to skip creation entirely and then abort below
+# with a bare `install: invalid group 'vaultbase'`. Both tools tolerate an
+# existing group, so this is safe to attempt unconditionally.
+if [ "${ADDUSER_KIND}" = "useradd" ]; then
+    groupadd --system "${SVC_GROUP}" 2>/dev/null || true
+else
+    addgroup -S "${SVC_GROUP}" 2>/dev/null || true
+fi
+
 if id -u "${SVC_USER}" >/dev/null 2>&1; then
     ok "User '${SVC_USER}' already exists"
+elif [ "${ADDUSER_KIND}" = "useradd" ]; then
+    useradd --system --no-create-home --shell "${NOLOGIN}" -g "${SVC_GROUP}" "${SVC_USER}"
+    ok "Created system user '${SVC_USER}'"
 else
-    useradd --system --no-create-home --shell /usr/sbin/nologin --user-group "${SVC_USER}"
+    # busybox: -S system account, -D no password, -H no home dir.
+    adduser -S -D -H -s "${NOLOGIN}" -G "${SVC_GROUP}" "${SVC_USER}"
     ok "Created system user '${SVC_USER}'"
 fi
 
-install -d -m 0750 -o "${SVC_USER}" -g "${SVC_GROUP}" "${DATA_DIR}"
-install -d -m 0755 -o root         -g root           "${ETC_DIR}"
+# If the group still does not resolve, say so in terms the operator can act
+# on rather than letting `install -g` fail with a bare coreutils message.
+GROUP_HINT="Create it and re-run. On glibc: groupadd --system ${SVC_GROUP} && usermod -g ${SVC_GROUP} ${SVC_USER}. On Alpine: addgroup -S ${SVC_GROUP} && adduser ${SVC_USER} ${SVC_GROUP}"
+
+if [ -d "${DATA_DIR}" ]; then
+    # Existing data dir: fix ownership so the service can write, but leave the
+    # mode alone — an operator may have tightened it to 0700 deliberately.
+    chown "${SVC_USER}:${SVC_GROUP}" "${DATA_DIR}" \
+        || die "Could not chown ${DATA_DIR} to ${SVC_USER}:${SVC_GROUP}. ${GROUP_HINT}"
+else
+    install -d -m 0750 -o "${SVC_USER}" -g "${SVC_GROUP}" "${DATA_DIR}" \
+        || die "Could not create ${DATA_DIR} owned by ${SVC_USER}:${SVC_GROUP}. ${GROUP_HINT}"
+fi
+install -d -m 0755 -o root -g root "${ETC_DIR}"
 ok "Data dir: ${DATA_DIR}"
 ok "Config dir: ${ETC_DIR}"
 
-# ── Env file (preserve existing JWT secret) ────────────────────────────────
+# ── Env file (preserve existing secrets) ───────────────────────────────────
 if [ -f "${ENV_FILE}" ]; then
     ok "Existing ${ENV_FILE} — keeping JWT secret + values"
+    # Once the env file exists it is authoritative: the service reads its port
+    # from there, not from this run's --port. Read the live value back so the
+    # health-check URL printed at the end is the one that actually works.
+    LIVE_PORT="$(awk -F= '/^[[:space:]]*VAULTBASE_PORT[[:space:]]*=/ { gsub(/[^0-9]/, "", $2); print $2 }' "${ENV_FILE}" | tail -n 1)"
+    case "${LIVE_PORT}" in
+        ''|*[!0-9]*) LIVE_PORT="${DEFAULT_PORT}" ;;
+    esac
+    if [ "${PORT_SET}" -eq 1 ] && [ "${PORT}" != "${LIVE_PORT}" ]; then
+        warn "--port ${PORT} ignored: ${ENV_FILE} already sets VAULTBASE_PORT=${LIVE_PORT}."
+        warn "To change it, edit ${ENV_FILE} and run 'systemctl restart vaultbase'."
+    fi
+    PORT="${LIVE_PORT}"
 else
+    FRESH_INSTALL=1
     JWT_SECRET="$(head -c 48 /dev/urandom | base64 | tr -d '\n=' | tr '+/' '-_')"
+    # Gates the unauthenticated first-admin endpoint. Generated per install so
+    # a fresh box on a public IP is never claimable by whoever reaches it
+    # first. `vaultbase setup-admin` does not need it; only the web page does.
+    SETUP_KEY="$(head -c 24 /dev/urandom | base64 | tr -d '\n=' | tr '+/' '-_')"
     umask 077
+    if [ "${NO_SYSTEMD}" -eq 0 ]; then
+        RESTART_HINT="run \`systemctl restart vaultbase\`"
+    else
+        RESTART_HINT="restart vaultbase"
+    fi
     cat > "${ENV_FILE}" <<EOF
 # Vaultbase configuration — generated by the installer on $(date -u +%FT%TZ)
-# Override any of these and run \`systemctl restart vaultbase\` to apply.
+# Override any of these and ${RESTART_HINT} to apply.
 
 VAULTBASE_PORT=${PORT}
 VAULTBASE_DATA_DIR=${DATA_DIR}
@@ -339,32 +487,89 @@ VAULTBASE_DATA_DIR=${DATA_DIR}
 # Rotate by changing this value and forcing all clients to reauthenticate.
 VAULTBASE_JWT_SECRET=${JWT_SECRET}
 
+# Gates POST /api/v1/admin/setup, which is otherwise open until the first
+# admin exists. Bootstrap with \`vaultbase setup-admin\` (see the installer
+# output), which ignores this key. The browser setup page at /_/ cannot send
+# it, so to use that instead: comment this line out, ${RESTART_HINT}, create
+# the account, then uncomment it again.
+VAULTBASE_SETUP_KEY=${SETUP_KEY}
+
 # Optional: required only if you use encrypted fields.
 # Generate with: head -c 32 /dev/urandom | base64
 # VAULTBASE_ENCRYPTION_KEY=
 
-# Optional: comma-separated list of allowed origins for CORS / WS upgrades.
-# VAULTBASE_ALLOWED_ORIGINS=https://your-app.example.com
+# Optional: peer addresses allowed to set X-Forwarded-For, comma-separated.
+# Set this to your reverse proxy, otherwise the client IPs in the audit log
+# and the rate limiter are the proxy's rather than the caller's.
+# VAULTBASE_TRUSTED_PROXIES=127.0.0.1
+
+# CORS allowed origins are not an env var — set \`security.allowed_origins\`
+# under Settings in the admin UI.
 EOF
-    chown root:"${SVC_GROUP}" "${ENV_FILE}"
-    chmod 0640 "${ENV_FILE}"
     umask 022
-    ok "Wrote ${ENV_FILE} (mode 0640) with fresh JWT secret"
+    ok "Wrote ${ENV_FILE} (mode 0640) with a fresh JWT secret + setup key"
+fi
+
+# Unconditional, not just on creation: an env file left at 0644 by an older
+# installer or by hand keeps the JWT signing key and the setup key readable by
+# every local user. Re-running the installer is the documented repair path, so
+# it has to actually repair this.
+chown root:"${SVC_GROUP}" "${ENV_FILE}" \
+    || die "Could not chown ${ENV_FILE} to root:${SVC_GROUP}. ${GROUP_HINT}"
+if [ "${FRESH_INSTALL}" -eq 0 ]; then
+    # `stat -c` is fine here: this block is Linux-only (macOS exits earlier)
+    # and busybox stat supports it too.
+    OLD_MODE="$(stat -c '%a' "${ENV_FILE}" 2>/dev/null || echo '')"
+    chmod 0640 "${ENV_FILE}"
+    if [ -n "${OLD_MODE}" ] && [ "${OLD_MODE}" != "640" ]; then
+        warn "Tightened ${ENV_FILE} from mode ${OLD_MODE} to 0640 — it holds the JWT signing key."
+    fi
+else
+    chmod 0640 "${ENV_FILE}"
 fi
 
 # ── Install binary (atomic) ─────────────────────────────────────────────────
 header "Install binary"
 
+# Must be sampled before the swap: `systemctl enable --now` is a no-op on a
+# unit that is already active, so an upgrade would otherwise leave the old
+# process serving the old binary while reporting success.
+if [ "${NO_SYSTEMD}" -eq 0 ] && systemctl is-active --quiet vaultbase 2>/dev/null; then
+    WAS_ACTIVE=1
+fi
+
 install -d -m 0755 "${INSTALL_DIR}"
 install -m 0755 -o root -g root "${TMP}/vaultbase" "${INSTALL_DIR}/vaultbase.new"
+# rename() over a running binary swaps the inode; the live process keeps its
+# own mapping until it is restarted below.
 mv -f "${INSTALL_DIR}/vaultbase.new" "${INSTALL_DIR}/vaultbase"
 ok "Installed ${INSTALL_DIR}/vaultbase"
 
 # ── systemd unit ────────────────────────────────────────────────────────────
+# The unit runs as an unprivileged user with an empty capability set, so a
+# port below 1024 fails bind() with EACCES no matter how valid the number is.
+# Grant the single capability that covers it; stays empty otherwise, which is
+# the common case.
+if [ "${PORT}" -lt 1024 ]; then
+    BIND_CAPS="CAP_NET_BIND_SERVICE"
+    warn "Port ${PORT} is privileged — granting the unit CAP_NET_BIND_SERVICE."
+    warn "A reverse proxy on 80/443 forwarding to a high port is usually preferable."
+fi
+
 if [ "${NO_SYSTEMD}" -eq 0 ]; then
     header "systemd unit"
 
-    cat > "${UNIT_FILE}" <<'UNIT'
+    # systemd is running (we checked /run/systemd/system), but the unit
+    # directory is not guaranteed to exist — on a minimal image the `cat >`
+    # below would abort the script after the binary is already installed.
+    install -d -m 0755 "${UNIT_FILE%/*}"
+
+    # Unquoted heredoc: the paths and the service account come from the
+    # variables above, so there is nothing left to rewrite afterwards. (The
+    # old `sed -i` pass over ExecStart broke on any INSTALL_DIR containing
+    # a `|` or `&`.) Because it is unquoted, the unit body below must stay
+    # free of unescaped `$` and backticks — including inside its comments.
+    cat > "${UNIT_FILE}" <<UNIT
 [Unit]
 Description=Vaultbase backend
 Documentation=https://docs.vaultbase.dev
@@ -373,10 +578,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=vaultbase
-Group=vaultbase
-EnvironmentFile=/etc/vaultbase/vaultbase.env
-ExecStart=/usr/local/bin/vaultbase
+User=${SVC_USER}
+Group=${SVC_GROUP}
+EnvironmentFile=${ENV_FILE}
+ExecStart=${INSTALL_DIR}/vaultbase
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=30s
@@ -401,38 +606,62 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 MemoryDenyWriteExecute=no
-# `SystemCallFilter` was removed: Bun uses syscalls outside the
-# `@system-service` set (notably some io_uring + mmap variants), which
+# SystemCallFilter was removed: Bun uses syscalls outside the
+# @system-service set (notably some io_uring + mmap variants), which
 # triggers SIGSYS and a core dump under seccomp. The hardening above is
 # enough to neutralise the typical privilege-escalation paths.
 
 # Vaultbase only needs to write inside its data dir. ProtectSystem=strict
 # makes /etc/vaultbase read-only from the service's view (config is read once).
-ReadWritePaths=/var/lib/vaultbase
-CapabilityBoundingSet=
-AmbientCapabilities=
+ReadWritePaths=${DATA_DIR}
+# Empty unless --port (or VAULTBASE_PORT) is below 1024, where bind() needs
+# CAP_NET_BIND_SERVICE. Change the port in the env file and re-run the
+# installer so this is recalculated.
+CapabilityBoundingSet=${BIND_CAPS}
+AmbientCapabilities=${BIND_CAPS}
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-    # Point the unit at --install-dir when it isn't the default.
-    sed -i "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/vaultbase|" "${UNIT_FILE}"
     chmod 0644 "${UNIT_FILE}"
     ok "Wrote ${UNIT_FILE}"
 
-    systemctl daemon-reload
+    systemctl daemon-reload \
+        || warn "systemctl daemon-reload failed — systemd may not see the new unit yet."
 
+    # Every systemctl call below is guarded. Under `set -e` an unguarded
+    # failure here would abort the script before the summary block, so a
+    # service that fails to start would take the journalctl hint, the config
+    # paths and the generated setup key down with it — exactly the case the
+    # warning exists for. Let `is-active` do the reporting instead.
     if [ "${NO_START}" -eq 0 ]; then
-        systemctl enable --now vaultbase
+        if [ "${WAS_ACTIVE}" -eq 1 ]; then
+            # Already running: restart so the new binary actually takes over.
+            systemctl enable vaultbase >/dev/null 2>&1 || true
+            systemctl restart vaultbase || true
+        else
+            systemctl enable --now vaultbase || true
+        fi
         sleep 1
         if systemctl is-active --quiet vaultbase; then
-            ok "vaultbase service is active"
+            if [ "${WAS_ACTIVE}" -eq 1 ]; then
+                ok "vaultbase restarted onto ${VERSION}"
+            else
+                ok "vaultbase service is active"
+            fi
         else
-            warn "vaultbase failed to start. Inspect logs: journalctl -u vaultbase -n 50"
+            START_FAILED=1
+            warn "vaultbase is not running. Inspect logs: journalctl -u vaultbase -n 50"
+            warn "The binary and config below are in place; fix the cause and 'systemctl start vaultbase'."
         fi
     else
-        systemctl enable vaultbase
-        ok "Service enabled (use 'systemctl start vaultbase' when ready)"
+        systemctl enable vaultbase || true
+        if [ "${WAS_ACTIVE}" -eq 1 ]; then
+            warn "--no-start: the service is still running the previous binary."
+            warn "Run 'systemctl restart vaultbase' to finish the upgrade."
+        else
+            ok "Service enabled (use 'systemctl start vaultbase' when ready)"
+        fi
     fi
 fi
 
@@ -456,19 +685,93 @@ if [ "${NO_SYSTEMD}" -eq 0 ]; then
 EOF
 fi
 
-cat <<EOF
+if [ "${FRESH_INSTALL}" -eq 1 ]; then
+    cat <<EOF
   Next steps:
 
-    1. Bootstrap an admin account (one-shot CLI, never exposes the web setup):
-         sudo vaultbase setup-admin --email you@example.com --password '<pw>'
+    1. Bootstrap an admin account. The CLI reads its database path from the
+       environment, not from ${ENV_FILE}, and must run as
+       '${SVC_USER}' so the files stay owned by the service:
+
+         sudo -u ${SVC_USER} env VAULTBASE_DATA_DIR=${DATA_DIR} \\
+           ${INSTALL_DIR}/vaultbase setup-admin --email you@example.com --password '<pw>'
+
+       Running it as root, or without VAULTBASE_DATA_DIR, creates a separate
+       database in the current directory that the service never reads.
 
     2. Put a reverse proxy in front. Sample configs:
          https://docs.vaultbase.dev/getting-started/installation/
 
+       Then set VAULTBASE_TRUSTED_PROXIES in ${ENV_FILE} to the
+       proxy's address, or every client IP in the audit log and the rate
+       limiter will be the proxy's.
+
     3. Health check:
          curl http://127.0.0.1:${PORT}/api/health
 
-  Re-run this script any time to upgrade the binary in place. Your data,
-  config, and admin accounts are preserved.
+EOF
+else
+    # Upgrade: the admin account and proxy are already dealt with. Repeating
+    # step 1 here would send the operator at \`setup-admin\`, which refuses
+    # with "an admin already exists".
+    cat <<EOF
+  Upgrade complete — data, config and admin accounts are unchanged.
+
+    Health check:
+      curl http://127.0.0.1:${PORT}/api/health
+
+    If you have not created an admin account yet:
+      sudo -u ${SVC_USER} env VAULTBASE_DATA_DIR=${DATA_DIR} \\
+        ${INSTALL_DIR}/vaultbase setup-admin --email you@example.com --password '<pw>'
 
 EOF
+fi
+
+if [ "${NO_SYSTEMD}" -eq 0 ]; then
+    cat <<EOF
+  Re-run this script any time to upgrade the binary in place and restart the
+  service. Your data, config, and admin accounts are preserved.
+
+EOF
+else
+    cat <<EOF
+  Re-run this script any time to upgrade the binary in place. Restarting
+  vaultbase under your supervisor is up to you. Your data, config, and admin
+  accounts are preserved.
+
+EOF
+fi
+
+# The generated setup key gates the one endpoint that is open before the first
+# admin exists. Call it out explicitly, because the browser setup page has no
+# field for it and would otherwise just return 401.
+if [ -n "${SETUP_KEY}" ]; then
+    cat <<EOF
+  First-admin endpoint is gated
+  ─────────────────────────────
+
+  POST /api/v1/admin/setup is open until an admin exists, so the installer
+  generated a setup key and stored it in ${ENV_FILE}:
+
+    VAULTBASE_SETUP_KEY=${SETUP_KEY}
+
+  Step 1 above does not need it. If you would rather create the account over
+  HTTP, send it as a header:
+
+    curl -X POST http://127.0.0.1:${PORT}/api/v1/admin/setup \\
+      -H 'content-type: application/json' \\
+      -H 'x-setup-key: ${SETUP_KEY}' \\
+      -d '{"email":"you@example.com","password":"<pw>"}'
+
+  The browser page at /_/ cannot send the header. To use it, comment the key
+  out of ${ENV_FILE}, restart vaultbase, create the
+  account, then uncomment it and restart again.
+
+EOF
+fi
+
+# Non-zero exit when the service did not come up, so a caller wrapping this
+# script notices. The summary above has already been printed either way.
+if [ "${START_FAILED}" -eq 1 ]; then
+    exit 1
+fi
