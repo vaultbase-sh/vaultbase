@@ -1,0 +1,180 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * EXPERIMENT — sidebar in the redesign language.
+ *
+ * Originally derived from the auth boards; now matched to the frame drawn in
+ * `Vaultbase Dashboard.dc.html`, which specifies the sidebar directly: 240px,
+ * a 48px brand row, the version in a bordered chip, and nav rows with a 2px
+ * accent leading edge over --vb-surface-highlight when active.
+ *
+ * ── HOW TO REVERT ───────────────────────────────────────────────────────────
+ *
+ *   Live, no rebuild:   open the admin with  ?sidebar=classic
+ *                       (and ?sidebar=next to come back)
+ *
+ *   Permanently:        1. delete this file
+ *                       2. in src/components/Shell.tsx remove the block marked
+ *                          "SIDEBAR EXPERIMENT" and the `sidebarNextClass()`
+ *                          call in <aside className=…>
+ *                       3. remove the import of this file from Shell.tsx
+ *
+ * Nothing in globals.css was modified. The classic `.sidebar` / `.sb-*` rules
+ * are untouched and still the ones in force whenever `.sidebar--next` is
+ * absent, so deleting the three things above restores the old design exactly.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.sidebar--next {
+  /* Design tokens, scoped. globals.css defines --vb-fg-2/-3 and --vb-accent
+   * with different values for the rest of the admin; confining them here keeps
+   * every other surface untouched. Same approach as styles/auth.css. */
+  --vb-surface-inset: #08090a;
+  --vb-surface: #0d0e10;
+  --vb-surface-hover: #141518;
+  --vb-surface-highlight: #15161a;
+  --vb-line: #1f2125;
+  --vb-line-card: #24262a;
+  --vb-line-strong: #33363b;
+  --vb-fg: #edebe8;
+  --vb-fg-3: #a9a7a2;
+  --vb-fg-4: #8c8a86;
+  --vb-fg-5: #7c7a76;
+  --vb-accent: #e85a4f;
+  --vb-on-accent: #0d0e10;
+  --vb-font-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --vb-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Full-bleed rows: padding moves from the aside onto each row so hover and
+   * the active bar run edge to edge, the way the auth card's stepper does. */
+  width: 240px;
+  padding: 0;
+  gap: 0;
+  background: var(--vb-surface);
+  border-right: 1px solid var(--vb-line);
+  font-family: var(--vb-font-sans);
+  overflow-y: auto;
+}
+
+/* ── Brand ────────────────────────────────────────────────────────────────── */
+.sidebar--next .sb-brand {
+  height: 48px;
+  padding: 0 16px 0 20px;
+  gap: 10px;
+  border-bottom: 1px solid var(--vb-line);
+}
+.sidebar--next .sb-brand-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vb-fg);
+}
+.sidebar--next .sb-brand-version {
+  margin-left: auto;
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--vb-fg-4);
+  background: none;
+  border: 1px solid var(--vb-line-strong); /* bordered chip, per the board */
+  border-radius: 0;
+  padding: 3px 7px;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.sidebar--next .sb-section {
+  padding: 0;
+  gap: 0;
+}
+/* The board separates sections with space, not rules. */
+.sidebar--next .sb-section + .sb-section { margin-top: 20px; }
+.sidebar--next .sb-section:first-of-type { margin-top: 16px; }
+.sidebar--next .sb-section:last-of-type { margin-bottom: 16px; }
+
+.sidebar--next .sb-section-title {
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  color: var(--vb-fg-5);
+  padding: 0 20px 8px;
+  text-transform: uppercase;
+}
+
+.sidebar--next .sb-nav { gap: 0; }
+
+.sidebar--next .sb-nav-item {
+  gap: 12px;
+  padding: 7px 20px 7px 18px; /* 20 − the 2px bar on the leading edge */
+  border-radius: 0;
+  border-left: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--vb-fg-3);
+  transition: background var(--motion-fast) var(--ease-fast),
+              color var(--motion-fast) var(--ease-fast),
+              border-color var(--motion-fast) var(--ease-fast);
+}
+/* Shell renders the glyph at 13px; the design draws nav icons at 16. */
+.sidebar--next .sb-nav-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--vb-fg-5);
+  transition: color var(--motion-fast) var(--ease-fast);
+}
+
+.sidebar--next .sb-nav-item:hover {
+  background: var(--vb-surface-hover);
+  color: var(--vb-fg);
+}
+.sidebar--next .sb-nav-item:hover svg { color: var(--vb-fg-3); }
+
+/* Active: the auth stepper's accent bar, rotated to the leading edge. */
+.sidebar--next .sb-nav-item.active {
+  background: var(--vb-surface-highlight);
+  border-left-color: var(--vb-accent);
+  color: var(--vb-fg);
+  font-weight: 400;
+}
+.sidebar--next .sb-nav-item.active svg { color: var(--vb-accent); }
+
+.sidebar--next .sb-nav-item .count {
+  font-family: var(--vb-font-mono);
+  font-size: 10px;
+  color: var(--vb-fg-5);
+}
+.sidebar--next .sb-nav-item.active .count { color: var(--vb-accent); opacity: 1; }
+
+/* ── Account block ────────────────────────────────────────────────────────── */
+.sidebar--next .sb-bottom {
+  margin-top: auto;
+  border-top: 1px solid var(--vb-line);
+}
+.sidebar--next .sb-admin-pill {
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 0;
+  background: none;
+  transition: background var(--motion-fast) var(--ease-fast);
+}
+.sidebar--next .sb-admin-pill:hover { background: var(--vb-surface-hover); }
+
+.sidebar--next .sb-admin-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 0; /* square, like every other surface in the system */
+  background: var(--vb-accent);
+  color: var(--vb-on-accent);
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+.sidebar--next .sb-admin-name {
+  font-size: 13px;
+  color: var(--vb-fg);
+}
+.sidebar--next .sb-admin-role {
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--vb-fg-4);
+  text-transform: uppercase; /* Shell renders it lowercase */
+}

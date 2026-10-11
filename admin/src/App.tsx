@@ -1,6 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import "./styles/globals.css";
+// ADMIN THEME: redesign token layer. Remove this line to revert the whole
+// app to the previous look — see src/styles/theme-next.css.
+import "./styles/theme-next.css";
 import { api, type ApiResponse } from "./api.ts";
 import { Sidebar } from "./components/Shell.tsx";
 import { ToastHost } from "./components/UI.tsx";

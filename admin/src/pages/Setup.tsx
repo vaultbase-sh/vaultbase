@@ -1,10 +1,35 @@
+/**
+ * First-run setup wizard — implements `Vaultbase Setup.dc.html` from the
+ * "Vaultbase redesign scope" design project (boards 1a / 2a / 2b / 3a).
+ *
+ * Styling is shared with Login in ../styles/auth.css; see the comment at the
+ * top of that file for why the design tokens are not hoisted to :root. The
+ * password group and error line follow the login board, which is where those
+ * two patterns are drawn — the setup board predates them.
+ */
 import { useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import Icon from "../components/Icon.tsx";
-import { VaultbaseLogo, VaultbaseWordmark } from "../components/VaultbaseLogo.tsx";
+import AuthBackdrop from "../components/AuthBackdrop.tsx";
+import AuthMark from "../components/AuthMark.tsx";
 import { useVersion } from "../stores/version.ts";
+import "../styles/auth.css";
 
 type Step = "welcome" | "admin" | "done";
+
+const STEPS: { id: Step; label: string }[] = [
+  { id: "welcome", label: "WELCOME" },
+  { id: "admin", label: "ADMIN" },
+  { id: "done", label: "DONE" },
+];
+
+/**
+ * Client-side floor, kept in step with the server's `password.min_length`
+ * default (src/core/password-policy.ts). At setup time no settings row exists
+ * yet, so the default is what applies. If an operator has pinned a stricter
+ * policy the server's own message is surfaced verbatim on submit.
+ */
+const PW_MIN = 12;
 
 export default function Setup() {
   const [step, setStep] = useState<Step>("welcome");
@@ -12,104 +37,56 @@ export default function Setup() {
   const version = useVersion();
 
   return (
-    <div className="auth-shell">
-      <div className="auth-card wide" style={{ width: 520 }}>
-        <div className="auth-brand">
-          <span className="sb-brand-mark"><VaultbaseLogo size={26} /></span>
-          <VaultbaseWordmark height={16} className="name" />
-          {version && (
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              v{version}
-            </span>
-          )}
+    <div className="vb-auth">
+      <AuthBackdrop />
+      <div className="vb-auth__card">
+        <div className="vb-auth__head">
+          <AuthMark />
+          <span className="vb-auth__ver">{version ? `v${version}` : " "}</span>
         </div>
 
-        <StepIndicator step={step} />
+        <Stepper step={step} />
 
         {step === "welcome" && <WelcomeStep onNext={() => setStep("admin")} />}
-        {step === "admin"   && <AdminStep   onDone={(email) => { setAdminEmail(email); setStep("done"); }} />}
-        {step === "done"    && <DoneStep    email={adminEmail} onFinish={() => { window.location.assign("/_/login"); }} />}
+        {step === "admin" && (
+          <AdminStep
+            onBack={() => setStep("welcome")}
+            onDone={(email) => {
+              setAdminEmail(email);
+              setStep("done");
+            }}
+          />
+        )}
+        {step === "done" && (
+          <DoneStep email={adminEmail} onFinish={() => window.location.assign("/_/login")} />
+        )}
       </div>
     </div>
   );
 }
 
-// ── Step indicator ───────────────────────────────────────────────────────────
-/** Password input with reveal toggle for the setup + login auth screens. */
-function PwInput({ value, onChange, placeholder }: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const [show, setShow] = useState(false);
+// ── Stepper ──────────────────────────────────────────────────────────────────
+function Stepper({ step }: { step: Step }) {
+  const current = STEPS.findIndex((s) => s.id === step);
   return (
-    <div style={{ position: "relative" }}>
-      <input
-        className="input"
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={{ paddingRight: 36 }}
-      />
-      <button
-        type="button"
-        onClick={() => setShow((v) => !v)}
-        disabled={!value}
-        title={show ? "Hide" : "Show"}
-        style={{
-          position: "absolute",
-          right: 8, top: "50%", transform: "translateY(-50%)",
-          background: "transparent", border: 0,
-          color: "var(--vb-fg-3, #888)",
-          cursor: value ? "pointer" : "default",
-          padding: 4, display: "flex",
-        }}
-      >
-        <Icon name={show ? "eyeOff" : "eye"} size={14} />
-      </button>
-    </div>
-  );
-}
-
-function StepIndicator({ step }: { step: Step }) {
-  const steps: { id: Step; label: string }[] = [
-    { id: "welcome", label: "Welcome" },
-    { id: "admin",   label: "Admin"   },
-    { id: "done",    label: "Done"    },
-  ];
-  const currentIdx = steps.findIndex((s) => s.id === step);
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: -4 }}>
-      {steps.map((s, i) => {
-        const active = i === currentIdx;
-        const past = i < currentIdx;
+    <div className="vb-auth__steps">
+      {STEPS.map((s, i) => {
+        const active = i === current;
+        const done = i < current;
         return (
-          <div key={s.id} style={{ display: "flex", alignItems: "center", flex: 1, gap: 8 }}>
-            <div
-              style={{
-                width: 24, height: 24, borderRadius: "50%",
-                display: "grid", placeItems: "center",
-                fontSize: 11, fontFamily: "var(--font-mono)",
-                background: past || active ? "var(--accent)" : "rgba(255,255,255,0.06)",
-                color: past || active ? "#000" : "var(--text-muted)",
-                border: `0.5px solid ${active ? "var(--accent)" : "var(--border-default)"}`,
-                flexShrink: 0,
-              }}
-            >
-              {past ? <Icon name="check" size={11} /> : i + 1}
-            </div>
-            <span style={{ fontSize: 12, color: active ? "var(--text-primary)" : "var(--text-muted)", flex: 1 }}>
-              {s.label}
+          <div
+            key={s.id}
+            className={
+              "vb-auth__step" +
+              (active ? " vb-auth__step--active" : "") +
+              (done ? " vb-auth__step--done" : "")
+            }
+            aria-current={active ? "step" : undefined}
+          >
+            <span className="vb-auth__stepnum">
+              {done ? "✓" : String(i + 1).padStart(2, "0")}
             </span>
-            {i < steps.length - 1 && (
-              <div
-                style={{
-                  flex: 1, height: 1, marginRight: 4,
-                  background: past ? "var(--accent)" : "var(--border-default)",
-                }}
-              />
-            )}
+            {s.label}
           </div>
         );
       })}
@@ -118,56 +95,121 @@ function StepIndicator({ step }: { step: Step }) {
 }
 
 // ── Step 1: Welcome ──────────────────────────────────────────────────────────
+/** Icon paths come from the design board rather than components/Icon.tsx —
+ *  they are drawn at 16px with square caps to match the board exactly. */
+const FEATURES: { text: string; path: React.ReactNode }[] = [
+  {
+    text: "REST API for collections + records",
+    path: (
+      <>
+        <ellipse cx="12" cy="5" rx="8" ry="3" />
+        <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+      </>
+    ),
+  },
+  {
+    text: "Built-in auth (email + password, JWT)",
+    path: (
+      <>
+        <circle cx="9" cy="8" r="4" />
+        <path d="M2 21c0-3.9 3.1-7 7-7s7 3.1 7 7M16 4a4 4 0 0 1 0 8M22 21c0-3-1.8-5.5-4.5-6.5" />
+      </>
+    ),
+  },
+  {
+    text: "WebSocket realtime — subscribe to changes",
+    path: <path d="M2 12h4l3-8 6 16 3-8h4" />,
+  },
+  {
+    text: "Request logging + filterable Logs page",
+    path: (
+      <>
+        <rect x="4" y="2" width="16" height="20" />
+        <path d="M8 7h8M8 12h8M8 17h5" />
+      </>
+    ),
+  },
+  {
+    text: "File uploads (local filesystem)",
+    path: <path d="M12 16V3M6 9l6-6 6 6M3 15v6h18v-6" />,
+  },
+  {
+    text: "Single binary, SQLite, zero deps",
+    path: (
+      <>
+        <rect x="3" y="3" width="18" height="8" />
+        <rect x="3" y="13" width="18" height="8" />
+        <path d="M7 7h1M7 17h1" />
+      </>
+    ),
+  },
+];
+
 function WelcomeStep({ onNext }: { onNext: () => void }) {
-  const features = [
-    { icon: "database", text: "REST API for collections + records" },
-    { icon: "users",    text: "Built-in auth (email + password, JWT)" },
-    { icon: "activity", text: "WebSocket realtime — subscribe to changes" },
-    { icon: "scroll",   text: "Request logging + filterable Logs page" },
-    { icon: "upload",   text: "File uploads (local filesystem)" },
-    { icon: "server",   text: "Single binary, SQLite, zero deps" },
-  ];
   return (
-    <>
-      <div>
-        <h1 className="auth-title">Welcome to Vaultbase</h1>
-        <p className="auth-subtitle">
-          Self-hosted backend in a single binary. Let's get you set up — takes about 30 seconds.
-        </p>
+    <div className="vb-auth__body">
+      <div className="vb-auth__intro">
+        <h1 className="vb-auth__h1">
+          Welcome to Vaultbase<span className="vb-auth__dot">.</span>
+        </h1>
+        <p className="vb-auth__lead">Let's get you set up — takes about 30 seconds.</p>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px", background: "rgba(255,255,255,0.025)", borderRadius: 8, border: "0.5px solid var(--border-default)" }}>
-        {features.map((f) => (
-          <div key={f.text} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
-            <Icon name={f.icon} size={14} style={{ color: "var(--accent)" }} />
+
+      <div className="vb-auth__features">
+        {FEATURES.map((f) => (
+          <div key={f.text} className="vb-auth__feature">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              strokeWidth="1.5"
+              strokeLinecap="square"
+              aria-hidden="true"
+            >
+              {f.path}
+            </svg>
             <span>{f.text}</span>
           </div>
         ))}
       </div>
-      <button className="btn btn-primary" style={{ width: "100%", height: 36, justifyContent: "center" }} onClick={onNext}>
-        Get started <Icon name="chevronRight" size={12} />
-      </button>
-      <div className="auth-foot">
-        Already have an account? <a href="/_/login" style={{ color: "var(--accent-light)" }}>Sign in →</a>
+
+      <div className="vb-auth__actions">
+        <button type="button" className="vb-auth__btn" onClick={onNext}>
+          <span>Get started</span>
+          <span className="arrow">&rarr;</span>
+        </button>
+        <div className="vb-auth__foot">
+          Already have an account? <a href="/_/login">Sign in</a>
+        </div>
       </div>
-    </>
+    </div>
   );
 }
 
 // ── Step 2: Admin account ────────────────────────────────────────────────────
-function AdminStep({ onDone }: { onDone: (email: string) => void }) {
+function AdminStep({ onBack, onDone }: { onBack: () => void; onDone: (email: string) => void }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const valid = email.includes("@") && pw.length >= 8 && pw === pw2;
-  const pwMismatch = pw && pw2 && pw !== pw2;
-  const pwTooShort = pw.length > 0 && pw.length < 8;
+  const pwTooShort = pw.length > 0 && pw.length < PW_MIN;
+  const pwMismatch = pw.length > 0 && pw2.length > 0 && pw !== pw2;
+  const valid = email.includes("@") && pw.length >= PW_MIN && pw === pw2;
+
+  // One message at a time, matching the board's single error line. Local
+  // validation first, then whatever the server said.
+  const message = pwMismatch
+    ? "Passwords do not match."
+    : pwTooShort
+      ? `Password must be at least ${PW_MIN} characters.`
+      : error;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!valid) return;
+    if (!valid || loading) return;
     setError("");
     setLoading(true);
     const res = await api.post<ApiResponse<{ id: string }>>("/api/v1/admin/setup", {
@@ -175,162 +217,181 @@ function AdminStep({ onDone }: { onDone: (email: string) => void }) {
       password: pw,
     });
     setLoading(false);
-    if (res.data?.id) {
-      onDone(email);
-    } else {
-      setError(res.error ?? "Setup failed");
-    }
+    if (res.data?.id) onDone(email);
+    else setError(res.error ?? "Setup failed.");
   }
 
   return (
-    <>
-      <div>
-        <h1 className="auth-title">Create admin account</h1>
-        <p className="auth-subtitle">
-          This is your superuser. You can change credentials later in Settings.
-        </p>
+    <form className="vb-auth__body" onSubmit={handleSubmit}>
+      <div className="vb-auth__intro">
+        <h1 className="vb-auth__h1">
+          Create the admin<span className="vb-auth__dot">.</span>
+        </h1>
+        <p className="vb-auth__lead">This account owns the instance. You can add more later.</p>
       </div>
-      <form className="auth-form" onSubmit={handleSubmit}>
-        {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6, border: "0.5px solid rgba(248,113,113,0.3)" }}>
-            {error}
+
+      <div className="vb-auth__form">
+        <label className="vb-auth__field">
+          <span className="vb-auth__label">EMAIL</span>
+          <input
+            className="vb-auth__input"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
+            autoComplete="username"
+            autoFocus
+          />
+        </label>
+
+        <PwField
+          label="PASSWORD"
+          value={pw}
+          onChange={setPw}
+          placeholder={`At least ${PW_MIN} characters`}
+          bad={pwTooShort}
+        />
+
+        <PwField
+          label="CONFIRM PASSWORD"
+          value={pw2}
+          onChange={setPw2}
+          placeholder="Repeat password"
+          bad={pwMismatch}
+        />
+
+        {message && (
+          <div className="vb-auth__err" role="alert">
+            <span>{message}</span>
           </div>
         )}
-        <div>
-          <label className="label">Email</label>
-          <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoFocus />
-        </div>
-        <div>
-          <label className="label">Password</label>
-          <PwInput value={pw} onChange={setPw} placeholder="At least 8 characters" />
-          {pwTooShort && (
-            <div style={{ fontSize: 11, color: "var(--warning)", marginTop: 4 }}>
-              Password must be at least 8 characters
-            </div>
-          )}
-        </div>
-        <div>
-          <label className="label">Confirm password</label>
-          <PwInput value={pw2} onChange={setPw2} />
-          {pwMismatch && (
-            <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>
-              Passwords don't match
-            </div>
-          )}
-        </div>
-        <button className="btn btn-primary" disabled={!valid || loading}>
-          {loading ? <span className="spinner" /> : null}
-          {loading ? "Creating…" : "Create admin account"}
+      </div>
+
+      <div className="vb-auth__split">
+        <button
+          type="button"
+          className="vb-auth__btn vb-auth__btn--ghost"
+          onClick={onBack}
+          disabled={loading}
+        >
+          Back
         </button>
-      </form>
-    </>
+        <button
+          type="submit"
+          className={"vb-auth__btn" + (!valid && !loading ? " vb-auth__btn--primary-off" : "")}
+          disabled={!valid || loading}
+        >
+          <span>{loading ? "Creating…" : "Create admin"}</span>
+          {loading ? <span className="vb-auth__spinner" /> : <span className="arrow">&rarr;</span>}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Password input + reveal sharing one border, per the login board. */
+function PwField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  bad,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  bad?: boolean;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <label className="vb-auth__field">
+      <span className="vb-auth__label">{label}</span>
+      <span className={"vb-auth__pw" + (bad ? " vb-auth__pw--bad" : "")}>
+        <input
+          className="vb-auth__input"
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="new-password"
+        />
+        <button
+          type="button"
+          className="vb-auth__reveal"
+          onClick={() => setShow((v) => !v)}
+          disabled={!value}
+          title={show ? "Hide password" : "Show password"}
+          aria-label={show ? "Hide password" : "Show password"}
+        >
+          <Icon name={show ? "eyeOff" : "eye"} size={16} />
+        </button>
+      </span>
+    </label>
   );
 }
 
 // ── Step 3: Done ─────────────────────────────────────────────────────────────
 function DoneStep({ email, onFinish }: { email: string; onFinish: () => void }) {
   const [copied, setCopied] = useState<string | null>(null);
-  const baseUrl = window.location.origin;
+  const base = window.location.origin;
 
-  function copy(text: string, label: string) {
-    navigator.clipboard.writeText(text);
-    setCopied(label);
+  function copy(text: string, key: string) {
+    navigator.clipboard?.writeText(text);
+    setCopied(key);
     setTimeout(() => setCopied(null), 1500);
   }
 
-  const curlExample = `curl ${baseUrl}/api/health`;
+  const rows = [
+    { key: "admin", label: "ADMIN", value: `${base}/_/` },
+    { key: "rest", label: "REST", value: `${base}/api/` },
+  ];
 
   return (
-    <>
-      <div>
-        <h1 className="auth-title" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span
-            style={{
-              width: 26, height: 26, borderRadius: "50%",
-              background: "var(--success)", display: "grid", placeItems: "center",
-            }}
-          >
-            <Icon name="check" size={14} style={{ color: "#000" }} />
-          </span>
-          You're all set
+    <div className="vb-auth__body">
+      <div className="vb-auth__intro">
+        <h1 className="vb-auth__h1">
+          You're <em>live</em>
+          <span className="vb-auth__dot">.</span>
         </h1>
-        <p className="auth-subtitle">
-          Admin account <span className="mono" style={{ color: "var(--text-secondary)" }}>{email}</span> ready.
-          Sign in to start managing your data.
+        {/* The board reads "Signed in as …", but POST /admin/setup returns no
+            session (src/api/auth.ts) — the next step really is a sign-in. */}
+        <p className="vb-auth__lead">
+          Admin account <span className="mono">{email}</span> is ready. Sign in to continue.
         </p>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <InfoBlock
-          label="Admin panel"
-          value={`${baseUrl}/_/`}
-          copied={copied === "admin"}
-          onCopy={() => copy(`${baseUrl}/_/`, "admin")}
-        />
-        <InfoBlock
-          label="API base"
-          value={`${baseUrl}/api/`}
-          copied={copied === "api"}
-          onCopy={() => copy(`${baseUrl}/api/`, "api")}
-        />
-        <InfoBlock
-          label="Realtime WS"
-          value={`${baseUrl.replace(/^http/, "ws")}/realtime`}
-          copied={copied === "ws"}
-          onCopy={() => copy(`${baseUrl.replace(/^http/, "ws")}/realtime`, "ws")}
-        />
-
-        <div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontWeight: 500 }}>
-            Try a request
+      <div className="vb-auth__urls">
+        {rows.map((r) => (
+          <div key={r.key} className="vb-auth__url">
+            <span className="vb-auth__urlkey">{r.label}</span>
+            <span className="vb-auth__urlval">
+              <span>{r.value}</span>
+              <button
+                type="button"
+                className="vb-auth__copy"
+                onClick={() => copy(r.value, r.key)}
+                title="Copy"
+                aria-label={`Copy ${r.label} URL`}
+              >
+                <Icon name={copied === r.key ? "check" : "copy"} size={12} />
+              </button>
+            </span>
           </div>
-          <div className="code-block" style={{ position: "relative", paddingRight: 40 }}>
-            {curlExample}
-            <button
-              className="btn-icon"
-              style={{ position: "absolute", top: 6, right: 6 }}
-              onClick={() => copy(curlExample, "curl")}
-              title="Copy"
-            >
-              <Icon name={copied === "curl" ? "check" : "copy"} size={12} />
-            </button>
-          </div>
-        </div>
+        ))}
       </div>
 
-      <button className="btn btn-primary" style={{ width: "100%", height: 36, justifyContent: "center" }} onClick={onFinish}>
-        Continue to login <Icon name="chevronRight" size={12} />
-      </button>
-    </>
-  );
-}
-
-function InfoBlock({ label, value, copied, onCopy }: {
-  label: string;
-  value: string;
-  copied: boolean;
-  onCopy: () => void;
-}) {
-  return (
-    <div>
-      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, fontWeight: 500 }}>
-        {label}
-      </div>
-      <div
-        style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "8px 10px",
-          background: "rgba(255,255,255,0.04)",
-          border: "0.5px solid var(--border-default)",
-          borderRadius: 6,
-        }}
-      >
-        <span className="mono" style={{ flex: 1, fontSize: 12, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {value}
-        </span>
-        <button className="btn-icon" onClick={onCopy} title="Copy">
-          <Icon name={copied ? "check" : "copy"} size={12} />
+      <div className="vb-auth__actions">
+        <button type="button" className="vb-auth__btn" onClick={onFinish}>
+          <span>Sign in</span>
+          <span className="arrow">&rarr;</span>
         </button>
+        <div className="vb-auth__foot">
+          New here?{" "}
+          <a href="https://docs.vaultbase.dev" target="_blank" rel="noreferrer">
+            Read the quickstart
+          </a>
+        </div>
       </div>
     </div>
   );

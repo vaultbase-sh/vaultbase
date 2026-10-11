@@ -4,6 +4,38 @@ import Icon from "./Icon.tsx";
 import { VaultbaseLogo, VaultbaseWordmark } from "./VaultbaseLogo.tsx";
 import { useAuth } from "../stores/auth.ts";
 import { useVersion } from "../stores/version.ts";
+import "../styles/sidebar-next.css";
+
+/* ── SIDEBAR EXPERIMENT ──────────────────────────────────────────────────────
+ * Opt-in redesign of the nav, derived from the auth boards. Everything it
+ * needs lives in styles/sidebar-next.css under `.sidebar--next`; the classic
+ * `.sb-*` rules in globals.css are untouched and apply whenever that class is
+ * absent.
+ *
+ *   ?sidebar=classic  → old design (persists)
+ *   ?sidebar=next     → new design (persists)
+ *
+ * To remove the experiment entirely: delete styles/sidebar-next.css, this
+ * block, the import above, and the sidebarNextClass() call in <aside>.
+ * ──────────────────────────────────────────────────────────────────────────── */
+const SIDEBAR_PREF_KEY = "vb_sidebar_next";
+
+function sidebarNextClass(): string {
+  let on = true; // default while we are trying it out
+  try {
+    const q = new URLSearchParams(window.location.search).get("sidebar");
+    if (q === "classic" || q === "next") {
+      on = q === "next";
+      localStorage.setItem(SIDEBAR_PREF_KEY, on ? "1" : "0");
+    } else {
+      const saved = localStorage.getItem(SIDEBAR_PREF_KEY);
+      if (saved !== null) on = saved === "1";
+    }
+  } catch {
+    /* private mode or blocked storage — fall back to the default */
+  }
+  return on ? " sidebar--next" : "";
+}
 
 interface NavItem { to: string; label: string; icon: string; end?: boolean }
 interface NavSection { label: string; items: NavItem[] }
@@ -56,7 +88,7 @@ export const Sidebar: React.FC = () => {
     : adminEmail ?? "";
 
   return (
-    <aside className="sidebar">
+    <aside className={"sidebar" + sidebarNextClass()}>
       <div className="sb-brand">
         <span className="sb-brand-mark">
           <VaultbaseLogo size={20} />

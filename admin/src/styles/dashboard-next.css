@@ -1,0 +1,303 @@
+/* Dashboard — implements `Vaultbase Dashboard.dc.html` (v2) from the
+ * "Vaultbase redesign scope" project, boards 1a (empty) and 1b (in use).
+ *
+ * The board's thesis: tables over cards, mono tabular numbers, 36px rows, and
+ * empty states as one line *inside* the table rather than a separate card.
+ *
+ * Tokens are scoped to `.vb-dash` for the same reason as styles/auth.css:
+ * globals.css defines --vb-fg-2/-3 and --vb-accent with different values and
+ * ~290 call sites across the rest of the admin read them.
+ */
+
+.vb-dash {
+  --vb-surface-inset: #08090a;
+  --vb-surface: #0d0e10;
+  --vb-surface-hover: #141518;
+  --vb-surface-highlight: #15161a;
+  --vb-surface-chip: #16171a;
+  --vb-line-faint: #1a1c1f;
+  --vb-line: #1f2125;
+  --vb-line-card: #24262a;
+  --vb-line-strong: #33363b;
+  --vb-fg: #edebe8;
+  --vb-fg-2: #c9c7c2;
+  --vb-fg-3: #a9a7a2;
+  --vb-fg-4: #8c8a86;
+  --vb-fg-5: #7c7a76;
+  --vb-accent: #e85a4f;
+  --vb-accent-hover: #f06f64;
+  --vb-on-accent: #0d0e10;
+  --vb-ok: #7fcb8e;
+  --vb-font-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --vb-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--vb-surface);
+  color: var(--vb-fg);
+  font-family: var(--vb-font-sans);
+}
+
+/* ── Topbar ───────────────────────────────────────────────────────────────── */
+.vb-dash__bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+  flex: none;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--vb-line);
+}
+.vb-dash__title { font-size: 14px; font-weight: 500; flex: none; }
+.vb-dash__sub {
+  font-size: 12px;
+  color: var(--vb-fg-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vb-dash__spacer { flex: 1; }
+
+.vb-dash__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-4);
+  white-space: nowrap;
+  flex: none;
+}
+.vb-dash__dot {
+  width: 6px;
+  height: 6px;
+  background: var(--vb-ok);
+  flex: none;
+}
+.vb-dash__dot--down { background: var(--vb-accent); }
+.vb-dash__status strong { font-weight: 400; color: var(--vb-fg-2); }
+
+.vb-dash__range {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--vb-line-strong);
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+}
+.vb-dash__range button {
+  all: unset;
+  cursor: pointer;
+  padding: 5px 10px;
+  color: var(--vb-fg-4);
+}
+.vb-dash__range button:hover { color: var(--vb-fg-2); }
+.vb-dash__range button[aria-pressed="true"] {
+  background: var(--vb-line-card);
+  color: var(--vb-fg);
+}
+
+.vb-dash__refresh {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--vb-line-strong);
+  color: var(--vb-fg-3);
+  transition: border-color 150ms, color 150ms;
+}
+.vb-dash__refresh:hover { border-color: var(--vb-accent); color: var(--vb-fg); }
+.vb-dash__refresh[data-busy="true"] svg { animation: vb-dash-spin 700ms linear infinite; }
+@keyframes vb-dash-spin { to { transform: rotate(360deg); } }
+
+/* ── Stat tiles ───────────────────────────────────────────────────────────── */
+.vb-dash__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: none;
+  border-bottom: 1px solid var(--vb-line);
+}
+.vb-dash__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 24px 16px;
+  min-width: 0;
+}
+.vb-dash__stat + .vb-dash__stat { border-left: 1px solid var(--vb-line); }
+.vb-dash__stat-label {
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-4);
+  letter-spacing: 0.06em;
+}
+.vb-dash__stat-value {
+  font-family: var(--vb-font-mono);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.vb-dash__stat-value--alert { color: var(--vb-accent-hover); }
+.vb-dash__stat-sub {
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Panel grid ───────────────────────────────────────────────────────────── */
+.vb-dash__grid {
+  padding: 16px 24px 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .vb-dash__grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.vb-dash__panel { border: 1px solid var(--vb-line-card); min-width: 0; }
+.vb-dash__panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--vb-line);
+}
+.vb-dash__panel-title { font-size: 13px; font-weight: 500; flex: none; }
+.vb-dash__panel-meta {
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-4);
+  white-space: nowrap;
+}
+.vb-dash__panel-link {
+  font-size: 12px;
+  color: var(--vb-fg-3);
+  text-decoration: none;
+  white-space: nowrap;
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.vb-dash__panel-link:hover { color: var(--vb-accent); }
+
+/* ── Table ────────────────────────────────────────────────────────────────── */
+.vb-dash__th,
+.vb-dash__row {
+  display: grid;
+  gap: 12px;
+  align-items: center;
+  padding: 0 16px;
+}
+.vb-dash__th {
+  height: 30px;
+  border-bottom: 1px solid var(--vb-line);
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-4);
+  letter-spacing: 0.04em;
+}
+.vb-dash__row {
+  height: 36px;
+  border-bottom: 1px solid var(--vb-line-faint);
+  font-family: var(--vb-font-mono);
+  font-size: 12px;
+  color: var(--vb-fg);
+  text-decoration: none;
+}
+.vb-dash__row:last-child { border-bottom: 0; }
+a.vb-dash__row:hover { background: var(--vb-surface-hover); }
+
+.vb-dash__th > span,
+.vb-dash__row > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.vb-dash__num { text-align: right; font-variant-numeric: tabular-nums; }
+.vb-dash__dim { color: var(--vb-fg-4); }
+.vb-dash__key { color: var(--vb-fg-2); }
+.vb-dash__err { color: var(--vb-accent-hover); }
+.vb-dash__ok { color: var(--vb-ok); }
+.vb-dash__warn { color: var(--vb-fg-2); }
+
+/* Column templates, one per panel — shared by the header and its rows. */
+.vb-dash__t--dead  { grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1.6fr) 44px 44px; }
+.vb-dash__t--queue { grid-template-columns: 96px minmax(0, 1fr) 56px 84px 56px; }
+.vb-dash__t--coll  { grid-template-columns: minmax(0, 1fr) 48px 72px 84px 84px; }
+.vb-dash__t--req   { grid-template-columns: 64px 52px minmax(0, 1fr) 44px 48px; }
+
+/* Backlog bar inside the PENDING cell. */
+.vb-dash__bar-cell {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+.vb-dash__bar-track {
+  height: 4px;
+  background: var(--vb-surface-chip);
+  display: block;
+}
+.vb-dash__bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--vb-fg-4);
+}
+
+/* ── Empty state — one line inside the table, per the board ───────────────── */
+.vb-dash__empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.vb-dash__empty b { font-weight: 400; color: var(--vb-fg-2); }
+.vb-dash__empty span { color: var(--vb-fg-4); }
+.vb-dash__empty button {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--vb-accent);
+  padding: 0;
+  cursor: pointer;
+  color: var(--vb-fg);
+  font: inherit;
+}
+.vb-dash__empty button:hover { color: var(--vb-accent); }
+
+/* Skeleton while the first load is in flight. */
+.vb-dash__skel {
+  height: 36px;
+  border-bottom: 1px solid var(--vb-line-faint);
+  background: linear-gradient(90deg, transparent, var(--vb-surface-hover), transparent);
+  background-size: 200% 100%;
+  animation: vb-dash-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes vb-dash-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vb-dash__skel,
+  .vb-dash__refresh[data-busy="true"] svg { animation: none; }
+}

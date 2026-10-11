@@ -487,52 +487,63 @@ export const VbPageHeader: React.FC<{
   sub?: React.ReactNode;
   right?: React.ReactNode;
 }> = ({ breadcrumb, title, sub, right }) => (
-  <header style={{
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    padding: "20px 28px 18px",
-    borderBottom: "1px solid var(--vb-border)",
-    gap: 16,
-  }}>
-    <div style={{ minWidth: 0 }}>
-      {breadcrumb && breadcrumb.length > 0 && (
-        <div style={{
-          fontSize: 11.5,
-          color: "var(--vb-fg-3)",
-          fontFamily: "var(--font-mono)",
-          marginBottom: 6,
+  // The 48px band drawn in `Vaultbase Dashboard.dc.html`: title and subtitle
+  // share one row with the page actions, rather than the stacked 22px h1 this
+  // used to be. The breadcrumb becomes a dim prefix so nested pages keep their
+  // trail without a second line.
+  <header
+    style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 16,
+      height: 48,
+      flex: "none",
+      padding: "0 24px",
+      borderBottom: "1px solid var(--vb-border)",
+    }}
+  >
+    {breadcrumb && breadcrumb.length > 1 && (
+      <span
+        style={{
           display: "flex",
           alignItems: "center",
           gap: 6,
-        }}>
-          {breadcrumb.map((b, i) => (
-            <React.Fragment key={i}>
-              <span style={{ color: i === breadcrumb.length - 1 ? "var(--vb-fg-2)" : "var(--vb-fg-3)" }}>{b}</span>
-              {i < breadcrumb.length - 1 && <span style={{ color: "var(--vb-fg-3)", opacity: 0.5 }}>/</span>}
-            </React.Fragment>
-          ))}
-        </div>
-      )}
-      <h1 style={{
-        margin: 0,
-        fontSize: 22,
-        fontWeight: 600,
-        color: "var(--vb-fg)",
-        letterSpacing: -0.2,
-        lineHeight: 1.2,
-      }}>{title}</h1>
-      {sub && (
-        <div style={{
-          marginTop: 6,
-          fontSize: 12.5,
-          color: "var(--vb-fg-2)",
-          maxWidth: 620,
-          lineHeight: 1.5,
-        }}>{sub}</div>
-      )}
-    </div>
-    {right && <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>{right}</div>}
+          flex: "none",
+          fontFamily: "var(--font-mono)",
+          fontSize: 12,
+          color: "var(--vb-fg-4)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {breadcrumb.slice(0, -1).map((b, i) => (
+          <React.Fragment key={i}>
+            <span>{b}</span>
+            <span style={{ opacity: 0.6 }}>/</span>
+          </React.Fragment>
+        ))}
+      </span>
+    )}
+    <span style={{ fontSize: 14, fontWeight: 500, color: "var(--vb-fg)", flex: "none" }}>
+      {title}
+    </span>
+    {sub && (
+      <span
+        style={{
+          fontSize: 12,
+          color: "var(--vb-fg-4)",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          minWidth: 0,
+        }}
+      >
+        {sub}
+      </span>
+    )}
+    <span style={{ flex: 1 }} />
+    {right && (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>{right}</div>
+    )}
   </header>
 );
 
