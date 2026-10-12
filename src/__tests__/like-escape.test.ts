@@ -63,3 +63,64 @@ describe("~ with a field on the right", () => {
     expect(body.data.map((r) => r.a)).toEqual(["hello"]);
   });
 });
+
+describe("~ with an empty or missing right side", () => {
+  it("an empty or absent request value matches nothing", async () => {
+    expect(await list("")).toEqual([]);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/docs"));
+    const body = await res.json() as { data: unknown[] };
+    expect(body.data).toEqual([]);
+  });
+
+  it("!~ with an empty value is the negation: every row", async () => {
+    const { createPublicCollection } = await import("./_helpers.ts");
+    await createPublicCollection({ name: "notes", fields: JSON.stringify([{ name: "t", type: "text" }]) });
+    await createRecord("notes", { t: "x" }, null);
+    await createRecord("notes", { t: null }, null);
+    const q = async (f: string) => {
+      const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/notes?filter=${encodeURIComponent(f)}`));
+      return ((await res.json()) as { data: unknown[] }).data.length;
+    };
+    expect(await q('t ~ ""')).toBe(0);
+    expect(await q('t !~ ""')).toBe(2);
+    expect(await q('t ~ "x"')).toBe(1);
+    expect(await q('t !~ "x"')).toBe(1);
+  });
+
+  it("an empty field on the right matches nothing", async () => {
+    const { createPublicCollection } = await import("./_helpers.ts");
+    await createPublicCollection({ name: "pairs2", fields: JSON.stringify([{ name: "a", type: "text" }, { name: "b", type: "text" }]) });
+    await createRecord("pairs2", { a: "hello", b: "" }, null);
+    await createRecord("pairs2", { a: "hello", b: null }, null);
+    await createRecord("pairs2", { a: "hello", b: "ell" }, null);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/pairs2?filter=${encodeURIComponent("a ~ b")}`));
+    expect(((await res.json()) as { data: unknown[] }).data.length).toBe(1);
+  });
+
+  it("the rule engine agrees: empty or missing needle never matches", async () => {
+    const { evaluateRule } = await import("../core/rules.ts");
+    expect(evaluateRule('tag ~ @request.headers.x_tag', null, { tag: "alpha" }, { headers: {} } as never)).toBe(false);
+    expect(evaluateRule('tag ~ @request.headers.x_tag', null, { tag: "alpha" }, { headers: { x_tag: "" } } as never)).toBe(false);
+    expect(evaluateRule('tag !~ @request.headers.x_tag', null, { tag: "alpha" }, { headers: {} } as never)).toBe(true);
+    expect(evaluateRule('tag ~ @request.headers.x_tag', null, { tag: "alpha" }, { headers: { x_tag: "lph" } } as never)).toBe(true);
+  });
+});
+
+describe("~ with a _via_ back-relation on the right", () => {
+  it("does not become a match-everything pattern", async () => {
+    const { createPublicCollection } = await import("./_helpers.ts");
+    const posts = await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    await createPublicCollection({
+      name: "comments",
+      fields: JSON.stringify([{ name: "post", type: "relation", collection: posts.id }, { name: "body", type: "text" }]),
+    });
+    const lonely = await createRecord("posts", { title: "no comments here" }, null);
+    const quoted = await createRecord("posts", { title: 'says ["hi"]' }, null);
+    await createRecord("comments", { post: quoted.id, body: "hi" }, null);
+    expect(lonely.id).toBeTruthy();
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/posts?filter=${encodeURIComponent("title ~ comments_via_post.body")}`));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<{ title: string }> };
+    expect(body.data.map((r) => r.title)).toEqual(['says ["hi"]']);
+  });
+});

@@ -219,7 +219,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
   // Standard scalar comparison
   if (op === "~" || op === "!~") {
     const left = compileOperand(ast.left, ctx);
-    return `${left} ${op === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(ast.right, ctx)}`;
+    return likeSql(left, op, ast.right, ctx);
   }
 
   const left = compileOperand(ast.left, ctx);
@@ -253,7 +253,7 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
   const arraySql = compileOperand(stripped, ctx);
   let cmp: string;
   if (op === "~" || op === "!~") {
-    cmp = `value ${op === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(scalarOperand, ctx)}`;
+    cmp = likeSql("value", op, scalarOperand, ctx);
   } else {
     const right = compileOperand(scalarOperand, ctx);
     cmp = `value ${sqlOpFor(op)} ${right}`;
@@ -284,7 +284,7 @@ function compileArrayCmp(
   const innerCtx: CompileCtx = { ...ctx, params: inner };
   let cmp: string;
   if (scalarOp === "~" || scalarOp === "!~") {
-    cmp = `value ${scalarOp === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(scalarOperand, innerCtx)}`;
+    cmp = likeSql("value", scalarOp, scalarOperand, innerCtx);
   } else {
     const right = compileOperand(scalarOperand, innerCtx);
     cmp = `value ${sqlOpFor(scalarOp)} ${right}`;
@@ -548,15 +548,48 @@ function applyModifierToValue(v: unknown, m?: FieldModifier): unknown {
  * otherwise a caller who sends `%` makes `field ~ @request.body.x` match
  * every row.
  */
-function likeParam(operand: Operand, ctx: CompileCtx): string {
-  // A column on the right (`a ~ b`): operandValue() has no value for it, so
-  // this used to bind '%%' and match every row. Build the pattern in SQL,
-  // escaping the column's own wildcards; a NULL column matches nothing.
-  if (operand.kind === "field" || operand.kind === "collection") {
-    const col = compileOperand(operand, ctx);
-    return `'%' || replace(replace(replace(${col}, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+/**
+ * `left ~ right` / `left !~ right` as SQL. An empty or NULL right side
+ * matches nothing for `~` (and everything for `!~`) — before, it became the
+ * pattern '%%' and a rule like `tags ~ @request.auth.team` let anonymous
+ * callers see every row. coalesce() keeps `!~` the exact negation of `~`, as
+ * in the rule engine.
+ */
+function likeSql(leftSql: string, op: "~" | "!~", operand: Operand, ctx: CompileCtx): string {
+  const match = `coalesce(${leftSql} LIKE ${likeParam(operand, ctx)}, 0)`;
+  return op === "~" ? match : `NOT ${match}`;
+}
+
+function isValueOperand(operand: Operand): boolean {
+  switch (operand.kind) {
+    case "literal":
+    case "macro":
+      return true;
+    case "auth":
+    case "request":
+    case "requestMap":
+      return !operand.modifier;
+    default:
+      return false;
   }
-  const v = String(operandValue(operand, ctx) ?? "");
+}
+
+/** The LIKE pattern for `right`; NULL when the right side is empty or NULL. */
+function likeParam(operand: Operand, ctx: CompileCtx): string {
+  // Anything evaluated in SQL — a column (`a ~ b`), a `_via_` back-relation,
+  // a function, a modified operand: operandValue() has no value for it, so
+  // this used to bind '%%' and match every row. Build the pattern in SQL,
+  // escaping the operand's own wildcards.
+  if (!isValueOperand(operand)) {
+    const col = compileOperand(operand, ctx);
+    return `'%' || replace(replace(replace(nullif(${col}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+  }
+  const raw = operandValue(operand, ctx);
+  const v = raw === null || raw === undefined ? "" : String(raw);
+  if (v === "") {
+    ctx.params.push(null);
+    return "?";
+  }
   if (operand.kind === "literal" || operand.kind === "macro") {
     ctx.params.push(`%${v}%`);
     return "?";

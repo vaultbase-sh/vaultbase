@@ -17,6 +17,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   as `null`, which is public, so a new collection was readable and writable by anyone
   until someone set its rules. Existing collections keep the rules they have. To make a
   collection public, set `null` explicitly or pick **Public** on the **API rules** tab.
+- **`~` against an empty value no longer matches.** `field ~ ""`, or `~` against a
+  request value, auth field or column that is empty or missing, used to match every
+  record; it now matches none, and `!~` matches all. A `!~` filter now also includes
+  records whose field is NULL, as single-record rule checks already did.
 - **Rules can now see the request body.** `@request.body.<field>` was always empty, so
   `:isset` was always false and comparisons against the body always failed. Rules that
   use it now behave as written — check any that only worked because the body was empty.
@@ -269,6 +273,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   record. And for `~`, a `%` or `_` sent by the caller acted as a wildcard. List rules
   now see the request, and values from the request are matched as plain text with `~`
   (patterns written into a rule or filter keep their wildcards).
+- **`~` with an empty right side matched every record.** When the right-hand value of
+  `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
+  `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`
+  back-relation — the SQL filter compared against `%%` and matched everything. An empty
+  or missing value now matches nothing with `~` (and everything with `!~`), in list
+  filters and in single-record rule checks alike.
 - **A list request could make the database scan the whole table.** `page` had no upper
   bound, and SQLite walks every skipped row to reach an offset. A list may now skip at
   most 100,000 records; deeper pages answer `400`.

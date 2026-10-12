@@ -87,10 +87,16 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
     case ">=": return cmp(l, r) >= 0;
     case "<":  return cmp(l, r) < 0;
     case "<=": return cmp(l, r) <= 0;
-    case "~":  return String(l ?? "").includes(String(r ?? ""));
-    case "!~": return !String(l ?? "").includes(String(r ?? ""));
+    case "~":  return contains(l, r);
+    case "!~": return !contains(l, r);
     default:   return false;
   }
+}
+
+/** `~`: an empty or missing needle matches nothing (same as the SQL compiler). */
+function contains(haystack: unknown, needle: unknown): boolean {
+  const n = needle === null || needle === undefined ? "" : String(needle);
+  return n !== "" && String(haystack ?? "").includes(n);
 }
 
 function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalContext): boolean {
@@ -124,8 +130,8 @@ function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalCont
       case ">=": return cmp(item, target) >= 0;
       case "<":  return cmp(item, target) < 0;
       case "<=": return cmp(item, target) <= 0;
-      case "~":  return String(item ?? "").includes(String(target ?? ""));
-      case "!~": return !String(item ?? "").includes(String(target ?? ""));
+      case "~":  return contains(item, target);
+      case "!~": return !contains(item, target);
       default:   return false;
     }
   });
@@ -150,8 +156,8 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
       case ">=": match = cmp(item, target) >= 0; break;
       case "<":  match = cmp(item, target) < 0; break;
       case "<=": match = cmp(item, target) <= 0; break;
-      case "~":  match = String(item ?? "").includes(String(target ?? "")); break;
-      case "!~": match = !String(item ?? "").includes(String(target ?? "")); break;
+      case "~":  match = contains(item, target); break;
+      case "!~": match = !contains(item, target); break;
       default:   match = false;
     }
     if (match) return true;
