@@ -132,7 +132,7 @@ describe("setup key across processes (review 15 F-7)", () => {
       configureSetupKey(${JSON.stringify(dir)});
       process.stdout.write(requiredSetupKey({ quiet: true }));
     `;
-    const env = { ...process.env, BUN_BE_BUN: "1" };
+    const env: Record<string, string | undefined> = { ...process.env, BUN_BE_BUN: "1" };
     delete env["VAULTBASE_SETUP_KEY"];
     const procs = Array.from({ length: 8 }, () => Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", env }));
     const keys = await Promise.all(procs.map((p) => new Response(p.stdout).text()));
