@@ -134,3 +134,15 @@ describe("realtime sees the same auth props as HTTP (review 16 F-2)", () => {
     expect(ws.got.filter((m) => m.includes('"create"'))).toHaveLength(1);
   });
 });
+
+describe("re-verify refreshes auth flags (review 17 F-6)", () => {
+  it("an account that lost verification stops passing verified rules", async () => {
+    const ws = fakeWs("v1");
+    subscribe(ws, ["notes"]);
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    setWSAuth(ws, { id: "u1", type: "user", exp, token: "t", collection: "users", verified: true });
+    await reverifyRealtimeAuth(async () => ({ id: "u1", type: "user", exp, token: "t", collection: "users" }));
+    broadcast("notes", event, { viewRule: "@request.auth.verified = true", listRule: null, record: { id: "r1" } } as never);
+    expect(ws.got.filter((m) => m.includes('"create"'))).toHaveLength(0);
+  });
+});

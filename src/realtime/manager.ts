@@ -161,7 +161,12 @@ export async function reverifyRealtimeAuth(verify: (token: string) => Promise<WS
     if (!auth.token) continue;
     const fresh = await verify(auth.token);
     if (wsAuth.get(id) !== auth) continue; // changed while we awaited
-    if (fresh && fresh.id === auth.id && fresh.type === auth.type) continue;
+    if (fresh && fresh.id === auth.id && fresh.type === auth.type) {
+      // Same principal: take the refreshed flags (an account that lost
+      // email verification stops passing `@request.auth.verified = true`).
+      wsAuth.set(id, fresh);
+      continue;
+    }
     wsAuth.delete(id);
     const ws = connAdapter(id);
     try { ws?.send(JSON.stringify({ type: "auth_expired" })); } catch { /* gone */ }
