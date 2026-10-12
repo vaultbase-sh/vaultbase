@@ -305,6 +305,37 @@ header "Download"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
 
+# Download $1 to $2. On a terminal, curl's progress bar shows the transfer
+# (a silent 70 MB download looked frozen). A connection that stays under
+# SLOW_BPS for SLOW_SECS is dropped and retried on a new one (one
+# connection was seen crawling at ~100 KB/s while a fresh one from the same
+# host ran at ~20 MB/s), then one last attempt runs without the floor, so a
+# genuinely slow link still finishes. Any other failure (e.g. a 404) returns
+# at once.
+SLOW_BPS=102400
+SLOW_SECS=30
+download() {
+    if [ -t 2 ]; then _dl_quiet="--progress-bar"; else _dl_quiet="-s"; fi
+    # curl's --retry treats "too slow" (28) as transient and reconnects.
+    _dl_rc=0
+    curl -fSL ${_dl_quiet} --retry 3 --retry-delay 1 \
+        --speed-limit "${SLOW_BPS}" --speed-time "${SLOW_SECS}" \
+        -o "$2" "$1" || _dl_rc=$?
+    [ "${_dl_rc}" -eq 28 ] || return "${_dl_rc}"
+    warn "Still slow after retries — downloading without the speed check; this may take a while."
+    curl -fSL ${_dl_quiet} --retry 3 --retry-delay 2 -o "$2" "$1"
+}
+
+# Human-readable size of a remote file (follows redirects), or empty.
+remote_size() {
+    _rs_len="$(curl -fsSLI --max-time 10 "$1" 2>/dev/null \
+        | awk 'tolower($1) == "content-length:" { n = $2 } END { gsub(/\r/, "", n); print n }')"
+    case "${_rs_len}" in
+        ''|*[!0-9]*|0) printf '' ;;
+        *) awk -v n="${_rs_len}" 'BEGIN { printf " (%.0f MB)", n / 1048576 }' ;;
+    esac
+}
+
 # Prefer the xz-compressed asset (~30 MB instead of ~100 MB). Releases before
 # compressed assets existed, or hosts without `xz`, fall back to the raw
 # binary. Checksum + signature checks below run on the decompressed binary,
@@ -312,8 +343,12 @@ trap 'rm -rf "${TMP}"' EXIT INT TERM
 # Only the Linux binaries are published as .xz.
 FETCHED=0
 if [ "${OS}" = "linux" ] && command -v xz >/dev/null 2>&1; then
-    say "Fetching ${URL}.xz..."
-    if curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase.xz" "${URL}.xz" 2>/dev/null; then
+    # Probe first, so a release without .xz assets falls back quietly.
+    XZ_SIZE="$(remote_size "${URL}.xz")"
+    if [ -n "${XZ_SIZE}" ]; then
+        say "Fetching ${URL}.xz${XZ_SIZE}..."
+        download "${URL}.xz" "${TMP}/vaultbase.xz" \
+            || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
         xz -dc "${TMP}/vaultbase.xz" > "${TMP}/vaultbase" \
             || { err "Could not decompress ${URL}.xz"; exit 2; }
         rm -f "${TMP}/vaultbase.xz"
@@ -323,8 +358,8 @@ if [ "${OS}" = "linux" ] && command -v xz >/dev/null 2>&1; then
     fi
 fi
 if [ "${FETCHED}" -eq 0 ]; then
-    say "Fetching ${URL}..."
-    curl -fsSL --retry 3 --retry-delay 2 -o "${TMP}/vaultbase" "${URL}" \
+    say "Fetching ${URL}$(remote_size "${URL}")..."
+    download "${URL}" "${TMP}/vaultbase" \
         || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
 fi
 

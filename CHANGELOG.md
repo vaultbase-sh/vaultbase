@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **The installer looked frozen while downloading.** The binary (about 70 MB on macOS)
+  downloaded silently, so a slow connection looked like a hang. The installer now shows
+  the size and a progress bar in a terminal, and a download that stays under 100 KB/s
+  for 30 seconds is retried on a new connection; if it is still slow, the last attempt
+  runs without the speed check so it can finish.
+
 ## [0.17.0] — 2026-10-12
 
 ### Upgrade notes
