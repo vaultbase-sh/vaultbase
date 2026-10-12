@@ -25,6 +25,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   longer return secret values; a `PATCH` that sends `********` back leaves the stored
   value alone. Scripts that read a secret back from `GET /admin/settings` must keep their
   own copy. A metrics token can be copied only before it is saved.
+- **New files are no longer world-readable.** The server sets a `027` umask at startup,
+  so the database, uploads, logs and backups it creates are readable by its user and
+  group only. If another user (not in the service's group) reads those files directly,
+  add it to the group.
 - **An uncaught exception now stops the process.** It used to be logged and ignored,
   leaving the server running in an unknown state. It is still logged, then the server
   shuts down gracefully with exit code 1 — run Vaultbase under a supervisor that
@@ -308,6 +312,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now generates a setup key when none is configured and requires it (compared in
   constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
   listened on all interfaces; it is now used.
+- **Data files were world-readable outside the installer.** No umask was set, so with the
+  usual `022` the database, uploads, logs and backups were readable by every local user
+  unless the installer had locked down the data directory. The server now uses `027`.
 - **`vaultbase update` installed unsigned releases silently.** With cosign installed,
   the signature was only checked when the release carried `.sig`/`.pem` assets, so a
   release without them was installed on the SHA-256 alone, with no warning. It is now

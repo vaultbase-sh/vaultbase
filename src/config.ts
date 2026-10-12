@@ -32,7 +32,16 @@ async function loadJwtSecret(dataDir: string): Promise<string> {
   return secret;
 }
 
+/**
+ * Files the server creates — the database and its WAL, uploads, logs,
+ * backups, thumbnails — are readable by the owner and its group only. With
+ * the usual 022 umask they were world-readable on any install not made by
+ * the installer (which sets the data dir to 0750 but not the files in it).
+ */
+export const FILE_UMASK = 0o027;
+
 export async function loadConfig(): Promise<Config> {
+  try { process.umask(FILE_UMASK); } catch { /* not supported (Windows) */ }
   const dataDir = process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data";
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 
