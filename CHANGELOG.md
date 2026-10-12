@@ -317,6 +317,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `127.0.0.1` or `127.0.0.0/8` in `VAULTBASE_TRUSTED_PROXIES`, so the forwarded client
   address and `X-Forwarded-Proto` were ignored and every client shared the proxy's rate
   limit. Peer addresses are now read in their IPv4 form.
+- **The same address could be registered twice in different case.** Promoting an
+  anonymous account, changing email and magic-link sign-up checked for an existing
+  address case-sensitively, so `ALICE@example.com` could be added beside
+  `alice@example.com` (register already checked in any case). All four now do.
 - **`~` with an empty right side matched every record.** When the right-hand value of
   `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`

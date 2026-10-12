@@ -104,3 +104,14 @@ describe("register", () => {
     expect((u as unknown as Record<string, unknown>)["nickname"]).toBe("trin");
   });
 });
+
+describe("promote email uniqueness (review 15 F-5)", () => {
+  it("refuses an address that differs from an existing one only in case", async () => {
+    const first = await anonymous();
+    expect((await post("/auth/users/promote", { email: "alice@test.local", password: "a-good-password-1" }, first.token)).status).toBe(200);
+    const second = await anonymous();
+    const res = await post("/auth/users/promote", { email: "ALICE@test.local", password: "a-good-password-1" }, second.token);
+    expect(res.status).toBe(409);
+    expect(findUserByEmail((await getCollection("users"))!, "ALICE@test.local")).toBeNull();
+  });
+});

@@ -1168,7 +1168,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Checked after the cooldown so the two can't be told apart by a 429.
         // (Confirming re-checks, in case the address is taken in between.)
         // The row stays (spent) so it still counts towards the cooldown.
-        if (findUserByEmail(col, newEmail)) {
+        if (findUserByEmailAnyCase(col, newEmail)) {
           await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, stored));
           return { data: { sent: true } };
         }
@@ -1209,7 +1209,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const valid = await Bun.password.verify(body.password, u.password_hash).catch(() => false);
         if (!valid) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         await loginSucceeded(attempt);
-        const taken = findUserByEmail(col, tok.payload);
+        const taken = findUserByEmailAnyCase(col, tok.payload);
         if (taken && taken.id !== u.id) { set.status = 422; return { error: "Email already in use", code: 422 }; }
         // The link proves the new address; ending old sessions makes every
         // device sign in again with it.
@@ -1235,7 +1235,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const email = body.email.trim();
         if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
-        if (findUserByEmail(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
+        if (findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
 
         const data: Record<string, unknown> = { ...(body.data ?? {}) };
         delete data["email"];
@@ -1628,7 +1628,9 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         // Email uniqueness within the collection (excluding self).
-        const dup = findUserByEmail(col, body.email);
+        // Case-insensitive, as register checks: `ALICE@x` beside `alice@x`
+        // is the same mailbox under two accounts.
+        const dup = findUserByEmailAnyCase(col, body.email);
         if (dup && dup.id !== u.id) {
           set.status = 409; return { error: "Email already in use", code: 409 };
         }
