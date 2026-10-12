@@ -103,6 +103,22 @@ function maybeDecrypt(key: string, value: string): string {
 }
 
 /**
+ * Whether the current key decrypts the stored secret settings. False means
+ * the key changed (e.g. VAULTBASE_ENCRYPTION_KEY set to something other than
+ * the generated `.encryption-key`): starting anyway would read every secret
+ * as "" and could overwrite them.
+ */
+export function encryptionKeyMatchesData(): boolean {
+  const rows = rawClient()
+    .prepare(`SELECT key, value FROM vaultbase_settings`)
+    .all() as Array<{ key: string; value: string }>;
+  const sample = rows.find((r) => isEncrypted(r.value));
+  if (!sample) return true;
+  if (!isEncryptionAvailable()) return false;
+  try { decryptValueSync(sample.value); return true; } catch { return false; }
+}
+
+/**
  * Encrypt secret settings still stored in plaintext (written before a key
  * existed). Run at startup; returns how many were converted.
  */

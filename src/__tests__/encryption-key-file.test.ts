@@ -60,3 +60,27 @@ describe("encryption key file", () => {
     }
   });
 });
+
+describe("key mismatches (review 17 F-5)", () => {
+  it("an existing but empty key file is not silently replaced", async () => {
+    const { writeFileSync } = await import("fs");
+    writeFileSync(join(dir, ".encryption-key"), "");
+    expect(() => loadEncryptionKey(dir)).toThrow(/not replaced/);
+  });
+
+  it("a different key is detected before secrets are read as empty", async () => {
+    const { encryptionKeyMatchesData } = await import("../api/settings.ts");
+    initDb(":memory:");
+    await runMigrations();
+    try {
+      loadEncryptionKey(dir);
+      const { setSetting } = await import("../api/settings.ts");
+      setSetting("smtp.pass", "secret");
+      expect(encryptionKeyMatchesData()).toBe(true);
+      process.env["VAULTBASE_ENCRYPTION_KEY"] = Buffer.alloc(32, 9).toString("base64");
+      expect(encryptionKeyMatchesData()).toBe(false);
+    } finally {
+      closeDb();
+    }
+  });
+});

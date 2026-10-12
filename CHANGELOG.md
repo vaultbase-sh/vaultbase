@@ -25,7 +25,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the server now creates `<dataDir>/.encryption-key` (0600) on first start, uses it for
   secret settings and encrypted fields, and encrypts secret settings still stored in
   plaintext. **Back up this file with your database backups**: encrypted values can't be
-  read without it. To switch to the env var later, set it to the file's contents.
+  read without it. To switch to the env var later, set it to the file's contents. The
+  server refuses to start if the key doesn't decrypt the stored secrets, or if the key
+  file exists but can't be read, rather than replacing it.
 - **Custom routes are rate limited and return a generic `500`.** A custom route that
   throws now answers `{"error":"Internal error"}`; read the message in the logs. They
   count against the `/api/*` rate-limit rules like other API requests.

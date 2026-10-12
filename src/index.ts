@@ -241,7 +241,7 @@ Environment:
   VAULTBASE_SETUP_KEY             Key for first-admin setup (default: generated, printed at boot)
   VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
-  VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (required to use encrypted fields)
+  VAULTBASE_ENCRYPTION_KEY        At-rest key for secrets and encrypted fields (default: <dataDir>/.encryption-key, generated)
   VAULTBASE_WORKERS               Worker count for \`vaultbase cluster\`
   VAULTBASE_TRUSTED_PROXIES       Comma-separated peer IPs trusted for X-Forwarded-For
   NODE_ENV / VAULTBASE_ENV        Triggers production guardrails on \`wipe\`.
@@ -367,6 +367,17 @@ async function main() {
     process.exit(0);
   }
 
+  // Refuse to run with a key that can't read the stored secrets.
+  {
+    const { encryptionKeyMatchesData } = await import("./api/settings.ts");
+    if (!encryptionKeyMatchesData()) {
+      process.stderr.write(
+        "vaultbase: the encryption key does not decrypt the stored secrets. If you set VAULTBASE_ENCRYPTION_KEY, " +
+        `set it to the contents of ${config.dataDir}/.encryption-key (or unset it); a lost key can't be recovered.\n`,
+      );
+      process.exit(1);
+    }
+  }
   // Secret settings saved before an encryption key existed are still
   // plaintext in data.db (and its backups); encrypt them now.
   try {

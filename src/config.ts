@@ -59,6 +59,14 @@ export function loadEncryptionKey(dataDir: string): string {
     try { return readFileSync(path, "utf8").trim() || null; } catch { return null; }
   };
   let key = read();
+  if (!key && existsSync(path)) {
+    // There is a key file we can't use (permissions, truncated). Replacing
+    // it would make everything encrypted with it unreadable for good.
+    throw new Error(
+      `${path} exists but can't be read or is empty. Fix its permissions or contents ` +
+      `(or set VAULTBASE_ENCRYPTION_KEY to the original key); it is not replaced automatically.`,
+    );
+  }
   if (!key) {
     const fresh = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
     const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
