@@ -3501,11 +3501,10 @@ function NotificationsSection() {
   const [fcmTestSending, setFcmTestSending] = useState(false);
 
   function refresh(): Promise<void> {
-    // `reveal=1` asks the server to include the actual secrets — admin
-    // already has full DB access so it's not a new exposure path; we
-    // gain a real reveal toggle in the UI for verifying values match.
+    // Secrets are write-only: the response says whether each is set, and a
+    // save only sends one the admin typed in.
     return api
-      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers?reveal=1")
+      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers")
       .then((res) => {
         if (res.data) {
           setCfg(res.data);

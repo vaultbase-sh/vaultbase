@@ -581,7 +581,12 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       },
     },
     handler: async (args) => {
-      setSetting(String(args.key), String(args.value));
+      const key = String(args.key);
+      // A masked value read back from list/get_setting: keep the stored one.
+      if (shouldEncryptSettingKey(key) && String(args.value) === SECRET_SETTING_MASK) {
+        return asJsonText({ updated: false, key: args.key, reason: "masked value; stored secret kept" });
+      }
+      setSetting(key, String(args.value));
       return asJsonText({ updated: true, key: args.key });
     },
   });

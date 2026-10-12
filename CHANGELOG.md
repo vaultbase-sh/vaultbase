@@ -27,8 +27,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   plaintext. **Back up this file with your database backups**: encrypted values can't be
   read without it. To switch to the env var later, set it to the file's contents.
 - **Secret settings read back as `********`.** The admin API and MCP settings tools no
-  longer return secret values; a `PATCH` that sends `********` back leaves the stored
-  value alone. Scripts that read a secret back from `GET /admin/settings` must keep their
+  longer return secret values; a `PATCH` (or MCP `update_setting`) that sends `********`
+  back leaves the stored value alone. `GET /admin/notifications/providers` ignores
+  `?reveal=1`: the OneSignal key and FCM service account are write-only. Scripts that read a secret back from `GET /admin/settings` must keep their
   own copy. A metrics token can be copied only before it is saved.
 - **New files are no longer world-readable.** The server sets a `027` umask at startup,
   so the database, uploads, logs and backups it creates are readable by its user and
