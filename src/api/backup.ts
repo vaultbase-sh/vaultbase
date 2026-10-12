@@ -1,6 +1,23 @@
 import { copyFileSync, existsSync, renameSync, rmSync } from "fs";
 import Elysia from "elysia";
-import { closeDb, initDb } from "../db/client.ts";
+import { closeDb, getRawClient, initDb } from "../db/client.ts";
+import { withExclusiveWrite } from "../core/write-gate.ts";
+import { _resetCollectionCache, invalidateSensitiveSchema } from "../core/collections.ts";
+import { invalidateHookCache } from "../core/hooks.ts";
+import { invalidateRoutesCache } from "../core/routes.ts";
+import { invalidateJobsCache } from "../core/jobs.ts";
+import { invalidateWorkerCache } from "../core/queues.ts";
+import { invalidateWebhookCache } from "../core/webhooks.ts";
+import { invalidateFlagCache } from "../core/flags.ts";
+import { clearFilterCache } from "../core/filter-cache.ts";
+import { _resetVectorCache } from "../core/vector-cache.ts";
+import { invalidatePreparedStatements } from "../core/records.ts";
+import { invalidateUserTableColumnCache } from "../core/users-table.ts";
+import { invalidateRateLimitCache } from "./ratelimit.ts";
+import { invalidateEmailCache } from "../core/email.ts";
+import { invalidateStorageCache } from "../core/storage.ts";
+import { invalidateEgressCache } from "../core/hook-egress.ts";
+import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 import { backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
@@ -46,6 +63,56 @@ async function swapInDb(dbPath: string, staging: string): Promise<string | null>
   initDb(`file:${dbPath}`);
   await runMigrations();
   return null;
+}
+
+/**
+ * Swap in a restored database safely, in a single process:
+ * - with the exclusive write gate, so no write lands on the closing handle;
+ * - keeping every token revocation made since the backup was taken — a
+ *   restore used to bring back sessions that had been signed out or
+ *   revoked, API tokens included;
+ * - dropping every in-memory cache built from the old database (collections,
+ *   hooks, routes, jobs, workers, settings-derived caches), which kept
+ *   serving the replaced schema and code until restart.
+ */
+async function restoreDatabase(dbPath: string, staging: string): Promise<string | null> {
+  return withExclusiveWrite(async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const revoked = getRawClient()
+      .prepare(`SELECT jti, expires_at, revoked_at FROM vaultbase_token_revocations WHERE expires_at > ?`)
+      .all(now) as Array<{ jti: string; expires_at: number; revoked_at: number }>;
+    const err = await swapInDb(dbPath, staging);
+    if (err) return err;
+    const keep = getRawClient().prepare(
+      `INSERT OR IGNORE INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?)`,
+    );
+    for (const r of revoked) keep.run(r.jti, r.expires_at, r.revoked_at);
+    for (const reset of [
+      _resetCollectionCache, invalidateSensitiveSchema, invalidateHookCache, invalidateRoutesCache,
+      invalidateJobsCache, invalidateWorkerCache, invalidateWebhookCache, invalidateFlagCache,
+      clearFilterCache, _resetVectorCache, invalidatePreparedStatements, () => invalidateUserTableColumnCache(),
+      invalidateRateLimitCache, invalidateEmailCache, invalidateStorageCache, invalidateEgressCache,
+      invalidateCorsCache,
+    ]) {
+      try { reset(); } catch { /* a cache that isn't loaded */ }
+    }
+    return null;
+  });
+}
+
+/**
+ * In cluster mode each worker holds its own connection and caches; a swap
+ * in one worker leaves the others on the old database file (and their writes
+ * landing in it). Restore offline instead: stop the service, replace
+ * data.db, start it.
+ */
+function clusterRestoreRefusal(set: { status?: number | string }) {
+  if (!process.env["VAULTBASE_WORKER_ID"]) return null;
+  set.status = 409;
+  return {
+    error: "Online restore isn't supported in cluster mode. Stop the service, replace data.db with the backup, and start it again.",
+    code: 409,
+  };
 }
 
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
@@ -131,6 +198,8 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
       }
+      const refused = clusterRestoreRefusal(set);
+      if (refused) return refused;
       const p = backupPath(params.name);
       if (!p) {
         set.status = 404;
@@ -138,12 +207,12 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       }
       const staging = `${dbPath}.restore`;
       copyFileSync(p, staging);
-      const err = await swapInDb(dbPath, staging);
+      const err = await restoreDatabase(dbPath, staging);
       if (err) {
         set.status = 500;
         return { error: `Restore failed: ${err}`, code: 500 };
       }
-      return { data: { message: "Restore complete. Existing tokens are still valid." } };
+      return { data: { message: "Restore complete. Sessions revoked since the backup stay revoked." } };
     })
 
     // Restore from uploaded SQLite file
@@ -153,6 +222,8 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return { error: "Unauthorized", code: 401 };
       }
 
+      const refused = clusterRestoreRefusal(set);
+      if (refused) return refused;
       const formData = await request.formData();
       const file = formData.get("file");
       if (!(file instanceof File)) {
@@ -171,12 +242,12 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       // Write to a staging path next to the live DB
       const staging = `${dbPath}.restore`;
       await Bun.write(staging, file);
-      const err = await swapInDb(dbPath, staging);
+      const err = await restoreDatabase(dbPath, staging);
       if (err) {
         set.status = 500;
         return { error: `Restore failed: ${err}`, code: 500 };
       }
 
-      return { data: { message: "Restore complete. Existing tokens are still valid." } };
+      return { data: { message: "Restore complete. Sessions revoked since the backup stay revoked." } };
     });
 }

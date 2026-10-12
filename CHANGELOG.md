@@ -312,6 +312,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now generates a setup key when none is configured and requires it (compared in
   constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
   listened on all interfaces; it is now used.
+- **Restoring a backup revived revoked sessions and kept stale caches.** A restore rolled
+  back `token_revocations`, so sessions signed out and API tokens revoked since the
+  backup worked again; it kept serving collections, hooks and routes from the replaced
+  database's in-memory caches until restart; and it ran without the write gate.
+  Revocations are now carried over, caches are dropped, and the swap holds the write
+  gate. In cluster mode, where it swapped the database under one worker only, online
+  restore answers `409`.
 - **Admin actions from the admin UI were audited without an actor.** The audit log read
   the admin only from the `Authorization` header, so actions by an admin signed in with
   the session cookie were recorded with no actor. It now reads the same token sources
