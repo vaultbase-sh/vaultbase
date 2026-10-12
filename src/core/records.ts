@@ -199,7 +199,7 @@ function buildRecord(
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
     // Auth-system columns are private — never emit on the wire.
-    if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
+    if ((col.type === "auth" || col.type === "view") && AUTH_PRIVATE_COLUMNS.has(k)) continue;
     const def = fieldByName.get(k);
     // Never expose password hashes via the API
     if (def?.type === "password") continue;

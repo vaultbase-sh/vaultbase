@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq, or } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
+import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
 import { parseThumbSpec } from "./image.ts";
@@ -211,7 +212,9 @@ export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
  */
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
   const out = new Set<string>();
-  if (col.type === "auth") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
+  // Views too: a view over an auth table (`SELECT * FROM vb_users`) carries
+  // the same columns under the same names.
+  if (col.type === "auth" || col.type === "view") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
   try {
     for (const f of parseFields(col.fields)) {
       if (f.type === "password") out.add(f.name);
@@ -369,27 +372,32 @@ export function ensureAuthColumns(collectionName: string): void {
  * and obvious abuse, not a sandbox: a sufficiently determined admin can still
  * read sensitive tables in their SELECT and that's their responsibility.
  */
+const VIEW_BANNED_WORDS = new Set([
+  "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "ATTACH", "DETACH", "PRAGMA",
+  "REPLACE", "TRUNCATE", "VACUUM", "REINDEX", "LOAD_EXTENSION", "WITH", "RECURSIVE",
+]);
+
 export function validateViewQuery(query: string): void {
   const q = query.trim();
   if (!q) throw new Error("View query is empty");
-  const body = q.replace(/;\s*$/, "");
-  if (body.includes(";")) throw new Error("View query must be a single statement");
-  // Strip /* ... */ and -- ... line comments before keyword scanning so
-  // attackers can't hide banned tokens inside comments.
-  const stripped = body
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ");
-  if (!/^select\b/i.test(stripped.trim())) throw new Error("View query must begin with SELECT");
-  const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex|load_extension|with|recursive)\b/i;
-  if (banned.test(stripped)) throw new Error("View query may only SELECT");
-  // `\bpragma\b` above misses the table-valued function forms —
-  // `pragma_table_info(...)`, `pragma_database_list()` — because `_` is a word
-  // character, so there is no boundary after "pragma". Those functions, and the
-  // `sqlite_*` metadata tables, disclose the schema and the DB's absolute file
-  // path to anyone who can read the resulting view. No legitimate view
-  // references them.
-  if (/\b(pragma_|sqlite_)/i.test(stripped)) {
+  // One scanner pass that knows strings, quoted identifiers and comments.
+  // Stripping comments with a regex first let a `'--'` inside a string hide
+  // the rest of the line from every check below.
+  const { words, identifiers, statements } = scanSql(q);
+  if (statements !== 1) throw new Error("View query must be a single statement");
+  if (words[0] !== "SELECT") throw new Error("View query must begin with SELECT");
+  if (words.some((w) => VIEW_BANNED_WORDS.has(w))) throw new Error("View query may only SELECT");
+  // The table-valued `pragma_*()` functions and the `sqlite_*` metadata
+  // tables disclose the schema and the DB's absolute file path to anyone who
+  // can read the resulting view. No legitimate view references them.
+  const names = [...words, ...identifiers];
+  if (names.some((w) => w.startsWith("PRAGMA_") || w.startsWith("SQLITE_"))) {
     throw new Error("View query may not reference SQLite metadata");
+  }
+  // Auth secrets can't be selected by name (or renamed with AS). `SELECT *`
+  // keeps their names, and those are stripped from view rows and filters.
+  if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()))) {
+    throw new Error("View query may not read password hashes, TOTP secrets or password_reset_at");
   }
 }
 

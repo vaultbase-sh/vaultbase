@@ -78,6 +78,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   fails, instead of removing or changing them. Admins are unaffected.
 - **Files whose field was removed are admin-only.** A stored file whose field was dropped
   or renamed is no longer served by the record's rules.
+- **View queries can't name auth secrets.** A view whose query mentions `password_hash`,
+  `totp_secret` or `password_reset_at` is rejected when saved; edit it to drop those
+  columns. `SELECT *` views keep working, without those columns.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -238,6 +241,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   their treatment. The server now sets the context's `auth` attribute from the caller's
   session (and removes it for anonymous callers), so rules targeting `auth.*` can be
   trusted, and `flags.public_evaluate = 0` limits evaluation to signed-in callers.
+- **Views over auth tables exposed password hashes.** A view collection such as
+  `SELECT * FROM vb_users` returned `password_hash`, `totp_secret` and
+  `password_reset_at`, and let callers filter on them. They are now stripped from view
+  rows and refused in view filters, and a view query that names them (or renames them)
+  is rejected. The view-query check also read a `'--'` inside a string as a comment and
+  skipped the rest of the line, which could hide a reference to SQLite's metadata
+  tables; it now parses strings, identifiers and comments properly.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
