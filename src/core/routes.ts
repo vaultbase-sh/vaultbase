@@ -43,6 +43,7 @@ interface RouteRow {
   path: string;
   code: string;
   enabled: number;
+  require_auth?: number;
 }
 
 interface CompiledRoute {
@@ -52,6 +53,7 @@ interface CompiledRoute {
   path: string;
   pathPattern: RegExp;
   paramNames: string[];
+  requireAuth: boolean;
   fn: (ctx: RouteContext) => Promise<unknown>;
 }
 
@@ -88,6 +90,7 @@ function compile(row: RouteRow): CompiledRoute | null {
       path: row.path,
       pathPattern: regex,
       paramNames: params,
+      requireAuth: row.require_auth === 1,
       fn,
     };
   } catch (e) {
@@ -158,6 +161,9 @@ export async function dispatchCustomRoute(
   }
 
   const auth = await extractAuth(request, jwtSecret);
+  if (match.route.requireAuth && !auth) {
+    return { status: 401, headers: {}, body: { error: "Unauthorized", code: 401 } };
+  }
   const helpers = makeHookHelpers({
     name: match.route.name,
     auth,
@@ -194,9 +200,9 @@ export async function dispatchCustomRoute(
       status = 422;
       body = { error: e.message, code: 422, details: e.details };
     } else {
-      const msg = e instanceof Error ? e.message : String(e);
+      // The message (SQL, paths, stack details) goes to the log only.
       console.error(`[routes] route ${match.route.id} threw:`, e);
-      body = { error: msg, code: 500 };
+      body = { error: "Internal error", code: 500 };
     }
     void insertLog(request.method, fullPath, status, Date.now() - started, ip,
       auth ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) } : null);

@@ -26,6 +26,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   secret settings and encrypted fields, and encrypts secret settings still stored in
   plaintext. **Back up this file with your database backups**: encrypted values can't be
   read without it. To switch to the env var later, set it to the file's contents.
+- **Custom routes are rate limited and return a generic `500`.** A custom route that
+  throws now answers `{"error":"Internal error"}`; read the message in the logs. They
+  count against the `/api/*` rate-limit rules like other API requests.
 - **Secret settings read back as `********`.** The admin API and MCP settings tools no
   longer return secret values; a `PATCH` (or MCP `update_setting`) that sends `********`
   back leaves the stored value alone. `GET /admin/notifications/providers` ignores
@@ -322,6 +325,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now generates a setup key when none is configured and requires it (compared in
   constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
   listened on all interfaces; it is now used.
+- **Custom routes skipped rate limits, security headers and CORS.** Routes under
+  `/api/v1/custom/` answer before the rest of the pipeline, so none of the three applied,
+  and an uncaught error returned its message (SQL, file paths) to the caller. They now
+  get all three and a generic `500`. Routes can also require sign-in (`require_auth`,
+  **Require sign-in** in the editor); existing routes stay public.
 - **Restoring a backup revived revoked sessions and kept stale caches.** A restore rolled
   back `token_revocations`, so sessions signed out and API tokens revoked since the
   backup worked again; it kept serving collections, hooks and routes from the replaced

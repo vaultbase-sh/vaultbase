@@ -193,6 +193,8 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+  // Per-route sign-in requirement; existing routes stay public.
+  addColumn(client, `ALTER TABLE vaultbase_routes ADD COLUMN require_auth INTEGER NOT NULL DEFAULT 0`);
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_jobs (

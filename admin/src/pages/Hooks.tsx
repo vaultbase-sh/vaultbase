@@ -115,6 +115,8 @@ interface CustomRoute {
   path: string;
   code: string;
   enabled: number;
+  /** 1 = callers must be signed in (401 otherwise). */
+  require_auth?: number;
   created_at: number;
   updated_at: number;
 }
@@ -808,6 +810,7 @@ function RouteEditor({
   const [path, setPath] = useState("");
   const [code, setCode] = useState(ROUTE_TEMPLATE);
   const [enabled, setEnabled] = useState(true);
+  const [requireAuth, setRequireAuth] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -819,12 +822,14 @@ function RouteEditor({
       setPath(route.path);
       setCode(route.code);
       setEnabled(!!route.enabled);
+      setRequireAuth(!!route.require_auth);
     } else {
       setName("");
       setMethod("GET");
       setPath("/");
       setCode(ROUTE_TEMPLATE);
       setEnabled(true);
+      setRequireAuth(false);
     }
     setError("");
     setSaving(false);
@@ -837,7 +842,7 @@ function RouteEditor({
     }
     setSaving(true);
     setError("");
-    const body = { name: name.trim(), method, path, code, enabled };
+    const body = { name: name.trim(), method, path, code, enabled, require_auth: requireAuth };
     const res = isNew
       ? await api.post<ApiResponse<CustomRoute>>("/api/v1/admin/routes", body)
       : await api.patch<ApiResponse<CustomRoute>>(`/api/v1/admin/routes/${route!.id}`, body);
@@ -890,6 +895,7 @@ function RouteEditor({
             </VbField>
           </div>
           <ToggleField on={enabled} onChange={setEnabled} />
+          <ToggleField on={requireAuth} onChange={setRequireAuth} label="Require sign-in" />
           <div style={{ display: "flex", gap: 8 }}>
             <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
             <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>

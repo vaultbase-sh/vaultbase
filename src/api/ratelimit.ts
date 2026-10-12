@@ -287,17 +287,35 @@ function trimBuckets(): void {
   }
 }
 
+/**
+ * Charge `request` against the matching rate-limit rule. Returns null when
+ * it may proceed, or what to answer with when it is over the limit.
+ */
+export async function checkRateLimit(
+  request: Request,
+  peerIp: string | null,
+  jwtSecret?: string,
+): Promise<{ retryAfter: number; body: { error: string; code: number } } | null> {
+  const path = normalizeApiPath(new URL(request.url).pathname);
+  if (shouldSkip(path)) return null;
+  const cfg = loadConfig();
+  if (!cfg.enabled || cfg.rules.length === 0) return null;
+
+  const hasAuth = await hasValidToken(request, jwtSecret);
+  const match = findRule(cfg.rules, path, request.method, hasAuth);
+  if (!match) return null;
+
+  const ip = ipFromRequest(request, peerIp);
+  const key = `${ip}|${match.index}`;
+  if (consumeToken(key, match.rule.max, match.rule.windowMs)) return null;
+  return {
+    retryAfter: Math.ceil(match.rule.windowMs / 1000),
+    body: { error: `Rate limit exceeded (rule: ${match.rule.label})`, code: 429 },
+  };
+}
+
 export function makeRateLimitPlugin(jwtSecret?: string) {
   return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
-    const path = normalizeApiPath(new URL(request.url).pathname);
-    if (shouldSkip(path)) return;
-    const cfg = loadConfig();
-    if (!cfg.enabled || cfg.rules.length === 0) return;
-
-    const hasAuth = await hasValidToken(request, jwtSecret);
-    const match = findRule(cfg.rules, path, request.method, hasAuth);
-    if (!match) return;
-
     // Bun exposes the peer IP via `server.requestIP(request)`. Elysia surfaces
     // `server` on the handler context.
     let peerIp: string | null = null;
@@ -305,12 +323,11 @@ export function makeRateLimitPlugin(jwtSecret?: string) {
       const s = server as unknown as { requestIP?: (r: Request) => { address: string } | null };
       peerIp = s?.requestIP?.(request)?.address ?? null;
     } catch { /* not all runtimes expose this */ }
-    const ip = ipFromRequest(request, peerIp);
-    const key = `${ip}|${match.index}`;
-    if (!consumeToken(key, match.rule.max, match.rule.windowMs)) {
+    const limited = await checkRateLimit(request, peerIp, jwtSecret);
+    if (limited) {
       set.status = 429;
-      set.headers["Retry-After"] = String(Math.ceil(match.rule.windowMs / 1000));
-      return { error: `Rate limit exceeded (rule: ${match.rule.label})`, code: 429 };
+      set.headers["Retry-After"] = String(limited.retryAfter);
+      return limited.body;
     }
   });
 }

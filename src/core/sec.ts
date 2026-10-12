@@ -423,6 +423,11 @@ export function trustedClientIp(request: Request, peerIp: string | null): string
  */
 const requestPeers = new WeakMap<Request, string | null>();
 
+/** The socket peer recorded for `request` by the server, or null. */
+export function rememberedPeer(request: Request): string | null {
+  return requestPeers.get(request) ?? null;
+}
+
 export function rememberPeer(request: Request, ip: string | null): void {
   requestPeers.set(request, ip === null ? null : normalizePeerIp(ip));
 }
