@@ -178,7 +178,10 @@ export function createServer(config: Config) {
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.
   setInterval(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000).unref?.();
-  return new Elysia()
+  // Client realtime messages are small JSON commands; Bun closes a socket
+  // sending anything larger (1009). This is server-wide websocket config —
+  // a limit on the .ws() route is ignored.
+  return new Elysia({ websocket: { maxPayloadLength: 64 * 1024 } })
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
     .onRequest(({ request, server }) => {
@@ -356,8 +359,6 @@ export function createServer(config: Config) {
       return { data: null };
     })
     .ws("/realtime", {
-      // Client messages are small JSON commands; refuse anything larger.
-      maxPayloadLength: 64 * 1024,
       async open(ws) {
         const req = (ws.data as { request?: Request } | undefined)?.request;
         if (req) {

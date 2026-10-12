@@ -106,3 +106,33 @@ describe("realtime Origin policy — SSE", () => {
     expect(await sseStatus(null)).toBe(200);
   });
 });
+
+/** Send `size` bytes after "connected"; resolves with the close code, or null if still open after 1s. */
+function sendAndWatch(size: number): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://${base}/realtime`);
+    const fail = setTimeout(() => { ws.close(); reject(new Error("no connected message within 3s")); }, 3000);
+    let sent = false;
+    ws.onmessage = () => {
+      if (sent) return;
+      sent = true;
+      clearTimeout(fail);
+      ws.send(JSON.stringify({ type: "subscribe", topics: ["x".repeat(size)] }));
+      setTimeout(() => { ws.close(); resolve(null); }, 1000);
+    };
+    ws.onclose = (e) => { if (sent) resolve(e.code); };
+  });
+}
+
+describe("realtime WebSocket message size", () => {
+  // The 64 KB limit was set on the route, which Elysia ignores; it has to be
+  // on the server's websocket config.
+  it("closes a connection that sends a message over 64 KB", async () => {
+    // Bun drops the socket (the client sees 1006 or 1009); before, it stayed open.
+    expect(await sendAndWatch(200 * 1024)).not.toBeNull();
+  });
+
+  it("keeps a connection that sends ordinary messages", async () => {
+    expect(await sendAndWatch(1024)).toBeNull();
+  });
+});
