@@ -67,3 +67,53 @@ describe("@collection.* on the right of ~", () => {
     expect(await count('"viewers-only" ~ @collection.members.role', "carol")).toBe(1);
   });
 });
+
+describe("@collection.* row binding (review 16)", () => {
+  async function docsByGroup(rule: string, who: string): Promise<string[]> {
+    await createCollection({ name: "gdocs", fields: JSON.stringify([{ name: "grp", type: "text" }]), list_rule: rule, view_rule: rule });
+    await createRecord("gdocs", { grp: "A" }, null);
+    await createRecord("gdocs", { grp: "B" }, null);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/gdocs", {
+      headers: { authorization: `Bearer ${await signUserJwt(ids[who]!, `${who}@test.local`, "users", SECRET)}` },
+    }));
+    return ((await res.json()) as { data: Array<{ grp: string }> }).data.map((d) => d.grp).sort();
+  }
+
+  beforeEach(async () => {
+    await createCollection({
+      name: "gm", fields: JSON.stringify([{ name: "user", type: "text" }, { name: "grp", type: "text" }]),
+      list_rule: null, view_rule: null,
+    });
+    await createRecord("gm", { user: ids["alice"], grp: "A" }, null);
+    await createRecord("gm", { user: ids["carol"], grp: "B" }, null);
+  });
+
+  it("two conditions on one collection must hold on the same row (F-1)", async () => {
+    const rule = "@collection.gm.grp = grp && @collection.gm.user = @request.auth.id";
+    expect(await docsByGroup(rule, "carol")).toEqual(["B"]);
+  });
+
+  it("the same rule still serves members their own group (legitimate path)", async () => {
+    const rule = "@collection.gm.grp = grp && @collection.gm.user = @request.auth.id";
+    expect(await docsByGroup(rule, "alice")).toEqual(["A"]);
+  });
+
+  it("an OR branch without the lookup still passes when nothing joins", async () => {
+    expect(await docsByGroup('grp = "A" || @collection.gm.user = "nobody"', "bob")).toEqual(["A"]);
+  });
+
+  it("!= against @collection means no row matches: a two-entry ban list bans both (F-1b)", async () => {
+    await createCollection({ name: "bans", fields: JSON.stringify([{ name: "user", type: "text" }]), list_rule: null, view_rule: null });
+    await createRecord("bans", { user: ids["alice"] }, null);
+    await createRecord("bans", { user: ids["bob"] }, null);
+    const rule = "@collection.bans.user != @request.auth.id";
+    expect(await docsByGroup(rule, "bob")).toEqual([]);
+  });
+
+  it("…and doesn't ban anyone else", async () => {
+    await createCollection({ name: "bans", fields: JSON.stringify([{ name: "user", type: "text" }]), list_rule: null, view_rule: null });
+    await createRecord("bans", { user: ids["alice"] }, null);
+    await createRecord("bans", { user: ids["bob"] }, null);
+    expect(await docsByGroup("@collection.bans.user != @request.auth.id", "carol")).toEqual(["A", "B"]);
+  });
+});

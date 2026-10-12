@@ -354,9 +354,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   collection.
 - **`@collection.*` rules looked at one arbitrary row.** `@collection.members.user =
   @request.auth.id` compiled to "the `user` of the first `members` row equals the
-  caller", so only that member passed. A comparison with an `@collection.*` operand now
-  means "some row of that collection that the caller may view matches", on either side
-  of the operator.
+  caller", so only that member passed, and a ban list (`@collection.bans.user !=
+  @request.auth.id`) only banned its first entry. A rule now passes when some row of the
+  collection (that the caller may view) makes it true, with every reference to the same
+  collection and alias bound to that one row; `!=` and `!~` against such a reference
+  mean no row matches.
 - **The same address could be registered twice in different case.** Promoting an
   anonymous account, changing email and magic-link sign-up checked for an existing
   address case-sensitively, so `ALICE@example.com` could be added beside

@@ -133,8 +133,10 @@ export function compileToSql(
     params: [],
     /** Track recursion depth on @collection.* / _via_ joins to bound work. */
     joinDepth: 0,
+    hoist: null,
+    aliasSeq: { n: 0 },
   };
-  const sql = compileNode(ast, ctx);
+  const sql = compileScoped(ast, ctx);
   return { sql, params: ctx.params };
 }
 
@@ -150,6 +152,36 @@ interface CompileCtx {
   hostPrivateField: (name: string) => boolean;
   /** Allow-list for the same table, or undefined to skip validation. */
   hostFilterable: ((name: string) => boolean) | undefined;
+  /** Joined `@collection.*` rows for the expression being compiled (see compileScoped). */
+  hoist: HoistScope | null;
+  /** Shared counter for join aliases, unique across nested scopes. */
+  aliasSeq: { n: number };
+}
+
+interface HoistJoin { alias: string; table: string; on: string; onParams: unknown[] }
+interface HoistScope { joins: HoistJoin[]; byKey: Map<string, HoistJoin> }
+
+/**
+ * Compile an expression in which every `@collection.X` reference (per alias)
+ * is bound to one row of X: the expression becomes
+ * `EXISTS (SELECT 1 FROM (SELECT 1) LEFT JOIN X AS j ON <X's view rule> … WHERE <expr>)`.
+ * So `@collection.members.grp = grp && @collection.members.user = @request.auth.id`
+ * needs one membership row matching both, and a LEFT JOIN keeps
+ * `public = true || @collection.…` true when X has no visible rows.
+ */
+function compileScoped(ast: Expr, ctx: CompileCtx): string {
+  const scope: HoistScope = { joins: [], byKey: new Map() };
+  const exprParams: unknown[] = [];
+  const sub: CompileCtx = { ...ctx, params: exprParams, hoist: scope };
+  const sql = compileNode(ast, sub);
+  if (scope.joins.length === 0) {
+    ctx.params.push(...exprParams);
+    return sql;
+  }
+  for (const j of scope.joins) ctx.params.push(...j.onParams);
+  ctx.params.push(...exprParams);
+  const joins = scope.joins.map((j) => `LEFT JOIN ${escapeIdent(j.table)} AS ${j.alias} ON ${j.on}`).join(" ");
+  return `EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one ${joins} WHERE ${sql})`;
 }
 
 const MAX_JOIN_DEPTH = 4;
@@ -216,22 +248,22 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return compileEach(ast.left, ast.right, op, ctx);
   }
 
-  // `@collection.X.f <op> v` (either side): some row of X matches.
+  // `@collection.X.f != v` / `!~ v` (either side): no row of X the caller
+  // may view matches. Bound to the joined row instead, it meant "some row
+  // differs" — and a ban list with two entries banned nobody.
   const leftColl = ast.left.kind === "collection" && !ast.left.modifier;
   const rightColl = ast.right.kind === "collection" && !ast.right.modifier;
-  if (leftColl !== rightColl) {
+  if (leftColl !== rightColl && (op === "!=" || op === "!~")) {
     const coll = (leftColl ? ast.left : ast.right) as Extract<Operand, { kind: "collection" }>;
     const other = leftColl ? ast.right : ast.left;
-    return compileCollectionRef(coll, ctx, (inner) => {
-      if (op === "~" || op === "!~") {
-        // `x ~ @collection.X.f` isn't symmetric; keep the operand order.
-        if (leftColl) return likeSql(inner, op, other, ctx);
-        const match = `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
-        return op === "~" ? match : `NOT ${match}`;
+    return `NOT ${compileCollectionRef(coll, ctx, (inner) => {
+      if (op === "!~") {
+        if (leftColl) return likeSql(inner, "~", other, ctx);
+        return `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
       }
       const otherSql = compileOperand(other, ctx);
-      return leftColl ? `${inner} ${sqlOpFor(op)} ${otherSql}` : `${otherSql} ${sqlOpFor(op)} ${inner}`;
-    });
+      return leftColl ? `${inner} = ${otherSql}` : `${otherSql} = ${inner}`;
+    })}`;
   }
 
   // Standard scalar comparison
@@ -372,13 +404,35 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
 }
 
 /**
- * `@collection.X.f`. On its own (with a modifier, or both sides of a
- * comparison) it is the value from one row. Compared against something else
- * — `exists` set — it is "some row of X the caller may view has f <op> v",
- * compiled to EXISTS. It used to be `(SELECT f FROM X LIMIT 1) <op> v`,
- * which looked at one arbitrary row: a members list only worked for its
- * first member.
+ * `@collection.X.f`. Normally a column of the row of X joined for this
+ * expression (see compileScoped), so every reference to X shares one row.
+ * With `exists`, a standalone `EXISTS (SELECT 1 FROM X WHERE <view rule> AND
+ * exists(f))`, used for negated comparisons. It used to be
+ * `(SELECT f FROM X LIMIT 1)`, one arbitrary row: a members list only worked
+ * for its first member, a ban list only banned its first entry.
  */
+/**
+ * Which rows of `collection` (joined as `alias`) the caller may see: its
+ * view rule compiled against the alias, `1=0` when admin-only (or no lookup
+ * to check it with) for non-admins.
+ */
+function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx): string {
+  if (!ctx.lookup) return ctx.auth?.type === "admin" ? "1" : "1=0";
+  const meta = ctx.lookup(collection);
+  if (!meta) throw new Error(`unknown collection in @collection.*: ${collection}`);
+  if (meta.viewRule === null) return "1";
+  if (meta.viewRule === "") return ctx.auth?.type === "admin" ? "1" : "1=0";
+  const innerAst = parseExpression(meta.viewRule);
+  if (!innerAst) return "1=0";
+  const innerCtx: CompileCtx = {
+    ...ctx,
+    tableName: alias,
+    hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
+    hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
+  };
+  return compileScoped(innerAst, innerCtx);
+}
+
 function compileCollectionRef(
   op: Extract<Operand, { kind: "collection" }>,
   ctx: CompileCtx,
@@ -394,6 +448,25 @@ function compileCollectionRef(
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
     const head = op.path[0]!;
+    if (!exists && ctx.hoist) {
+      const targetMeta0 = ctx.lookup?.(op.collection);
+      if (targetMeta0 && (targetMeta0.isPrivateField(head) || !targetMeta0.isFilterable(head))) {
+        throw new PrivateFieldError(head);
+      }
+      const key = `${op.collection}\u0000${op.alias ?? ""}`;
+      let join = ctx.hoist.byKey.get(key);
+      if (!join) {
+        const alias = `_vbj${++ctx.aliasSeq.n}`;
+        const onParams: unknown[] = [];
+        const on = collectionRowGuard(op.collection, alias, { ...ctx, params: onParams });
+        join = { alias, table: targetTable, on, onParams };
+        ctx.hoist.byKey.set(key, join);
+        ctx.hoist.joins.push(join);
+      }
+      let col = `${join.alias}.${escapeIdent(head)}`;
+      for (let i = 1; i < op.path.length; i++) col = `json_extract(${col}, '$.${op.path[i]}')`;
+      return applyModifierToSql(col, op.modifier);
+    }
     // `@collection.users.password_hash` is the same oracle as a local ref.
     const targetMeta = ctx.lookup?.(op.collection);
     if (targetMeta && (targetMeta.isPrivateField(head) || !targetMeta.isFilterable(head))) {
@@ -430,7 +503,7 @@ function compileCollectionRef(
             hostPrivateField: (n) => ctx.lookup?.(op.collection)?.isPrivateField(n) ?? false,
             hostFilterable: (n) => ctx.lookup?.(op.collection)?.isFilterable(n) ?? true,
           };
-          const sql = compileNode(innerAst, innerCtx);
+          const sql = compileScoped(innerAst, innerCtx);
           // copy back joinDepth so siblings see the work
           ctx.joinDepth = innerCtx.joinDepth;
           where = ` WHERE ${sql}`;
@@ -510,7 +583,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
             hostPrivateField: (n) => ctx.lookup?.(op.targetCollection)?.isPrivateField(n) ?? false,
             hostFilterable: (n) => ctx.lookup?.(op.targetCollection)?.isFilterable(n) ?? true,
           };
-          const ruleSql = compileNode(innerAst, innerCtx);
+          const ruleSql = compileScoped(innerAst, innerCtx);
           ctx.joinDepth = innerCtx.joinDepth;
           where += ` AND (${ruleSql})`;
         }
