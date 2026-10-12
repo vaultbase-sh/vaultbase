@@ -578,6 +578,14 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
             via = "token";
           }
         }
+        // A protected field is served by token only: falling through to the
+        // rule path made `protected` (and one-time / IP-bound tokens) a no-op
+        // on any record the caller could view. Admins are exempt.
+        const protectedField = fieldDefForAudit?.options?.protected === true;
+        if (!allowed && protectedField && auth?.type !== "admin") {
+          set.status = 401;
+          return { error: "Token required", code: 401 };
+        }
         if (!allowed) {
           // ── Rule path ─────────────────────────────────────────────────
           const reqCtx = buildFileRequestContext(request, clientIp, meta, collectionName);

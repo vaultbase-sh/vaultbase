@@ -66,6 +66,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `vaultbase setup-admin --email … --password … --force`.
 - **The admin SQL runner runs one statement per query.** A script with several
   statements separated by `;` now answers an error; run them one at a time.
+- **Protected files always need a download token.** Apps that showed protected files
+  by relying on the record's view rule must now mint a token
+  (`POST /files/:collection/:recordId/:field/:filename/token`) and append `?token=`.
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
@@ -186,6 +189,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   are stopped when the limit is reached. The sandbox also refuses `ATTACH`, `DETACH` and
   `VACUUM`, which could reach the live database or write files outside it, and the
   SQL runner now runs one statement at a time.
+- **Protected file fields didn't require a token.** A request without one fell through
+  to the record's rules and was served whenever they allowed it, so on a viewable record
+  `protected` — and one-time or IP-bound download tokens — could be skipped. Protected
+  files now need a valid download token for everyone but admins.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
