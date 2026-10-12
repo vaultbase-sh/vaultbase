@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb, getRawClient } from "../db/client.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
-import { getCollection, parseFields } from "../core/collections.ts";
+import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
 import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
 import { canSeeAs, getRecord } from "../core/records.ts";
@@ -179,7 +179,12 @@ function isRedirectUriAllowed(provider: string, uri: string): boolean {
     // `https://app.com*` also matched `https://app.com.evil.tld/…`.
     try {
       const prefix = new URL(p.slice(0, -1));
-      return prefix.origin === target.origin && target.pathname.startsWith(prefix.pathname);
+      if (prefix.protocol === "http:" || prefix.protocol === "https:") {
+        return prefix.origin === target.origin && target.pathname.startsWith(prefix.pathname);
+      }
+      // App schemes (`com.myapp://oauth*`) have no origin to compare — every
+      // non-web URL's is "null" — so match the same scheme and a raw prefix.
+      return target.protocol === prefix.protocol && uri.startsWith(p.slice(0, -1));
     } catch {
       return false;
     }
@@ -515,17 +520,52 @@ async function endRefreshedReplacement(token: string, jwtSecret: string): Promis
   } catch { /* not ours or malformed: nothing to end */ }
 }
 
+/**
+ * The account whose email matches `email` ignoring case. Plain lookups are
+ * exact, so `ALICE@x` from a provider missed the `alice@x` account and made a
+ * second account for the same mailbox.
+ */
+function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], email: string) {
+  const exact = findUserByEmail(col, email);
+  if (exact) return exact;
+  const row = getRawClient().prepare(
+    `SELECT id FROM "${userTableName(col.name)}" WHERE email = ? COLLATE NOCASE LIMIT 1`,
+  ).get(email) as { id: string } | undefined;
+  return row ? findUserById(col, row.id) : null;
+}
+
 /** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
-async function mfaTicketFor(collectionId: string, userId: string): Promise<{ mfa_required: true; mfa_token: string }> {
+async function mfaTicketFor(collectionId: string, userId: string, pending?: { link: PendingLink }): Promise<{ mfa_required: true; mfa_token: string }> {
   const ticket = newToken();
   await getDb().insert(authTokens).values({
     id: storedTokenId(ticket),
     user_id: userId,
     collection_id: collectionId,
     purpose: "mfa_ticket",
+    // Work to finish once the second factor is in (a provider link waiting
+    // on merge-confirm), so nothing changes on the password alone.
+    ...(pending ? { payload: JSON.stringify(pending) } : {}),
     expires_at: Math.floor(Date.now() / 1000) + MFA_TICKET_TTL_SECONDS,
   });
   return { mfa_required: true, mfa_token: ticket };
+}
+
+interface PendingLink { provider: string; provider_user_id: string; email: string }
+
+/** Link a provider identity to `userId` (idempotent) and mark the email verified. */
+async function applyProviderLink(colId: string, col: Parameters<typeof findUserById>[0], userId: string, link: PendingLink): Promise<void> {
+  const db = getDb();
+  const existing = await db.select().from(oauthLinks).where(and(
+    eq(oauthLinks.user_id, userId), eq(oauthLinks.provider, link.provider), eq(oauthLinks.provider_user_id, link.provider_user_id),
+  )).limit(1);
+  if (existing.length === 0) {
+    await db.insert(oauthLinks).values({
+      id: crypto.randomUUID(), user_id: userId, collection_id: colId,
+      provider: link.provider, provider_user_id: link.provider_user_id, provider_email: link.email,
+    });
+  }
+  const u = findUserById(col, userId);
+  if (u && !u.email_verified) await updateUserById(col, userId, { email_verified: 1, updated_at: Math.floor(Date.now() / 1000) });
 }
 
 export function makeAuthPlugin(jwtSecret: string) {
@@ -894,6 +934,13 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!(await consumeToken(tok.id, now))) {
           set.status = 400;
           return { error: "Invalid or expired MFA ticket", code: 400 };
+        }
+        // A merge-confirm waiting on this second factor: link the provider now.
+        if (tok.payload) {
+          try {
+            const pending = JSON.parse(tok.payload) as { link?: PendingLink };
+            if (pending.link) await applyProviderLink(col.id, col, u.id, pending.link);
+          } catch { /* not a pending-work payload */ }
         }
         const { token } = await signAuthToken({
           payload: { id: u.id, email: u.email, collection: col.name },
@@ -1669,6 +1716,12 @@ export function makeAuthPlugin(jwtSecret: string) {
       // it only in the browser (or only for server-side PKCE) let a forged
       // callback complete someone else's sign-in in the victim's browser.
       const state = query.state || newToken();
+      // The state travels through URLs, so anyone can obtain a valid one by
+      // starting a flow of their own and then plant its callback in a
+      // victim's browser (login CSRF). The state secret never leaves the
+      // page that called /authorize; /exchange requires it, so only that
+      // page can finish the flow.
+      const stateSecret = newToken();
       const nonce = providerUsesNonce(query.provider) ? newToken() : undefined;
       let codeChallenge: string | undefined;
       let verifier: string | undefined;
@@ -1692,7 +1745,10 @@ export function makeAuthPlugin(jwtSecret: string) {
           collection_id: col.id,
           purpose: "oauth2_state",
           code: verifier ?? null,
-          payload: JSON.stringify({ provider: query.provider, redirectUri: query.redirectUri, nonce: nonce ?? null }),
+          payload: JSON.stringify({
+            provider: query.provider, redirectUri: query.redirectUri, nonce: nonce ?? null,
+            secretHash: storedTokenId(stateSecret),
+          }),
           expires_at: Math.floor(Date.now() / 1000) + PKCE_TTL_SECONDS,
         });
       } catch {
@@ -1711,6 +1767,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           data: {
             authorize_url: url,
             state,
+            state_secret: stateSecret,
             ...(codeChallenge ? { code_challenge: codeChallenge, code_challenge_method: "S256" } : {}),
             pkce: serverManagedPkce ? "server" : codeChallenge ? "client" : "none",
           },
@@ -1752,14 +1809,15 @@ export function makeAuthPlugin(jwtSecret: string) {
       // and redirect URI, and is spent here (once).
       const db = getDb();
       const now = Math.floor(Date.now() / 1000);
-      if (!body.state) { set.status = 400; return { error: "state is required", code: 400 }; }
+      if (!body.state || !body.state_secret) { set.status = 400; return { error: "state and state_secret are required", code: 400 }; }
       const stateRow = (await findOneTimeToken(body.state))[0];
-      let stored: { provider?: string; redirectUri?: string; nonce?: string | null } = {};
+      let stored: { provider?: string; redirectUri?: string; nonce?: string | null; secretHash?: string } = {};
       try { stored = JSON.parse(stateRow?.payload ?? "{}"); } catch { /* invalid below */ }
       if (
         !stateRow || stateRow.purpose !== "oauth2_state" || stateRow.collection_id !== col.id ||
         stateRow.used_at || stateRow.expires_at < now ||
         stored.provider !== body.provider || stored.redirectUri !== body.redirectUri ||
+        !stored.secretHash || !timingSafeEqualStr(stored.secretHash, storedTokenId(body.state_secret)) ||
         !(await consumeToken(stateRow.id, now))
       ) {
         set.status = 400; return { error: "Invalid or expired state", code: 400 };
@@ -1810,7 +1868,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       //    `/oauth2/merge-confirm` with the user's existing password (or a
       //    valid user token for that user) to consent before we link.
       if (!userId && profile.emailVerified) {
-        const existing = findUserByEmail(col, profile.email);
+        const existing = findUserByEmailAnyCase(col, profile.email);
         if (existing) {
           const matchedUserId = existing.id;
           const mergeToken = crypto.randomUUID();
@@ -1843,21 +1901,22 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
 
       // 3. Create new user — fires afterCreate on the auth collection.
-      //    An address the provider didn't verify can't create a second
-      //    account beside an existing one (or be merged into it).
-      if (!userId && findUserByEmail(col, profile.email)) {
-        set.status = 409;
-        return { error: "An account with this email already exists. Sign in to it, then link this provider.", code: 409 };
-      }
+      //    An address the provider didn't verify isn't claimed for the new
+      //    account: it gets a placeholder (the provider's address stays on the
+      //    link). Otherwise the provider could reserve an address for someone
+      //    else's future account, or collide with an existing one.
+      const accountEmail = profile.emailVerified && !findUserByEmailAnyCase(col, profile.email)
+        ? profile.email
+        : `${body.provider}_${new Bun.CryptoHasher("sha256").update(profile.id).digest("hex").slice(0, 24)}@oauth.invalid`;
       if (!userId) {
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
         const hash = await hashPassword(randomPw);
         userId = crypto.randomUUID();
         await insertUser(col, {
           id: userId,
-          email: profile.email,
+          email: accountEmail,
           password_hash: hash,
-          email_verified: profile.emailVerified ? 1 : 0,
+          email_verified: accountEmail === profile.email ? 1 : 0,
           custom: profile.name ? { name: profile.name } : {},
           legacyDataJson: JSON.stringify(profile.name ? { name: profile.name } : {}),
           created_at: now,
@@ -1887,13 +1946,14 @@ export function makeAuthPlugin(jwtSecret: string) {
       // account's MFA.
       const signedIn = findUserById(col, userId);
       if (signedIn?.totp_enabled === 1) return { data: await mfaTicketFor(col.id, userId) };
+      const email = signedIn?.email ?? accountEmail;
       const { token } = await signAuthToken({
-        payload: { id: userId, email: profile.email, collection: col.name },
+        payload: { id: userId, email, collection: col.name },
         audience: "user",
         expiresInSeconds: tokenWindowSeconds("user"),
         jwtSecret,
       });
-      return { data: { token, record: { id: userId, email: profile.email } } };
+      return { data: { token, record: { id: userId, email } } };
     }, {
       body: t.Object({
         provider: t.String(),
@@ -1901,6 +1961,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         redirectUri: t.String(),
         // PKCE: client-supplied verifier wins; otherwise we look up by `state`.
         state: t.Optional(t.String()),
+        state_secret: t.Optional(t.String()),
         code_verifier: t.Optional(t.String()),
       }),
     })
@@ -1971,34 +2032,15 @@ export function makeAuthPlugin(jwtSecret: string) {
 
       // Already linked? If the same provider+provider_user_id row already
       // exists for this user, treat the call as idempotent and just sign a JWT.
-      const existingLink = await db
-        .select()
-        .from(oauthLinks)
-        .where(and(
-          eq(oauthLinks.user_id, user.id),
-          eq(oauthLinks.provider, stored.provider),
-          eq(oauthLinks.provider_user_id, stored.provider_user_id)
-        ))
-        .limit(1);
-      if (existingLink.length === 0) {
-        await db.insert(oauthLinks).values({
-          id: crypto.randomUUID(),
-          user_id: user.id,
-          collection_id: col.id,
-          provider: stored.provider,
-          provider_user_id: stored.provider_user_id,
-          provider_email: stored.email,
-        });
-      }
-      if (!user.email_verified) {
-        await updateUserById(col, user.id, { email_verified: 1, updated_at: now });
-      }
+      const link: PendingLink = { provider: stored.provider, provider_user_id: stored.provider_user_id, email: stored.email };
       // Proven by password, this is a sign-in: an account with TOTP on gets
-      // an MFA ticket, not a session. (A caller proving it with a session
-      // already passed MFA to get that session.)
+      // an MFA ticket, and the link is made only once that second factor is
+      // in — the password alone changes nothing. (A caller proving it with a
+      // session already passed MFA to get that session.)
       if (!viaSession && user.totp_enabled === 1) {
-        return { data: { ...(await mfaTicketFor(col.id, user.id)), linked_provider: stored.provider } };
+        return { data: { ...(await mfaTicketFor(col.id, user.id, { link })), linked_provider: stored.provider } };
       }
+      await applyProviderLink(col.id, col, user.id, link);
 
       const { token } = await signAuthToken({
         payload: { id: user.id, email: user.email, collection: col.name },

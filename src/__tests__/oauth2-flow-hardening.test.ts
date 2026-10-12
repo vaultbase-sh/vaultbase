@@ -80,19 +80,23 @@ const json = (path: string, body: unknown) => app().handle(new Request(`http://l
 async function authorize(redirectUri = CB, state?: string) {
   const q = new URLSearchParams({ provider: "oidc", redirectUri, ...(state ? { state } : {}) });
   const res = await app().handle(new Request(`http://localhost/auth/users/oauth2/authorize?${q}`));
-  const body = await res.json() as { data?: { authorize_url: string; state: string } };
+  const body = await res.json() as { data?: { authorize_url: string; state: string; state_secret: string } };
   return { status: res.status, data: body.data };
 }
 
-/** Run /authorize, have the stub echo the nonce it was given, then return the state. */
-async function begin(): Promise<string> {
+/** Run /authorize, have the stub echo the nonce it was given, then return the flow. */
+async function begin(): Promise<{ state: string; secret: string }> {
   const { data } = await authorize();
   echoNonce = new URL(data!.authorize_url).searchParams.get("nonce");
-  return data!.state;
+  return { state: data!.state, secret: data!.state_secret };
 }
 
-const exchange = (state: string | undefined, redirectUri = CB) =>
-  json("/auth/users/oauth2/exchange", { provider: "oidc", code: "c", redirectUri, ...(state !== undefined ? { state } : {}) });
+const exchange = (flow: { state?: string; secret?: string } | undefined, redirectUri = CB) =>
+  json("/auth/users/oauth2/exchange", {
+    provider: "oidc", code: "c", redirectUri,
+    ...(flow?.state !== undefined ? { state: flow.state } : {}),
+    ...(flow?.secret !== undefined ? { state_secret: flow.secret } : {}),
+  });
 
 describe("state", () => {
   it("a full flow with the issued state signs in (legitimate path)", async () => {
@@ -102,25 +106,25 @@ describe("state", () => {
   });
 
   it("is required, must have been issued, and works once", async () => {
-    const state = await begin();
+    const flow = await begin();
     expect((await exchange(undefined)).status).toBe(400);
-    expect((await exchange("forged-state")).status).toBe(400);
-    expect((await exchange(state)).status).toBe(200);
-    expect((await exchange(state)).status).toBe(400);
+    expect((await exchange({ state: "forged-state", secret: flow.secret })).status).toBe(400);
+    expect((await exchange(flow)).status).toBe(200);
+    expect((await exchange(flow)).status).toBe(400);
   });
 
   it("is bound to the redirect URI it was issued for", async () => {
     setSetting("oauth2.allowed_redirect_uris", `${CB},${APP}/other`);
-    const state = await begin();
-    expect((await exchange(state, `${APP}/other`)).status).toBe(400);
+    const flow = await begin();
+    expect((await exchange(flow, `${APP}/other`)).status).toBe(400);
   });
 });
 
 describe("nonce", () => {
   it("an id_token with another flow's nonce is refused", async () => {
-    const state = await begin();
+    const flow = await begin();
     echoNonce = "someone-elses-nonce";
-    expect((await exchange(state)).status).toBe(400);
+    expect((await exchange(flow)).status).toBe(400);
   });
 });
 
@@ -160,9 +164,15 @@ describe("accounts", () => {
     expect(body.data.token).toBeUndefined();
   });
 
-  it("an unverified provider email can't create a twin of an existing account", async () => {
-    profile = { sub: "p-3", email: "seed@test.local", email_verified: false };
-    expect((await exchange(await begin())).status).toBe(409);
+  it("an unverified provider email isn't claimed for the new account", async () => {
+    profile = { sub: "p-3", email: "SEED@test.local", email_verified: false };
+    const res = await exchange(await begin());
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: { record: { email: string } } };
+    expect(body.data.record.email).toMatch(/@oauth\.invalid$/);
+    profile = { sub: "p-4", email: "nobody-yet@test.local", email_verified: false };
+    const second = await (await exchange(await begin())).json() as { data: { record: { email: string } } };
+    expect(second.data.record.email).toMatch(/@oauth\.invalid$/);
   });
 
   it("a password reset drops the account's OAuth links", async () => {
@@ -175,5 +185,47 @@ describe("accounts", () => {
     });
     expect((await json("/auth/users/confirm-password-reset", { token: "reset-tok", password: "brand-new-pass-1" })).status).toBe(200);
     expect(await getDb().select().from(oauthLinks).where(and(eq(oauthLinks.user_id, link.user_id)))).toHaveLength(0);
+  });
+});
+
+describe("review 12 follow-ups", () => {
+  it("a state obtained by someone else can't finish the flow without its secret (login CSRF)", async () => {
+    const attackers = await begin();
+    const attackerNonce = echoNonce;
+    // The victim's page has no secret for this state (or its own, different one).
+    const victims = await begin();
+    // The provider callback is genuinely the attacker's (their nonce).
+    echoNonce = attackerNonce;
+    expect((await exchange({ state: attackers.state })).status).toBe(400);
+    expect((await exchange({ state: attackers.state, secret: victims.secret })).status).toBe(400);
+  });
+
+  it("an app-scheme wildcard doesn't admit other schemes", async () => {
+    setSetting("oauth2.allowed_redirect_uris", "com.myapp://oauth*");
+    expect((await authorize("javascript:alert(1)")).status).toBe(422);
+    expect((await authorize("data:text/html,x")).status).toBe(422);
+    expect((await authorize("com.other://oauth/cb")).status).toBe(422);
+    expect((await authorize("com.myapp://oauth/cb")).status).toBe(200);
+  });
+
+  it("a verified email matches an existing account regardless of case (merge, not a twin)", async () => {
+    profile = { sub: "p-5", email: "SEED@test.local", email_verified: true };
+    const body = await (await exchange(await begin())).json() as { data: { merge_required?: boolean } };
+    expect(body.data.merge_required).toBe(true);
+  });
+
+  it("merge-confirm by password links nothing until the MFA step is done", async () => {
+    const id = await seedAuthUser({ collection: "users", email: "mfa2@test.local", passwordHash: await Bun.password.hash("pw-1234567890") });
+    const col = (await getCollection("users"))!;
+    const secret = generateSecret();
+    await updateUserById(col, id, { totp_enabled: 1, totp_secret: secret });
+    profile = { sub: "p-6", email: "mfa2@test.local", email_verified: true };
+    const merge = await (await exchange(await begin())).json() as { data: { merge_token: string } };
+    const confirm = await (await json("/auth/users/oauth2/merge-confirm", { merge_token: merge.data.merge_token, password: "pw-1234567890" })).json() as { data: { mfa_token: string } };
+    expect(await getDb().select().from(oauthLinks).where(eq(oauthLinks.provider_user_id, "p-6"))).toHaveLength(0);
+    const { generateCode } = await import("../core/totp.ts");
+    const done = await json("/auth/users/login/mfa", { mfa_token: confirm.data.mfa_token, code: generateCode(secret) });
+    expect(done.status).toBe(200);
+    expect(await getDb().select().from(oauthLinks).where(eq(oauthLinks.provider_user_id, "p-6"))).toHaveLength(1);
   });
 });

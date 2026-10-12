@@ -94,9 +94,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `oauth2.allowed_redirect_uris` configured, only redirect URIs on `app.url`'s origin are
   accepted — set the list if your callback lives elsewhere. Accounts with TOTP get
   `{ mfa_required, mfa_token }` from `/exchange` and password-based `/merge-confirm`.
-  Facebook, Microsoft, Twitch, Spotify and Notion emails no longer merge into existing
-  accounts or count as verified, and an existing address answers `409`. Resetting a
-  password removes the account's provider links.
+  `/oauth2/authorize` also returns a `state_secret`; keep it in the page that started
+  the flow and send it to `/exchange` — without it the exchange answers `400`. Facebook,
+  Microsoft, Twitch, Spotify and Notion emails no longer merge into existing accounts or
+  count as verified; an account created from an unverified (or already taken) provider
+  email gets a placeholder `…@oauth.invalid` address. Resetting a password removes the
+  account's provider links.
 - **Hook egress is stricter.** `helpers.fetch` is now filtered like `helpers.http`;
   redirects are followed by hand (at most 5) with each hop checked; a host that doesn't
   resolve is blocked; and cloud metadata addresses can't be allowed. A hook that reached
