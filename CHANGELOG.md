@@ -399,6 +399,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Queue jobs interrupted by a restart or crash ran again.** A job left in `running`
+  when its process stopped stayed there for good. At startup those jobs go back on the
+  queue (the interrupted run counts as an attempt). In cluster mode, where a sibling may
+  still be running them, only jobs running for over an hour are taken back.
 - **Vector search returned `400` for `nearLimit` above 25.** The top matches were
   loaded with one `id = … || …` filter, longer than the filter parser accepts. They are
   now loaded in chunks, so `nearLimit` works up to its documented 1000.

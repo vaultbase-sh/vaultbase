@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -214,6 +214,19 @@ const POLL_INTERVAL_MS = 500;
  */
 export function startQueueScheduler(): void {
   if (schedulerInterval) return;
+  // Jobs a previous process left in `running` were never picked up again.
+  // Alone, every running job is ours from before a restart; in a cluster a
+  // sibling may still be working on it, so only re-queue ones running for
+  // longer than STUCK_AFTER_SECONDS.
+  const clustered = !!process.env["VAULTBASE_WORKER_ID"];
+  void recoverInterruptedJobs(clustered ? Math.floor(Date.now() / 1000) - STUCK_AFTER_SECONDS : Math.floor(Date.now() / 1000))
+    .catch(() => { /* retried by the sweep */ });
+  if (clustered) {
+    recoveryInterval = setInterval(() => {
+      void recoverInterruptedJobs(Math.floor(Date.now() / 1000) - STUCK_AFTER_SECONDS).catch(() => { /* next sweep */ });
+    }, 60_000);
+    recoveryInterval.unref?.();
+  }
   schedulerInterval = setInterval(() => { void tick(); }, POLL_INTERVAL_MS);
   void tick();
 }
@@ -221,6 +234,32 @@ export function startQueueScheduler(): void {
 export function stopQueueScheduler(): void {
   if (schedulerInterval) clearInterval(schedulerInterval);
   schedulerInterval = null;
+  if (recoveryInterval) clearInterval(recoveryInterval);
+  recoveryInterval = null;
+}
+
+let recoveryInterval: ReturnType<typeof setInterval> | null = null;
+/** In cluster mode, a job running this long is assumed to have lost its process. */
+const STUCK_AFTER_SECONDS = 60 * 60;
+
+/**
+ * Put jobs stuck in `running` (claimed at or before `startedBefore`) back on
+ * the queue, counting the interrupted run as an attempt. Returns how many.
+ */
+export async function recoverInterruptedJobs(startedBefore: number): Promise<number> {
+  const rows = await getDb()
+    .update(jobsLog)
+    .set({
+      status: "queued",
+      attempt: sql`${jobsLog.attempt} + 1`,
+      worker_id: null,
+      started_at: null,
+      scheduled_at: Math.floor(Date.now() / 1000),
+      error: "interrupted: the process running this job stopped",
+    })
+    .where(and(eq(jobsLog.status, "running"), lte(jobsLog.started_at, startedBefore)))
+    .returning({ id: jobsLog.id });
+  return rows.length;
 }
 
 async function tick(): Promise<void> {
