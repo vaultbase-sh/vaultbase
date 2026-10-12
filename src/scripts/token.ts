@@ -133,6 +133,9 @@ async function cmdMint(args: ParsedArgs, jwtSecret: string): Promise<void> {
     process.stdout.write(`  id:      ${result.id}\n`);
     process.stdout.write(`  expires: ${expDate} (${Math.round((result.expires_at - Math.floor(Date.now() / 1000)) / 86400)} days)\n`);
     process.stdout.write(`  scopes:  ${args.scopes.join(", ")}\n\n`);
+    if (args.scopes.some((sc) => sc === "read" || sc === "mcp:read")) {
+      process.stderr.write("note: a read / mcp:read token reads ALL data, ignoring collection rules — treat it as a read-only admin credential.\n");
+    }
     process.stdout.write(`  TOKEN — save this, it will NEVER be shown again:\n\n`);
     process.stdout.write(`    ${result.token}\n\n`);
   }
