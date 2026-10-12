@@ -24,11 +24,16 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
 
 export function makeCollectionsPlugin(jwtSecret: string) {
   return new Elysia({ name: "collections" })
-    .get("/collections", async () => {
+    // Collection definitions carry every rule, field and view query — a map
+    // of what is protected and how — so reading them is admin-only, like the
+    // OpenAPI document.
+    .get("/collections", async ({ request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const data = await listCollections();
       return { data };
     })
-    .get("/collections/:id", async ({ params, set }) => {
+    .get("/collections/:id", async ({ params, request, set }) => {
+      if (!(await isAdmin(request, jwtSecret))) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const col = await getCollection(params.id);
       if (!col) { set.status = 404; return { error: "Not found", code: 404 }; }
       return { data: col };

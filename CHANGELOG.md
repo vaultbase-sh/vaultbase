@@ -69,6 +69,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Protected files always need a download token.** Apps that showed protected files
   by relying on the record's view rule must now mint a token
   (`POST /files/:collection/:recordId/:field/:filename/token`) and append `?token=`.
+- **`GET /collections` and `/collections/:id` need an admin token.** Non-admin callers
+  get `401`. For a schema your app can read, enable the public OpenAPI document
+  (`api.openapi_public`), which leaves out admin-only collections.
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
@@ -193,6 +196,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   to the record's rules and was served whenever they allowed it, so on a viewable record
   `protected` — and one-time or IP-bound download tokens — could be skipped. Protected
   files now need a valid download token for everyone but admins.
+- **Collection definitions were public.** `GET /collections` and `/collections/:id`
+  answered anyone with every collection's rules, fields and view SQL. They are now
+  admin-only, as the API docs already said.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
