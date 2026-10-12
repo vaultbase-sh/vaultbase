@@ -236,7 +236,7 @@ Server flags:
 Environment:
   VAULTBASE_DATA_DIR              Data directory (default: ./vaultbase_data)
   VAULTBASE_PORT                  HTTP port (default: 8091)
-  VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
+  VAULTBASE_HOST                  Bind host (default: all interfaces, IPv4 and IPv6)
   VAULTBASE_SETUP_KEY             Key for first-admin setup (default: generated, printed at boot)
   VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
@@ -381,9 +381,10 @@ async function main() {
   // before — no flag, no behavior change.
   const isWorker = !!process.env["VAULTBASE_WORKER_ID"];
   // VAULTBASE_HOST was documented but never read, so the server always
-  // listened on every interface.
-  const hostname = process.env["VAULTBASE_HOST"]?.trim() || "0.0.0.0";
-  server.listen({ port: config.port, hostname, ...(isWorker ? { reusePort: true } : {}) });
+  // listened on every interface. Unset keeps Bun's default (all interfaces,
+  // IPv4 and IPv6).
+  const hostname = process.env["VAULTBASE_HOST"]?.trim();
+  server.listen({ port: config.port, ...(hostname ? { hostname } : {}), ...(isWorker ? { reusePort: true } : {}) });
 
   // Graceful shutdown: stop taking connections, let in-flight requests
   // finish (up to 10 s), stop background work, flush logs, close the

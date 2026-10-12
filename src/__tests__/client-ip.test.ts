@@ -10,7 +10,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setSetting } from "../api/settings.ts";
-import { clientIp, perClientLimitIp, rememberPeer, trustedClientIp } from "../core/sec.ts";
+import { clientIp, perClientLimitIp, rememberPeer, requestIsHttps, trustedClientIp } from "../core/sec.ts";
 
 const req = (xff?: string) => new Request("http://localhost/", { headers: xff ? { "x-forwarded-for": xff } : {} });
 
@@ -73,5 +73,23 @@ describe("perClientLimitIp (realtime per-address caps)", () => {
   it("with trusted proxies, caps by the forwarded client address", () => {
     expect(perClientLimitIp(req("203.0.113.5"), "10.0.0.2")).toBe("203.0.113.5");
     expect(perClientLimitIp(req(), "198.51.100.9")).toBe("198.51.100.9");
+  });
+});
+
+describe("IPv4-mapped peers (review 15 F-3)", () => {
+  // On an IPv6 listener an IPv4 proxy shows up as ::ffff:a.b.c.d, which
+  // never matched a v4 entry in the trusted-proxy list.
+  it("match an IPv4 trusted proxy", () => {
+    expect(trustedClientIp(req("203.0.113.5"), "::ffff:10.0.0.2")).toBe("203.0.113.5");
+  });
+
+  it("are reported in IPv4 form, so rate limits key the same way", () => {
+    expect(trustedClientIp(req(), "::ffff:198.51.100.9")).toBe("198.51.100.9");
+  });
+
+  it("count for X-Forwarded-Proto from a trusted proxy", () => {
+    const r = new Request("http://localhost/", { headers: { "x-forwarded-proto": "https" } });
+    rememberPeer(r, "::ffff:10.0.0.2");
+    expect(requestIsHttps(r)).toBe(true);
   });
 });

@@ -347,7 +347,19 @@ function getTrustedProxies(): { cidrs: ParsedCidr[]; bare: Set<string> } | null 
   return { cidrs, bare };
 }
 
+/**
+ * `::ffff:a.b.c.d` → `a.b.c.d`. A server listening on IPv6 sees IPv4 peers
+ * in this mapped form, which never matched `127.0.0.1` or `10.0.0.0/8` in
+ * the trusted-proxy list: the proxy's forwarded address was ignored and every
+ * client shared its rate-limit bucket.
+ */
+export function normalizePeerIp(ip: string): string {
+  const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  return m ? m[1]! : ip;
+}
+
 function isTrustedProxy(ip: string): boolean {
+  ip = normalizePeerIp(ip);
   const t = getTrustedProxies();
   if (!t) return false;
   if (t.bare.has(ip)) return true;
@@ -370,6 +382,7 @@ const LOCAL_NETWORK_CIDRS = [
  */
 export function perClientLimitIp(request: Request | null, peerIp: string | null): string | null {
   if (!peerIp) return null;
+  peerIp = normalizePeerIp(peerIp);
   if (!getTrustedProxies()) {
     const ip = embeddedIPv4(peerIp) ?? peerIp;
     if (LOCAL_NETWORK_CIDRS.some((c) => ipInCidr(ip, c))) return null;
@@ -380,6 +393,7 @@ export function perClientLimitIp(request: Request | null, peerIp: string | null)
 
 export function trustedClientIp(request: Request, peerIp: string | null): string {
   if (!peerIp) return "unknown";
+  peerIp = normalizePeerIp(peerIp);
   if (!isTrustedProxy(peerIp)) return peerIp;
   const fwd = request.headers.get("x-forwarded-for");
   if (fwd) {
@@ -406,7 +420,7 @@ export function trustedClientIp(request: Request, peerIp: string | null): string
 const requestPeers = new WeakMap<Request, string | null>();
 
 export function rememberPeer(request: Request, ip: string | null): void {
-  requestPeers.set(request, ip);
+  requestPeers.set(request, ip === null ? null : normalizePeerIp(ip));
 }
 
 /**

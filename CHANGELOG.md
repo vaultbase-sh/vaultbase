@@ -56,7 +56,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   doesn't need the key, and now reads `/etc/vaultbase/vaultbase.env` (or
   `VAULTBASE_ENV_FILE`) so it works on the service's database.
 - **`VAULTBASE_HOST` is honoured.** The server used to listen on every interface
-  whatever it said; set `VAULTBASE_HOST=127.0.0.1` behind a local reverse proxy.
+  whatever it said; set `VAULTBASE_HOST=127.0.0.1` behind a local reverse proxy. Unset,
+  it still listens on every interface, IPv4 and IPv6.
 - **Sign-in lockout is on by default and covers users too.** After 10 failed sign-ins in
   15 minutes, the account (and, behind a configured trusted proxy, the client IP) gets
   `429 Too many failed attempts` until the window passes. This applies to admin sign-in,
@@ -311,6 +312,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the signature was only checked when the release carried `.sig`/`.pem` assets, so a
   release without them was installed on the SHA-256 alone, with no warning. It is now
   refused unless `--no-verify` is passed.
+- **A trusted proxy reaching the server over IPv4-mapped IPv6 wasn't trusted.** On an
+  IPv6 listener an IPv4 proxy appears as `::ffff:127.0.0.1`, which never matched
+  `127.0.0.1` or `127.0.0.0/8` in `VAULTBASE_TRUSTED_PROXIES`, so the forwarded client
+  address and `X-Forwarded-Proto` were ignored and every client shared the proxy's rate
+  limit. Peer addresses are now read in their IPv4 form.
 - **`~` with an empty right side matched every record.** When the right-hand value of
   `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`
