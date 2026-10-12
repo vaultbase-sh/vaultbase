@@ -2,13 +2,13 @@ import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb, getRawClient } from "../db/client.ts";
-import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks } from "../db/schema.ts";
+import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields } from "../core/collections.ts";
 import { findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
 import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
 import { getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
-import { tokenWindowSeconds } from "../core/auth-tokens.ts";
+import { sessionMaxSeconds, tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
   dummyPasswordHash,
   HASH_OPTS,
@@ -1832,12 +1832,43 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (typeof prev["collection"] === "string") claims["collection"] = prev["collection"];
       const anonymous = prev["anonymous"] === true;
       if (anonymous) claims["anonymous"] = true;
-      const { token: newToken } = await signAuthToken({
+      const now = Math.floor(Date.now() / 1000);
+      let ttl = tokenWindowSeconds(anonymous ? "anonymous" : "refresh");
+      // Absolute session lifetime. `auth_time` is the original sign-in and is
+      // carried through every refresh (tokens minted at sign-in don't carry it,
+      // so their `iat` is the sign-in). Refreshing can extend a session up to
+      // the cap but never past it. Anonymous sessions are exempt: a guest has
+      // no credential to sign in again with, so capping would orphan the
+      // account and its data.
+      const authTime = typeof prev["auth_time"] === "number" ? prev["auth_time"] : (ctx.iat ?? now);
+      claims["auth_time"] = authTime;
+      const cap = sessionMaxSeconds();
+      if (cap > 0 && !anonymous) {
+        const remaining = authTime + cap - now;
+        if (remaining < 60) {
+          set.status = 401; return { error: "Session expired. Sign in again.", code: 401 };
+        }
+        ttl = Math.min(ttl, remaining);
+      }
+      // Revoke the token being replaced, so refreshing doesn't leave two live
+      // sessions. The insert is conditional: two requests racing the same
+      // token can't both get a fresh one.
+      if (ctx.jti) {
+        const revoked = await getDb().insert(tokenRevocations)
+          .values({ jti: ctx.jti, expires_at: ctx.exp ?? now + ttl, revoked_at: now })
+          .onConflictDoNothing()
+          .returning({ jti: tokenRevocations.jti });
+        if (revoked.length === 0) { set.status = 401; return { error: "Token expired or invalid", code: 401 }; }
+      }
+      const { token: newToken, jti, exp, iat } = await signAuthToken({
         payload: claims,
         audience: ctx.type,
-        expiresInSeconds: tokenWindowSeconds(anonymous ? "anonymous" : "refresh"),
+        expiresInSeconds: ttl,
         jwtSecret,
       });
+      if (ctx.type === "admin") {
+        await recordAdminSession({ jti, admin_id: ctx.id, admin_email: ctx.email ?? "", issued_at: iat, expires_at: exp, request });
+      }
       return { data: { token: newToken } };
     });
 }

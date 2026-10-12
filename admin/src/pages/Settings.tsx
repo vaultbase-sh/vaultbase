@@ -2406,8 +2406,12 @@ const PRESETS: Array<{ label: string; seconds: number }> = [
   { label: "90 days", seconds: 90 * 86400 },
 ];
 
+const SESSION_MAX_DEFAULT = 30 * 86400;
+
 function SessionLifetimesSection() {
   const [values, setValues] = useState<Record<string, string>>({});
+  // Absolute cap on how long refreshing can keep one sign-in alive.
+  const [maxSession, setMaxSession] = useState(String(SESSION_MAX_DEFAULT));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -2420,6 +2424,7 @@ function SessionLifetimesSection() {
           next[k.kind] = v ?? String(k.defaultSeconds);
         }
         setValues(next);
+        setMaxSession(res.data["auth.session.max_seconds"] ?? String(SESSION_MAX_DEFAULT));
       }
       setLoading(false);
     });
@@ -2442,11 +2447,17 @@ function SessionLifetimesSection() {
         return;
       }
     }
+    const max = parseInt(maxSession, 10);
+    if (!Number.isFinite(max) || (max !== 0 && max < 3600)) {
+      toast("Maximum session age: 0 (no cap) or at least 3600 seconds", "info");
+      return;
+    }
     setSaving(true);
     const payload: Record<string, string> = {};
     for (const k of SESSION_KINDS) {
       payload[`auth.${k.kind}.window_seconds`] = String(parseInt(values[k.kind] ?? "0", 10));
     }
+    payload["auth.session.max_seconds"] = String(max);
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
@@ -2526,6 +2537,29 @@ function SessionLifetimesSection() {
             </div>
           );
         })}
+        <div style={{
+          border: "1px solid var(--vb-border)", borderRadius: 7,
+          padding: "12px 14px", background: "var(--vb-bg-2)",
+        }}>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Maximum session age</div>
+            <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--vb-fg-3)", marginTop: 2 }}>
+              How long <VbCode>/refresh</VbCode> can keep one sign-in alive, counted from the original
+              sign-in. After that the user or admin signs in again. Anonymous sessions are exempt.
+              0 = no cap. Default 30 days.
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <VbInput
+              mono type="number" min={0}
+              value={maxSession}
+              onChange={(e) => setMaxSession(e.target.value)}
+              disabled={loading}
+              style={{ width: 140 }}
+            />
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>seconds</span>
+          </div>
+        </div>
       </div>
 
       <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />

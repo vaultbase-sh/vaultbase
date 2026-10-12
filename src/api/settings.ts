@@ -7,7 +7,7 @@ import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache 
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
-import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
+import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 import { validateBackupKeep } from "../core/backups.ts";
 import { validateCron } from "../core/jobs.ts";
@@ -177,6 +177,10 @@ export function makeSettingsPlugin(jwtSecret: string) {
         // Pre-validate auth window keys before any write — reject the whole
         // PATCH on the first invalid value rather than half-applying.
         for (const [k, v] of Object.entries(body)) {
+          if (k === SESSION_MAX_KEY) {
+            const err = validateSessionMaxSeconds(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
           if (isAuthWindowKey(k)) {
             const err = validateWindowSeconds(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }

@@ -47,6 +47,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `POST /auth/:collection/login`, which had none. Tune or disable it at **Settings →
   Security → Brute-force lockout** (`auth.lockout.max_attempts`, `0` turns it off). An
   install that had explicitly saved `0` keeps it off.
+- **Refreshing a token revokes the old one, and sessions have a maximum age.**
+  `POST /auth/refresh` now revokes the token it was called with, so keep the new token
+  and drop the old one (the SDK already does). A sign-in can be kept alive by refreshing
+  for at most 30 days from the original sign-in; after that `/refresh` answers `401` and
+  the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
+  Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
+  sessions are exempt.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -111,6 +118,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   one email of each kind per minute and five per hour; extra requests to the public
   endpoints still answer `200` but send nothing, and `request-verify` answers `429`. A
   held-back OTP request no longer voids the code that was already sent.
+- **A stolen token could be kept alive forever.** `/auth/refresh` left the old token
+  valid until its own expiry and re-stamped the expiry on every call, with no limit on
+  the session's total age. Admin refreshes also didn't appear in **Settings → Security →
+  Sessions**, so they couldn't be revoked from there. See the upgrade note above.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
