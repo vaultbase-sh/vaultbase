@@ -13,7 +13,7 @@
 import type { Database } from "bun:sqlite";
 import { getRawClient } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
-import { parseFields, userTableName, type FieldDef } from "./collections.ts";
+import { privateFieldNames, parseFields, userTableName, type FieldDef } from "./collections.ts";
 import { compileListWhere, FilterError, type ListOptions } from "./records.ts";
 
 export type AggFn = "count" | "sum" | "avg" | "min" | "max";
@@ -58,6 +58,9 @@ function resolveColumn(col: Collection, fields: FieldDef[], name: string): Colum
   if (name === "created" || name === "created_at") return { sql: q("created_at"), type: "autodate" };
   if (name === "updated" || name === "updated_at") return { sql: q("updated_at"), type: "autodate" };
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name)) throw new FilterError(`unknown field '${name}'`);
+  // Private columns (auth secrets, password fields — in a view too) are
+  // unknown here, as they are to filters: grouping returns their values.
+  if (privateFieldNames(col).has(name)) throw new FilterError(`unknown field '${name}'`);
   const f = fields.find((x) => x.name === name);
   // View fields are inferred and untyped; anything the view exposes is fair game.
   if (col.type === "view") {

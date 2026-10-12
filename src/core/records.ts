@@ -471,6 +471,7 @@ export async function listRecords(
     "id", "created_at", "updated_at",
     ...fields.filter((f) => !f.system).map((f) => f.name),
   ]);
+  const sortPrivate = privateFieldNames(col);
   const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses: string[] = [];
   for (const s of sortSpec.split(",").map((x) => x.trim()).filter(Boolean)) {
@@ -482,6 +483,9 @@ export async function listRecords(
     // the SELECT and may not be fully reflected in `fields`); base + auth
     // collections strictly whitelist.
     if (col.type !== "view" && !sortableCols.has(colName)) continue;
+    // Never order by a private column: the row order alone leaks it one
+    // comparison at a time (a password field, or auth secrets in a view).
+    if (sortPrivate.has(colName)) continue;
     // Defense-in-depth even after whitelist: reject any value that doesn't
     // match a SQL identifier regex. Whitelist covers it for non-view, this
     // is the view-collection-fallback safety net.

@@ -394,11 +394,45 @@ export function validateViewQuery(query: string): void {
   if (names.some((w) => w.startsWith("PRAGMA_") || w.startsWith("SQLITE_"))) {
     throw new Error("View query may not reference SQLite metadata");
   }
-  // Auth secrets can't be selected by name (or renamed with AS). `SELECT *`
-  // keeps their names, and those are stripped from view rows and filters.
-  if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()))) {
-    throw new Error("View query may not read password hashes, TOTP secrets or password_reset_at");
+  // Auth secrets and password-type fields can't be selected by name (or
+  // renamed with AS). `SELECT *` keeps their names, and those are stripped
+  // from view rows and filters.
+  const sensitive = sensitiveSchema();
+  if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()) || sensitive.passwordFields.has(w.toLowerCase()))) {
+    throw new Error("View query may not read password hashes, TOTP secrets, password_reset_at or password fields");
   }
+  // A compound SELECT takes its column names from its first part, so
+  // `SELECT 1 AS a, … UNION SELECT * FROM vb_users` renames the secrets by
+  // position, past the name check above.
+  if (words.some((w) => w === "UNION" || w === "INTERSECT" || w === "EXCEPT") &&
+      [...words, ...identifiers].some((w) => sensitive.tables.has(w.toLowerCase()))) {
+    throw new Error("View query may not combine (UNION / INTERSECT / EXCEPT) results from tables with private columns");
+  }
+}
+
+/**
+ * Names the view check treats as private: every password-type field of any
+ * collection, and the tables that hold private columns (auth collections,
+ * and collections with a password field). Read straight from the
+ * collections table so the check stays synchronous.
+ */
+function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> } {
+  const passwordFields = new Set<string>();
+  const tables = new Set<string>();
+  let rows: Array<{ name: string; type: string; fields: string }> = [];
+  try {
+    rows = rawClient().prepare("SELECT name, type, fields FROM vaultbase_collections").all() as typeof rows;
+  } catch { /* no collections table yet */ }
+  for (const r of rows) {
+    let hasPassword = false;
+    try {
+      for (const f of parseFields(r.fields)) {
+        if (f.type === "password") { passwordFields.add(f.name.toLowerCase()); hasPassword = true; }
+      }
+    } catch { /* unparseable: treat by type only */ }
+    if (r.type === "auth" || hasPassword) tables.add(userTableName(r.name).toLowerCase());
+  }
+  return { passwordFields, tables };
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */

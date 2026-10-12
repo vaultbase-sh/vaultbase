@@ -61,3 +61,26 @@ describe("view query check", () => {
     expect(() => validateViewQuery("SELECT id, email, created_at FROM vb_users WHERE email LIKE '%--%'")).not.toThrow();
   });
 });
+
+describe("review 10 follow-ups", () => {
+  it("/_aggregate can't group by a view's private columns", async () => {
+    await createCollection({ name: "people", type: "view", view_query: "SELECT * FROM vb_users", list_rule: null, view_rule: null });
+    const res = await list(`/_aggregate?agg=count&groupBy=password_hash`);
+    expect(res.status).toBe(400);
+    expect(await res.text()).not.toContain("secret-hash");
+  });
+
+  it("sorting by a private column is ignored, so row order doesn't leak it", async () => {
+    await seedAuthUser({ collection: "users", email: "b@test.local", passwordHash: "$zzz" });
+    await createCollection({ name: "people", type: "view", view_query: "SELECT * FROM vb_users", list_rule: null, view_rule: null });
+    const order = async (sort: string) => ((await (await list(`?sort=${sort}`)).json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+    expect(await order("password_hash")).toEqual(await order("-password_hash"));
+  });
+
+  it("a base collection's password field can't be read through a view, nor renamed by UNION", async () => {
+    await createCollection({ name: "vault", fields: JSON.stringify([{ name: "pin", type: "password" }]) });
+    expect(() => validateViewQuery("SELECT id, pin AS p FROM vb_vault")).toThrow();
+    expect(() => validateViewQuery("SELECT 1 AS id, 2 AS email, 3 AS a, 4 AS b, 5 AS c, 6 AS d, 7 AS e, 8 AS f, 9 AS g, 10 AS h UNION SELECT * FROM vb_users")).toThrow();
+    expect(() => validateViewQuery("SELECT id FROM vb_vault UNION SELECT id FROM vb_users")).toThrow();
+  });
+});
