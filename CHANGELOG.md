@@ -88,6 +88,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
   should handle `{ "type": "auth_expired" }` by sending a fresh token. Connections are
   capped at 10,000 per process and 100 topics each. Managing an SSE client that has
   authenticated needs that user's token.
+- **OAuth flows need the server-issued `state`.** `/oauth2/authorize` records the
+  `state` (generating one if you send none, returned as `data.state`); `/oauth2/exchange`
+  now requires it back, for the same provider and redirect URI, once. With no
+  `oauth2.allowed_redirect_uris` configured, only redirect URIs on `app.url`'s origin are
+  accepted — set the list if your callback lives elsewhere. Accounts with TOTP get
+  `{ mfa_required, mfa_token }` from `/exchange` and password-based `/merge-confirm`.
+  Facebook, Microsoft, Twitch, Spotify and Notion emails no longer merge into existing
+  accounts or count as verified, and an existing address answers `409`. Resetting a
+  password removes the account's provider links.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -274,6 +283,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
   limit; and `POST`/`DELETE /realtime` trusted the SSE `clientId` alone. Tokens are now
   re-checked every minute and at expiry, connections and topics are capped, slow SSE
   readers are dropped, and managing an authenticated SSE client needs its user's token.
+- **OAuth sign-in skipped MFA and didn't check its own state.** Signing in through a
+  linked provider, or confirming a merge with the password, issued a session even when
+  the account had TOTP on. `/oauth2/exchange` accepted any `state` (it was only checked
+  for server-side PKCE), so a forged callback could sign a victim's browser into the
+  attacker's account; OIDC/Apple flows sent no `nonce`; with no redirect allow-list any
+  redirect URI was accepted, and a `https://app.com*` entry also matched
+  `https://app.com.evil.tld`. Five providers' unverified emails were trusted for account
+  merging. A password reset left provider links in place. All fixed — see the upgrade
+  note.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

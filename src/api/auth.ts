@@ -33,9 +33,11 @@ import {
   exchangeCodeForToken,
   fetchProviderProfileFromExchange,
   generateCodeVerifier,
+  idTokenNonce,
   isProviderEnabled,
   listEnabledProviders,
   providerRequiresPkce,
+  providerUsesNonce,
   PROVIDERS,
 } from "../core/oauth2.ts";
 import {
@@ -157,12 +159,31 @@ async function consumeToken(id: string, now: number): Promise<boolean> {
 }
 
 function isRedirectUriAllowed(provider: string, uri: string): boolean {
+  let target: URL;
+  try { target = new URL(uri); } catch { return false; }
   const settings = getAllSettings();
   const raw = settings[`oauth2.${provider}.allowed_redirect_uris`] ?? settings["oauth2.allowed_redirect_uris"] ?? "";
-  if (!raw) return true; // not configured → fall back to provider-side allowlist
+  if (!raw) {
+    // Not configured: only this app's own origin (app.url). Allowing any URI
+    // here left the decision to whatever the provider has registered, which
+    // is often broader than intended (wildcards, localhost, staging).
+    const app = getAppUrl();
+    try { return !!app && new URL(app).origin === target.origin; } catch { return false; }
+  }
   const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
   if (list.includes("*")) return true;
-  return list.some((p) => p === uri || (p.endsWith("*") && uri.startsWith(p.slice(0, -1))));
+  return list.some((p) => {
+    if (p === uri) return true;
+    if (!p.endsWith("*")) return false;
+    // A trailing `*` extends the path only. Compared as raw prefixes,
+    // `https://app.com*` also matched `https://app.com.evil.tld/…`.
+    try {
+      const prefix = new URL(p.slice(0, -1));
+      return prefix.origin === target.origin && target.pathname.startsWith(prefix.pathname);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function newToken(): string {
@@ -490,6 +511,19 @@ async function endRefreshedReplacement(token: string, jwtSecret: string): Promis
     await revokeToken(r.jti, r.iat + r.ttl);
     await getDb().delete(authTokens).where(eq(authTokens.id, id));
   } catch { /* not ours or malformed: nothing to end */ }
+}
+
+/** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
+async function mfaTicketFor(collectionId: string, userId: string): Promise<{ mfa_required: true; mfa_token: string }> {
+  const ticket = newToken();
+  await getDb().insert(authTokens).values({
+    id: storedTokenId(ticket),
+    user_id: userId,
+    collection_id: collectionId,
+    purpose: "mfa_ticket",
+    expires_at: Math.floor(Date.now() / 1000) + MFA_TICKET_TTL_SECONDS,
+  });
+  return { mfa_required: true, mfa_token: ticket };
 }
 
 export function makeAuthPlugin(jwtSecret: string) {
@@ -1018,6 +1052,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         // stolen token stops working once the owner resets their password.
         await updateUserById(col, tok.user_id, { password_hash: hash, password_reset_at: now, updated_at: now });
         await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        // A reset is how an owner takes their account back: a provider linked
+        // by whoever had it (merge-confirm with a leaked password) would
+        // otherwise keep signing them in.
+        await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, tok.user_id), eq(oauthLinks.collection_id, col.id)));
         return { data: { reset: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1608,7 +1646,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     //  - Client provides `code_challenge` → server bakes it into the URL untouched
     //    and never stores anything; the client owns the verifier.
     //  - Client omits `code_challenge` → server generates a verifier, stashes it
-    //    in `vaultbase_auth_tokens` keyed by `state` (purpose="oauth2_pkce"), and
+    //    with the flow's state row (purpose="oauth2_state"), and
     //    bakes the derived challenge into the URL. Useful for confidential web
     //    flows where the caller can't easily keep the verifier across the redirect.
     .get("/auth/:collection/oauth2/authorize", async ({ params, query, set }) => {
@@ -1624,48 +1662,53 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!isRedirectUriAllowed(query.provider, query.redirectUri)) {
         set.status = 422; return { error: "redirectUri not in allowlist", code: 422 };
       }
-      const state = query.state ?? "";
+      // The state is recorded server-side for every flow, bound to the
+      // provider and redirect URI, and /exchange requires it back. Checking
+      // it only in the browser (or only for server-side PKCE) let a forged
+      // callback complete someone else's sign-in in the victim's browser.
+      const state = query.state || newToken();
+      const nonce = providerUsesNonce(query.provider) ? newToken() : undefined;
       let codeChallenge: string | undefined;
+      let verifier: string | undefined;
       let serverManagedPkce = false;
       // Twitter (and any future requiresPkce provider) needs PKCE no matter what
       // the caller asked for. Promote use_pkce so we generate + store the verifier.
       const forcePkce = providerRequiresPkce(query.provider);
       if (query.code_challenge) {
-        // Client-managed PKCE: trust their challenge, store nothing.
+        // Client-managed PKCE: trust their challenge, store no verifier.
         codeChallenge = query.code_challenge;
       } else if (query.use_pkce === "1" || query.use_pkce === "true" || forcePkce) {
-        // Server-managed PKCE: generate verifier, store keyed by state.
-        if (!state) {
-          set.status = 422; return { error: "state is required when use_pkce=1", code: 422 };
-        }
-        const verifier = generateCodeVerifier();
+        // Server-managed PKCE: generate the verifier and keep it with the state.
+        verifier = generateCodeVerifier();
         codeChallenge = await codeChallengeFromVerifier(verifier);
-        const now = Math.floor(Date.now() / 1000);
-        try {
-          await getDb().insert(authTokens).values({
-            id: storedTokenId(state),
-            user_id: "",       // pre-auth flow, no user yet
-            collection_id: col.id,
-            purpose: "oauth2_pkce",
-            code: verifier,    // reuse the `code` column to hold the verifier
-            expires_at: now + PKCE_TTL_SECONDS,
-          });
-        } catch (e) {
-          set.status = 422;
-          return { error: `Failed to persist PKCE state (state must be unique): ${e instanceof Error ? e.message : String(e)}`, code: 422 };
-        }
         serverManagedPkce = true;
+      }
+      try {
+        await getDb().insert(authTokens).values({
+          id: storedTokenId(state),
+          user_id: "",       // pre-auth flow, no user yet
+          collection_id: col.id,
+          purpose: "oauth2_state",
+          code: verifier ?? null,
+          payload: JSON.stringify({ provider: query.provider, redirectUri: query.redirectUri, nonce: nonce ?? null }),
+          expires_at: Math.floor(Date.now() / 1000) + PKCE_TTL_SECONDS,
+        });
+      } catch {
+        set.status = 422;
+        return { error: "state must be unique", code: 422 };
       }
       try {
         const url = buildAuthorizeUrl({
           provider: query.provider,
           redirectUri: query.redirectUri,
           state,
+          ...(nonce ? { nonce } : {}),
           ...(codeChallenge ? { codeChallenge, codeChallengeMethod: "S256" as const } : {}),
         });
         return {
           data: {
             authorize_url: url,
+            state,
             ...(codeChallenge ? { code_challenge: codeChallenge, code_challenge_method: "S256" } : {}),
             pkce: serverManagedPkce ? "server" : codeChallenge ? "client" : "none",
           },
@@ -1703,20 +1746,23 @@ export function makeAuthPlugin(jwtSecret: string) {
         set.status = 422; return { error: "redirectUri not in allowlist", code: 422 };
       }
 
-      // PKCE — pull a server-stored verifier keyed by state, if one exists.
-      // Falls through silently when the caller is doing PKCE entirely client-side
-      // (or not at all). A stored verifier is consumed (used_at set) on lookup.
+      // The state from /authorize is required, must belong to this provider
+      // and redirect URI, and is spent here (once).
       const db = getDb();
       const now = Math.floor(Date.now() / 1000);
-      let codeVerifier: string | undefined = body.code_verifier;
-      if (!codeVerifier && body.state) {
-        const tokRows = await findOneTimeToken(body.state);
-        const tok = tokRows[0];
-        if (tok && tok.purpose === "oauth2_pkce" && tok.collection_id === col.id && !tok.used_at && tok.expires_at >= now) {
-          codeVerifier = tok.code ?? undefined;
-          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
-        }
+      if (!body.state) { set.status = 400; return { error: "state is required", code: 400 }; }
+      const stateRow = (await findOneTimeToken(body.state))[0];
+      let stored: { provider?: string; redirectUri?: string; nonce?: string | null } = {};
+      try { stored = JSON.parse(stateRow?.payload ?? "{}"); } catch { /* invalid below */ }
+      if (
+        !stateRow || stateRow.purpose !== "oauth2_state" || stateRow.collection_id !== col.id ||
+        stateRow.used_at || stateRow.expires_at < now ||
+        stored.provider !== body.provider || stored.redirectUri !== body.redirectUri ||
+        !(await consumeToken(stateRow.id, now))
+      ) {
+        set.status = 400; return { error: "Invalid or expired state", code: 400 };
       }
+      const codeVerifier: string | undefined = body.code_verifier ?? stateRow.code ?? undefined;
 
       let profile;
       try {
@@ -1726,6 +1772,13 @@ export function makeAuthPlugin(jwtSecret: string) {
           redirectUri: body.redirectUri,
           ...(codeVerifier ? { codeVerifier } : {}),
         });
+        // An id_token must carry the nonce this flow sent, so one minted for
+        // another sign-in can't be replayed into this one.
+        if (stored.nonce) {
+          const got = idTokenNonce(tok.raw);
+          if (got !== undefined && got !== stored.nonce) throw new Error("id_token nonce mismatch");
+          if (got === undefined && body.provider === "apple") throw new Error("Apple did not return an id_token");
+        }
         // Apple: identity comes from the id_token in the exchange response.
         // Everyone else: hit the provider's userinfo endpoint with the access_token.
         profile = await fetchProviderProfileFromExchange(body.provider, tok);
@@ -1788,6 +1841,12 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
 
       // 3. Create new user — fires afterCreate on the auth collection.
+      //    An address the provider didn't verify can't create a second
+      //    account beside an existing one (or be merged into it).
+      if (!userId && findUserByEmail(col, profile.email)) {
+        set.status = 409;
+        return { error: "An account with this email already exists. Sign in to it, then link this provider.", code: 409 };
+      }
       if (!userId) {
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
         const hash = await hashPassword(randomPw);
@@ -1821,6 +1880,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
       }
 
+      // A linked account with TOTP on still needs its second factor: the
+      // provider vouches for who the user is at the provider, not for this
+      // account's MFA.
+      const signedIn = findUserById(col, userId);
+      if (signedIn?.totp_enabled === 1) return { data: await mfaTicketFor(col.id, userId) };
       const { token } = await signAuthToken({
         payload: { id: userId, email: profile.email, collection: col.name },
         audience: "user",
@@ -1874,6 +1938,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       //   1. password (verify against the existing user's hash), OR
       //   2. an Authorization: Bearer <user-jwt> belonging to this user.
       let proven = false;
+      let viaSession = false;
       if (typeof body.password === "string" && body.password !== "") {
         // A password guess here is a sign-in attempt: same lockout.
         const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: clientIpForLockout(request) };
@@ -1888,12 +1953,18 @@ export function makeAuthPlugin(jwtSecret: string) {
         const headerToken = request.headers.get("authorization")?.replace("Bearer ", "");
         if (headerToken) {
           const ctx = await verifyAuthToken(headerToken, jwtSecret, { audience: "user" });
-          if (ctx && ctx.id === user.id && ctx.collection === col.name) proven = true;
+          if (ctx && ctx.id === user.id && ctx.collection === col.name) { proven = true; viaSession = true; }
         }
       }
       if (!proven) {
         set.status = 401;
         return { error: "Password or user token did not match the existing account", code: 401 };
+      }
+      // Spend the merge token before linking, so two racing confirms can't
+      // both get through.
+      if (!(await consumeToken(tok.id, now))) {
+        set.status = 401;
+        return { error: "Invalid or expired merge token", code: 401 };
       }
 
       // Already linked? If the same provider+provider_user_id row already
@@ -1920,7 +1991,12 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!user.email_verified) {
         await updateUserById(col, user.id, { email_verified: 1, updated_at: now });
       }
-      await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+      // Proven by password, this is a sign-in: an account with TOTP on gets
+      // an MFA ticket, not a session. (A caller proving it with a session
+      // already passed MFA to get that session.)
+      if (!viaSession && user.totp_enabled === 1) {
+        return { data: { ...(await mfaTicketFor(col.id, user.id)), linked_provider: stored.provider } };
+      }
 
       const { token } = await signAuthToken({
         payload: { id: user.id, email: user.email, collection: col.name },
