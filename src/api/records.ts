@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
+import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal, verifyAuthToken } from "../core/sec.ts";
 import { getCollection } from "../core/collections.ts";
 import {
@@ -121,8 +122,8 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
 }
 
 /** Non-admin writes validate relation fields as the caller (see WriteGuard). */
-function relationsAs(auth: AuthContext | null): { relationsAs?: { auth: AuthContext | null } } {
-  return auth?.type === "admin" ? {} : { relationsAs: { auth } };
+function relationsAs(auth: AuthContext | null, request?: Request): { relationsAs?: { auth: AuthContext | null; request?: RequestContextLike | null } } {
+  return auth?.type === "admin" ? {} : { relationsAs: { auth, ...(request ? { request: buildRequestContext(request) } : {}) } };
 }
 
 /**
@@ -193,9 +194,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
         // Apply expression rule as access filter (admins bypass)
+        // Rules see the request: the list rule here, and the related
+        // collections' view rules when expanding.
+        opts.request = buildRequestContext(request);
         if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
           opts.accessRule = col.list_rule;
-          opts.request = buildRequestContext(request);
         }
 
         // ── Vector similarity search ───────────────────────────────────────
@@ -385,7 +388,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }
         try {
           const record = await runWithHookRequest(request, () =>
-            createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth))
+            createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))
           );
           return { data: record };
         } catch (e) {
@@ -422,7 +425,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           // With If-Match, the write itself re-checks that the record is
           // still the one the precondition was checked against.
           const guard = {
-            ...relationsAs(auth),
+            ...relationsAs(auth, request),
             ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
           };
           const record = await runWithHookRequest(request, () =>

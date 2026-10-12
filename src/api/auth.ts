@@ -6,7 +6,7 @@ import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tok
 import { getCollection, parseFields } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
 import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
-import { getRecord } from "../core/records.ts";
+import { canSeeAs, getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
 import { sessionMaxSeconds, tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
@@ -292,7 +292,9 @@ async function validateAuthRegister(
   // Build a synthetic collection with implicit flags stripped so the validator
   // checks options on email/verified just like any other field.
   const synthetic = { ...col, fields: JSON.stringify(fields) };
-  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, "create");
+  // Relations set at sign-up point at records an anonymous caller can see,
+  // the same check the records API applies to non-admin writes.
+  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, "create", undefined, canSeeAs(null));
   // validateRecord's "email" branch only checks regex, not min/max length —
   // enforce admin-set length constraints here so register matches the rest of
   // the API surface (text-typed fields already get min/max from validateRecord).

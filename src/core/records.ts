@@ -534,7 +534,7 @@ export async function listRecords(
   // Expand
   if (opts.expand) {
     const expandPaths = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
-    await expandRelations(items, expandPaths, fields, opts.auth ?? null);
+    await expandRelations(items, expandPaths, fields, opts.auth ?? null, opts.request ?? null);
   }
 
   // Field projection
@@ -596,7 +596,7 @@ async function createRecordImpl(
   const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth, helpers });
 
-  await validateRecord(col, data, "create", undefined, guard.relationsAs ? canSeeAs(guard.relationsAs.auth) : undefined);
+  await validateRecord(col, data, "create", undefined, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -697,7 +697,7 @@ async function updateRecordImpl(
     helpers,
   });
 
-  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth) : undefined);
+  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -776,7 +776,7 @@ export interface WriteGuard {
    * Validate relation fields as this caller: a relation may only point at a
    * record the caller can view. Set by the API for non-admin callers.
    */
-  relationsAs?: { auth: AuthContext | null };
+  relationsAs?: { auth: AuthContext | null; request?: RequestContextLike | null };
   /**
    * The caller's rules for rows a delete reaches through cascades: `change`
    * is null for a cascaded delete, or the fields a `setNull` cascade writes.
@@ -787,11 +787,11 @@ export interface WriteGuard {
 }
 
 /** Relation check for `auth`: the target record must pass its collection's view rule. */
-function canSeeAs(auth: AuthContext | null): CanSeeRecord {
+export function canSeeAs(auth: AuthContext | null, request: RequestContextLike | null = null): CanSeeRecord {
   return async (target, id) => {
     if (auth?.type === "admin" || target.view_rule === null) return true;
     if (target.view_rule === "") return false;
-    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth });
+    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request });
     const tableRef = quoteIdent(userTableName(target.name));
     const row = rawClient().prepare(
       `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
@@ -1116,6 +1116,7 @@ async function expandRelations(
   expandPaths: string[],
   schema: FieldDef[],
   auth: AuthContext | null,
+  request: RequestContextLike | null = null,
 ): Promise<void> {
   if (items.length === 0 || expandPaths.length === 0) return;
   const client = rawClient();
@@ -1144,6 +1145,7 @@ async function expandRelations(
     } else if (view !== null && auth?.type !== "admin") {
       const compiled = parseFilter(view, userTableName(targetCol.name), {
         auth,
+        request,
         lookup: makeCollectionLookup(),
         hostPrivateField: (n) => privateFieldNames(targetCol).has(n),
       });
@@ -1179,7 +1181,7 @@ async function expandRelations(
 
     // Recurse: expand the remaining paths on the just-loaded target records
     if (restPaths.length > 0) {
-      await expandRelations(expanded, restPaths, targetFields, auth);
+      await expandRelations(expanded, restPaths, targetFields, auth, request);
     }
   }
 }

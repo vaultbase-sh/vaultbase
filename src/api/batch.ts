@@ -88,7 +88,7 @@ async function dispatchOp(
         (body ?? {}) as Record<string, unknown>,
         buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
       );
-      const rec = await createRecord(op.collection, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth } });
+      const rec = await createRecord(op.collection, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
       return { status: 201, body: rec };
     }
     case "list": {
@@ -126,7 +126,7 @@ async function dispatchOp(
       )) {
         throw new RuleDeniedError("update_rule");
       }
-      const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth } });
+      const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
       return { status: 200, body: rec };
     }
     case "delete": {

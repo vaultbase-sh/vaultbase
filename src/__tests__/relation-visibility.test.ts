@@ -68,3 +68,42 @@ describe("relation targets", () => {
     expect((await create(mine)).status).toBe(200);
   });
 });
+
+describe("review 10 follow-ups", () => {
+  it("rules that read request headers work for relation checks and expand", async () => {
+    await createCollection({
+      name: "teams", fields: JSON.stringify([{ name: "code", type: "text" }]),
+      view_rule: "code = @request.headers.x_team", list_rule: "code = @request.headers.x_team",
+    });
+    await createCollection({
+      name: "members",
+      fields: JSON.stringify([{ name: "team", type: "relation", collection: "teams" }]),
+      create_rule: "@request.auth.id != ''", list_rule: null, view_rule: null,
+    });
+    const team = (await createRecord("teams", { code: "red" }, null)).id;
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/members", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${jwt}`, "x-team": "red" },
+      body: JSON.stringify({ team }),
+    }));
+    expect(res.status).toBe(200);
+    const listed = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/members?expand=team", {
+      headers: { authorization: `Bearer ${jwt}`, "x-team": "red" },
+    }));
+    const body = await listed.json() as { data: Array<{ expand?: { team?: { id: string } } }> };
+    expect(body.data[0]?.expand?.team?.id).toBe(team);
+  });
+
+  it("sign-up can't point a relation at a record the caller can't see", async () => {
+    const { makeAuthPlugin } = await import("../api/auth.ts");
+    await createCollection({
+      name: "people", type: "auth",
+      fields: JSON.stringify([{ name: "note", type: "relation", collection: "notes" }]),
+    });
+    const res = await makeAuthPlugin(SECRET).handle(new Request("http://localhost/auth/people/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "x@test.local", password: "a-good-password-1", note: theirs }),
+    }));
+    expect(res.status).toBe(422);
+  });
+});
