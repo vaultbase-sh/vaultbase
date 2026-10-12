@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
-import { getDb } from "../db/client.ts";
+import { getDb, getRawClient } from "../db/client.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks } from "../db/schema.ts";
 import { getCollection, parseFields } from "../core/collections.ts";
 import { findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
@@ -273,21 +273,52 @@ function buildLink(appUrl: string, kind: keyof typeof LINK_PATHS, collection: st
   return `${base}${path}?token=${token}&collection=${encodeURIComponent(collection)}`;
 }
 
+/** One email per kind per user per minute, and at most this many an hour. */
+const EMAIL_COOLDOWN_SECONDS = 60;
+const MAX_EMAILS_PER_HOUR = 5;
+
+/**
+ * Whether the just-inserted token `id` may be emailed, or falls inside the
+ * per-user cooldown. Anyone can type a victim's address into the reset or OTP
+ * form, so without this their inbox is only as safe as the per-IP rate limit.
+ *
+ * The token row is inserted first and then ranked by rowid among the user's
+ * recent tokens of the same purpose: it may send only if nothing earlier was
+ * issued in the last minute and fewer than `MAX_EMAILS_PER_HOUR` in the last
+ * hour. Ranking by insertion order means a burst of parallel requests sends
+ * exactly one email instead of racing a check-then-insert.
+ */
+function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const earlier = (since: number) => (getRawClient().query(
+    `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
+      WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ?
+        AND rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`,
+  ).get(userId, collectionId, purpose, since, id) as { n: number }).n;
+  return earlier(now - EMAIL_COOLDOWN_SECONDS) === 0 && earlier(now - 3600) < MAX_EMAILS_PER_HOUR;
+}
+
+/** Returns false when the email was held back by the per-user cooldown. */
 async function issueAndSend(
   kind: "verify" | "reset",
   user: { id: string; email: string },
   collectionId: string,
   collectionName: string
-): Promise<void> {
+): Promise<boolean> {
   const token = newToken();
   const expiresAt = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS;
+  const purpose = kind === "verify" ? "email_verify" : "password_reset";
   await getDb().insert(authTokens).values({
     id: token,
     user_id: user.id,
     collection_id: collectionId,
-    purpose: kind === "verify" ? "email_verify" : "password_reset",
+    purpose,
     expires_at: expiresAt,
   });
+  if (!emailAllowed(token, user.id, collectionId, purpose)) {
+    await getDb().delete(authTokens).where(eq(authTokens.id, token));
+    return false;
+  }
   const tpl = getTemplate(kind);
   const appUrl = getAppUrl();
   const vars = {
@@ -302,6 +333,7 @@ async function issueAndSend(
     subject: renderTemplate(tpl.subject, vars),
     text: renderTemplate(tpl.body, vars),
   });
+  return true;
 }
 
 /** Send a link email for a token already stored in vaultbase_auth_tokens. */
@@ -325,7 +357,7 @@ async function issueOtpAndSend(
   user: { id: string; email: string },
   collectionId: string,
   collectionName: string
-): Promise<void> {
+): Promise<boolean> {
   const token = newToken();
   const code = newOtpCode();
   const now = Math.floor(Date.now() / 1000);
@@ -338,6 +370,12 @@ async function issueOtpAndSend(
     code,
     expires_at: expiresAt,
   });
+  // Held back by the cooldown: drop the row before it voids the live code,
+  // so a flood of requests can't keep killing the code the user was sent.
+  if (!emailAllowed(token, user.id, collectionId, "otp")) {
+    await getDb().delete(authTokens).where(eq(authTokens.id, token));
+    return false;
+  }
   // One live code per user: the new one voids the rest, so each code only
   // ever has its own attempt budget to spend. Voiding after the insert means
   // two racing requests can't both leave a code live.
@@ -363,6 +401,7 @@ async function issueOtpAndSend(
     subject: renderTemplate(tpl.subject, vars),
     text: renderTemplate(tpl.body, vars),
   });
+  return true;
 }
 
 export function makeAuthPlugin(jwtSecret: string) {
@@ -800,7 +839,8 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (u.email_verified) return { data: { sent: false, alreadyVerified: true } };
       if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
       try {
-        await issueAndSend("verify", { id: u.id, email: u.email }, col.id, col.name);
+        const sent = await issueAndSend("verify", { id: u.id, email: u.email }, col.id, col.name);
+        if (!sent) { set.status = 429; return { error: "A verification email was sent recently. Try again later.", code: 429 }; }
         return { data: { sent: true } };
       } catch (e) {
         set.status = 500;

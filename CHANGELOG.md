@@ -106,6 +106,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   per-account limit, only the per-IP rate limit, and the admin lockout was off by default.
   See the upgrade note above. The lockout is also charged before the password is checked,
   so parallel attempts can't slip past it.
+- **A victim's inbox could be flooded with reset and sign-in emails.** Password-reset,
+  OTP and verification emails were limited only per client IP. Each user now gets at most
+  one email of each kind per minute and five per hour; extra requests to the public
+  endpoints still answer `200` but send nothing, and `request-verify` answers `429`. A
+  held-back OTP request no longer voids the code that was already sent.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
