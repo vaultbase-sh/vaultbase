@@ -188,6 +188,8 @@ export async function verifyAuthToken(
         if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at > ctx.iat) {
           return null;
         }
+        // Read from the row, not the token, so verifying takes effect at once.
+        if (u.email_verified === 1) ctx.verified = true;
       }
     }
 
@@ -218,6 +220,9 @@ export function dataPrincipal(ctx: VerifiedAuth | null, access: "read" | "write"
   }
   const out: AuthContext = { id: ctx.id, type: ctx.type };
   if (ctx.email) out.email = ctx.email;
+  if (ctx.collection) out.collection = ctx.collection;
+  if (ctx.anonymous) out.anonymous = true;
+  if (ctx.verified) out.verified = true;
   return out;
 }
 

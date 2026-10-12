@@ -1,5 +1,5 @@
 import type { AuthContext } from "./rules.ts";
-import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
+import type { Expr, Operand, AnyCmpOp, FieldModifier, AuthProp } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 
 /** Parameterized SQL fragment + bound values. */
@@ -637,10 +637,15 @@ function bodyChanged(op: Extract<Operand, { kind: "requestMap" }>, ctx: CompileC
   return "?";
 }
 
-function authValue(auth: AuthContext | null, prop: "id" | "email" | "type"): string | null {
+function authValue(auth: AuthContext | null, prop: AuthProp): string | number | null {
   if (!auth) return null;
   if (prop === "id")   return auth.id || null;
   if (prop === "type") return auth.type;
+  // Without these, `@request.auth.id != ""` was the only "signed in" test,
+  // and it admits guests (anonymous sessions) and every auth collection.
+  if (prop === "collectionName") return auth.collection ?? null;
+  if (prop === "verified")  return auth.verified ? 1 : 0;
+  if (prop === "anonymous") return auth.anonymous ? 1 : 0;
   return auth.email ?? null;
 }
 

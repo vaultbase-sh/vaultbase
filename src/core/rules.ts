@@ -6,6 +6,12 @@ export interface AuthContext {
   id: string;
   type: "user" | "admin";
   email?: string;
+  /** Users: the auth collection the account belongs to. */
+  collection?: string;
+  /** Users: a guest session from `/auth/:collection/anonymous`. */
+  anonymous?: boolean;
+  /** Users: the account's email is verified (as of this request). */
+  verified?: boolean;
 }
 
 export interface EvalContext {
@@ -186,6 +192,9 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
       if (!ctx.auth) return UNAUTH_SENTINEL;
       if (op.prop === "id") return ctx.auth.id || UNAUTH_SENTINEL;
       if (op.prop === "type") return ctx.auth.type;
+      if (op.prop === "collectionName") return ctx.auth.collection ?? null;
+      if (op.prop === "verified") return ctx.auth.verified ? 1 : 0;
+      if (op.prop === "anonymous") return ctx.auth.anonymous ? 1 : 0;
       return ctx.auth.email ?? UNAUTH_SENTINEL;
     }
     case "request": return ctx.request?.[op.prop] ?? null;

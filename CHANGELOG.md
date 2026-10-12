@@ -329,6 +329,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `127.0.0.1` or `127.0.0.0/8` in `VAULTBASE_TRUSTED_PROXIES`, so the forwarded client
   address and `X-Forwarded-Proto` were ignored and every client shared the proxy's rate
   limit. Peer addresses are now read in their IPv4 form.
+- **Rules couldn't tell guests, unverified users or other auth collections apart.** The
+  usual "signed in" rule, `@request.auth.id != ""`, also admits anonymous guest sessions
+  and users of every auth collection, and there was no way to require a verified email.
+  Rules can now use `@request.auth.collectionName`, `@request.auth.verified` (read from
+  the account on each request) and `@request.auth.anonymous`. Review rules that rely on
+  `@request.auth.id != ""` if you enable anonymous sign-in or have more than one auth
+  collection.
 - **The same address could be registered twice in different case.** Promoting an
   anonymous account, changing email and magic-link sign-up checked for an existing
   address case-sensitively, so `ALICE@example.com` could be added beside

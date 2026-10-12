@@ -40,7 +40,8 @@ export const FIELD_MODIFIERS: ReadonlySet<FieldModifier> = new Set([
   "isset", "changed", "length", "each", "lower",
 ]);
 
-export type AuthProp = "id" | "email" | "type";
+export type AuthProp = "id" | "email" | "type" | "collectionName" | "verified" | "anonymous";
+const AUTH_PROPS: readonly string[] = ["id", "email", "type", "collectionName", "verified", "anonymous"];
 export type RequestProp = "method" | "context";
 export type RequestMapKind = "headers" | "query" | "body";
 
@@ -325,10 +326,11 @@ function makeFieldOperand(parts: string[], modifier?: FieldModifier): Operand {
 function readAtRef(ts: TokenStream): Operand {
   // Already at `@` boundary
   if (ts.consume("@request.auth.")) {
-    const prop = ts.readWord();
-    if (prop !== "id" && prop !== "email" && prop !== "type") {
-      throw new Error(`Unsupported auth prop: ${prop}`);
+    const word = ts.readWord();
+    if (!AUTH_PROPS.includes(word)) {
+      throw new Error(`Unsupported auth prop: ${word}`);
     }
+    const prop = word as AuthProp;
     const modifier = readOptionalModifier(ts);
     if (modifier) return { kind: "auth", prop, modifier };
     return { kind: "auth", prop };

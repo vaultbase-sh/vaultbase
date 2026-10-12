@@ -4,7 +4,7 @@ import type { FieldDef } from "../api.ts";
 /**
  * Inline rule expression editor with autocomplete.
  * Suggests:
- *   - @request.auth.id, @request.auth.email, @request.auth.type
+ *   - @request.auth.id, .email, .type, .collectionName, .verified, .anonymous
  *   - field names from the current collection schema
  *   - operators (=, !=, >, >=, <, <=, ~, &&, ||)
  *   - common literal values (true, false, null, "")
@@ -14,6 +14,9 @@ const AUTH_REFS = [
   { label: "@request.auth.id",    detail: "current authenticated user/admin id" },
   { label: "@request.auth.email", detail: "auth email (if present)" },
   { label: "@request.auth.type",  detail: "'user' | 'admin'" },
+  { label: "@request.auth.collectionName", detail: "auth collection of the signed-in user" },
+  { label: "@request.auth.verified",  detail: "true when the user's email is verified" },
+  { label: "@request.auth.anonymous", detail: "true for a guest (anonymous) session" },
 ];
 
 const OPERATORS = [
