@@ -166,6 +166,7 @@ export function getSchemaVersion(): number {
 export function _resetCollectionCache(): void {
   schemaVersion++;
   cache.clear();
+  sensitiveCache = null;
   // Schema mutated — drop cached prepared statements (their SQL embeds table
   // / column names that may have changed).
   void clearPreparedStatementsOnSchemaChange();
@@ -213,8 +214,10 @@ export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
   const out = new Set<string>();
   // Views too: a view over an auth table (`SELECT * FROM vb_users`) carries
-  // the same columns under the same names.
+  // the same columns under the same names, and `SELECT *` over a collection
+  // with a password field carries that field.
   if (col.type === "auth" || col.type === "view") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
+  if (col.type === "view") for (const f of sensitiveSchema().passwordFields) out.add(f);
   try {
     for (const f of parseFields(col.fields)) {
       if (f.type === "password") out.add(f.name);
@@ -397,6 +400,7 @@ export function validateViewQuery(query: string): void {
   // Auth secrets and password-type fields can't be selected by name (or
   // renamed with AS). `SELECT *` keeps their names, and those are stripped
   // from view rows and filters.
+  invalidateSensitiveSchema(); // judge against the schema as it is right now
   const sensitive = sensitiveSchema();
   if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()) || sensitive.passwordFields.has(w.toLowerCase()))) {
     throw new Error("View query may not read password hashes, TOTP secrets, password_reset_at or password fields");
@@ -412,16 +416,21 @@ export function validateViewQuery(query: string): void {
 
 /**
  * Names the view check treats as private: every password-type field of any
- * collection, and the tables that hold private columns (auth collections,
- * and collections with a password field). Read straight from the
- * collections table so the check stays synchronous.
+ * collection, and the tables that hold private columns — auth collections,
+ * collections with a password field, and (transitively) views that read
+ * from either, so `UNION` through an intermediate view is caught too. Read
+ * straight from the collections table so the check stays synchronous;
+ * cached for a moment because row output consults it.
  */
-function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> } {
+let sensitiveCache: { at: number; value: { passwordFields: Set<string>; tables: Set<string> } } | null = null;
+
+export function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> } {
+  if (sensitiveCache && Date.now() - sensitiveCache.at < 2_000) return sensitiveCache.value;
   const passwordFields = new Set<string>();
   const tables = new Set<string>();
-  let rows: Array<{ name: string; type: string; fields: string }> = [];
+  let rows: Array<{ name: string; type: string; fields: string; view_query: string | null }> = [];
   try {
-    rows = rawClient().prepare("SELECT name, type, fields FROM vaultbase_collections").all() as typeof rows;
+    rows = rawClient().prepare("SELECT name, type, fields, view_query FROM vaultbase_collections").all() as typeof rows;
   } catch { /* no collections table yet */ }
   for (const r of rows) {
     let hasPassword = false;
@@ -432,7 +441,31 @@ function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> }
     } catch { /* unparseable: treat by type only */ }
     if (r.type === "auth" || hasPassword) tables.add(userTableName(r.name).toLowerCase());
   }
-  return { passwordFields, tables };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const r of rows) {
+      const t = userTableName(r.name).toLowerCase();
+      if (r.type !== "view" || !r.view_query || tables.has(t)) continue;
+      const { words, identifiers } = scanSql(r.view_query);
+      if ([...words, ...identifiers].some((w) => tables.has(w.toLowerCase()))) { tables.add(t); changed = true; }
+    }
+  }
+  const value = { passwordFields, tables };
+  sensitiveCache = { at: Date.now(), value };
+  return value;
+}
+
+/** Drop the cached sensitive-schema answer (schema changed). */
+export function invalidateSensitiveSchema(): void {
+  sensitiveCache = null;
+}
+
+/**
+ * A view row column name as SQLite reports it: a name repeated in the
+ * select list (a join over two auth rows) comes back as `name:1`, `name:2`.
+ */
+export function baseColumnName(name: string): string {
+  return name.replace(/:\d+$/, "");
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */

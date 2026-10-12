@@ -11,7 +11,7 @@ import {
   parseFields,
   userTableName,
   type CascadeMode,
-  type FieldDef, AUTH_PRIVATE_COLUMNS, privateFieldNames } from "./collections.ts";
+  type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { maybeRecordHistory } from "./record-history.ts";
@@ -185,6 +185,10 @@ async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown>
  * Mirrors the contract enforced by /admin/users/:col in v0.10.
  */
 
+function viewPrivate(name: string): boolean {
+  return AUTH_PRIVATE_COLUMNS.has(name) || sensitiveSchema().passwordFields.has(name.toLowerCase());
+}
+
 function buildRecord(
   row: Record<string, unknown>,
   col: Collection,
@@ -199,8 +203,10 @@ function buildRecord(
   };
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
-    // Auth-system columns are private — never emit on the wire.
-    if ((col.type === "auth" || col.type === "view") && AUTH_PRIVATE_COLUMNS.has(k)) continue;
+    // Auth-system columns are private — never emit on the wire. In a view,
+    // also password fields, and duplicates SQLite renames to `name:1`.
+    if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
+    if (col.type === "view" && viewPrivate(baseColumnName(k))) continue;
     const def = fieldByName.get(k);
     // Never expose password hashes via the API
     if (def?.type === "password") continue;

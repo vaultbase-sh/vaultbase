@@ -84,3 +84,39 @@ describe("review 10 follow-ups", () => {
     expect(() => validateViewQuery("SELECT id FROM vb_vault UNION SELECT id FROM vb_users")).toThrow();
   });
 });
+
+describe("review 13 follow-ups", () => {
+  it("a view joining two users doesn't return the second user's secrets as name:1", async () => {
+    await createCollection({
+      name: "pairs", type: "view", list_rule: null, view_rule: null,
+      view_query: "SELECT a.id, a.email, b.email AS other_email, a.password_hash AS x FROM vb_users a, vb_users b",
+    }).catch(() => undefined); // refused by name: fine
+    await createCollection({
+      name: "pairs2", type: "view", list_rule: null, view_rule: null,
+      view_query: "SELECT * FROM vb_users a JOIN vb_users b ON 1 = 1",
+    });
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/pairs2"));
+    const text = await res.text();
+    expect(text).not.toContain("secret-hash");
+    expect(text).not.toContain("password_hash");
+    expect(text).not.toContain("totp_secret");
+  });
+
+  it("a UNION through an intermediate view is refused", async () => {
+    await createCollection({ name: "everyone", type: "view", view_query: "SELECT * FROM vb_users", list_rule: null, view_rule: null });
+    expect(() => validateViewQuery("SELECT 1 AS a, 2 AS b UNION SELECT * FROM vb_everyone")).toThrow();
+  });
+
+  it("SELECT * over a collection with a password field doesn't return it", async () => {
+    const { createRecord } = await import("../core/records.ts");
+    await createCollection({ name: "vault2", fields: JSON.stringify([{ name: "label", type: "text" }, { name: "pin", type: "password" }]) });
+    await createRecord("vault2", { label: "l", pin: "pin-secret-123" }, null);
+    await createCollection({ name: "vaultview", type: "view", view_query: "SELECT * FROM vb_vault2", list_rule: null, view_rule: null });
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/vaultview"));
+    const text = await res.text();
+    expect(text).toContain('"label"');
+    expect(text).not.toContain('"pin"');
+    const agg = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/vaultview/_aggregate?agg=count&groupBy=pin"));
+    expect(agg.status).toBe(400);
+  });
+});
