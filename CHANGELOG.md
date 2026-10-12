@@ -398,8 +398,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Thumbnails had no decode budget.** A small upload could declare a huge canvas (or an
   animated GIF thousands of frames) and be decoded on the request path, and concurrent
   requests for different sizes could get past the 32-variants-per-file cap. Images over
-  50 megapixels are now served without a thumbnail, oversized animations get a still
-  first frame, and the variant cap is taken atomically.
+  50 megapixels are now served without a thumbnail; animations over 25 megapixels in total
+  (frames × width × height, frames counted from the file's structure) get a still first
+  frame; at most two animations are decoded at once; and the variant cap is taken
+  atomically.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

@@ -263,22 +263,74 @@ export function canThumbnail(format: ThumbFormat): boolean {
  */
 /** Largest source image (width × height) a thumbnail is decoded from. */
 export const MAX_SOURCE_PIXELS = 50_000_000;
-/** Largest total (frames × width × height) an animated GIF is decoded for. */
-export const MAX_ANIMATION_PIXELS = 200_000_000;
+/**
+ * Largest total (frames × width × height) an animated GIF is decoded for.
+ * Every frame is decoded at full canvas size as RGBA, so this is ~100 MB.
+ */
+export const MAX_ANIMATION_PIXELS = 25_000_000;
+/** Animated decodes running at once; the rest wait their turn. */
+const MAX_ANIMATED_DECODES = 2;
 
 /** The source is over the decode budget; callers serve the original instead. */
 export class ImageTooLargeError extends Error {}
 
 /**
- * Frames in a GIF, counted from its graphic-control extensions without
- * decoding anything (an upper bound, which is what a budget needs).
+ * Frames in a GIF: its image descriptors, found by walking the block
+ * structure without decoding anything. Counting graphic-control extensions
+ * (the old way) missed frames that have none — they're optional — so a few
+ * hundred bytes could declare dozens of full-canvas frames and be decoded
+ * as one. A file that doesn't parse counts as over any budget.
  */
-function gifFrameCount(bytes: Uint8Array): number {
-  let n = 0;
-  for (let i = 0; i + 2 < bytes.length; i++) {
-    if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9 && bytes[i + 2] === 0x04) n++;
+export function gifFrameCount(bytes: Uint8Array): number {
+  const TOO_MANY = Number.MAX_SAFE_INTEGER;
+  if (bytes.length < 13) return TOO_MANY;
+  let i = 13; // header (6) + logical screen descriptor (7)
+  const packed = bytes[10]!;
+  if (packed & 0x80) i += 3 * (1 << ((packed & 0x07) + 1)); // global color table
+  /** Skip a run of data sub-blocks; returns the index after the terminator, or -1. */
+  const skipSubBlocks = (at: number): number => {
+    while (at < bytes.length) {
+      const size = bytes[at]!;
+      if (size === 0) return at + 1;
+      at += size + 1;
+    }
+    return -1;
+  };
+  let frames = 0;
+  while (i < bytes.length) {
+    const block = bytes[i]!;
+    if (block === 0x3b) break; // trailer
+    if (block === 0x21) { // extension: introducer, label, sub-blocks
+      i = skipSubBlocks(i + 2);
+    } else if (block === 0x2c) { // image descriptor
+      if (i + 10 > bytes.length) return TOO_MANY;
+      frames++;
+      const flags = bytes[i + 9]!;
+      i += 10;
+      if (flags & 0x80) i += 3 * (1 << ((flags & 0x07) + 1)); // local color table
+      i = skipSubBlocks(i + 1); // LZW minimum code size, then image data
+    } else {
+      return TOO_MANY;
+    }
+    if (i < 0) return frames > 0 ? frames + 1 : TOO_MANY; // truncated mid-block
   }
-  return Math.max(1, n);
+  return Math.max(1, frames);
+}
+
+let animatedDecodes = 0;
+const animatedWaiters: Array<() => void> = [];
+
+async function withAnimatedDecodeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  while (animatedDecodes >= MAX_ANIMATED_DECODES) {
+    await new Promise<void>((resolve) => animatedWaiters.push(resolve));
+  }
+  animatedDecodes++;
+  try {
+    return await fn();
+  } finally {
+    animatedDecodes--;
+    animatedWaiters.shift()?.();
+  }
 }
 
 export async function generateThumbnail(
@@ -297,7 +349,7 @@ export async function generateThumbnail(
     return await thumbnailStill(bytes, spec, "png");
   }
   if (spec.format) return await thumbnailStill(bytes, spec, spec.format);
-  if (format === "gif") return await thumbnailGif(bytes, spec);
+  if (format === "gif") return await withAnimatedDecodeSlot(() => thumbnailGif(bytes, spec));
   return await thumbnailStill(bytes, spec, format);
 }
 
