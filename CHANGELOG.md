@@ -171,8 +171,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **One-time tokens were stored in plaintext.** Password-reset, verification, OTP and
   invitation links, MFA tickets and OAuth merge tokens were kept verbatim in the
   database, so anyone with a copy of it (a backup, read-only SQL access) could use a
-  pending reset link. They are now stored as SHA-256 hashes. Links issued before the
-  upgrade keep working until they expire.
+  pending reset link. They are now stored as SHA-256 hashes, and an OTP's 6-digit code as
+  an HMAC keyed with the server secret. Links issued before the upgrade are re-keyed on
+  first start and keep working; OTP codes issued before it stop working (they last ten
+  minutes — request a new one).
 - **Any admin could take over another admin's account.** `PATCH /admin/admins/:id`
   changed any admin's email and password; it now only changes the caller's own (`403`
   otherwise). A locked-out admin is recovered with `vaultbase setup-admin --force`.

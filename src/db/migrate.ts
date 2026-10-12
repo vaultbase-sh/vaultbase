@@ -413,6 +413,9 @@ export async function runMigrations() {
   v0_11PrepAuthTables(client);
   v0_11FinalizeAuthMigration(client);
 
+  // ── v0.17: one-time tokens are stored hashed ──
+  hashLegacyAuthTokens(client);
+
   // ── v0.12: created_at / updated_at indexes on record tables ──
   // New tables get them in createUserTable; backfill existing ones.
   const { ensureTimestampIndexes } = await import("../core/collections.ts");
@@ -449,6 +452,31 @@ export async function runMigrations() {
  * from the corresponding per-collection table. Operator must run
  * `vaultbase doctor` and reconcile before the next boot.
  */
+/**
+ * Rows in `vaultbase_auth_tokens` written before v0.17 are keyed by the raw
+ * token. Re-key them by `h:` + SHA-256, the form the auth API looks up, so
+ * links issued before an upgrade keep working and nothing readable from the
+ * database works as a token. Live OTP rows also hold their 6-digit code in
+ * plaintext and there's no secret here to re-key it with, so they are
+ * voided instead (they last ten minutes; the user asks for a new code).
+ * Internal rows (`totp_step`, `refresh_rotation`) aren't tokens. Idempotent.
+ */
+function hashLegacyAuthTokens(client: Database): void {
+  const now = Math.floor(Date.now() / 1000);
+  client.prepare(
+    `UPDATE vaultbase_auth_tokens SET used_at = ?, code = NULL
+      WHERE purpose = 'otp' AND code IS NOT NULL AND code NOT LIKE 'hmac:%'`,
+  ).run(now);
+  const rows = client.prepare(
+    `SELECT id FROM vaultbase_auth_tokens
+      WHERE id NOT LIKE 'h:%' AND purpose NOT IN ('totp_step', 'refresh_rotation')`,
+  ).all() as Array<{ id: string }>;
+  const rekey = client.prepare(`UPDATE vaultbase_auth_tokens SET id = ? WHERE id = ?`);
+  for (const r of rows) {
+    rekey.run("h:" + new Bun.CryptoHasher("sha256").update(r.id).digest("hex"), r.id);
+  }
+}
+
 function v0_11FinalizeAuthMigration(client: Database): void {
   const exists = client.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vaultbase_users'`,

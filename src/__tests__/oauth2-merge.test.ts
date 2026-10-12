@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { hashedTokenId } from "./_helpers.ts";
 import * as jose from "jose";
 import { closeDb, getDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
@@ -50,7 +51,7 @@ async function stagePendingMerge(
   const tokenId = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
   await getDb().insert(authTokens).values({
-    id: tokenId,
+    id: hashedTokenId(tokenId),
     user_id: userId,
     collection_id: collectionId,
     purpose: "oauth2_merge",
@@ -110,7 +111,7 @@ describe("oauth2 merge-confirm", () => {
     expect(links[0]!.provider_user_id).toBe(PROVIDER_USER_ID);
 
     // Token consumed
-    const tok = (await getDb().select().from(authTokens).where(eq(authTokens.id, mergeToken)))[0]!;
+    const tok = (await getDb().select().from(authTokens).where(eq(authTokens.id, hashedTokenId(mergeToken))))[0]!;
     expect(tok.used_at).not.toBeNull();
   });
 
@@ -160,7 +161,7 @@ describe("oauth2 merge-confirm", () => {
     const userId = await seedUser(col.id, "frank@example.test", "pw");
     const mergeToken = crypto.randomUUID();
     await getDb().insert(authTokens).values({
-      id: mergeToken,
+      id: hashedTokenId(mergeToken),
       user_id: userId,
       collection_id: col.id,
       purpose: "oauth2_merge",

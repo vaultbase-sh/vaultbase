@@ -182,19 +182,19 @@ function storedTokenId(raw: string): string {
   return "h:" + new Bun.CryptoHasher("sha256").update(raw).digest("hex");
 }
 
-/** Token formats issued before tokens were hashed: 64 hex chars, or a UUID. */
-const LEGACY_TOKEN_RE = /^(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+/** Look up a one-time token by the raw value a caller presents. */
+async function findOneTimeToken(raw: string) {
+  return await getDb().select().from(authTokens).where(eq(authTokens.id, storedTokenId(raw))).limit(1);
+}
 
 /**
- * Look up a one-time token by the raw value a caller presents. Rows written
- * before hashing (still keyed by the raw token) are found too, but only for
- * the formats Vaultbase used to issue — so a hash read out of the database
- * (`h:…`) can't be presented as a token. Those rows expire within days.
+ * What is stored for an OTP's 6-digit code: an HMAC keyed with the server
+ * secret, which lives outside the database. A plain hash of a 6-digit code
+ * falls to a million guesses offline, and the code plus the user's email
+ * (also in the database) is a sign-in.
  */
-async function findOneTimeToken(raw: string) {
-  const rows = await getDb().select().from(authTokens).where(eq(authTokens.id, storedTokenId(raw))).limit(1);
-  if (rows.length > 0 || !LEGACY_TOKEN_RE.test(raw)) return rows;
-  return await getDb().select().from(authTokens).where(eq(authTokens.id, raw)).limit(1);
+async function otpCodeDigest(code: string, jwtSecret: string): Promise<string> {
+  return "hmac:" + (await hmacRecoveryCode(`otp:${code}`, jwtSecret));
 }
 
 /**
@@ -397,7 +397,8 @@ async function sendTemplated(
 async function issueOtpAndSend(
   user: { id: string; email: string },
   collectionId: string,
-  collectionName: string
+  collectionName: string,
+  jwtSecret: string,
 ): Promise<boolean> {
   const token = newToken();
   const code = newOtpCode();
@@ -409,7 +410,7 @@ async function issueOtpAndSend(
     user_id: user.id,
     collection_id: collectionId,
     purpose: "otp",
-    code,
+    code: await otpCodeDigest(code, jwtSecret),
     expires_at: expiresAt,
   });
   // Held back by the cooldown: drop the row before it voids the live code,
@@ -1215,7 +1216,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Not awaited, for the same reason as password reset: no timing
         // difference between addresses with and without an account.
         if (u && u.is_anonymous !== 1) {
-          issueOtpAndSend({ id: u.id, email: u.email }, col.id, col.name).catch((e) => {
+          issueOtpAndSend({ id: u.id, email: u.email }, col.id, col.name, jwtSecret).catch((e) => {
             console.error("[auth] otp email failed for", redactEmail(u.email), "—", e instanceof Error ? e.message : e);
           });
         }
@@ -1287,7 +1288,7 @@ export function makeAuthPlugin(jwtSecret: string) {
             .orderBy(desc(authTokens.created_at))
             .limit(1) : [];
           tok = tokenRows[0];
-          if (!tok || !(await spendTokenAttempt(tok.id)) || !(tok.code && timingSafeEqualStr(tok.code, body.code!))) {
+          if (!tok || !(await spendTokenAttempt(tok.id)) || !(tok.code && timingSafeEqualStr(tok.code, await otpCodeDigest(body.code!, jwtSecret)))) {
             set.status = 400; return { error: "Invalid or expired code", code: 400 };
           }
           await releaseAttempt(attempt);

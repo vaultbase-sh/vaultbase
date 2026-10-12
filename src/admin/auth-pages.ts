@@ -447,7 +447,7 @@ function otpPage(token: string, collection: string): string {
     mfa.style.display = 'block';
     mfa.addEventListener('submit', function (e) {
       e.preventDefault();
-      var v = document.getElementById('code').value.trim();
+      var v = document.getElementById('code').value.replace(/\s+/g, '');
       var body = /^[0-9]{6}$/.test(v) ? { mfa_token: ticket, code: v } : { mfa_token: ticket, recovery_code: v };
       document.getElementById('verify').disabled = true;
       fetch(base + '/login/mfa', {

@@ -13,7 +13,7 @@ import { setSetting } from "../api/settings.ts";
 import { authTokens } from "../db/schema.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { makeAuthPagesPlugin } from "../admin/auth-pages.ts";
-import { ensureAuthCollection } from "./_helpers.ts";
+import { ensureAuthCollection, hashedTokenId } from "./_helpers.ts";
 import { insertUser } from "../core/users-table.ts";
 import { generateCode, generateSecret } from "../core/totp.ts";
 
@@ -43,7 +43,7 @@ describe("magic-link page for an MFA account", () => {
     const now = Math.floor(Date.now() / 1000);
     await insertUser(col, { id, email: "m@test.local", password_hash: "x", totp_secret: secret, totp_enabled: 1, email_verified: 1, created_at: now, updated_at: now });
     const link = "a".repeat(64);
-    await getDb().insert(authTokens).values({ id: link, user_id: id, collection_id: col.id, purpose: "otp", code: "123456", expires_at: now + 600 });
+    await getDb().insert(authTokens).values({ id: hashedTokenId(link), user_id: id, collection_id: col.id, purpose: "otp", code: "123456", expires_at: now + 600 });
     const app = makeAuthPlugin(SECRET);
     const post = (path: string, body: unknown) => app.handle(new Request(`http://localhost${path}`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),

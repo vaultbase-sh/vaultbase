@@ -50,6 +50,8 @@ const post = (path: string, body: unknown) =>
 
 /** Pretend every token of `purpose` was issued `seconds` earlier. */
 async function age(purpose: string, seconds: number): Promise<void> {
+  // Requests answer before the email (and, for OTP, the token row) is done.
+  await Bun.sleep(50);
   const rows = await getDb().select().from(authTokens).where(and(eq(authTokens.user_id, userId), eq(authTokens.purpose, purpose)));
   for (const r of rows) await getDb().update(authTokens).set({ created_at: r.created_at - seconds }).where(eq(authTokens.id, r.id));
 }

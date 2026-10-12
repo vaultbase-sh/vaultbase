@@ -8,6 +8,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { eq } from "drizzle-orm";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
@@ -68,13 +69,42 @@ describe("one-time tokens at rest", () => {
     expect((await post("/auth/users/confirm-password-reset", { token, password: "a-new-password-1" })).status).toBe(200);
   });
 
-  it("a link issued before the upgrade (stored in plaintext) still works", async () => {
+  it("a link issued before the upgrade (stored in plaintext) is re-keyed and still works", async () => {
     const col = (await getCollection("users"))!;
     const legacy = "b".repeat(64);
     await getDb().insert(authTokens).values({
       id: legacy, user_id: userId, collection_id: col.id, purpose: "password_reset",
       expires_at: Math.floor(Date.now() / 1000) + 600,
     });
+    await runMigrations();
+    const ids = (await getDb().select().from(authTokens)).map((r) => r.id);
+    expect(ids).not.toContain(legacy);
+    expect(ids).toContain(hashedTokenId(legacy));
     expect((await post("/auth/users/confirm-password-reset", { token: legacy, password: "a-new-password-1" })).status).toBe(200);
+  });
+
+  it("the OTP code is not stored in a form a database reader can use", async () => {
+    const { setSetting } = await import("../api/settings.ts");
+    setSetting("auth.otp.enabled", "1");
+    await post("/auth/users/otp/request", { email: "u@test.local" });
+    for (let i = 0; i < 50 && !smtp.last("code"); i++) await Bun.sleep(20);
+    const code = /\n\s+(\d{6})\n/.exec(smtp.last("code") ?? "")![1]!;
+    const [row] = await getDb().select().from(authTokens).where(eq(authTokens.purpose, "otp"));
+    expect(row!.code).not.toBe(code);
+    expect(row!.code).not.toBe(new Bun.CryptoHasher("sha256").update(code).digest("hex"));
+    expect((await post("/auth/users/otp/auth", { email: "u@test.local", code: row!.code })).status).toBe(400);
+    expect((await post("/auth/users/otp/auth", { email: "u@test.local", code })).status).toBe(200);
+  });
+
+  it("pre-upgrade OTP rows (plaintext codes) are voided by the migration", async () => {
+    const col = (await getCollection("users"))!;
+    await getDb().insert(authTokens).values({
+      id: "c".repeat(64), user_id: userId, collection_id: col.id, purpose: "otp", code: "123456",
+      expires_at: Math.floor(Date.now() / 1000) + 600,
+    });
+    await runMigrations();
+    const [row] = await getDb().select().from(authTokens).where(eq(authTokens.purpose, "otp"));
+    expect(row!.code).toBeNull();
+    expect(row!.used_at).not.toBeNull();
   });
 });
