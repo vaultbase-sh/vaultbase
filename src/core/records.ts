@@ -642,6 +642,7 @@ async function createRecordImpl(
   afterCommit(() => {
     broadcast(col.name, { type: "create", collection: col.name, record: result }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: result as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
@@ -740,6 +741,7 @@ async function updateRecordImpl(
   afterCommit(() => {
     broadcast(col.name, { type: "update", collection: col.name, record: result }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: result as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
@@ -986,6 +988,7 @@ async function applyCascades(
       }
       const now = Math.floor(Date.now() / 1000);
       for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
+      const refListRule = refCol ? refCol.list_rule : ((await getCollection(ref.collection.name))?.list_rule ?? "");
       client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
         .run(now, id);
@@ -996,6 +999,7 @@ async function applyCascades(
         const rec = await getRecord(ref.collection.name, r.id);
         if (rec) afterCommit(() => broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
           viewRule: ref.collection.view_rule,
+          listRule: refListRule,
           record: rec as unknown as Record<string, unknown>,
         }));
       }
@@ -1078,6 +1082,7 @@ async function deleteRecordInternal(
   afterCommit(() => {
     broadcast(col.name, { type: "delete", collection: col.name, id }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: existing as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });

@@ -8,7 +8,8 @@
 import { describe, expect, it, beforeEach } from "bun:test";
 import {
   _reset, admitConnection, broadcast, getSSEClient, reverifyRealtimeAuth, setSSESubscriptions,
-  setWSAuth, subscribe, MAX_REALTIME_CONNECTIONS, MAX_TOPICS_PER_CONNECTION, type WSLike,
+  setWSAuth, subscribe, unregisterSSEClient, MAX_CONNECTIONS_PER_IP, MAX_REALTIME_CONNECTIONS,
+  MAX_TOPIC_LENGTH, MAX_TOPICS_PER_CONNECTION, type WSLike,
 } from "../realtime/manager.ts";
 import { openSSEStream } from "../realtime/sse.ts";
 
@@ -63,5 +64,44 @@ describe("realtime limits", () => {
     const big = { ...event, record: { ...event.record, blob: "x".repeat(200_000) } };
     for (let i = 0; i < 20 && getSSEClient(clientId); i++) broadcast("notes", big as typeof event, { viewRule: null });
     expect(getSSEClient(clientId)).toBeUndefined();
+  });
+});
+
+describe("review 11 follow-ups", () => {
+  const listOnlyMine = { viewRule: null, listRule: "owner = @request.auth.id", record: { id: "r1", owner: "u1" } };
+
+  it("a collection subscription follows the list rule", () => {
+    const ws = fakeWs("c1");
+    subscribe(ws, ["notes"]);
+    setWSAuth(ws, { id: "someone-else", type: "user" });
+    broadcast("notes", event, listOnlyMine);
+    expect(ws.got).toHaveLength(0);
+  });
+
+  it("a per-record subscription needs only the view rule (legitimate path)", () => {
+    const ws = fakeWs("c1");
+    subscribe(ws, ["notes/r1"]);
+    setWSAuth(ws, { id: "someone-else", type: "user" });
+    broadcast("notes", event, listOnlyMine);
+    expect(ws.got).toHaveLength(1);
+  });
+
+  it("over-long topics are refused", () => {
+    const ws = fakeWs("c1");
+    expect(subscribe(ws, ["x".repeat(MAX_TOPIC_LENGTH + 1), "notes"])).toEqual(["notes"]);
+  });
+
+  it("one address can't take every connection", () => {
+    for (let i = 0; i < MAX_CONNECTIONS_PER_IP; i++) expect(admitConnection(`a${i}`, "203.0.113.9")).toBe(true);
+    expect(admitConnection("one-more", "203.0.113.9")).toBe(false);
+    expect(admitConnection("someone-else", "198.51.100.1")).toBe(true);
+  });
+
+  it("unregistering an SSE client closes its stream", async () => {
+    const { clientId, response } = openSSEStream()!;
+    const reader = response.body!.getReader();
+    await reader.read(); // greeting
+    unregisterSSEClient(clientId);
+    expect((await reader.read()).done).toBe(true);
   });
 });

@@ -39,28 +39,33 @@ interface SSEHandle {
  * Open an SSE stream and register a client with the realtime manager.
  * Returns a Response whose body streams events until the client disconnects.
  */
-export function openSSEStream(): SSEHandle | null {
+export function openSSEStream(ip?: string | null): SSEHandle | null {
   const clientId = crypto.randomUUID();
-  if (!admitConnection(clientId)) return null;
+  if (!admitConnection(clientId, ip)) return null;
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
 
-  const cleanup = () => {
+  /** End the stream; `abort` drops anything still queued (a stalled reader). */
+  const cleanup = (abort = false) => {
     if (closed) return;
     closed = true;
     if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     unregisterSSEClient(clientId);
-    try { controller?.close(); } catch { /* already closed */ }
+    try {
+      if (abort) controller?.error(new Error("SSE client too slow"));
+      else controller?.close();
+    } catch { /* already closed */ }
     controller = null;
   };
 
   const adapter: WSLike = {
+    close() { cleanup(); },
     send(data: string) {
       if (closed || !controller) throw new Error("SSE stream closed");
       // desiredSize goes negative once more than MAX_QUEUED_BYTES is waiting.
       if ((controller.desiredSize ?? 0) < 0) {
-        cleanup();
+        cleanup(true);
         throw new Error("SSE client too slow");
       }
       try {

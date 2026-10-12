@@ -294,7 +294,7 @@ export function createServer(config: Config) {
     }))
     // SSE fallback for clients that can't open WebSockets. Pairs with
     // `POST /api/v1/realtime` for setting subscriptions.
-    .get("/api/v1/realtime", ({ request, set }) => {
+    .get("/api/v1/realtime", ({ request, server, set }) => {
       const origin = request.headers.get("origin");
       // Browsers always send Origin, so a present Origin must be allow-listed
       // (blocks cross-site use). A missing Origin is a non-browser client
@@ -304,7 +304,8 @@ export function createServer(config: Config) {
         set.status = 403;
         return { error: "Origin not allowed", code: 403 };
       }
-      const sse = openSSEStream();
+      const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      const sse = openSSEStream(trustedClientIp(request, peer));
       if (!sse) { set.status = 503; return { error: "Too many realtime connections", code: 503 }; }
       set.headers["content-type"] = "text/event-stream; charset=utf-8";
       return sse.response;
@@ -345,6 +346,8 @@ export function createServer(config: Config) {
       return { data: null };
     })
     .ws("/realtime", {
+      // Client messages are small JSON commands; refuse anything larger.
+      maxPayloadLength: 64 * 1024,
       async open(ws) {
         const req = (ws.data as { request?: Request } | undefined)?.request;
         if (req) {
@@ -369,7 +372,8 @@ export function createServer(config: Config) {
         } else {
           wsAny.data.connId = newId;
         }
-        if (!admitConnection(newId)) {
+        const peer = (ws as unknown as { remoteAddress?: string }).remoteAddress ?? null;
+        if (!admitConnection(newId, req ? trustedClientIp(req, peer) : peer)) {
           ws.send(JSON.stringify({ type: "error", reason: "too_many_connections" }));
           ws.close();
           return;

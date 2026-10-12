@@ -86,8 +86,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Realtime changes.** A WebSocket or SSE connection from this server's own origin is
   accepted even with `security.allowed_origins` empty (it used to be refused). Clients
   should handle `{ "type": "auth_expired" }` by sending a fresh token. Connections are
-  capped at 10,000 per process and 100 topics each. Managing an SSE client that has
-  authenticated needs that user's token.
+  capped at 10,000 per process, 100 per client address and 100 topics (of at most 200
+  characters) each; WebSocket messages over 64 KB are refused. Subscriptions to a whole
+  collection only deliver records that pass its `list_rule`. Managing an SSE client that
+  has authenticated needs that user's token.
 - **OAuth flows need the server-issued `state`.** `/oauth2/authorize` records the
   `state` (generating one if you send none, returned as `data.state`); `/oauth2/exchange`
   now requires it back, for the same provider and redirect URI, once. With no
@@ -294,6 +296,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   limit; and `POST`/`DELETE /realtime` trusted the SSE `clientId` alone. Tokens are now
   re-checked every minute and at expiry, connections and topics are capped, slow SSE
   readers are dropped, and managing an authenticated SSE client needs its user's token.
+  Collection-wide subscriptions also ignored the collection's `list_rule`, so a record
+  hidden from lists was still pushed to every subscriber who could view it; they now
+  follow the list rule as well (a subscription to one record by id needs only the view
+  rule).
 - **OAuth sign-in skipped MFA and didn't check its own state.** Signing in through a
   linked provider, or confirming a merge with the password, issued a session even when
   the account had TOTP on. `/oauth2/exchange` accepted any `state` (it was only checked
