@@ -631,7 +631,8 @@ async function updateRecordImpl(
   collectionName: string,
   id: string,
   data: Record<string, unknown> | null | undefined,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
@@ -651,8 +652,15 @@ async function updateRecordImpl(
     data = stripped;
   }
 
+  // Raw row first, then the API-shaped record: if anything writes in between,
+  // the final comparison below sees it.
+  const tableRef = quoteIdent(userTableName(col.name));
+  const rawBefore = rawRowJson(tableRef, id);
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
+  if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
+    throw new PreconditionFailedError();
+  }
 
   // beforeUpdate hook
   const helpers = makeHookHelpers();
@@ -687,9 +695,12 @@ async function updateRecordImpl(
   setCols.push(`"updated_at" = ?`);
   setVals.push(now);
 
-  const tableRef = quoteIdent(userTableName(col.name));
   const client = rawClient();
 
+  // The precondition held when checked, but hooks and validation awaited
+  // since: re-read the row and write in the same synchronous step, so a
+  // concurrent write can't land between the check and this UPDATE.
+  if (guard.ifUnchanged && rawRowJson(tableRef, id) !== rawBefore) throw new PreconditionFailedError();
   if (setCols.length > 1) {
     client.prepare(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`).run(...setVals, id);
   }
@@ -720,6 +731,28 @@ async function updateRecordImpl(
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
+
+/**
+ * The record changed between the caller's precondition check (an HTTP
+ * `If-Match`) and the write. The caller answers 412.
+ */
+export class PreconditionFailedError extends Error {
+  constructor() { super("Precondition Failed: record was modified"); }
+}
+
+/**
+ * Write preconditions. `ifUnchanged` is the record (as `getRecord` returned
+ * it) the caller checked its precondition against; the write goes ahead only
+ * if the record is still exactly that.
+ */
+export interface WriteGuard {
+  ifUnchanged?: Record<string, unknown>;
+}
+
+/** Synchronous read of the raw row, for comparing just before a write. */
+function rawRowJson(tableRef: string, id: string): string {
+  return JSON.stringify(rawClient().prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) ?? null);
+}
 
 export class RestrictError extends Error {
   details: Record<string, string>;
@@ -864,23 +897,33 @@ async function applyCascades(
 async function deleteRecordImpl(
   collectionName: string,
   id: string,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<void> {
-  return deleteRecordInternal(collectionName, id, auth, new Set<string>());
+  return deleteRecordInternal(collectionName, id, auth, new Set<string>(), guard);
 }
 
 async function deleteRecordInternal(
   collectionName: string,
   id: string,
   auth: AuthContext | null,
-  visited: Set<string>
+  visited: Set<string>,
+  guard: WriteGuard = {},
 ): Promise<void> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
 
+  const tableRef = quoteIdent(userTableName(col.name));
+  const rawBefore = rawRowJson(tableRef, id);
   const existing = await getRecord(collectionName, id);
-  if (!existing) return;
+  if (!existing) {
+    if (guard.ifUnchanged) throw new PreconditionFailedError();
+    return;
+  }
+  if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
+    throw new PreconditionFailedError();
+  }
 
   // Order matters: restrict refs (no side effects) → beforeDelete hook (may
   // abort) → cascades → delete. Cascading before the hook left children
@@ -896,7 +939,8 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited);
 
-  const tableRef = quoteIdent(userTableName(col.name));
+  // Same as update: re-check and delete in one synchronous step.
+  if (guard.ifUnchanged && rawRowJson(tableRef, id) !== rawBefore) throw new PreconditionFailedError();
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
@@ -1028,8 +1072,9 @@ export function updateRecord(
   id: string,
   data: Record<string, unknown> | null | undefined,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth));
+  return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth, guard));
 }
 
 /**
@@ -1042,12 +1087,13 @@ export async function deleteRecord(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<void> {
   const col = await getCollection(collectionName);
   const cascades = col
     ? (await findIncomingRefs(col.name)).some((r) => r.cascade !== "restrict")
     : false;
-  const run = () => deleteRecordImpl(collectionName, id, auth);
+  const run = () => deleteRecordImpl(collectionName, id, auth, guard);
   if (!cascades) return withSharedWrite(run);
 
   const mode = gateMode();

@@ -11,6 +11,7 @@ import {
   FilterError,
   AccessRuleError,
   clientPaging,
+  PreconditionFailedError,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
@@ -115,6 +116,18 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
     if (legacy && weak === legacy) return null;
   }
   return { currentEtag: current };
+}
+
+/** 412 for a write whose If-Match stopped holding while it ran. */
+async function preconditionResponse(
+  set: { status?: number | string; headers: Record<string, string | number> },
+  collection: string,
+  id: string,
+) {
+  set.status = 412;
+  const current = recordEtag(await getRecord(collection, id) as unknown as Record<string, unknown> | null);
+  if (current) set.headers["ETag"] = current;
+  return { error: "Precondition Failed: record was modified", code: 412 };
 }
 
 function validationResponse(set: { status?: number | string }, err: ValidationError) {
@@ -385,8 +398,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { error: "Precondition Failed: record was modified", code: 412 };
         }
         try {
+          // With If-Match, the write itself re-checks that the record is
+          // still the one the precondition was checked against.
+          const guard = request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
           const record = await runWithHookRequest(request, () =>
-            updateRecord(params.collection, params.id, body as Record<string, unknown>, auth)
+            updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
           );
           const etag = recordEtag(record as unknown as Record<string, unknown>);
           if (etag) set.headers["ETag"] = etag;
@@ -394,6 +410,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
           if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+          if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
           throw e;
         }
       },
@@ -416,12 +433,14 @@ export function makeRecordsPlugin(jwtSecret: string) {
         return { error: "Precondition Failed: record was modified", code: 412 };
       }
       try {
+        const guard = request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
         await runWithHookRequest(request, () =>
-          deleteRecord(params.collection, params.id, auth)
+          deleteRecord(params.collection, params.id, auth, guard)
         );
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
         if (e instanceof RestrictError) {
           set.status = 409;
           return { error: e.message, code: 409, details: e.details };

@@ -204,6 +204,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   changed hands the new owner could read every earlier version. Non-admins now see only
   versions that pass the view rule as they stood, and only their own user id as the
   author of a change.
+- **`If-Match` didn't stop concurrent writes.** The ETag was compared before the write,
+  so several requests carrying the same ETag could all pass and all write. The check now
+  holds until the write lands: only one succeeds, the rest get `412`.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
