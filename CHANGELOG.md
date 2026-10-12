@@ -81,6 +81,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **View queries can't name auth secrets.** A view whose query mentions `password_hash`,
   `totp_secret` or `password_reset_at` is rejected when saved; edit it to drop those
   columns. `SELECT *` views keep working, without those columns.
+- **Uploads need an existing record.** `POST /files/:collection/:recordId/:field` answers
+  `404` for a record id that doesn't exist; create the record first, then upload.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -252,6 +254,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `-`, `@`, tab or carriage return ran as a formula in whoever opened the export. Such
   values are now prefixed with `'` (shown as plain text); CSV import removes the prefix
   again, so an export re-imports unchanged.
+- **Files could be uploaded for records that don't exist.** The upload endpoint accepted
+  any record id and judged it by the create rule, so storage could be filled with files
+  attached to nothing. Uploads now need an existing record and pass its update rule.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
