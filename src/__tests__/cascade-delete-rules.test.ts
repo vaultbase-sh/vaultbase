@@ -57,7 +57,10 @@ const del = (path: string) => makeRecordsPlugin(SECRET).handle(new Request(`http
 describe("cascade delete follows the child collection's rules", () => {
   it("refuses a delete that would cascade into someone else's records", async () => {
     const { project, theirs } = await setup("cascade");
-    expect((await del(`/projects/${project.id}`)).status).toBe(403);
+    const res = await del(`/projects/${project.id}`);
+    expect(res.status).toBe(403);
+    // The refusal doesn't name the collection the caller can't see into.
+    expect(JSON.stringify(await res.json())).not.toContain("tasks");
     expect(await getRecord("tasks", theirs.id)).not.toBeNull();
     expect(await getRecord("projects", project.id)).not.toBeNull();
   });

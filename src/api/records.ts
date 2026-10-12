@@ -119,6 +119,15 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
   return { currentEtag: current };
 }
 
+/**
+ * True when If-Match names specific versions. `*` only asks that the record
+ * exists, so it doesn't pin the write to the version that was read.
+ */
+function ifMatchPinsVersion(request: Request): boolean {
+  const header = request.headers.get("if-match");
+  return !!header && parseIfMatch(header).some((t) => t !== "*");
+}
+
 /** 412 for a write whose If-Match stopped holding while it ran. */
 async function preconditionResponse(
   set: { status?: number | string; headers: Record<string, string | number> },
@@ -406,7 +415,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         try {
           // With If-Match, the write itself re-checks that the record is
           // still the one the precondition was checked against.
-          const guard = request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
+          const guard = ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
           const record = await runWithHookRequest(request, () =>
             updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
           );
@@ -441,7 +450,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       try {
         const cascadeAllowed = cascadeRuleCheck(request, auth);
         const guard = {
-          ...(request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+          ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
           ...(cascadeAllowed ? { cascadeAllowed } : {}),
         };
         await runWithHookRequest(request, () =>
@@ -451,7 +460,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
         if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
-        if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: e.message, code: 403 }; }
+        // Generic on purpose: naming the child collection would tell the
+        // caller that related records they can't see exist.
+        if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: "Forbidden", code: 403 }; }
         if (e instanceof RestrictError) {
           set.status = 409;
           return { error: e.message, code: 409, details: e.details };

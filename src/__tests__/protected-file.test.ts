@@ -97,4 +97,11 @@ describe("protected file field", () => {
       .sign(new TextEncoder().encode(SECRET));
     expect((await get(`/files/${filename}`, t)).status).toBe(200);
   });
+
+  it("a file whose field was dropped isn't served by the rules again", async () => {
+    const { getCollection, updateCollection } = await import("../core/collections.ts");
+    const col = (await getCollection("docs"))!;
+    await updateCollection(col.id, { fields: JSON.stringify([{ name: "title", type: "text" }]) } as Parameters<typeof updateCollection>[1]);
+    expect((await get(`/files/${filename}`)).status).toBe(401);
+  });
 });

@@ -581,7 +581,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         // A protected field is served by token only: falling through to the
         // rule path made `protected` (and one-time / IP-bound tokens) a no-op
         // on any record the caller could view. Admins are exempt.
-        const protectedField = fieldDefForAudit?.options?.protected === true;
+        // A file whose field no longer exists (dropped or renamed) has no
+        // field options left to say whether it was protected: treat it like
+        // an orphan, admin-only, rather than falling back to the rules.
+        const protectedField = fieldDefForAudit?.options?.protected === true || !fieldDefForAudit;
         if (!allowed && protectedField && auth?.type !== "admin") {
           set.status = 401;
           return { error: "Token required", code: 401 };

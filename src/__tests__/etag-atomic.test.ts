@@ -62,3 +62,34 @@ describe("If-Match is atomic with the write", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("If-Match follow-ups (review 09)", () => {
+  it("a beforeUpdate hook that writes the same row doesn't make the request fail", async () => {
+    const { getDb } = await import("../db/client.ts");
+    const { hooks } = await import("../db/schema.ts");
+    const { invalidateHookCache } = await import("../core/hooks.ts");
+    await getDb().insert(hooks).values({
+      id: "h-touch", name: "touch", collection_name: "posts", event: "beforeUpdate", enabled: 1,
+      code: "ctx.helpers.db.exec(`UPDATE vb_posts SET title = 'touched-by-hook' WHERE id = ?`, ctx.existing.id);",
+    });
+    invalidateHookCache();
+    try {
+      const r = await createRecord("posts", { title: "v0" }, null);
+      const res = await app().handle(new Request(`http://localhost/posts/${r.id}`, {
+        method: "PATCH", headers: { "content-type": "application/json", "if-match": await etagOf(r.id) }, body: JSON.stringify({ title: "v1" }),
+      }));
+      expect(res.status).toBe(200);
+    } finally {
+      invalidateHookCache();
+    }
+  });
+
+  it("If-Match: * only requires the record to exist; concurrent writers all succeed", async () => {
+    const r = await createRecord("posts", { title: "v0" }, null);
+    const results = await Promise.all(Array.from({ length: 4 }, (_, i) =>
+      app().handle(new Request(`http://localhost/posts/${r.id}`, {
+        method: "PATCH", headers: { "content-type": "application/json", "if-match": "*" }, body: JSON.stringify({ title: `w${i}` }),
+      }))));
+    expect(results.map((x) => x.status)).toEqual([200, 200, 200, 200]);
+  });
+});

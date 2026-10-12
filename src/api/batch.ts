@@ -192,7 +192,7 @@ export function makeBatchPlugin(jwtSecret: string) {
           }
           if (e instanceof CascadeForbiddenError) {
             set.status = 403;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 403 };
+            return { error: `Batch failed at request ${results.length}: forbidden`, code: 403 };
           }
           if (e instanceof RestrictError) {
             set.status = 409;

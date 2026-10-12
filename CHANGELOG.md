@@ -72,6 +72,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **`GET /collections` and `/collections/:id` need an admin token.** Non-admin callers
   get `401`. For a schema your app can read, enable the public OpenAPI document
   (`api.openapi_public`), which leaves out admin-only collections.
+- **A delete is refused if its cascade would touch records you can't modify.** Deleting
+  a record whose relations cascade (`cascade` or `setNull`) now checks each affected
+  record against its own collection's delete (or update) rule and answers `403` if any
+  fails, instead of removing or changing them. Admins are unaffected.
+- **Files whose field was removed are admin-only.** A stored file whose field was dropped
+  or renamed is no longer served by the record's rules.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.

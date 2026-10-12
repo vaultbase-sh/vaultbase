@@ -151,7 +151,7 @@ import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord } from "./validate.ts";
-import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
+import { getActiveHookRequest, makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
 
 const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json"]);
@@ -667,10 +667,12 @@ async function updateRecordImpl(
     data = stripped;
   }
 
-  // Raw row first, then the API-shaped record: if anything writes in between,
-  // the final comparison below sees it.
   const tableRef = quoteIdent(userTableName(col.name));
-  const rawBefore = rawRowJson(tableRef, id);
+  const writeKey = `${col.name}:${id}`;
+  // A guarded write holds the record's lock from the version check to the
+  // write; any other write to the record waits for whichever lock is held.
+  const unlock = guard.ifUnchanged ? await lockRecord(writeKey) : (await waitForRecordLock(writeKey), null);
+  try {
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
   if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
@@ -712,10 +714,6 @@ async function updateRecordImpl(
 
   const client = rawClient();
 
-  // The precondition held when checked, but hooks and validation awaited
-  // since: re-read the row and write in the same synchronous step, so a
-  // concurrent write can't land between the check and this UPDATE.
-  if (guard.ifUnchanged && rawRowJson(tableRef, id) !== rawBefore) throw new PreconditionFailedError();
   if (setCols.length > 1) {
     client.prepare(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`).run(...setVals, id);
   }
@@ -743,6 +741,9 @@ async function updateRecordImpl(
     });
   });
   return result;
+  } finally {
+    unlock?.();
+  }
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
@@ -778,10 +779,36 @@ export class CascadeForbiddenError extends Error {
   }
 }
 
-/** Synchronous read of the raw row, for comparing just before a write. */
-function rawRowJson(tableRef: string, id: string): string {
-  return JSON.stringify(rawClient().prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) ?? null);
+/**
+ * Per-record locks held by guarded (If-Match) writes. While one is held,
+ * other requests' writes to that record wait, so the version the guard
+ * checked is the version it writes over. The holder's own request — its
+ * beforeUpdate hooks writing the same row — passes straight through.
+ */
+const recordLocks = new Map<string, { owner: unknown; released: Promise<void> }>();
+const NO_REQUEST = Symbol("no request");
+
+async function waitForRecordLock(key: string): Promise<void> {
+  const self = getActiveHookRequest() ?? NO_REQUEST;
+  for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
+    await held.released;
+  }
 }
+
+async function lockRecord(key: string): Promise<() => void> {
+  const self = getActiveHookRequest() ?? NO_REQUEST;
+  // Check and take the lock with no await in between, or two requests could
+  // both find it free.
+  for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
+    await held.released;
+  }
+  let release!: () => void;
+  const released = new Promise<void>((r) => { release = r; });
+  const lock = { owner: self, released };
+  recordLocks.set(key, lock);
+  return () => { if (recordLocks.get(key) === lock) recordLocks.delete(key); release(); };
+}
+
 
 export class RestrictError extends Error {
   details: Record<string, string>;
@@ -907,6 +934,7 @@ async function applyCascades(
         }
       }
       const now = Math.floor(Date.now() / 1000);
+      for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
       client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
         .run(now, id);
@@ -961,7 +989,11 @@ async function deleteRecordInternal(
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
 
   const tableRef = quoteIdent(userTableName(col.name));
-  const rawBefore = rawRowJson(tableRef, id);
+  const writeKey = `${col.name}:${id}`;
+  // A guarded write holds the record's lock from the version check to the
+  // write; any other write to the record waits for whichever lock is held.
+  const unlock = guard.ifUnchanged ? await lockRecord(writeKey) : (await waitForRecordLock(writeKey), null);
+  try {
   const existing = await getRecord(collectionName, id);
   if (!existing) {
     if (guard.ifUnchanged) throw new PreconditionFailedError();
@@ -985,8 +1017,6 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited, guard);
 
-  // Same as update: re-check and delete in one synchronous step.
-  if (guard.ifUnchanged && rawRowJson(tableRef, id) !== rawBefore) throw new PreconditionFailedError();
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
@@ -1007,6 +1037,9 @@ async function deleteRecordInternal(
       auth, helpers,
     });
   });
+  } finally {
+    unlock?.();
+  }
 }
 
 // ── Relation expand ─────────────────────────────────────────────────────────
