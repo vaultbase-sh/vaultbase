@@ -216,6 +216,24 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return compileEach(ast.left, ast.right, op, ctx);
   }
 
+  // `@collection.X.f <op> v` (either side): some row of X matches.
+  const leftColl = ast.left.kind === "collection" && !ast.left.modifier;
+  const rightColl = ast.right.kind === "collection" && !ast.right.modifier;
+  if (leftColl !== rightColl) {
+    const coll = (leftColl ? ast.left : ast.right) as Extract<Operand, { kind: "collection" }>;
+    const other = leftColl ? ast.right : ast.left;
+    return compileCollectionRef(coll, ctx, (inner) => {
+      if (op === "~" || op === "!~") {
+        // `x ~ @collection.X.f` isn't symmetric; keep the operand order.
+        if (leftColl) return likeSql(inner, op, other, ctx);
+        const match = `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
+        return op === "~" ? match : `NOT ${match}`;
+      }
+      const otherSql = compileOperand(other, ctx);
+      return leftColl ? `${inner} ${sqlOpFor(op)} ${otherSql}` : `${otherSql} ${sqlOpFor(op)} ${inner}`;
+    });
+  }
+
   // Standard scalar comparison
   if (op === "~" || op === "!~") {
     const left = compileOperand(ast.left, ctx);
@@ -353,7 +371,19 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
   return applyModifierToSql(expr, op.modifier);
 }
 
-function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx: CompileCtx): string {
+/**
+ * `@collection.X.f`. On its own (with a modifier, or both sides of a
+ * comparison) it is the value from one row. Compared against something else
+ * — `exists` set — it is "some row of X the caller may view has f <op> v",
+ * compiled to EXISTS. It used to be `(SELECT f FROM X LIMIT 1) <op> v`,
+ * which looked at one arbitrary row: a members list only worked for its
+ * first member.
+ */
+function compileCollectionRef(
+  op: Extract<Operand, { kind: "collection" }>,
+  ctx: CompileCtx,
+  exists?: (inner: string) => string,
+): string {
   if (!IDENT_RE.test(op.collection)) throw new Error(`invalid collection: ${op.collection}`);
   for (const p of op.path) if (!IDENT_RE.test(p)) throw new Error(`invalid path: ${p}`);
   if (++ctx.joinDepth > MAX_JOIN_DEPTH) {
@@ -411,6 +441,10 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
       where = " WHERE 1=0";
     }
 
+    if (exists) {
+      const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
+      return `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(inner)})`;
+    }
     return applyModifierToSql(
       `(SELECT ${inner} FROM ${escapeIdent(targetTable)}${where} LIMIT 1)`,
       op.modifier,
@@ -574,16 +608,18 @@ function isValueOperand(operand: Operand): boolean {
   }
 }
 
+/** A LIKE pattern matching SQL value `col` as plain text; NULL when it is empty or NULL. */
+function sqlLikePattern(col: string): string {
+  return `'%' || replace(replace(replace(nullif(${col}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+}
+
 /** The LIKE pattern for `right`; NULL when the right side is empty or NULL. */
 function likeParam(operand: Operand, ctx: CompileCtx): string {
   // Anything evaluated in SQL — a column (`a ~ b`), a `_via_` back-relation,
   // a function, a modified operand: operandValue() has no value for it, so
   // this used to bind '%%' and match every row. Build the pattern in SQL,
   // escaping the operand's own wildcards.
-  if (!isValueOperand(operand)) {
-    const col = compileOperand(operand, ctx);
-    return `'%' || replace(replace(replace(nullif(${col}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
-  }
+  if (!isValueOperand(operand)) return sqlLikePattern(compileOperand(operand, ctx));
   const raw = operandValue(operand, ctx);
   const v = raw === null || raw === undefined ? "" : String(raw);
   if (v === "") {

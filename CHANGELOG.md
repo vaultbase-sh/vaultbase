@@ -336,6 +336,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the account on each request) and `@request.auth.anonymous`. Review rules that rely on
   `@request.auth.id != ""` if you enable anonymous sign-in or have more than one auth
   collection.
+- **`@collection.*` rules looked at one arbitrary row.** `@collection.members.user =
+  @request.auth.id` compiled to "the `user` of the first `members` row equals the
+  caller", so only that member passed. A comparison with an `@collection.*` operand now
+  means "some row of that collection that the caller may view matches", on either side
+  of the operator.
 - **The same address could be registered twice in different case.** Promoting an
   anonymous account, changing email and magic-link sign-up checked for an existing
   address case-sensitively, so `ALICE@example.com` could be added beside
