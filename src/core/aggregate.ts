@@ -37,7 +37,7 @@ const TIME = new Set(["date", "autodate"]);
 /** Types whose stored value is a scalar worth grouping or comparing. */
 const SCALAR = new Set(["text", "number", "bool", "select", "relation", "email", "url", "date", "autodate", "editor"]);
 
-export interface AggregateOptions extends Pick<ListOptions, "filter" | "search" | "accessRule" | "auth"> {
+export interface AggregateOptions extends Pick<ListOptions, "filter" | "search" | "accessRule" | "auth" | "request"> {
   agg?: string;
   groupBy?: string;
   sort?: string;

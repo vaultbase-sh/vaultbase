@@ -219,9 +219,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
   // Standard scalar comparison
   if (op === "~" || op === "!~") {
     const left = compileOperand(ast.left, ctx);
-    const v = operandValue(ast.right, ctx);
-    ctx.params.push(`%${String(v ?? "")}%`);
-    return `${left} ${op === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    return `${left} ${op === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(ast.right, ctx)}`;
   }
 
   const left = compileOperand(ast.left, ctx);
@@ -255,9 +253,7 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
   const arraySql = compileOperand(stripped, ctx);
   let cmp: string;
   if (op === "~" || op === "!~") {
-    const v = operandValue(scalarOperand, ctx);
-    ctx.params.push(`%${String(v ?? "")}%`);
-    cmp = `value ${op === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    cmp = `value ${op === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(scalarOperand, ctx)}`;
   } else {
     const right = compileOperand(scalarOperand, ctx);
     cmp = `value ${sqlOpFor(op)} ${right}`;
@@ -288,9 +284,7 @@ function compileArrayCmp(
   const innerCtx: CompileCtx = { ...ctx, params: inner };
   let cmp: string;
   if (scalarOp === "~" || scalarOp === "!~") {
-    const v = operandValue(scalarOperand, innerCtx);
-    inner.push(`%${String(v ?? "")}%`);
-    cmp = `value ${scalarOp === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    cmp = `value ${scalarOp === "~" ? "LIKE" : "NOT LIKE"} ${likeParam(scalarOperand, innerCtx)}`;
   } else {
     const right = compileOperand(scalarOperand, innerCtx);
     cmp = `value ${sqlOpFor(scalarOp)} ${right}`;
@@ -544,6 +538,24 @@ function applyModifierToValue(v: unknown, m?: FieldModifier): unknown {
     default:
       return v;
   }
+}
+
+/**
+ * The bound pattern for `~` / `!~`: the value wrapped in `%…%`. A literal
+ * the filter or rule author wrote keeps LIKE's wildcards (`%`, `_`). A value
+ * that arrives at runtime — `@request.*`, `@request.auth.*` — is matched as
+ * plain text, the way the in-process rule engine already matches it:
+ * otherwise a caller who sends `%` makes `field ~ @request.body.x` match
+ * every row.
+ */
+function likeParam(operand: Operand, ctx: CompileCtx): string {
+  const v = String(operandValue(operand, ctx) ?? "");
+  if (operand.kind === "literal" || operand.kind === "macro") {
+    ctx.params.push(`%${v}%`);
+    return "?";
+  }
+  ctx.params.push(`%${v.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+  return "? ESCAPE '\\'";
 }
 
 function operandValue(op: Operand, ctx: CompileCtx): unknown {

@@ -212,6 +212,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   allowed to delete their own record removed or changed every record pointing at it,
   whoever owned them. Each affected record must now pass its own collection's delete (or
   update) rule, or the whole delete is refused with `403`. Admins are unaffected.
+- **List rules that read the request matched too much.** A `list_rule` using
+  `@request.headers.*` or `@request.query.*` was compiled without the request, so those
+  values were empty in the SQL filter — `field ~ @request.headers.x` then matched every
+  record. And for `~`, a `%` or `_` sent by the caller acted as a wildcard. List rules
+  now see the request, and values from the request are matched as plain text with `~`
+  (patterns written into a rule or filter keep their wildcards).
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

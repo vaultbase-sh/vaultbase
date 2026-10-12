@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
+import type { RequestContextLike } from "./filter.ts";
 import {
   getCollection,
   getCollectionCached,
@@ -248,6 +249,11 @@ export interface ListOptions {
   search?: string;
   accessRule?: string;
   auth?: AuthContext | null;
+  /**
+   * The request, as rules see it (`@request.headers.*`, `@request.query.*`).
+   * Without it those operands compiled to NULL in the SQL access filter.
+   */
+  request?: RequestContextLike | null;
 }
 
 export interface ListResult {
@@ -343,7 +349,7 @@ type Binding = string | number | bigint | boolean | null | Uint8Array;
  */
 export async function compileListWhere(
   col: Collection,
-  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search">,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request">,
 ): Promise<{ whereSql: string; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
   const whereParts: string[] = [];
@@ -356,6 +362,7 @@ export async function compileListWhere(
   const hostCols = filterableColumns(col);
   const filterOpts = {
     auth: opts.auth ?? null,
+    request: opts.request ?? null,
     lookup,
     hostIdField: "id",
     hostPrivateField: (n: string) => hostPrivate.has(n),
@@ -439,7 +446,7 @@ export async function listRecords(
   // A search with no explicit sort orders by relevance (bm25): the SELECT
   // joins the match set itself, so it skips the search clause in WHERE.
   const match = opts.sort === undefined ? searchMatch(col, opts.search) : null;
-  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null }) : null;
+  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
   // updated_at, so skip the default sort there — caller can opt in by passing

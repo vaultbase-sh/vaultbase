@@ -180,6 +180,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         // Apply expression rule as access filter (admins bypass)
         if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
           opts.accessRule = col.list_rule;
+          opts.request = buildRequestContext(request);
         }
 
         // ── Vector similarity search ───────────────────────────────────────
@@ -226,6 +227,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
             ranked = await searchVectors(col, vecField.name, queryVec, {
               ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
               ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}),
+              ...(opts.request !== undefined ? { request: opts.request } : {}),
               ...(opts.search !== undefined ? { search: opts.search } : {}),
               auth: opts.auth ?? null,
               limit,
@@ -306,7 +308,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.search) opts.search = query.search;
         if (query.sort) opts.sort = query.sort;
         if (query.limit) opts.limit = Number(query.limit);
-        if (col.list_rule && auth?.type !== "admin") opts.accessRule = col.list_rule;
+        if (col.list_rule && auth?.type !== "admin") {
+          opts.accessRule = col.list_rule;
+          opts.request = buildRequestContext(request);
+        }
         try {
           return await timeFor(request, "db_exec", () => aggregateRecords(col, opts));
         } catch (e) {

@@ -105,6 +105,7 @@ async function dispatchOp(
       // Apply expression rule as access filter (admins bypass)
       if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
         opts.accessRule = col.list_rule;
+        opts.request = buildRequestContext(request);
       }
       const result = await listRecords(op.collection, opts);
       return { status: 200, body: result };

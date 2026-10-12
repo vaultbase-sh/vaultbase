@@ -35,7 +35,7 @@ export async function searchVectors(
   col: Collection,
   field: string,
   query: number[],
-  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search"> & { limit: number; minScore?: number },
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request"> & { limit: number; minScore?: number },
 ): Promise<Array<{ id: string; score: number }>> {
   // Field definitions (dimensions, names) may have changed.
   if (getSchemaVersion() !== cacheSchemaVersion) {
