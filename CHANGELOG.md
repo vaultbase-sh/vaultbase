@@ -199,6 +199,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Collection definitions were public.** `GET /collections` and `/collections/:id`
   answered anyone with every collection's rules, fields and view SQL. They are now
   admin-only, as the API docs already said.
+- **Record history showed old versions to a record's new owner.** History was readable
+  by anyone who passed the view rule against the record as it is now, so after a record
+  changed hands the new owner could read every earlier version. Non-admins now see only
+  versions that pass the view rule as they stood, and only their own user id as the
+  author of a change.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

@@ -461,11 +461,23 @@ export function makeRecordsPlugin(jwtSecret: string) {
       }
       const perPage = query.perPage ? parseInt(String(query.perPage), 10) : 50;
       const page = query.page ? parseInt(String(query.page), 10) : 1;
+      // Admins see every version. Anyone else sees a version only if the view
+      // rule passes against that version as it stood: passing it against the
+      // record as it is *now* let a new owner read everything the previous
+      // owner wrote. Who made each change is only shown when it was the
+      // caller.
+      const isAdminCaller = auth?.type === "admin";
       const out: HistoryListResponse = await listRecordHistory(
         params.collection,
         params.id,
-        { perPage, page },
+        isAdminCaller ? { perPage, page } : {
+          perPage, page,
+          visible: (e) => checkRule(request, "view_rule", col.name, col.view_rule, auth, e.snapshot),
+        },
       );
+      if (!isAdminCaller) {
+        for (const e of out.data) if (e.actor_id !== (auth?.id ?? null)) e.actor_id = null;
+      }
       return { data: out };
     })
 
