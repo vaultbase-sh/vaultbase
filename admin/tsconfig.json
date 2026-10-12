@@ -12,5 +12,8 @@
     "jsx": "react-jsx",
     "strict": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Unit tests run under `bun test` (bun:test types); the app build doesn't
+  // type-check them, and CI's admin job has no Bun type declarations.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }
