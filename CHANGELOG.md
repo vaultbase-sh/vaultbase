@@ -7,10 +7,33 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [Unreleased] — 0.17.0
 
 ### Upgrade notes
 
+- **Collection rules now default to admin-only.** A rule left out when creating a
+  collection — over the API, from the admin's **New collection** dialog, or when
+  restoring a migration snapshot — is stored as `""` (admin only). It used to be stored
+  as `null`, which is public, so a new collection was readable and writable by anyone
+  until someone set its rules. Existing collections keep the rules they have. To make a
+  collection public, set `null` explicitly or pick **Public** on the **API rules** tab.
+- **Rules can now see the request body.** `@request.body.<field>` was always empty, so
+  `:isset` was always false and comparisons against the body always failed. Rules that
+  use it now behave as written — check any that only worked because the body was empty.
+- **Update rules are checked against the record as it would be after the change**, as
+  well as the record as it is now. A rule like `owner = @request.auth.id` no longer lets
+  the owner hand the record to someone else in the same request.
+- **`expand` follows the related collection's `view_rule`.** Related records the caller
+  can't view are left out of `expand` instead of being returned in full.
+- **Auth cookies only work on same-origin requests.** `vaultbase_admin_token` and
+  `vaultbase_user_token` are ignored on cross-site and same-site (sibling subdomain)
+  requests. The admin UI and anything sending `Authorization: Bearer …` are unaffected.
+  With the SDK, `authTransport: "cookie"` now only works when your app is served from the
+  same origin as Vaultbase; the default, `"both"`, also sends the header and keeps working.
+- **Uploaded files are served more strictly.** Only safe raster images are shown inline;
+  everything else, SVG included, downloads as `application/octet-stream`. Every file
+  response carries `Content-Security-Policy: sandbox`, and stored file extensions now
+  come from the validated MIME type rather than the uploaded file name.
 - **A fresh install now gates the first-admin endpoint.** `install.sh` generates a
   `VAULTBASE_SETUP_KEY` into `/etc/vaultbase/vaultbase.env`, so `POST /api/v1/admin/setup`
   requires an `X-Setup-Key` header. Bootstrap with `vaultbase setup-admin`, which ignores
@@ -30,6 +53,33 @@ Binaries, checksums, signatures and SBOMs for every version are on
   is rebuilt around four live tables — dead jobs, per-queue backlog, top collections and
   recent requests — with a 1h / 24h / 7d range picker backed by the windowed endpoints above.
 - The installer grants `CAP_NET_BIND_SERVICE` when `--port` is below 1024, instead of writing a unit that cannot bind.
+
+### Security
+- **New collections were public by default.** See the upgrade note above. The admin's
+  rule editor also had a bug that saved an "Admin only" rule as public when the
+  collection was edited; both are fixed.
+- **Filters could read hidden columns.** `filter` and `sort` accepted `password_hash`,
+  `totp_secret` and other private auth columns, which let a caller recover them one
+  character at a time. They — and any column that isn't a declared field — are now
+  rejected as unknown, including through `@collection.*` and `_via_` references.
+- **An uploaded file could run as a page on the API's own origin.** A file stored with
+  an `.html` name was served as `text/html` even when uploaded as an image, which with
+  the admin cookie amounted to admin takeover. See the upgrade note on file serving.
+- **The auth cookies could be used from another site.** See the upgrade note above.
+- **Rules didn't see the request body, and update rules only checked the old record.**
+  Together these let a user write fields a rule was meant to block, or move a record they
+  owned to another user. The built-in `notifications` collection's update rule now also
+  pins the `user` field.
+- **`expand` ignored the related collection's view rule**, returning related records the
+  caller wasn't allowed to see.
+- **Dropping an index wasn't tied to its collection.** `DELETE
+  /admin/collections/:name/indexes/:indexName` only checked the `idx_`/`uniq_` prefix, so
+  it could drop any matching index in the database, including the one keeping admin
+  emails unique, and the name went into SQL unescaped. It now returns 404 unless the
+  index belongs to that collection.
+- **View queries could read SQLite metadata.** `pragma_*()` functions and `sqlite_*`
+  tables passed the view-query check and could expose the schema and database file path
+  through a public view. They are now rejected.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
