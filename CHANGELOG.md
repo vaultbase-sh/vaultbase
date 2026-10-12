@@ -294,6 +294,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now generates a setup key when none is configured and requires it (compared in
   constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
   listened on all interfaces; it is now used.
+- **`vaultbase update` installed unsigned releases silently.** With cosign installed,
+  the signature was only checked when the release carried `.sig`/`.pem` assets, so a
+  release without them was installed on the SHA-256 alone, with no warning. It is now
+  refused unless `--no-verify` is passed.
 - **`~` with an empty right side matched every record.** When the right-hand value of
   `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`
