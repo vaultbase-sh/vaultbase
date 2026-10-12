@@ -107,8 +107,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   capped at 10,000 per process, 100 per client address and 100 topics (of at most 200
   characters) each; WebSocket messages over 64 KB are refused. The per-address cap needs
   the real client address: behind a reverse proxy, set `security.trusted_proxies` (until
-  then, connections arriving from a loopback or private address are not capped per
-  address). Subscriptions to a whole
+  then, connections from a loopback peer, or forwarded by a private-network peer, are not
+  capped per address). Subscriptions to a whole
   collection only deliver records that pass its `list_rule`. Managing an SSE client that
   has authenticated needs that user's token.
 - **OAuth flows need the server-issued `state`.** `/oauth2/authorize` records the

@@ -62,7 +62,14 @@ describe("perClientLimitIp (realtime per-address caps)", () => {
     expect(perClientLimitIp(req(), "127.0.0.1")).toBeNull();
     expect(perClientLimitIp(req(), "::1")).toBeNull();
     expect(perClientLimitIp(req(), "::ffff:127.0.0.1")).toBeNull();
-    expect(perClientLimitIp(req(), "172.18.0.4")).toBeNull();
+    // A container-network proxy forwards the request.
+    expect(perClientLimitIp(req("203.0.113.5"), "172.18.0.4")).toBeNull();
+  });
+
+  it("still caps a private-network client that connects directly (review 15 F-6)", () => {
+    setSetting("security.trusted_proxies", "");
+    expect(perClientLimitIp(req(), "10.1.2.3")).toBe("10.1.2.3");
+    expect(perClientLimitIp(req(), "192.168.1.20")).toBe("192.168.1.20");
   });
 
   it("still caps a public peer by its own address", () => {
