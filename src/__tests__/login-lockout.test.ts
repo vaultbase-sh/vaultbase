@@ -12,7 +12,7 @@ import { eq } from "drizzle-orm";
 import { admin, authTokens, loginFailures } from "../db/schema.ts";
 import { getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
-import { seedAuthUser } from "./_helpers.ts";
+import { hashedTokenId, seedAuthUser } from "./_helpers.ts";
 
 const SECRET = "test-secret-login-lockout";
 const PASSWORD = "correct-horse-battery-1";
@@ -127,7 +127,7 @@ describe("other password checks share the lockout", () => {
     const col = (await getCollection("users"))!;
     const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
     await getDb().insert(authTokens).values({
-      id: "change-token", user_id: userId, collection_id: col.id, purpose: "email_change",
+      id: hashedTokenId("change-token"), user_id: userId, collection_id: col.id, purpose: "email_change",
       payload: "attacker@test.local", expires_at: Math.floor(Date.now() / 1000) + 3600,
     });
     for (let i = 0; i < 10; i++) {
@@ -140,7 +140,7 @@ describe("other password checks share the lockout", () => {
     const col = (await getCollection("users"))!;
     const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
     await getDb().insert(authTokens).values({
-      id: "merge-token", user_id: userId, collection_id: col.id, purpose: "oauth2_merge",
+      id: hashedTokenId("merge-token"), user_id: userId, collection_id: col.id, purpose: "oauth2_merge",
       code: JSON.stringify({ provider: "github", provider_user_id: "gh-1", email: "alice@test.local", name: null }),
       expires_at: Math.floor(Date.now() / 1000) + 900,
     });

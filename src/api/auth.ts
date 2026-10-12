@@ -172,6 +172,32 @@ function newToken(): string {
 }
 
 /**
+ * One-time tokens (email links, MFA tickets, merge tokens, PKCE state) are
+ * stored as a SHA-256 hash, never as the token itself, so a copy of the
+ * database — a backup, a read-only SQL session — can't be turned into a
+ * password reset or a sign-in. The raw token only exists in the email or
+ * response that carries it.
+ */
+function storedTokenId(raw: string): string {
+  return "h:" + new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+}
+
+/** Token formats issued before tokens were hashed: 64 hex chars, or a UUID. */
+const LEGACY_TOKEN_RE = /^(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/**
+ * Look up a one-time token by the raw value a caller presents. Rows written
+ * before hashing (still keyed by the raw token) are found too, but only for
+ * the formats Vaultbase used to issue — so a hash read out of the database
+ * (`h:…`) can't be presented as a token. Those rows expire within days.
+ */
+async function findOneTimeToken(raw: string) {
+  const rows = await getDb().select().from(authTokens).where(eq(authTokens.id, storedTokenId(raw))).limit(1);
+  if (rows.length > 0 || !LEGACY_TOKEN_RE.test(raw)) return rows;
+  return await getDb().select().from(authTokens).where(eq(authTokens.id, raw)).limit(1);
+}
+
+/**
  * Generate a single 8-character alphanumeric recovery code formatted as
  * `XXXX-XXXX`. Uses an unambiguous alphabet (no 0/O, 1/I) to make codes
  * easier to read off paper.
@@ -322,15 +348,16 @@ async function issueAndSend(
   const token = newToken();
   const expiresAt = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS;
   const purpose = kind === "verify" ? "email_verify" : "password_reset";
+  const stored = storedTokenId(token);
   await getDb().insert(authTokens).values({
-    id: token,
+    id: stored,
     user_id: user.id,
     collection_id: collectionId,
     purpose,
     expires_at: expiresAt,
   });
-  if (!emailAllowed(token, user.id, collectionId, purpose)) {
-    await getDb().delete(authTokens).where(eq(authTokens.id, token));
+  if (!emailAllowed(stored, user.id, collectionId, purpose)) {
+    await getDb().delete(authTokens).where(eq(authTokens.id, stored));
     return false;
   }
   const tpl = getTemplate(kind);
@@ -376,8 +403,9 @@ async function issueOtpAndSend(
   const code = newOtpCode();
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + OTP_TTL_SECONDS;
+  const stored = storedTokenId(token);
   await getDb().insert(authTokens).values({
-    id: token,
+    id: stored,
     user_id: user.id,
     collection_id: collectionId,
     purpose: "otp",
@@ -386,8 +414,8 @@ async function issueOtpAndSend(
   });
   // Held back by the cooldown: drop the row before it voids the live code,
   // so a flood of requests can't keep killing the code the user was sent.
-  if (!emailAllowed(token, user.id, collectionId, "otp")) {
-    await getDb().delete(authTokens).where(eq(authTokens.id, token));
+  if (!emailAllowed(stored, user.id, collectionId, "otp")) {
+    await getDb().delete(authTokens).where(eq(authTokens.id, stored));
     return false;
   }
   // One live code per user: the new one voids the rest, so each code only
@@ -398,7 +426,7 @@ async function issueOtpAndSend(
     eq(authTokens.collection_id, collectionId),
     eq(authTokens.purpose, "otp"),
     isNull(authTokens.used_at),
-    ne(authTokens.id, token),
+    ne(authTokens.id, stored),
   ));
   const tpl = getTemplate("otp");
   const appUrl = getAppUrl();
@@ -702,7 +730,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           const ticket = newToken();
           const now = Math.floor(Date.now() / 1000);
           await db.insert(authTokens).values({
-            id: ticket,
+            id: storedTokenId(ticket),
             user_id: u.id,
             collection_id: col.id,
             purpose: "mfa_ticket",
@@ -737,7 +765,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           return { error: "Provide exactly one of code or recovery_code", code: 422 };
         }
         const db = getDb();
-        const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.mfa_token)).limit(1);
+        const rows = await findOneTimeToken(body.mfa_token);
         const tok = rows[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "mfa_ticket" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
@@ -907,7 +935,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         const db = getDb();
-        const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1);
+        const rows = await findOneTimeToken(body.token);
         const tok = rows[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "email_verify" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
@@ -951,7 +979,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const db = getDb();
-        const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1);
+        const rows = await findOneTimeToken(body.token);
         const tok = rows[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "password_reset" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
@@ -989,8 +1017,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const db = getDb();
         const token = newToken();
         const now = Math.floor(Date.now() / 1000);
+        const stored = storedTokenId(token);
         await db.insert(authTokens).values({
-          id: token,
+          id: stored,
           user_id: u.id,
           collection_id: col.id,
           purpose: "email_change",
@@ -1000,8 +1029,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         // The link goes to an address the caller chooses, so the same
         // cooldown applies: a signed-in user can't use this to flood a
         // stranger's inbox. Held back, the earlier link stays valid.
-        if (!emailAllowed(token, u.id, col.id, "email_change")) {
-          await db.delete(authTokens).where(eq(authTokens.id, token));
+        if (!emailAllowed(stored, u.id, col.id, "email_change")) {
+          await db.delete(authTokens).where(eq(authTokens.id, stored));
           set.status = 429; return { error: "An email change was requested recently. Try again in a minute.", code: 429 };
         }
         // A taken address gets the same answer as a free one, and no link:
@@ -1010,12 +1039,12 @@ export function makeAuthPlugin(jwtSecret: string) {
         // (Confirming re-checks, in case the address is taken in between.)
         // The row stays (spent) so it still counts towards the cooldown.
         if (findUserByEmail(col, newEmail)) {
-          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, token));
+          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, stored));
           return { data: { sent: true } };
         }
         // One pending change at a time: a new request voids older links.
         await db.update(authTokens).set({ used_at: now }).where(and(
-          eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at), ne(authTokens.id, token),
+          eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at), ne(authTokens.id, stored),
         ));
         await sendTemplated("email_change", newEmail, token, col.name);
         return { data: { sent: true } };
@@ -1029,7 +1058,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         const db = getDb();
-        const tok = (await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1))[0];
+        const tok = (await findOneTimeToken(body.token))[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "email_change" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now || !tok.payload) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
@@ -1105,7 +1134,7 @@ export function makeAuthPlugin(jwtSecret: string) {
 
         const token = newToken();
         await getDb().insert(authTokens).values({
-          id: token, user_id: id, collection_id: col.id, purpose: "invite", expires_at: now + INVITE_TTL_SECONDS,
+          id: storedTokenId(token), user_id: id, collection_id: col.id, purpose: "invite", expires_at: now + INVITE_TTL_SECONDS,
         });
         try {
           await sendTemplated("invite", email, token, col.name);
@@ -1126,7 +1155,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
         if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         const db = getDb();
-        const tok = (await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1))[0];
+        const tok = (await findOneTimeToken(body.token))[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "invite" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired invitation", code: 400 };
@@ -1193,7 +1222,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const now = Math.floor(Date.now() / 1000);
         let tok;
         if (body.token) {
-          const rows = await db.select().from(authTokens).where(eq(authTokens.id, body.token)).limit(1);
+          const rows = await findOneTimeToken(body.token);
           tok = rows[0];
         } else {
           // Code lookups need the email too — codes alone are 6 digits and
@@ -1252,7 +1281,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (u.totp_enabled === 1) {
           const ticket = newToken();
           await db.insert(authTokens).values({
-            id: ticket,
+            id: storedTokenId(ticket),
             user_id: u.id,
             collection_id: col.id,
             purpose: "mfa_ticket",
@@ -1561,7 +1590,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const now = Math.floor(Date.now() / 1000);
         try {
           await getDb().insert(authTokens).values({
-            id: state,
+            id: storedTokenId(state),
             user_id: "",       // pre-auth flow, no user yet
             collection_id: col.id,
             purpose: "oauth2_pkce",
@@ -1628,7 +1657,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const now = Math.floor(Date.now() / 1000);
       let codeVerifier: string | undefined = body.code_verifier;
       if (!codeVerifier && body.state) {
-        const tokRows = await db.select().from(authTokens).where(eq(authTokens.id, body.state)).limit(1);
+        const tokRows = await findOneTimeToken(body.state);
         const tok = tokRows[0];
         if (tok && tok.purpose === "oauth2_pkce" && tok.collection_id === col.id && !tok.used_at && tok.expires_at >= now) {
           codeVerifier = tok.code ?? undefined;
@@ -1678,7 +1707,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           const matchedUserId = existing.id;
           const mergeToken = crypto.randomUUID();
           await db.insert(authTokens).values({
-            id: mergeToken,
+            id: storedTokenId(mergeToken),
             user_id: matchedUserId,
             collection_id: col.id,
             purpose: "oauth2_merge",
@@ -1767,7 +1796,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const db = getDb();
       const now = Math.floor(Date.now() / 1000);
 
-      const tokRows = await db.select().from(authTokens).where(eq(authTokens.id, body.merge_token)).limit(1);
+      const tokRows = await findOneTimeToken(body.merge_token);
       const tok = tokRows[0];
       if (!tok || tok.purpose !== "oauth2_merge" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
         set.status = 401;

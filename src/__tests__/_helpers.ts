@@ -87,3 +87,12 @@ export async function signUserJwt(
     .setJti(crypto.randomUUID())
     .sign(new TextEncoder().encode(jwtSecret));
 }
+
+/**
+ * The stored id of a one-time token: tokens are kept as a SHA-256 hash, so
+ * a test that seeds `vaultbase_auth_tokens` directly stores this and
+ * presents the raw value.
+ */
+export function hashedTokenId(raw: string): string {
+  return "h:" + new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+}

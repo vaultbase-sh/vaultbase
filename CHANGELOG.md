@@ -148,6 +148,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   came back measurably faster; both branches now do the same work and validate first.
   `request-email-change` answered "Email already in use" for a taken address; it now
   answers like any other request and sends nothing.
+- **One-time tokens were stored in plaintext.** Password-reset, verification, OTP and
+  invitation links, MFA tickets and OAuth merge tokens were kept verbatim in the
+  database, so anyone with a copy of it (a backup, read-only SQL access) could use a
+  pending reset link. They are now stored as SHA-256 hashes. Links issued before the
+  upgrade keep working until they expire.
 
 ### Fixed
 - **The hosted magic-link page now works for accounts with two-factor sign-in.** It used

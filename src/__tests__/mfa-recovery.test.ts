@@ -120,8 +120,9 @@ describe("login/mfa with recovery_code", () => {
     const { authTokens } = await import("../db/schema.ts");
     const ticket = "mfa-test-" + crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    const { hashedTokenId } = await import("./_helpers.ts");
     await getDb().insert(authTokens).values({
-      id: ticket,
+      id: hashedTokenId(ticket),
       user_id: userId,
       collection_id: collectionId,
       purpose: "mfa_ticket",
