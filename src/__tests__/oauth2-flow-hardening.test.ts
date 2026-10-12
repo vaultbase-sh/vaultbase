@@ -229,3 +229,31 @@ describe("review 12 follow-ups", () => {
     expect(await getDb().select().from(oauthLinks).where(eq(oauthLinks.provider_user_id, "p-6"))).toHaveLength(1);
   });
 });
+
+describe("review 14 follow-ups", () => {
+  it("placeholder addresses aren't predictable, so they can't be registered first", async () => {
+    profile = { sub: "p-7", email: "unverified@test.local", email_verified: false };
+    const a = await (await exchange(await begin())).json() as { data: { record: { email: string } } };
+    const expected = `oidc_${new Bun.CryptoHasher("sha256").update("p-7").digest("hex").slice(0, 24)}@oauth.invalid`;
+    expect(a.data.record.email).not.toBe(expected);
+  });
+
+  it("a placeholder account can't unlink its only provider", async () => {
+    profile = { sub: "p-8", email: "unverified2@test.local", email_verified: false };
+    const body = await (await exchange(await begin())).json() as { data: { token: string } };
+    const res = await app().handle(new Request("http://localhost/auth/users/oauth2/oidc/unlink", {
+      method: "DELETE", headers: { authorization: `Bearer ${body.data.token}` },
+    }));
+    expect(res.status).toBe(409);
+  });
+
+  it("register treats a different-case address as taken", async () => {
+    const res = await json("/auth/users/register", { email: "SEED@test.local", password: "another-password-1" });
+    expect(res.status).toBe(200);
+    const col = (await getCollection("users"))!;
+    const { getRawClient } = await import("../db/client.ts");
+    const n = (getRawClient().query(`SELECT count(*) AS n FROM vb_users WHERE email = 'SEED@test.local' COLLATE NOCASE`).get() as { n: number }).n;
+    expect(n).toBe(1);
+    void col;
+  });
+});

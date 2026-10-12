@@ -736,7 +736,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         // fallback. Earlier versions enforced GLOBAL email uniqueness across
         // every auth collection — pre-existing rows still work via the
         // helper's fallback to vaultbase_users.
-        const existing = findUserByEmail(col, body.email);
+        // Any case: `ALICE@x` must not become a second account beside `alice@x`.
+        const existing = findUserByEmailAnyCase(col, body.email);
         // No-enumeration: always return a generic success. If the email is
         // taken, queue a "complete account / reset password" email instead so
         // the legitimate owner can recover, and refuse silently.
@@ -1915,7 +1916,8 @@ export function makeAuthPlugin(jwtSecret: string) {
       //    else's future account, or collide with an existing one.
       const accountEmail = profile.emailVerified && !findUserByEmailAnyCase(col, profile.email)
         ? profile.email
-        : `${body.provider}_${new Bun.CryptoHasher("sha256").update(profile.id).digest("hex").slice(0, 24)}@oauth.invalid`;
+        // Random, so nobody can register the placeholder ahead of the owner.
+        : `${body.provider}_${newToken().slice(0, 24)}@oauth.invalid`;
       if (!userId) {
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
         const hash = await hashPassword(randomPw);
@@ -2106,7 +2108,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         .from(oauthLinks)
         .where(eq(oauthLinks.user_id, userId));
       const remainingAfter = allLinks.filter((l) => l.provider !== params.provider).length;
-      const hasPassword = u.password_hash !== "" && u.is_anonymous !== 1;
+      // An account created from a provider with an unverified email has only
+      // a placeholder address and a random password nobody knows: it has no
+      // other way in, and can't reset one.
+      const hasPassword = u.password_hash !== "" && u.is_anonymous !== 1 && !u.email.endsWith("@oauth.invalid");
       if (!hasPassword && remainingAfter === 0) {
         set.status = 409;
         return { error: "Cannot unlink — would leave you locked out", code: 409 };
