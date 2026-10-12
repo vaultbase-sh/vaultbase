@@ -33,7 +33,7 @@ import { dispatchEvent } from "../core/webhooks.ts";
 import { runJob, validateCron, invalidateJobsCache } from "../core/jobs.ts";
 import { invalidateRoutesCache, ROUTE_METHODS } from "../core/routes.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
-import { getSetting, setSetting, getAllSettings } from "../api/settings.ts";
+import { getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { ToolRegistry, asJsonText } from "./tools.ts";
 import { hasScope } from "../core/api-tokens.ts";
@@ -532,25 +532,25 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
 
   // ── settings ───────────────────────────────────────────────────────────
 
-  // Settings tools require mcp:admin (not mcp:read) — the response decrypts
-  // smtp.password / oauth2.<provider>.client_secret / OneSignal app key /
-  // FCM service-account JSON / etc. An mcp:read token is the "least-privileged
-  // observer" scope and must never see operator secrets.
+  // Settings tools require mcp:admin (not mcp:read). Secret-valued settings
+  // (smtp.password, oauth2.<provider>.client_secret, FCM service account, …)
+  // read as SECRET_SETTING_MASK here, as in the admin API; they can be
+  // written but not read back.
   reg.register({
     requiredScope: "mcp:admin",
     definition: {
       name: "vaultbase.list_settings",
-      description: "List every setting key/value. Encrypted-at-rest keys are decrypted in this response (admin-equivalent visibility) — requires mcp:admin scope.",
+      description: "List every setting key/value. Secret values (passwords, client secrets, keys, tokens) are masked — requires mcp:admin scope.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
-    handler: async () => asJsonText(getAllSettings()),
+    handler: async () => asJsonText(getAllSettingsMasked()),
   });
 
   reg.register({
     requiredScope: "mcp:admin",
     definition: {
       name: "vaultbase.get_setting",
-      description: "Read a single setting by key. Returns the (decrypted, when applicable) value — requires mcp:admin scope.",
+      description: "Read a single setting by key. Secret values are masked — requires mcp:admin scope.",
       inputSchema: {
         type: "object",
         properties: { key: { type: "string" } },
@@ -559,8 +559,9 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       },
     },
     handler: async (args) => {
-      const v = getSetting(String(args.key), "");
-      return asJsonText({ key: args.key, value: v });
+      const key = String(args.key);
+      const v = getSetting(key, "");
+      return asJsonText({ key: args.key, value: shouldEncryptSettingKey(key) && v !== "" ? SECRET_SETTING_MASK : v });
     },
   });
 

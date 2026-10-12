@@ -21,6 +21,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   request value, auth field or column that is empty or missing, used to match every
   record; it now matches none, and `!~` matches all. A `!~` filter now also includes
   records whose field is NULL, as single-record rule checks already did.
+- **Secret settings read back as `********`.** The admin API and MCP settings tools no
+  longer return secret values; a `PATCH` that sends `********` back leaves the stored
+  value alone. Scripts that read a secret back from `GET /admin/settings` must keep their
+  own copy. A metrics token can be copied only before it is saved.
 - **An uncaught exception now stops the process.** It used to be logged and ignored,
   leaving the server running in an unknown state. It is still logged, then the server
   shuts down gracefully with exit code 1 — run Vaultbase under a supervisor that
@@ -293,6 +297,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `@collection.bans.user != @request.auth.id` let a banned user read, change or delete
   the record by id while list requests refused them. A comparison with such an operand
   is now false in those checks, so it can only narrow access.
+- **The settings API returned every secret in plaintext.** `GET /admin/settings` (and the
+  MCP `list_settings`/`get_setting` tools) decrypted the SMTP password, OAuth client
+  secrets, storage keys and tokens, so anything that could read one admin response had
+  them all. Secret-valued settings now read back as `********`.
 - **A fresh install could be claimed by whoever reached it first.** `POST /admin/setup`
   was open unless `VAULTBASE_SETUP_KEY` was set, so an install from the container image,
   a manual binary or source had its first-admin endpoint open to the network. The server

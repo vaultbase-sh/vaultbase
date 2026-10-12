@@ -131,6 +131,23 @@ export function getAllSettings(): Record<string, string> {
   return out;
 }
 
+/**
+ * What a secret-valued setting (see shouldEncryptSettingKey) reads as through
+ * the admin API and MCP. They used to come back decrypted, so anything that
+ * could read one admin response had every SMTP password, OAuth client secret
+ * and storage key. A PATCH that sends the mask back leaves the value alone.
+ */
+export const SECRET_SETTING_MASK = "********";
+
+/** getAllSettings() with secret values masked (empty ones stay empty). */
+export function getAllSettingsMasked(): Record<string, string> {
+  const out = getAllSettings();
+  for (const k of Object.keys(out)) {
+    if (shouldEncryptSettingKey(k) && out[k] !== "") out[k] = SECRET_SETTING_MASK;
+  }
+  return out;
+}
+
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
@@ -165,7 +182,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
-      return { data: getAllSettings() };
+      return { data: getAllSettingsMasked() };
     })
     // Update settings (partial — keys not in body are left alone)
     .patch(
@@ -203,6 +220,8 @@ export function makeSettingsPlugin(jwtSecret: string) {
           }
         }
         for (const [k, v] of Object.entries(body)) {
+          // The masked value the UI read and sent back: keep what's stored.
+          if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
           setSetting(k, String(v));
         }
         // Bust caches that depend on settings
@@ -219,7 +238,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
           if (String(body["update_check.enabled"]) === "1") startUpdateCheckScheduler();
           else stopUpdateCheckScheduler();
         }
-        return { data: getAllSettings() };
+        return { data: getAllSettingsMasked() };
       },
       { body: t.Record(t.String(), t.Any()) }
     )

@@ -1431,9 +1431,10 @@ function MetricsSection() {
         label="Bearer token (optional)"
         hint={
           <>
-            When set, scrapers must send <VbCode>Authorization: Bearer &lt;token&gt;</VbCode>.
-            Leave blank to expose <VbCode>/api/v1/metrics</VbCode> publicly — only do this
-            if the endpoint is protected at the proxy layer.
+            When set, scrapers can send <VbCode>Authorization: Bearer &lt;token&gt;</VbCode>.
+            Blank means only signed-in admins can read <VbCode>/api/v1/metrics</VbCode>.
+            Copy a generated token before saving: once saved it reads back as
+            <VbCode>********</VbCode>, like every secret setting.
           </>
         }
       >
