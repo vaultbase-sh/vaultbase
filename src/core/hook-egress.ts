@@ -54,6 +54,8 @@ export class EgressBlockedError extends Error {
     super(
       cidr === "dns"
         ? `helpers.http: egress to ${url} blocked — the host name did not resolve, so its address can't be checked.`
+        : cidr.startsWith("scheme ")
+        ? `helpers.http: egress to ${url} blocked — only http and https URLs are allowed.`
         : `helpers.http: egress to ${url} blocked — resolved IP ${resolvedIp} is in denylist range ${cidr}. ` +
           (METADATA_CIDRS.includes(cidr)
             ? `Cloud metadata endpoints are always blocked.`
@@ -384,6 +386,12 @@ export async function guardedFetch(input: string | URL | Request, init?: Request
   let body: ArrayBuffer | null = first.body ? await first.arrayBuffer() : null;
   const headers = new Headers(first.headers);
   for (let hop = 0; ; hop++) {
+    // HTTP(S) only. Bun's fetch also reads file:// URLs; a redirect from a
+    // remote server to file:///… must never turn into a local file read.
+    const proto = new URL(url).protocol;
+    if (proto !== "http:" && proto !== "https:") {
+      throw new EgressBlockedError(url, "(non-http)", `scheme ${proto}`);
+    }
     await assertEgressAllowed(url);
     const res = await fetch(url, {
       method,
@@ -395,7 +403,15 @@ export async function guardedFetch(input: string | URL | Request, init?: Request
     const location = res.headers.get("location");
     if (!follow || res.status < 300 || res.status > 399 || !location) return res;
     if (hop >= MAX_REDIRECTS) throw new Error(`egress: too many redirects from ${first.url}`);
-    url = new URL(location, url).toString();
+    const next = new URL(location, url);
+    // Credentials don't follow a redirect to another origin (as in fetch's
+    // own redirect handling).
+    if (next.origin !== new URL(url).origin) {
+      headers.delete("authorization");
+      headers.delete("cookie");
+      headers.delete("proxy-authorization");
+    }
+    url = next.toString();
     // 303 (and a POST answered 301/302) continues as a body-less GET.
     if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
       method = "GET";

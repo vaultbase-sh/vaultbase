@@ -24,6 +24,9 @@ beforeAll(() => {
       const u = new URL(req.url);
       if (u.pathname === "/to-private") return new Response(null, { status: 302, headers: { location: "http://10.0.0.1/secret" } });
       if (u.pathname === "/to-metadata") return new Response(null, { status: 307, headers: { location: "http://169.254.169.254/latest/meta-data/" } });
+      if (u.pathname === "/to-file") return new Response(null, { status: 302, headers: { location: "file:///etc/passwd" } });
+      if (u.pathname === "/to-other-origin") return new Response(null, { status: 302, headers: { location: `http://localhost:${u.port}/echo` } });
+      if (u.pathname === "/echo") return Response.json({ auth: req.headers.get("authorization"), cookie: req.headers.get("cookie") });
       return new Response("ok");
     },
   });
@@ -102,5 +105,23 @@ describe("cloud metadata", () => {
     invalidateEgressCache();
     await blocked("http://169.254.169.254/");
     await blocked("http://[fd00:ec2::254]/");
+  });
+});
+
+describe("review 14 follow-ups", () => {
+  it("never follows a redirect to file:// (or any non-http scheme)", async () => {
+    setSetting("hooks.http.allow", "127.0.0.1/32");
+    invalidateEgressCache();
+    await expect(guardedFetch(`http://127.0.0.1:${stub.port}/to-file`)).rejects.toBeInstanceOf(EgressBlockedError);
+    await expect(guardedFetch("file:///etc/passwd")).rejects.toBeInstanceOf(EgressBlockedError);
+  });
+
+  it("drops credentials on a cross-origin redirect", async () => {
+    setSetting("hooks.http.allow", "127.0.0.1/32,::1/128");
+    invalidateEgressCache();
+    const res = await guardedFetch(`http://127.0.0.1:${stub.port}/to-other-origin`, {
+      headers: { authorization: "Bearer secret", cookie: "s=1" },
+    });
+    expect(await res.json()).toEqual({ auth: null, cookie: null });
   });
 });
