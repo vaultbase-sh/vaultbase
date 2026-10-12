@@ -85,6 +85,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now allows 5 attempts, a new code voids the previous one, used and expired codes are
   never matched, and an account allows 10 failed codes per 15 minutes in total; past that,
   `POST /auth/:collection/otp/auth` answers `429` until the window passes.
+- **The MFA code limit could be reset by signing in again.** The 5-attempt limit on the
+  second step of MFA sign-in was kept per sign-in ticket, so anyone holding the password
+  could fetch a new ticket and keep guessing; parallel guesses could also slip past the
+  count. Failed TOTP and recovery codes now count per account (10 per 15 minutes, then
+  `429`), including on `POST /auth/:collection/totp/disable`, and the counter is updated
+  atomically. A TOTP code is accepted once: replaying a code that has just been used is
+  refused. A recovery code or MFA ticket can no longer be used twice by sending two
+  requests at the same time.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.

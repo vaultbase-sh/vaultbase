@@ -102,12 +102,20 @@ export function generateCode(secret: string, unixSeconds: number = Math.floor(Da
  * comparison so timing leaks can't reveal partial matches.
  */
 export function verifyCode(secret: string, code: string, unixSeconds: number = Math.floor(Date.now() / 1000)): boolean {
-  if (typeof code !== "string" || code.length !== DIGITS) return false;
+  return matchingStep(secret, code, unixSeconds) !== null;
+}
+
+/**
+ * Like `verifyCode`, but returns the time step (counter) the code matched, or
+ * null. Callers that must refuse a replayed code record the step as spent.
+ */
+export function matchingStep(secret: string, code: string, unixSeconds: number = Math.floor(Date.now() / 1000)): number | null {
+  if (typeof code !== "string" || code.length !== DIGITS) return null;
   for (const offset of [0, -STEP_SECONDS, STEP_SECONDS]) {
     const candidate = generateCode(secret, unixSeconds + offset);
-    if (timingSafeEqual(candidate, code)) return true;
+    if (timingSafeEqual(candidate, code)) return Math.floor((unixSeconds + offset) / STEP_SECONDS);
   }
-  return false;
+  return null;
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

@@ -40,7 +40,7 @@ import {
 import {
   buildOtpauthUrl,
   generateSecret,
-  verifyCode as verifyTotpCode,
+  matchingStep as matchingTotpStep,
 } from "../core/totp.ts";
 import { isAuthFeatureEnabled } from "../core/auth-features.ts";
 import { validatePassword } from "../core/password-policy.ts";
@@ -117,6 +117,32 @@ async function countTokenFailure(id: string, now: number): Promise<void> {
     .returning({ attempts: authTokens.attempts });
   if ((rows[0]?.attempts ?? MAX_OTP_ATTEMPTS) >= MAX_OTP_ATTEMPTS) {
     await getDb().update(authTokens).set({ used_at: now }).where(eq(authTokens.id, id));
+  }
+}
+
+/**
+ * Check a TOTP code and spend it: each time step can be used once per user,
+ * so a code seen over someone's shoulder (or replayed from a log) is dead as
+ * soon as its owner has used it. The spent step is a row keyed by
+ * collection, user and step, so two racing requests can't both claim it.
+ */
+async function verifyTotpOnce(collectionId: string, userId: string, secret: string, code: string): Promise<boolean> {
+  const step = matchingTotpStep(secret, code);
+  if (step === null) return false;
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await getDb().insert(authTokens).values({
+      id: `totp_step:${collectionId}:${userId}:${step}`,
+      user_id: userId,
+      collection_id: collectionId,
+      purpose: "totp_step",
+      used_at: now,
+      // Past the ±1 step drift window the code can't match anyway.
+      expires_at: now + 120,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -630,14 +656,18 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "MFA not configured for this account", code: 400 };
         }
+        // Brute-force gate per account, across every ticket: `/login` mints a
+        // fresh ticket for anyone with the password, so a per-ticket count
+        // alone would let them walk the code space.
+        const failKey = `mfa:${col.id}:${u.id}`;
+        if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+          set.status = 429;
+          return { error: "Too many failed attempts. Try again later.", code: 429 };
+        }
         if (hasCode) {
-          if (!verifyTotpCode(u.totp_secret, body.code!)) {
-            // Brute-force gate per ticket.
-            const attempts = (tok.attempts ?? 0) + 1;
-            await db.update(authTokens).set({ attempts }).where(eq(authTokens.id, tok.id));
-            if (attempts >= MAX_OTP_ATTEMPTS) {
-              await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
-            }
+          if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code!))) {
+            await countTokenFailure(tok.id, now);
+            await recordAttemptFailure(failKey);
             set.status = 401;
             return { error: "Invalid code", code: 401 };
           }
@@ -666,19 +696,25 @@ export function makeAuthPlugin(jwtSecret: string) {
               if (ok) matchId = codeRow[0].id;
             }
           }
-          if (!matchId) {
-            const attempts = (tok.attempts ?? 0) + 1;
-            await db.update(authTokens).set({ attempts }).where(eq(authTokens.id, tok.id));
-            if (attempts >= MAX_OTP_ATTEMPTS) {
-              await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
-            }
+          // Spend the code with a conditional UPDATE so two requests racing
+          // the same recovery code can't both get through.
+          const spent = matchId
+            ? await db.update(mfaRecoveryCodes).set({ used_at: now })
+                .where(and(eq(mfaRecoveryCodes.id, matchId), isNull(mfaRecoveryCodes.used_at)))
+                .returning({ id: mfaRecoveryCodes.id })
+            : [];
+          if (spent.length === 0) {
+            await countTokenFailure(tok.id, now);
+            await recordAttemptFailure(failKey);
             set.status = 401;
             return { error: "Invalid recovery code", code: 401 };
           }
-          await db.update(mfaRecoveryCodes).set({ used_at: now }).where(eq(mfaRecoveryCodes.id, matchId));
-          await db.delete(mfaRecoveryLookup).where(eq(mfaRecoveryLookup.recovery_id, matchId));
+          await db.delete(mfaRecoveryLookup).where(eq(mfaRecoveryLookup.recovery_id, matchId!));
         }
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        if (!(await consumeToken(tok.id, now))) {
+          set.status = 400;
+          return { error: "Invalid or expired MFA ticket", code: 400 };
+        }
         const { token } = await signAuthToken({
           payload: { id: u.id, email: u.email, collection: col.name },
           audience: "user",
@@ -1147,7 +1183,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "Run /totp/setup first", code: 400 }; }
-        if (!verifyTotpCode(u.totp_secret, body.code)) {
+        if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code))) {
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
         await updateUserById(col, u.id, { totp_enabled: 1, updated_at: Math.floor(Date.now() / 1000) });
@@ -1169,7 +1205,14 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "MFA not configured", code: 400 }; }
-        if (!verifyTotpCode(u.totp_secret, body.code)) {
+        // Same per-account budget as sign-in: a stolen session must not be
+        // able to guess its way past the code that guards this.
+        const failKey = `mfa:${col.id}:${u.id}`;
+        if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+          set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
+        }
+        if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code))) {
+          await recordAttemptFailure(failKey);
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
         await updateUserById(col, u.id, { totp_enabled: 0, totp_secret: null, updated_at: Math.floor(Date.now() / 1000) });
