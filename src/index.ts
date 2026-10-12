@@ -366,6 +366,16 @@ async function main() {
     process.exit(0);
   }
 
+  // Secret settings saved before an encryption key existed are still
+  // plaintext in data.db (and its backups); encrypt them now.
+  try {
+    const { encryptPlaintextSecretSettings } = await import("./api/settings.ts");
+    const n = encryptPlaintextSecretSettings();
+    if (n > 0) process.stderr.write(`vaultbase: encrypted ${n} secret setting(s) stored in plaintext\n`);
+  } catch (e) {
+    process.stderr.write(`vaultbase: could not encrypt plaintext secret settings: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+
   if (flags.applySnapshot) {
     await applySnapshotFromCli(flags.applySnapshot, flags.snapshotMode);
   }

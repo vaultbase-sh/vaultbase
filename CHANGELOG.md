@@ -21,6 +21,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   request value, auth field or column that is empty or missing, used to match every
   record; it now matches none, and `!~` matches all. A `!~` filter now also includes
   records whose field is NULL, as single-record rule checks already did.
+- **An encryption key is generated when none is set.** Without `VAULTBASE_ENCRYPTION_KEY`
+  the server now creates `<dataDir>/.encryption-key` (0600) on first start, uses it for
+  secret settings and encrypted fields, and encrypts secret settings still stored in
+  plaintext. **Back up this file with your database backups**: encrypted values can't be
+  read without it. To switch to the env var later, set it to the file's contents.
 - **Secret settings read back as `********`.** The admin API and MCP settings tools no
   longer return secret values; a `PATCH` that sends `********` back leaves the stored
   value alone. Scripts that read a secret back from `GET /admin/settings` must keep their
@@ -302,6 +307,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `@collection.bans.user != @request.auth.id` let a banned user read, change or delete
   the record by id while list requests refused them. A comparison with such an operand
   is now false in those checks, so it can only narrow access.
+- **Secret settings were stored and backed up in plaintext by default.** Encryption at
+  rest needed `VAULTBASE_ENCRYPTION_KEY`, which few installs set, so the SMTP password,
+  OAuth client secrets and storage keys sat in `data.db` and every backup in clear. A key
+  is now generated when none is set, and existing plaintext secrets are encrypted.
 - **The settings API returned every secret in plaintext.** `GET /admin/settings` (and the
   MCP `list_settings`/`get_setting` tools) decrypted the SMTP password, OAuth client
   secrets, storage keys and tokens, so anything that could read one admin response had

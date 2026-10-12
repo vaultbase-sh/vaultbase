@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, chmodSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, chmodSync, linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 export interface Config {
@@ -40,6 +40,41 @@ async function loadJwtSecret(dataDir: string): Promise<string> {
  */
 export const FILE_UMASK = 0o027;
 
+/**
+ * The at-rest key for secret settings and encrypted fields. Without
+ * `VAULTBASE_ENCRYPTION_KEY`, secret settings (SMTP password, OAuth client
+ * secrets, storage keys) were stored — and backed up — in plaintext. Now a
+ * key is generated once into `<dataDir>/.encryption-key` (0600) and used
+ * instead, the same way `.secret` backs the JWT key. Keep that file with
+ * your backups: encrypted values can't be read without it.
+ *
+ * Created as a temp file linked into place, so processes starting together
+ * (cluster workers) all end up with the same key.
+ */
+export function loadEncryptionKey(dataDir: string): string {
+  const env = process.env["VAULTBASE_ENCRYPTION_KEY"];
+  if (env) return env;
+  const path = join(dataDir, ".encryption-key");
+  const read = (): string | null => {
+    try { return readFileSync(path, "utf8").trim() || null; } catch { return null; }
+  };
+  let key = read();
+  if (!key) {
+    const fresh = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      writeFileSync(tmp, fresh, { mode: 0o600, flag: "wx" });
+      try { linkSync(tmp, path); } catch { if (!read()) renameSync(tmp, path); }
+    } finally {
+      try { unlinkSync(tmp); } catch { /* linked or renamed away */ }
+    }
+    key = read() ?? fresh;
+  }
+  // The encryption module reads the env var; point it at this key.
+  process.env["VAULTBASE_ENCRYPTION_KEY"] = key;
+  return key;
+}
+
 export async function loadConfig(): Promise<Config> {
   try { process.umask(FILE_UMASK); } catch { /* not supported (Windows) */ }
   const dataDir = process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data";
@@ -61,7 +96,7 @@ export async function loadConfig(): Promise<Config> {
     uploadDir,
     logsDir,
     jwtSecret,
-    encryptionKey: process.env["VAULTBASE_ENCRYPTION_KEY"],
+    encryptionKey: loadEncryptionKey(dataDir),
   };
 }
 

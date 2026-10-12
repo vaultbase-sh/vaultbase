@@ -102,6 +102,24 @@ function maybeDecrypt(key: string, value: string): string {
   }
 }
 
+/**
+ * Encrypt secret settings still stored in plaintext (written before a key
+ * existed). Run at startup; returns how many were converted.
+ */
+export function encryptPlaintextSecretSettings(): number {
+  if (!isEncryptionAvailable()) return 0;
+  const rows = rawClient()
+    .prepare(`SELECT key, value FROM vaultbase_settings`)
+    .all() as Array<{ key: string; value: string }>;
+  let n = 0;
+  for (const r of rows) {
+    if (!shouldEncryptSettingKey(r.key) || r.value === "" || isEncrypted(r.value)) continue;
+    setSetting(r.key, r.value);
+    n++;
+  }
+  return n;
+}
+
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
   const row = rawClient()
