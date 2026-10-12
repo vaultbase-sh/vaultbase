@@ -84,3 +84,22 @@ describe("key mismatches (review 17 F-5)", () => {
     }
   });
 });
+
+describe("key check tolerates foreign values (review 18 F-3)", () => {
+  it("one undecryptable value among good ones doesn't fail the check", async () => {
+    const { encryptionKeyMatchesData, setSetting } = await import("../api/settings.ts");
+    initDb(":memory:");
+    await runMigrations();
+    try {
+      loadEncryptionKey(dir);
+      // A ciphertext from another install, and a non-secret key with the
+      // prefix — stored first, so a check that samples one row hits them.
+      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("app.name", "vbenc:1:not-really");
+      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("oauth2.x.client_secret", "vbenc:1:AAAA:BBBB");
+      setSetting("smtp.pass", "secret");
+      expect(encryptionKeyMatchesData()).toBe(true);
+    } finally {
+      closeDb();
+    }
+  });
+});

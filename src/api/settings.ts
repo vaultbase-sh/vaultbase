@@ -112,10 +112,15 @@ export function encryptionKeyMatchesData(): boolean {
   const rows = rawClient()
     .prepare(`SELECT key, value FROM vaultbase_settings`)
     .all() as Array<{ key: string; value: string }>;
-  const sample = rows.find((r) => isEncrypted(r.value));
-  if (!sample) return true;
+  // Only secret settings, and the key is wrong only if none of them decrypt:
+  // one value copied in from another install (or typed with a "vbenc:"
+  // prefix) mustn't stop every later start.
+  const secrets = rows.filter((r) => shouldEncryptSettingKey(r.key) && isEncrypted(r.value));
+  if (secrets.length === 0) return true;
   if (!isEncryptionAvailable()) return false;
-  try { decryptValueSync(sample.value); return true; } catch { return false; }
+  return secrets.some((r) => {
+    try { decryptValueSync(r.value); return true; } catch { return false; }
+  });
 }
 
 /**

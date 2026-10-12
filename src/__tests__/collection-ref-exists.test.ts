@@ -8,7 +8,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { createCollection } from "../core/collections.ts";
+import { createCollection, getCollection } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { seedAuthUser, signUserJwt } from "./_helpers.ts";
@@ -156,5 +156,51 @@ describe("@collection.* review 17 follow-ups", () => {
   it("a client filter may still use one @collection reference", async () => {
     const r = await docs(null, "bob", "@collection.members.user = @request.auth.id");
     expect(r).toEqual({ status: 200, n: 1 });
+  });
+});
+
+describe("@collection.* review 18 follow-ups", () => {
+  async function listWith(filter: string, who: string | null): Promise<{ status: number; n: number }> {
+    if (!(await getCollection("fdocs"))) {
+      await createCollection({ name: "fdocs", fields: JSON.stringify([{ name: "t", type: "text" }]), list_rule: null, view_rule: null });
+      await createRecord("fdocs", { t: "x" }, null);
+    }
+    const headers: Record<string, string> = who ? { authorization: `Bearer ${await signUserJwt(ids[who]!, `${who}@test.local`, "users", SECRET)}` } : {};
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/fdocs?filter=${encodeURIComponent(filter)}`, { headers }));
+    return { status: res.status, n: ((await res.json()) as { data?: unknown[] }).data?.length ?? 0 };
+  }
+
+  it("a client filter can't pair two cross-collection operands (F-1)", async () => {
+    await createCollection({ name: "fposts", fields: JSON.stringify([{ name: "body", type: "text" }]), list_rule: null, view_rule: null });
+    await createCollection({
+      name: "fcomments",
+      fields: JSON.stringify([{ name: "post", type: "relation", collection: "fposts" }, { name: "body", type: "text" }]),
+      list_rule: null, view_rule: null,
+    });
+    expect((await listWith("@collection.members.role != fcomments_via_post.body", null)).status).toBe(400);
+  });
+
+  it("a hidden collection's contents don't show through a negation (F-2)", async () => {
+    await createCollection({ name: "secrets", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: "", view_rule: "" });
+    const empty = await listWith('@collection.secrets.v != "x"', null);
+    await createRecord("secrets", { v: "y" }, null);
+    const filled = await listWith('@collection.secrets.v != "x"', null);
+    expect(empty).toEqual(filled);
+  });
+
+  it("two negations over a collection whose view rule uses @collection still compile (F-4)", async () => {
+    await createCollection({
+      name: "gbans", fields: JSON.stringify([{ name: "user", type: "text" }]),
+      list_rule: "@collection.members.user = @request.auth.id", view_rule: "@collection.members.user = @request.auth.id",
+    });
+    await createCollection({
+      name: "g2docs", fields: JSON.stringify([{ name: "t", type: "text" }]),
+      list_rule: "@collection.gbans.user != @request.auth.id && @collection.gbans.user != \"x\"",
+      view_rule: null,
+    });
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/g2docs", {
+      headers: { authorization: `Bearer ${await signUserJwt(ids["bob"]!, "bob@test.local", "users", SECRET)}` },
+    }));
+    expect(res.status).toBe(200);
   });
 });

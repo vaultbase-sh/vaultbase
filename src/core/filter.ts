@@ -97,6 +97,14 @@ export interface ParseFilterOpts {
    * collection ran for seconds, four for minutes, on the main thread.
    */
   maxJoins?: number;
+  /**
+   * Most cross-collection operands (`@collection.*`, `_via_`) the expression
+   * itself may use, joined or not (default unlimited). Two in one comparison
+   * cost |host| × |A| × |B|: `@collection.tags.name != comments_via_post.body`
+   * took ~30 s at 1000 rows each, on the main thread. A client filter gets 1,
+   * which keeps it at most quadratic.
+   */
+  maxCrossRefs?: number;
 }
 
 /** Default cap on `@collection.*` joins per expression (see ParseFilterOpts.maxJoins). */
@@ -146,6 +154,7 @@ export function compileToSql(
     hoist: null,
     aliasSeq: { n: 0 },
     maxJoins: opts.maxJoins ?? MAX_COLLECTION_JOINS,
+    crossRefs: { n: 0, max: opts.maxCrossRefs ?? Number.POSITIVE_INFINITY },
   };
   const sql = compileScoped(ast, ctx);
   return { sql, params: ctx.params };
@@ -169,6 +178,19 @@ interface CompileCtx {
   aliasSeq: { n: number };
   /** Cap on aliasSeq.n for this compile. */
   maxJoins: number;
+  /** Cross-collection operands used by this expression (not by inherited view rules). */
+  crossRefs: { n: number; max: number };
+}
+
+function chargeCrossRef(ctx: CompileCtx): void {
+  if (++ctx.crossRefs.n > ctx.crossRefs.max) {
+    throw new Error(`too many @collection / _via_ references in one filter (at most ${ctx.crossRefs.max})`);
+  }
+}
+
+/** Context for compiling an inherited view rule: its own references aren't the caller's to count. */
+function guardCtx(ctx: CompileCtx, overrides: Partial<CompileCtx>): CompileCtx {
+  return { ...ctx, ...overrides, crossRefs: { n: 0, max: Number.POSITIVE_INFINITY } };
 }
 
 interface HoistJoin { alias: string; table: string; on: string; onParams: unknown[] }
@@ -438,12 +460,11 @@ function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx):
   if (meta.viewRule === "") return ctx.auth?.type === "admin" ? "1" : "1=0";
   const innerAst = parseExpression(meta.viewRule);
   if (!innerAst) return "1=0";
-  const innerCtx: CompileCtx = {
-    ...ctx,
+  const innerCtx: CompileCtx = guardCtx(ctx, {
     tableName: alias,
     hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
     hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
-  };
+  });
   return compileScoped(innerAst, innerCtx);
 }
 
@@ -474,6 +495,7 @@ function compileCollectionRef(
         if (ctx.aliasSeq.n >= ctx.maxJoins) {
           throw new Error(`too many @collection references in one expression (at most ${ctx.maxJoins})`);
         }
+        chargeCrossRef(ctx);
         const alias = `_vbj${++ctx.aliasSeq.n}`;
         const onParams: unknown[] = [];
         const on = collectionRowGuard(op.collection, alias, { ...ctx, params: onParams });
@@ -495,6 +517,22 @@ function compileCollectionRef(
       inner = `json_extract(${inner}, '$.${op.path[i]}')`;
     }
 
+    if (negate) {
+      chargeCrossRef(ctx);
+      // "No row matches" can only be shown over rows the caller may see.
+      // For a non-admin, any view rule on X may hide rows (an admin-only ban
+      // list, other users' entries), so the negation is false — decided
+      // from the rule alone. Counting only visible rows let every banned user
+      // pass; probing for hidden rows leaked whether any existed.
+      const meta = ctx.lookup?.(op.collection);
+      if (ctx.lookup && !meta) throw new Error(`unknown collection in @collection.*: ${op.collection}`);
+      if (ctx.auth?.type !== "admin" && !(meta && meta.viewRule === null)) {
+        // Still refuse private fields, as every other path does.
+        if (meta && (meta.isPrivateField(head) || !meta.isFilterable(head))) throw new PrivateFieldError(head);
+        return "0";
+      }
+    }
+
     // Inherit the joined collection's view_rule. Anonymous-rule-eval (no
     // lookup provided) is fail-CLOSED for non-admins. A function, because a
     // negated comparison needs the guard twice (each use pushes its params).
@@ -514,12 +552,11 @@ function compileCollectionRef(
         const innerAst = parseExpression(meta.viewRule);
         if (innerAst) {
           // Recursively compile against the target table; share params.
-          const innerCtx: CompileCtx = {
-            ...ctx,
+          const innerCtx: CompileCtx = guardCtx(ctx, {
             tableName: targetTable,
             hostPrivateField: (n) => ctx.lookup?.(op.collection)?.isPrivateField(n) ?? false,
             hostFilterable: (n) => ctx.lookup?.(op.collection)?.isFilterable(n) ?? true,
-          };
+          });
           const sql = compileScoped(innerAst, innerCtx);
           // copy back joinDepth so siblings see the work
           ctx.joinDepth = innerCtx.joinDepth;
@@ -537,13 +574,7 @@ function compileCollectionRef(
     if (exists) {
       const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
       const match = `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
-      if (!negate) return match;
-      if (!where) return `NOT ${match}`;
-      // "No row matches" can only be shown over rows the caller may see. If
-      // some rows are hidden from them (an admin-only ban list, say), it
-      // fails closed: counting only visible rows let every banned user pass.
-      const hiddenGuard = buildWhere().slice(" WHERE ".length);
-      return `(NOT ${match} AND NOT EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE NOT coalesce((${hiddenGuard}), 0)))`;
+      return negate ? `NOT ${match}` : match;
     }
     return applyModifierToSql(
       `(SELECT ${inner} FROM ${escapeIdent(targetTable)}${where} LIMIT 1)`,
@@ -562,6 +593,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
     throw new Error("_via_ join depth exceeded");
   }
   try {
+    chargeCrossRef(ctx);
     const targetTable = `vb_${op.targetCollection}`;
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 

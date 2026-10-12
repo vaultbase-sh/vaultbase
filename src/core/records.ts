@@ -389,9 +389,10 @@ export async function compileListWhere(
   if (opts.filter) {
     let compiled;
     try {
-      // A caller's own filter gets one @collection join; rules (written by
-      // admins) get the default. See ParseFilterOpts.maxJoins.
-      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1 });
+      // A caller's own filter gets one @collection join and one
+      // cross-collection operand in all; rules (written by admins) get the
+      // defaults. See ParseFilterOpts.maxJoins / maxCrossRefs.
+      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1, maxCrossRefs: 1 });
     } catch (e) {
       throw new FilterError(e instanceof Error ? e.message : String(e));
     }
