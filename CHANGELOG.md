@@ -266,7 +266,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   Cascades (`cascade` and `setNull`) ignored the related collection's rules, so a user
   allowed to delete their own record removed or changed every record pointing at it,
   whoever owned them. Each affected record must now pass its own collection's delete (or
-  update) rule, or the whole delete is refused with `403`. Admins are unaffected.
+  update) rule, or the whole delete is refused with `403`. Admins are unaffected. A
+  delete blocked by a `restrict` reference — directly or inside `/batch` — no longer
+  names the referencing collections to non-admins.
 - **List rules that read the request matched too much.** A `list_rule` using
   `@request.headers.*` or `@request.query.*` was compiled without the request, so those
   values were empty in the SQL filter — `field ~ @request.headers.x` then matched every

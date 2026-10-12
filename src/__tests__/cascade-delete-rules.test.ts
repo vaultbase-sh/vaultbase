@@ -91,3 +91,37 @@ describe("cascade delete follows the child collection's rules", () => {
     expect(await getRecord("tasks", mine.id)).toBeNull();
   });
 });
+
+describe("restrict refusals don't name hidden collections", () => {
+  it("a batch delete blocked by restrict answers 409 without the referencing collection", async () => {
+    await createCollection({
+      name: "projects", fields: JSON.stringify([{ name: "owner", type: "text" }]),
+      list_rule: null, view_rule: null, delete_rule: "owner = @request.auth.id",
+    });
+    await createCollection({
+      name: "secret_audits",
+      fields: JSON.stringify([{ name: "project", type: "relation", collection: "projects", options: { cascade: "restrict" } }]),
+    });
+    const project = await createRecord("projects", { owner: alice }, null);
+    await createRecord("secret_audits", { project: project.id }, null);
+    const batch = (auth: string) => makeBatchPlugin(SECRET).handle(new Request("http://localhost/batch", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${auth}` },
+      body: JSON.stringify({ requests: [{ method: "DELETE", url: `/api/v1/projects/${project.id}` }] }),
+    }));
+    const res = await batch(aliceJwt);
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).not.toContain("secret_audits");
+    expect(await getRecord("projects", project.id)).not.toBeNull();
+
+    // Admins still get the details.
+    const { signAuthToken } = await import("../core/sec.ts");
+    const { getDb } = await import("../db/client.ts");
+    const { admin } = await import("../db/schema.ts");
+    await getDb().insert(admin).values({ id: "a1", email: "a1@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    const adminRes = await batch(token);
+    expect(adminRes.status).toBe(409);
+    expect(JSON.stringify(await adminRes.json())).toContain("secret_audits");
+  });
+});

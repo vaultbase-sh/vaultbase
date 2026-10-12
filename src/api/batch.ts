@@ -196,7 +196,11 @@ export function makeBatchPlugin(jwtSecret: string) {
           }
           if (e instanceof RestrictError) {
             set.status = 409;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details };
+            // As on DELETE /:collection/:id: only admins learn which
+            // collections still reference the record.
+            return auth?.type === "admin"
+              ? { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details }
+              : { error: `Batch failed at request ${results.length}: the record is referenced by other records`, code: 409 };
           }
           if (e instanceof ReadOnlyCollectionError) {
             set.status = 405;
