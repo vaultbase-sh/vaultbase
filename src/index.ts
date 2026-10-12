@@ -1,4 +1,5 @@
-import { loadConfig } from "./config.ts";
+import { loadConfig, loadServiceEnvFile } from "./config.ts";
+import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
 import { initDb, getDb } from "./db/client.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { admin } from "./db/schema.ts";
@@ -224,6 +225,8 @@ Environment:
   VAULTBASE_DATA_DIR              Data directory (default: ./vaultbase_data)
   VAULTBASE_PORT                  HTTP port (default: 8091)
   VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
+  VAULTBASE_SETUP_KEY             Key for first-admin setup (default: generated, printed at boot)
+  VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
   VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (required to use encrypted fields)
   VAULTBASE_CLUSTER_WORKERS       Worker count for \`vaultbase cluster\`
@@ -331,8 +334,14 @@ async function main() {
     }
   }
 
-  const config = await loadConfig();
   const flags = parseCliArgs(process.argv.slice(2));
+  // `sudo vaultbase setup-admin` used to ignore the service's env file and
+  // write the admin into a throwaway ./vaultbase_data in the current dir.
+  if (flags.setupAdmin) {
+    const envFile = loadServiceEnvFile();
+    if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+  }
+  const config = await loadConfig();
 
   initDb(`file:${config.dbPath}`);
   await runMigrations();
@@ -359,7 +368,10 @@ async function main() {
   // connections (SO_REUSEPORT). Single-process mode behaves exactly as
   // before — no flag, no behavior change.
   const isWorker = !!process.env["VAULTBASE_WORKER_ID"];
-  server.listen({ port: config.port, ...(isWorker ? { reusePort: true } : {}) });
+  // VAULTBASE_HOST was documented but never read, so the server always
+  // listened on every interface.
+  const hostname = process.env["VAULTBASE_HOST"]?.trim() || "0.0.0.0";
+  server.listen({ port: config.port, hostname, ...(isWorker ? { reusePort: true } : {}) });
 
   // Graceful shutdown: drain the buffered log writer so the last 50ms of
   // entries reach disk before exit. Two layers — async on signals (loop
@@ -377,8 +389,16 @@ async function main() {
 
 
   if (!adminExists) {
+    // Setup needs a key; print where to use it. A key from
+    // VAULTBASE_SETUP_KEY is the operator's own and isn't echoed.
+    const key = requiredSetupKey({ quiet: true });
+    const link = setupKeyFromEnv()
+      ? `${base}/_/setup  (setup key: VAULTBASE_SETUP_KEY)`
+      : `${base}/_/setup#key=${encodeURIComponent(key)}`;
     console.log(
-      `\n┌─────────────────────────────────────────────┐\n│  Vaultbase is running at ${base}   │\n│  Set up your admin account:                  │\n│  ${base}/_/setup                  │\n└─────────────────────────────────────────────┘\n`
+      `\nVaultbase is running at ${base}\n` +
+      `No admin exists yet. Create one at:\n  ${link}\n` +
+      (setupKeyFromEnv() ? "" : `Setup key: ${key}\n`)
     );
   } else {
     const tag = process.env["VAULTBASE_WORKER_ID"]

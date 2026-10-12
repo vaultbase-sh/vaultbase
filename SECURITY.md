@@ -89,7 +89,7 @@ Per-IP token-bucket rate limiting honors `X-Forwarded-For` only when the immedia
 
 ## Setup hardening
 
-`POST /api/admin/setup` accepts the `X-Setup-Key` header when `VAULTBASE_SETUP_KEY` is set. Use this on first boot to close the race where an attacker reaches `/setup` before the operator on a public IP. Print the key from the operator's terminal (e.g., `openssl rand -hex 32`) and pass it on the request.
+While no admin exists, `POST /api/v1/admin/setup` requires a setup key (`X-Setup-Key` header or `setup_key` in the body), so nobody who reaches a fresh install before the operator can claim it. The key is `VAULTBASE_SETUP_KEY` when set; otherwise the server generates one, stores it in `<dataDir>/.setup-key` (mode 0600) and prints it at startup. The file is deleted once the first admin exists. `vaultbase setup-admin` creates an admin locally without the key.
 
 The setup endpoint also enforces a 12-character minimum password and atomically refuses if a concurrent setup landed first.
 
@@ -102,7 +102,8 @@ The setup endpoint also enforces a 12-character minimum password and atomically 
 ## Hardening checklist for production
 
 - Set `VAULTBASE_JWT_SECRET` (don't rely on `.secret` fallback).
-- Set `VAULTBASE_SETUP_KEY` on first boot. Unset after creating the seed admin.
+- Create the first admin with `vaultbase setup-admin`, or with the setup key printed at first boot (or `VAULTBASE_SETUP_KEY`).
+- Set `VAULTBASE_HOST=127.0.0.1` when a reverse proxy on the same host is the only way in.
 - Set `VAULTBASE_TRUSTED_PROXIES` to your front-door peer IPs.
 - Set `security.allowed_origins` for the admin SPA / user app origins.
 - Set `VAULTBASE_ENCRYPTION_KEY` (AES-GCM, 32 bytes base64) if any field type is `encrypted`.

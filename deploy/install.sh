@@ -487,11 +487,9 @@ VAULTBASE_DATA_DIR=${DATA_DIR}
 # Rotate by changing this value and forcing all clients to reauthenticate.
 VAULTBASE_JWT_SECRET=${JWT_SECRET}
 
-# Gates POST /api/v1/admin/setup, which is otherwise open until the first
-# admin exists. Bootstrap with \`vaultbase setup-admin\` (see the installer
-# output), which ignores this key. The browser setup page at /_/ cannot send
-# it, so to use that instead: comment this line out, ${RESTART_HINT}, create
-# the account, then uncomment it again.
+# Key for POST /api/v1/admin/setup (and the browser setup page's "Setup key"
+# field) until the first admin exists. Without it the server would generate
+# and print its own. \`vaultbase setup-admin\` doesn't need it.
 VAULTBASE_SETUP_KEY=${SETUP_KEY}
 
 # Optional: required only if you use encrypted fields.
@@ -689,15 +687,12 @@ if [ "${FRESH_INSTALL}" -eq 1 ]; then
     cat <<EOF
   Next steps:
 
-    1. Bootstrap an admin account. The CLI reads its database path from the
-       environment, not from ${ENV_FILE}, and must run as
-       '${SVC_USER}' so the files stay owned by the service:
+    1. Bootstrap an admin account. The CLI reads ${ENV_FILE}
+       for the database path; run it as '${SVC_USER}' so the files
+       stay owned by the service:
 
-         sudo -u ${SVC_USER} env VAULTBASE_DATA_DIR=${DATA_DIR} \\
-           ${INSTALL_DIR}/vaultbase setup-admin --email you@example.com --password '<pw>'
-
-       Running it as root, or without VAULTBASE_DATA_DIR, creates a separate
-       database in the current directory that the service never reads.
+         sudo -u ${SVC_USER} ${INSTALL_DIR}/vaultbase setup-admin \\
+           --email you@example.com --password '<pw>'
 
     2. Put a reverse proxy in front. Sample configs:
          https://docs.vaultbase.dev/getting-started/installation/
@@ -742,30 +737,27 @@ else
 EOF
 fi
 
-# The generated setup key gates the one endpoint that is open before the first
-# admin exists. Call it out explicitly, because the browser setup page has no
-# field for it and would otherwise just return 401.
+# The generated setup key gates first-admin setup. Call it out explicitly,
+# because the browser setup page asks for it.
 if [ -n "${SETUP_KEY}" ]; then
     cat <<EOF
   First-admin endpoint is gated
   ─────────────────────────────
 
-  POST /api/v1/admin/setup is open until an admin exists, so the installer
-  generated a setup key and stored it in ${ENV_FILE}:
+  Creating the first admin over HTTP needs a setup key. The installer
+  generated one and stored it in ${ENV_FILE}:
 
     VAULTBASE_SETUP_KEY=${SETUP_KEY}
 
-  Step 1 above does not need it. If you would rather create the account over
-  HTTP, send it as a header:
+  Step 1 above does not need it. To use the browser setup page instead, open
+  http://127.0.0.1:${PORT}/_/setup#key=${SETUP_KEY}
+  (or paste the key into its Setup key field). Over curl, send it as a header:
 
     curl -X POST http://127.0.0.1:${PORT}/api/v1/admin/setup \\
       -H 'content-type: application/json' \\
       -H 'x-setup-key: ${SETUP_KEY}' \\
       -d '{"email":"you@example.com","password":"<pw>"}'
 
-  The browser page at /_/ cannot send the header. To use it, comment the key
-  out of ${ENV_FILE}, restart vaultbase, create the
-  account, then uncomment it and restart again.
 
 EOF
 fi

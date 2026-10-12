@@ -188,7 +188,17 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
 }
 
 // ── Step 2: Admin account ────────────────────────────────────────────────────
+/**
+ * The server prints the setup key to its log on a fresh install, as a
+ * `/_/setup#key=…` link. The fragment never reaches the server or its logs.
+ */
+function keyFromHash(): string {
+  const m = /(?:^#|&)key=([^&]+)/.exec(window.location.hash);
+  return m ? decodeURIComponent(m[1]!) : "";
+}
+
 function AdminStep({ onBack, onDone }: { onBack: () => void; onDone: (email: string) => void }) {
+  const [setupKey, setSetupKey] = useState(keyFromHash);
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
@@ -197,7 +207,7 @@ function AdminStep({ onBack, onDone }: { onBack: () => void; onDone: (email: str
 
   const pwTooShort = pw.length > 0 && pw.length < PW_MIN;
   const pwMismatch = pw.length > 0 && pw2.length > 0 && pw !== pw2;
-  const valid = email.includes("@") && pw.length >= PW_MIN && pw === pw2;
+  const valid = setupKey.trim() !== "" && email.includes("@") && pw.length >= PW_MIN && pw === pw2;
 
   // One message at a time, matching the board's single error line. Local
   // validation first, then whatever the server said.
@@ -215,9 +225,11 @@ function AdminStep({ onBack, onDone }: { onBack: () => void; onDone: (email: str
     const res = await api.post<ApiResponse<{ id: string }>>("/api/v1/admin/setup", {
       email,
       password: pw,
+      setup_key: setupKey.trim(),
     });
     setLoading(false);
     if (res.data?.id) onDone(email);
+    else if (res.code === 401) setError("Setup key is missing or wrong. It is printed in the server log.");
     else setError(res.error ?? "Setup failed.");
   }
 
@@ -231,6 +243,19 @@ function AdminStep({ onBack, onDone }: { onBack: () => void; onDone: (email: str
       </div>
 
       <div className="vb-auth__form">
+        <label className="vb-auth__field">
+          <span className="vb-auth__label">SETUP KEY</span>
+          <input
+            className="vb-auth__input"
+            type="text"
+            value={setupKey}
+            onChange={(e) => setSetupKey(e.target.value)}
+            placeholder="Printed in the server log"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+
         <label className="vb-auth__field">
           <span className="vb-auth__label">EMAIL</span>
           <input

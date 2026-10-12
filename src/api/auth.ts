@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { clearSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb, getRawClient } from "../db/client.ts";
@@ -581,7 +582,8 @@ export function makeAuthPlugin(jwtSecret: string) {
     .get("/admin/setup/status", async () => {
       const db = getDb();
       const existing = await db.select().from(admin).limit(1);
-      return { data: { has_admin: existing.length > 0 } };
+      // Setup always needs a key now; the flag tells the setup page to ask.
+      return { data: { has_admin: existing.length > 0, key_required: existing.length === 0 } };
     })
     .post(
       "/admin/setup",
@@ -590,18 +592,21 @@ export function makeAuthPlugin(jwtSecret: string) {
           const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
-        // Optional setup-key gate. When `VAULTBASE_SETUP_KEY` is set, the
-        // request must carry it as `X-Setup-Key`. Closes the race where an
-        // attacker reaches /setup before the operator on a public IP.
-        const expected = process.env["VAULTBASE_SETUP_KEY"];
-        if (expected) {
-          const provided = request.headers.get("x-setup-key");
-          if (!provided || provided !== expected) {
-            set.status = 401;
-            return { error: "Setup key required", code: 401 };
-          }
-        }
         const db = getDb();
+        if ((await db.select({ id: admin.id }).from(admin).limit(1)).length > 0) {
+          set.status = 400;
+          return { error: "Admin already set up", code: 400 };
+        }
+        // Setup-key gate: `VAULTBASE_SETUP_KEY`, or a key the server
+        // generated and printed to its log. Without it, whoever reached a
+        // fresh install first became its admin. Sent as `X-Setup-Key`, or
+        // as `setup_key` in the body (the browser setup page).
+        const expected = requiredSetupKey();
+        const provided = request.headers.get("x-setup-key") ?? body.setup_key ?? "";
+        if (!provided || !timingSafeEqualStr(provided, expected)) {
+          set.status = 401;
+          return { error: "Setup key required", code: 401 };
+        }
         const id = crypto.randomUUID();
         const hash = await hashPassword(body.password);
         const now = Math.floor(Date.now() / 1000);
@@ -626,9 +631,10 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "Admin already set up", code: 400 };
         }
+        clearSetupKey();
         return { data: { id, email: body.email } };
       },
-      { body: t.Object({ email: t.String(), password: t.String() }) }
+      { body: t.Object({ email: t.String(), password: t.String(), setup_key: t.Optional(t.String({ maxLength: 512 })) }) }
     )
     .post(
       "/admin/auth/login",

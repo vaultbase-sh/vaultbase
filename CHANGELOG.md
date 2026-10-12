@@ -38,12 +38,16 @@ Binaries, checksums, signatures and SBOMs for every version are on
   everything else, SVG included, downloads as `application/octet-stream`. Every file
   response carries `Content-Security-Policy: sandbox`, and stored file extensions now
   come from the validated MIME type rather than the uploaded file name.
-- **A fresh install now gates the first-admin endpoint.** `install.sh` generates a
-  `VAULTBASE_SETUP_KEY` into `/etc/vaultbase/vaultbase.env`, so `POST /api/v1/admin/setup`
-  requires an `X-Setup-Key` header. Bootstrap with `vaultbase setup-admin`, which ignores
-  the key. The browser setup page at `/_/` cannot send the header — to use it instead,
-  comment the key out, restart, create the account, then uncomment it. Existing installs
-  are untouched: the key is only written when the env file is created.
+- **First-admin setup always needs a setup key.** While no admin exists,
+  `POST /api/v1/admin/setup` requires the key as an `X-Setup-Key` header or a `setup_key`
+  body field. It is `VAULTBASE_SETUP_KEY` when set (`install.sh` writes one into
+  `/etc/vaultbase/vaultbase.env`); otherwise the server generates one, keeps it in
+  `<dataDir>/.setup-key` and prints it at startup with a `/_/setup#key=…` link. The browser
+  setup page has a **Setup key** field, filled in from that link. `vaultbase setup-admin`
+  doesn't need the key, and now reads `/etc/vaultbase/vaultbase.env` (or
+  `VAULTBASE_ENV_FILE`) so it works on the service's database.
+- **`VAULTBASE_HOST` is honoured.** The server used to listen on every interface
+  whatever it said; set `VAULTBASE_HOST=127.0.0.1` behind a local reverse proxy.
 - **Sign-in lockout is on by default and covers users too.** After 10 failed sign-ins in
   15 minutes, the account (and, behind a configured trusted proxy, the client IP) gets
   `429 Too many failed attempts` until the window passes. This applies to admin sign-in,
@@ -284,6 +288,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `@collection.bans.user != @request.auth.id` let a banned user read, change or delete
   the record by id while list requests refused them. A comparison with such an operand
   is now false in those checks, so it can only narrow access.
+- **A fresh install could be claimed by whoever reached it first.** `POST /admin/setup`
+  was open unless `VAULTBASE_SETUP_KEY` was set, so an install from the container image,
+  a manual binary or source had its first-admin endpoint open to the network. The server
+  now generates a setup key when none is configured and requires it (compared in
+  constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
+  listened on all interfaces; it is now used.
 - **`~` with an empty right side matched every record.** When the right-hand value of
   `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, chmodSync } from "fs";
+import { existsSync, mkdirSync, chmodSync, readFileSync } from "fs";
 import { join } from "path";
 
 export interface Config {
@@ -54,4 +54,31 @@ export async function loadConfig(): Promise<Config> {
     jwtSecret,
     encryptionKey: process.env["VAULTBASE_ENCRYPTION_KEY"],
   };
+}
+
+/** Where the installer writes the service's environment. */
+export const SERVICE_ENV_FILE = "/etc/vaultbase/vaultbase.env";
+
+/**
+ * For CLI subcommands run by hand against an installed service (`vaultbase
+ * setup-admin`): read the service's env file — `VAULTBASE_ENV_FILE`, or the
+ * installer's path — so the command works on the service's data dir instead
+ * of a fresh `./vaultbase_data` in the current directory. Variables already
+ * set in the environment win. Returns the file read, or null.
+ */
+export function loadServiceEnvFile(path = process.env["VAULTBASE_ENV_FILE"] ?? SERVICE_ENV_FILE): string | null {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch { return null; }
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    let value = m[2]!;
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0])) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[m[1]!] === undefined) process.env[m[1]!] = value;
+  }
+  return path;
 }

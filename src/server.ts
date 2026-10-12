@@ -1,4 +1,5 @@
 import Elysia, { t } from "elysia";
+import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
 import * as jose from "jose";
 import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
@@ -152,6 +153,7 @@ export function createServer(config: Config) {
   setUploadDir(config.uploadDir);
   setSandboxDir(`${config.dataDir}/sandboxes`);
   setBackupsDir(`${config.dataDir}/backups`);
+  configureSetupKey(config.dataDir);
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
