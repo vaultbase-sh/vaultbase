@@ -985,7 +985,7 @@ function ActiveSessionsCard() {
 
 function BruteForceCard() {
   const [enabled, setEnabled] = useState(false);
-  const [maxAttempts, setMaxAttempts] = useState("5");
+  const [maxAttempts, setMaxAttempts] = useState("10");
   const [duration, setDuration] = useState("900");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -993,9 +993,10 @@ function BruteForceCard() {
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
-        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "0", 10);
+        // Unset means the server default: on, 10 attempts.
+        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "10", 10);
         setEnabled(m > 0);
-        setMaxAttempts(m > 0 ? String(m) : "5");
+        setMaxAttempts(m > 0 ? String(m) : "10");
         setDuration(res.data["auth.lockout.duration_seconds"] ?? "900");
       }
       setLoaded(true);
@@ -1016,7 +1017,7 @@ function BruteForceCard() {
   return (
     <SubCard
       title="Brute-force lockout"
-      meta="per-email + per-IP failed-login throttle"
+      meta="per-account + per-IP failed-login throttle (admins and users)"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
@@ -1041,8 +1042,9 @@ function BruteForceCard() {
           </VbField>
         </div>
         <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
-          Tracks both <VbCode>email:&lt;addr&gt;</VbCode> and <VbCode>ip:&lt;addr&gt;</VbCode> keys so a
-          spray attack across emails from one IP gets caught alongside a single-account attack.
+          Applies to admin sign-in and to every auth collection's <VbCode>/login</VbCode>. Tracks a
+          per-account key and an <VbCode>ip:&lt;addr&gt;</VbCode> key so a spray attack across
+          emails from one IP gets caught alongside a single-account attack.
           Per-IP keying requires <VbCode>VAULTBASE_TRUSTED_PROXIES</VbCode> (or the proxies card below)
           to surface real client IPs through your reverse proxy.
         </div>

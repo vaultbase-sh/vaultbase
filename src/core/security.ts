@@ -128,43 +128,51 @@ export interface LockoutPolicy {
   duration_seconds: number;
 }
 
+/** Default failed sign-ins per account (and per IP) before a lockout. */
+export const DEFAULT_LOCKOUT_MAX_ATTEMPTS = 10;
+
 export function getLockoutPolicy(): LockoutPolicy {
-  const max = Number.parseInt(getSetting("auth.lockout.max_attempts", "0"), 10) || 0;
+  const raw = Number.parseInt(getSetting("auth.lockout.max_attempts", String(DEFAULT_LOCKOUT_MAX_ATTEMPTS)), 10);
+  const max = Number.isFinite(raw) && raw > 0 ? raw : 0;
   const dur = Math.max(60, Number.parseInt(getSetting("auth.lockout.duration_seconds", "900"), 10) || 900);
   return { enabled: max > 0, max_attempts: max, duration_seconds: dur };
 }
 
-/** Insert one failure row keyed by `email:<addr>` and `ip:<ip>` (when known). */
-export async function recordLoginFailure(opts: { email: string; ip: string | null }): Promise<void> {
-  const policy = getLockoutPolicy();
-  if (!policy.enabled) return;
-  const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
-  const rows: Array<{ id: string; key: string; at: number }> = [];
-  if (opts.email) rows.push({ id: crypto.randomUUID(), key: `email:${opts.email.toLowerCase()}`, at: now });
-  if (opts.ip)    rows.push({ id: crypto.randomUUID(), key: `ip:${opts.ip}`, at: now });
-  if (rows.length === 0) return;
-  await db.insert(loginFailures).values(rows).catch(() => { /* swallow */ });
+/**
+ * Lockout keys for a sign-in. `scope` separates principals that share an
+ * address: admins use `email:<addr>`, auth-collection users
+ * `user:<collection-id>:<addr>`, so failing against one never locks the other.
+ */
+function lockoutKeys(opts: { scope?: string; email: string; ip: string | null }): string[] {
+  const keys = [`${opts.scope ?? "email"}:${opts.email.trim().toLowerCase()}`];
+  if (opts.ip) keys.push(`ip:${opts.ip}`);
+  return keys;
 }
 
-export async function clearLoginFailures(opts: { email?: string; ip?: string | null }): Promise<void> {
-  const db = getDb();
-  if (opts.email) await db.delete(loginFailures).where(eq(loginFailures.key, `email:${opts.email.toLowerCase()}`));
-  if (opts.ip)    await db.delete(loginFailures).where(eq(loginFailures.key, `ip:${opts.ip}`));
-}
-
-/** True when the principal is in lockout window. */
-export async function isLockedOut(opts: { email: string; ip: string | null }): Promise<boolean> {
+/**
+ * Charge one sign-in attempt against the account (and IP) before the password
+ * is checked. Returns false while either key is locked out. The charge stays
+ * as the recorded failure unless the sign-in succeeds and the caller runs
+ * `clearLoginFailures`. Charging first means parallel attempts can't all read
+ * the same count, the way a check-then-record lockout lets them.
+ */
+export async function reserveLoginAttempt(opts: { scope?: string; email: string; ip: string | null }): Promise<boolean> {
   const policy = getLockoutPolicy();
-  if (!policy.enabled) return false;
-  const db = getDb();
-  const cutoff = Math.floor(Date.now() / 1000) - policy.duration_seconds;
-  for (const k of [`email:${opts.email.toLowerCase()}`, opts.ip ? `ip:${opts.ip}` : null]) {
-    if (!k) continue;
-    const rows = await db.select().from(loginFailures).where(and(eq(loginFailures.key, k), gte(loginFailures.at, cutoff)));
-    if (rows.length >= policy.max_attempts) return true;
+  if (!policy.enabled) return true;
+  const held: string[] = [];
+  for (const key of lockoutKeys(opts)) {
+    const id = await reserveAttempt(key, policy.max_attempts, policy.duration_seconds);
+    if (!id) {
+      for (const h of held) await releaseAttempt(h);
+      return false;
+    }
+    held.push(id);
   }
-  return false;
+  return true;
+}
+
+export async function clearLoginFailures(opts: { scope?: string; email: string; ip: string | null }): Promise<void> {
+  for (const key of lockoutKeys(opts)) await clearAttemptFailures(key);
 }
 
 // ── Per-account attempt budgets ─────────────────────────────────────────────

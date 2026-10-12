@@ -40,6 +40,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the key. The browser setup page at `/_/` cannot send the header — to use it instead,
   comment the key out, restart, create the account, then uncomment it. Existing installs
   are untouched: the key is only written when the env file is created.
+- **Sign-in lockout is on by default and covers users too.** After 10 failed sign-ins in
+  15 minutes, the account (and, behind a configured trusted proxy, the client IP) gets
+  `429 Too many failed attempts` until the window passes. This applies to admin sign-in,
+  which previously shipped with the lockout off, and now also to
+  `POST /auth/:collection/login`, which had none. Tune or disable it at **Settings →
+  Security → Brute-force lockout** (`auth.lockout.max_attempts`, `0` turns it off). An
+  install that had explicitly saved `0` keeps it off.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -93,8 +100,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `429`), including on `POST /auth/:collection/totp/disable`, and the counter is updated
   atomically, before the code is checked, so guesses sent in parallel can't get past
   either limit. A TOTP code is accepted once: replaying a code that has just been used is
-  refused (and isn't counted as a failed guess). A recovery code or MFA ticket can no longer be used twice by sending two
-  requests at the same time.
+  refused (and isn't counted as a failed guess). A recovery code or MFA ticket can no
+  longer be used twice by sending two requests at the same time.
+- **Passwords could be guessed without an account lockout.** User sign-in had no
+  per-account limit, only the per-IP rate limit, and the admin lockout was off by default.
+  See the upgrade note above. The lockout is also charged before the password is checked,
+  so parallel attempts can't slip past it.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.

@@ -46,9 +46,8 @@ import { isAuthFeatureEnabled } from "../core/auth-features.ts";
 import { validatePassword } from "../core/password-policy.ts";
 import {
   recordAdminSession,
-  recordLoginFailure,
+  reserveLoginAttempt,
   clearLoginFailures,
-  isLockedOut,
   getTrustedProxiesRaw,
   reserveAttempt,
   releaseAttempt,
@@ -426,7 +425,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const ip = clientIpForLockout(request);
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
-        if (await isLockedOut({ email: body.email, ip })) {
+        if (!(await reserveLoginAttempt({ email: body.email, ip }))) {
           return new Response(JSON.stringify({ error: "Too many failed attempts. Try again later.", code: 429 }), {
             status: 429,
             headers: { "content-type": "application/json" },
@@ -438,7 +437,6 @@ export function makeAuthPlugin(jwtSecret: string) {
         const hashToCheck = a?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
         if (!a || !valid) {
-          await recordLoginFailure({ email: body.email, ip });
           return new Response(JSON.stringify({ error: "Invalid credentials", code: 401 }), {
             status: 401,
             headers: { "content-type": "application/json" },
@@ -590,16 +588,23 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     .post(
       "/auth/:collection/login",
-      async ({ params, body, set }) => {
+      async ({ params, body, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        // Per-account lockout, charged before the password is checked. The
+        // per-IP rate limit alone doesn't stop a guesser with many addresses.
+        const lockout = { scope: `user:${col.id}`, email: body.email, ip: clientIpForLockout(request) };
+        if (!(await reserveLoginAttempt(lockout))) {
+          set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
+        }
         // Per-collection email lookup (vb_<col> first, legacy fallback).
         const u = findUserByEmail(col, body.email);
         // Always verify (against dummy hash on miss) so timing is constant.
         const hashToCheck = u?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
         if (!u || !valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
+        await clearLoginFailures(lockout);
 
         const db = getDb();
         if (u.totp_enabled === 1) {

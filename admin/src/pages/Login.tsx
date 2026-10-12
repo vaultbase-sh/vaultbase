@@ -24,8 +24,8 @@ export default function Login() {
    * Board 1d. The server answers 429 while a lockout window is open, so the
    * form is dead until it expires — the board disables the fields and swaps
    * the button to an outline rather than leaving an accent control that
-   * refuses. (Lockout is off unless an operator sets
-   * `auth.lockout.max_attempts`; the default is 0.)
+   * refuses. (Lockout is on by default — 10 failures in 15 minutes — unless
+   * an operator sets `auth.lockout.max_attempts` to 0.)
    */
   const [lockedOut, setLockedOut] = useState(false);
   const navigate = useNavigate();
