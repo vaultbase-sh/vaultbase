@@ -150,7 +150,7 @@ import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./wr
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { dispatchEvent } from "./webhooks.ts";
-import { validateRecord } from "./validate.ts";
+import { validateRecord, type CanSeeRecord } from "./validate.ts";
 import { getActiveHookRequest, makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
 
@@ -566,7 +566,8 @@ export async function getRecord(
 async function createRecordImpl(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
@@ -586,7 +587,7 @@ async function createRecordImpl(
   const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth, helpers });
 
-  await validateRecord(col, data, "create");
+  await validateRecord(col, data, "create", undefined, guard.relationsAs ? canSeeAs(guard.relationsAs.auth) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -688,7 +689,7 @@ async function updateRecordImpl(
     helpers,
   });
 
-  await validateRecord(col, data, "update", id);
+  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -764,12 +765,31 @@ export class PreconditionFailedError extends Error {
 export interface WriteGuard {
   ifUnchanged?: Record<string, unknown>;
   /**
+   * Validate relation fields as this caller: a relation may only point at a
+   * record the caller can view. Set by the API for non-admin callers.
+   */
+  relationsAs?: { auth: AuthContext | null };
+  /**
    * The caller's rules for rows a delete reaches through cascades: `change`
    * is null for a cascaded delete, or the fields a `setNull` cascade writes.
    * Returning false aborts the whole delete (it runs in a transaction).
    * Unset for admins and internal callers.
    */
   cascadeAllowed?: (col: Collection, record: Record<string, unknown>, change: Record<string, unknown> | null) => boolean;
+}
+
+/** Relation check for `auth`: the target record must pass its collection's view rule. */
+function canSeeAs(auth: AuthContext | null): CanSeeRecord {
+  return async (target, id) => {
+    if (auth?.type === "admin" || target.view_rule === null) return true;
+    if (target.view_rule === "") return false;
+    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth });
+    const tableRef = quoteIdent(userTableName(target.name));
+    const row = rawClient().prepare(
+      `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
+    ).get(id, ...whereParams);
+    return !!row;
+  };
 }
 
 /** A cascade would delete or change a row the caller's rules don't allow. */
@@ -1142,8 +1162,9 @@ export function createRecord(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => createRecordImpl(collectionName, data, auth));
+  return withSharedWrite(() => createRecordImpl(collectionName, data, auth, guard));
 }
 
 export function updateRecord(

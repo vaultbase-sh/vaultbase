@@ -257,6 +257,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Files could be uploaded for records that don't exist.** The upload endpoint accepted
   any record id and judged it by the create rule, so storage could be filled with files
   attached to nothing. Uploads now need an existing record and pass its update rule.
+- **Relation fields could point at records the caller can't see.** A relation was only
+  checked for existence, so a user could link to another user's private record, and the
+  "does not exist" error told them which ids exist in a collection they can't read. A
+  relation set by a non-admin must now point at a record that caller can view; missing
+  and hidden records get the same error. (A `unique` field still reports a duplicate:
+  that is what a unique constraint has to say.)
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

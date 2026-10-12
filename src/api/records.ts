@@ -119,6 +119,11 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
   return { currentEtag: current };
 }
 
+/** Non-admin writes validate relation fields as the caller (see WriteGuard). */
+function relationsAs(auth: AuthContext | null): { relationsAs?: { auth: AuthContext | null } } {
+  return auth?.type === "admin" ? {} : { relationsAs: { auth } };
+}
+
 /**
  * True when If-Match names specific versions. `*` only asks that the record
  * exists, so it doesn't pin the write to the version that was read.
@@ -379,7 +384,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }
         try {
           const record = await runWithHookRequest(request, () =>
-            createRecord(params.collection, body as Record<string, unknown>, auth)
+            createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth))
           );
           return { data: record };
         } catch (e) {
@@ -415,7 +420,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
         try {
           // With If-Match, the write itself re-checks that the record is
           // still the one the precondition was checked against.
-          const guard = ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
+          const guard = {
+            ...relationsAs(auth),
+            ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+          };
           const record = await runWithHookRequest(request, () =>
             updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
           );
