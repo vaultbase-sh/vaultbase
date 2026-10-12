@@ -56,6 +56,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   sessions are exempt.
 - **`/totp/setup` refuses while MFA is on.** To move a user to a new authenticator,
   call `/totp/disable` with a current code, then `/totp/setup` and `/totp/confirm` again.
+- **`request-email-change` no longer reports a taken address.** It answers
+  `{ "sent": true }` and sends nothing; the old `422 Email already in use` is gone.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -138,6 +140,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   /auth/:collection/totp/setup` overwrote the secret even with MFA already on, with no
   code required, after which the attacker's authenticator passed every MFA check. Setup
   now answers `409` while MFA is enabled; disable it with a current code first.
+- **Registration and email change could reveal which addresses have accounts.** Register
+  skipped password hashing (and validation) when the address was taken, so the response
+  came back measurably faster; both branches now do the same work and validate first.
+  `request-email-change` answered "Email already in use" for a taken address; it now
+  answers like any other request and sends nothing.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.

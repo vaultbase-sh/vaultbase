@@ -234,7 +234,14 @@ async function validateAuthRegister(
   col: { id: string; name: string; type: string; fields: string; created_at: number; updated_at: number; view_query: string | null; list_rule: string | null; view_rule: string | null; create_rule: string | null; update_rule: string | null; delete_rule: string | null; },
   data: Record<string, unknown>
 ): Promise<void> {
-  const fields = parseFields(col.fields).map((f) => ({ ...f, implicit: false }));
+  // Email uniqueness is left to the caller's own lookup: as a validation error
+  // it would answer "email must be unique" and tell anyone which addresses
+  // have accounts.
+  const fields = parseFields(col.fields).map((f) => ({
+    ...f,
+    implicit: false,
+    ...(f.implicit && f.name === "email" ? { options: { ...f.options, unique: false } } : {}),
+  }));
   // Build a synthetic collection with implicit flags stripped so the validator
   // checks options on email/verified just like any other field.
   const synthetic = { ...col, fields: JSON.stringify(fields) };
@@ -549,6 +556,21 @@ export function makeAuthPlugin(jwtSecret: string) {
           const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
+        // Validate first, so a payload that fails validation gets the same 422
+        // whether or not the address is taken.
+        try {
+          await validateAuthRegister(col, body as Record<string, unknown>);
+        } catch (e) {
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: "Validation failed", code: 422, details: e.details };
+          }
+          throw e;
+        }
+        // Hash before the lookup, on both branches: argon2 dominates the
+        // response time, and skipping it for a taken address made that branch
+        // measurably faster.
+        const hash = await hashPassword(body.password);
         // v0.11: per-collection email uniqueness via vb_<col> + legacy
         // fallback. Earlier versions enforced GLOBAL email uniqueness across
         // every auth collection — pre-existing rows still work via the
@@ -568,16 +590,6 @@ export function makeAuthPlugin(jwtSecret: string) {
           // not a leak: knowing the id alone gives no access without auth.
           return { data: { id: existing.id, email: body.email } };
         }
-        try {
-          await validateAuthRegister(col, body as Record<string, unknown>);
-        } catch (e) {
-          if (e instanceof ValidationError) {
-            set.status = 422;
-            return { error: "Validation failed", code: 422, details: e.details };
-          }
-          throw e;
-        }
-        const hash = await hashPassword(body.password);
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const { email, password, ...extra } = body;
@@ -939,7 +951,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, session.id);
         if (!u) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         if (newEmail.toLowerCase() === u.email.toLowerCase()) { set.status = 422; return { error: "That is already your email", code: 422 }; }
-        if (findUserByEmail(col, newEmail)) { set.status = 422; return { error: "Email already in use", code: 422 }; }
+        // A taken address gets the same answer as a free one, and no link:
+        // the response mustn't tell a signed-in user who else has an account.
+        // (Confirming re-checks, in case the address is taken in between.)
+        if (findUserByEmail(col, newEmail)) return { data: { sent: true } };
 
         const db = getDb();
         // One pending change at a time: a new request voids older links.

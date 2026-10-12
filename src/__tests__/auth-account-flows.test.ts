@@ -95,11 +95,13 @@ describe("email change", () => {
     expect((await post("/auth/users/confirm-email-change", { token: t, password: "correct-horse-1" })).status).toBe(400);
   });
 
-  it("needs a session and refuses a taken or invalid address", async () => {
+  it("needs a session, refuses an invalid address, and doesn't reveal a taken one", async () => {
     const { token } = await user();
     await seedAuthUser({ collection: "users", email: "taken@test.local" });
     expect((await post("/auth/users/request-email-change", { newEmail: "x@test.local" })).status).toBe(401);
-    expect((await post("/auth/users/request-email-change", { newEmail: "taken@test.local" }, token)).status).toBe(422);
+    // A taken address answers like a free one (no link is sent; see
+    // register-enumeration.test.ts).
+    expect((await post("/auth/users/request-email-change", { newEmail: "taken@test.local" }, token)).status).toBe(200);
     expect((await post("/auth/users/request-email-change", { newEmail: "not-an-email" }, token)).status).toBe(422);
   });
 
