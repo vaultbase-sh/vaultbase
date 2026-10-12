@@ -256,6 +256,11 @@ export interface ListOptions {
    * Without it those operands compiled to NULL in the SQL access filter.
    */
   request?: RequestContextLike | null;
+  /**
+   * Internal callers that walk a whole table page by page (the admin CSV
+   * export) aren't held to MAX_LIST_OFFSET. Never set from client input.
+   */
+  allowDeepPaging?: boolean;
 }
 
 export interface ListResult {
@@ -446,7 +451,7 @@ export async function listRecords(
   // SQLite walks every skipped row to reach an OFFSET, so a huge page number
   // makes one cheap request scan the whole table (and past 2^53 the value
   // isn't even an exact integer). Deeper reads narrow with a filter instead.
-  if (offset > MAX_LIST_OFFSET) {
+  if (offset > MAX_LIST_OFFSET && !opts.allowDeepPaging) {
     throw new FilterError(`page is too deep: at most ${MAX_LIST_OFFSET} records can be skipped; narrow the query with a filter`);
   }
 
