@@ -167,6 +167,31 @@ export async function isLockedOut(opts: { email: string; ip: string | null }): P
   return false;
 }
 
+// ── Per-account attempt budgets ─────────────────────────────────────────────
+//
+// Second factors and one-time codes are short (6 digits), so they need a hard
+// failure budget per account that holds no matter how many fresh codes or
+// tickets the caller mints. Unlike the login lockout above, these always apply.
+
+/** Record one failed attempt against `key` (e.g. `otp:<collection>:<user>`). */
+export async function recordAttemptFailure(key: string): Promise<void> {
+  await getDb().insert(loginFailures)
+    .values({ id: crypto.randomUUID(), key, at: Math.floor(Date.now() / 1000) })
+    .catch(() => { /* swallow */ });
+}
+
+/** Failed attempts recorded against `key` within the last `windowSeconds`. */
+export async function recentAttemptFailures(key: string, windowSeconds: number): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
+  const rows = await getDb().select({ id: loginFailures.id }).from(loginFailures)
+    .where(and(eq(loginFailures.key, key), gte(loginFailures.at, cutoff)));
+  return rows.length;
+}
+
+export async function clearAttemptFailures(key: string): Promise<void> {
+  await getDb().delete(loginFailures).where(eq(loginFailures.key, key));
+}
+
 /** GC failures older than the longest lockout window. */
 export async function pruneOldLoginFailures(): Promise<void> {
   const policy = getLockoutPolicy();

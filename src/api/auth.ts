@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
@@ -50,6 +50,8 @@ import {
   clearLoginFailures,
   isLockedOut,
   getTrustedProxiesRaw,
+  recordAttemptFailure,
+  recentAttemptFailures,
 } from "../core/security.ts";
 
 /** Best-effort client IP for lockout keying. Honours trusted-proxies setting. */
@@ -88,6 +90,47 @@ async function hashPassword(plaintext: string): Promise<string> {
 }
 
 const MAX_OTP_ATTEMPTS = 5;
+/**
+ * Failed OTP / MFA codes allowed per account inside `ATTEMPT_WINDOW_SECONDS`,
+ * across every code or ticket issued in that time. A fresh code or ticket
+ * resets the per-token count but never this one.
+ */
+const MAX_ACCOUNT_CODE_FAILURES = 10;
+const ATTEMPT_WINDOW_SECONDS = 15 * 60;
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Count one failed attempt on a one-time token. The increment is a single
+ * UPDATE so concurrent guesses can't each read the same count; the token is
+ * burned once the count reaches `MAX_OTP_ATTEMPTS`.
+ */
+async function countTokenFailure(id: string, now: number): Promise<void> {
+  const rows = await getDb().update(authTokens)
+    .set({ attempts: sql`${authTokens.attempts} + 1` })
+    .where(eq(authTokens.id, id))
+    .returning({ attempts: authTokens.attempts });
+  if ((rows[0]?.attempts ?? MAX_OTP_ATTEMPTS) >= MAX_OTP_ATTEMPTS) {
+    await getDb().update(authTokens).set({ used_at: now }).where(eq(authTokens.id, id));
+  }
+}
+
+/**
+ * Mark a one-time token used. Returns false when another request got there
+ * first, so a token can't be spent twice by racing it.
+ */
+async function consumeToken(id: string, now: number): Promise<boolean> {
+  const rows = await getDb().update(authTokens)
+    .set({ used_at: now })
+    .where(and(eq(authTokens.id, id), isNull(authTokens.used_at)))
+    .returning({ id: authTokens.id });
+  return rows.length > 0;
+}
 
 function isRedirectUriAllowed(provider: string, uri: string): boolean {
   const settings = getAllSettings();
@@ -265,7 +308,16 @@ async function issueOtpAndSend(
 ): Promise<void> {
   const token = newToken();
   const code = newOtpCode();
-  const expiresAt = Math.floor(Date.now() / 1000) + OTP_TTL_SECONDS;
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + OTP_TTL_SECONDS;
+  // One live code per user: a new one voids the rest, so each code only ever
+  // has its own attempt budget to spend.
+  await getDb().update(authTokens).set({ used_at: now }).where(and(
+    eq(authTokens.user_id, user.id),
+    eq(authTokens.collection_id, collectionId),
+    eq(authTokens.purpose, "otp"),
+    isNull(authTokens.used_at),
+  ));
   await getDb().insert(authTokens).values({
     id: token,
     user_id: user.id,
@@ -984,16 +1036,31 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (!body.email) { set.status = 422; return { error: "code requires email", code: 422 }; }
           const userByEmail = findUserByEmail(col, body.email);
           if (!userByEmail) { set.status = 400; return { error: "Invalid or expired code", code: 400 }; }
+          // Failures count per account, across every code sent in the window.
+          const failKey = `otp:${col.id}:${userByEmail.id}`;
+          if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+            set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
+          }
+          // Look up the user's live code, then compare. Looking up *by* code
+          // meant a wrong guess matched nothing and was never counted.
           const tokenRows = await db
             .select()
             .from(authTokens)
             .where(and(
               eq(authTokens.user_id, userByEmail.id),
+              eq(authTokens.collection_id, col.id),
               eq(authTokens.purpose, "otp"),
-              eq(authTokens.code, body.code!)
+              isNull(authTokens.used_at),
+              gte(authTokens.expires_at, now),
             ))
+            .orderBy(desc(authTokens.created_at))
             .limit(1);
           tok = tokenRows[0];
+          if (tok && !(tok.code && timingSafeEqualStr(tok.code, body.code!))) {
+            await countTokenFailure(tok.id, now);
+            await recordAttemptFailure(failKey);
+            set.status = 400; return { error: "Invalid or expired code", code: 400 };
+          }
         }
         if (!tok || tok.purpose !== "otp" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
@@ -1004,11 +1071,13 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         const u = findUserById(col, tok.user_id);
         if (!u) {
-          await db.update(authTokens).set({ attempts: (tok.attempts ?? 0) + 1 }).where(eq(authTokens.id, tok.id));
+          await countTokenFailure(tok.id, now);
           set.status = 400; return { error: "User not found", code: 400 };
         }
 
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        if (!(await consumeToken(tok.id, now))) {
+          set.status = 400; return { error: "Invalid or expired code", code: 400 };
+        }
         // OTP-issued sessions imply the email is verified (the IdP — us — confirmed it).
         if (!u.email_verified) {
           await updateUserById(col, u.id, { email_verified: 1, updated_at: now });

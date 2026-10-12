@@ -80,6 +80,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **View queries could read SQLite metadata.** `pragma_*()` functions and `sqlite_*`
   tables passed the view-query check and could expose the schema and database file path
   through a public view. They are now rejected.
+- **OTP sign-in codes could be guessed without limit.** A wrong code was never counted
+  against the attempt limit, and requesting a new code left the older ones valid. Each code
+  now allows 5 attempts, a new code voids the previous one, used and expired codes are
+  never matched, and an account allows 10 failed codes per 15 minutes in total; past that,
+  `POST /auth/:collection/otp/auth` answers `429` until the window passes.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
