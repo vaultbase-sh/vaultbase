@@ -135,6 +135,39 @@ export async function recordAuditEntry(opts: RecordOpts): Promise<void> {
   }
 }
 
+/**
+ * Persist an audit row for an action that doesn't arrive as an admin HTTP
+ * request — e.g. an MCP tool call made with an API token. Same table and
+ * columns as `recordAuditEntry`; errors are swallowed for the same reason.
+ */
+export async function recordAuditEvent(opts: {
+  actor: { id: string; email?: string } | null;
+  method: string;
+  path: string;
+  action: string;
+  target?: string | null;
+  status: number;
+  summary?: string | null;
+}): Promise<void> {
+  try {
+    await getDb().insert(auditLog).values({
+      id: crypto.randomUUID(),
+      actor_id: opts.actor?.id ?? null,
+      actor_email: opts.actor?.email ?? null,
+      method: opts.method,
+      path: opts.path,
+      action: opts.action,
+      target: opts.target ?? null,
+      status: opts.status,
+      ip: null,
+      summary: opts.summary ? trim(opts.summary, 1024) : null,
+      at: Math.floor(Date.now() / 1000),
+    });
+  } catch {
+    // Audit must never break the action it records.
+  }
+}
+
 // ── Read API ────────────────────────────────────────────────────────────────
 
 export interface ListAuditOpts {

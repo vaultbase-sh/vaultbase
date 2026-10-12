@@ -36,6 +36,9 @@ import { invalidateHookCache } from "../core/hooks.ts";
 import { getSetting, setSetting, getAllSettings } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { ToolRegistry, asJsonText } from "./tools.ts";
+import { hasScope } from "../core/api-tokens.ts";
+import { recordAuditEvent } from "../core/audit-log.ts";
+import { detectMutation, runSql } from "../core/sql-runner.ts";
 
 export function registerAdminWriteTools(reg: ToolRegistry): void {
 
@@ -588,7 +591,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     requiredScope: "mcp:sql",
     definition: {
       name: "vaultbase.run_sql",
-      description: "Run a raw SQL query against the live SQLite DB. Read-only by default — write/DDL queries require `allow_write: true` and tear through every safety net (RBAC, validation, hooks, audit). Avoid unless absolutely necessary; use the typed tools instead. Bound result set: 100 rows.\n\nSchema convention: every collection (base + auth) has a `vb_<name>` table. Auth collections additionally have inline columns for `email`, `password_hash`, `email_verified`, `totp_secret`, `totp_enabled`, `is_anonymous`, `password_reset_at`. Inserting auth users via raw SQL bypasses password hashing + email-verification flows — prefer `POST /api/v1/auth/<col>/register` (or the existing typed CRUD path) for login-capable users.",
+      description: "Run a raw SQL query against the live SQLite DB. Read-only by default (a separate read-only connection, 5 s limit). Write/DDL queries require `allow_write: true` AND the mcp:admin scope, and bypass every safety net except the audit log (RBAC, validation, hooks). Avoid unless absolutely necessary; use the typed tools instead. Bound result set: 100 rows.\n\nSchema convention: every collection (base + auth) has a `vb_<name>` table. Auth collections additionally have inline columns for `email`, `password_hash`, `email_verified`, `totp_secret`, `totp_enabled`, `is_anonymous`, `password_reset_at`. Inserting auth users via raw SQL bypasses password hashing + email-verification flows — prefer `POST /api/v1/auth/<col>/register` (or the existing typed CRUD path) for login-capable users.",
       inputSchema: {
         type: "object",
         properties: {
@@ -600,47 +603,59 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         additionalProperties: false,
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const q = String(args.query ?? "").trim();
       if (!q) throw new Error("query is required");
-      const looksLikeRead = /^\s*(WITH|SELECT|EXPLAIN|PRAGMA)\b/i.test(q);
-      if (args.allow_write !== true) {
-        // SQLite supports data-modifying CTEs (`WITH x AS (...) UPDATE ...`),
-        // and PRAGMA can mutate session state — the prefix check above is
-        // necessary but not sufficient. Strip comments + string literals so
-        // the literal "DELETE" inside a WHERE doesn't false-positive, then
-        // scan for any mutating keyword. Mirrors core/sql-runner.ts.
-        if (!looksLikeRead) {
-          throw new Error("non-SELECT requires allow_write: true (write paths bypass RBAC + validation; consider the typed tool instead)");
-        }
-        const stripped = q
-          .replace(/--[^\n]*/g, " ")
-          .replace(/\/\*[\s\S]*?\*\//g, " ")
-          .replace(/'(?:[^']|'')*'/g, "''")
-          .replace(/"(?:[^"]|"")*"/g, '""');
-        const upper = stripped.toUpperCase();
-        const banned = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "REINDEX", "VACUUM"];
-        for (const kw of banned) {
-          if (new RegExp(`\\b${kw}\\b`).test(upper)) {
-            throw new Error(`'${kw}' is blocked without allow_write: true (data-modifying ${kw} can hide inside a WITH-CTE).`);
-          }
-        }
-      }
       const params = (Array.isArray(args.params) ? args.params : []) as Array<string | number | bigint | boolean | null | Uint8Array>;
-      const client = getRawClient();
-      if (looksLikeRead) {
-        const stmt = client.query(q);
-        const rows = stmt.all(...params) as unknown[];
-        const truncated = rows.slice(0, 100);
-        return asJsonText({
-          rowCount: rows.length,
-          truncatedTo: truncated.length,
-          rows: truncated,
-        });
+      const write = args.allow_write === true;
+      // Every call is audited: the tool can read any table (password hashes
+      // included) and, with allow_write, change anything.
+      const audit = (status: number, summary: string) => recordAuditEvent({
+        actor: { id: ctx.adminId, email: ctx.adminEmail },
+        method: "MCP",
+        path: "vaultbase.run_sql",
+        action: write ? "mcp.sql.write" : "mcp.sql.read",
+        target: ctx.tokenName,
+        status,
+        summary: `${summary} | ${q}`,
+      });
+      if (write) {
+        // `allow_write` is the caller's own flag, so on its own it was no
+        // control at all: any `mcp:sql` token could rewrite the database.
+        // Writes take the admin scope as well.
+        if (!hasScope(ctx.scopes, "mcp:admin")) {
+          await audit(403, "refused: allow_write needs mcp:admin");
+          throw new Error("allow_write requires the mcp:admin (or admin) scope; mcp:sql alone is read-only");
+        }
+        const r = getRawClient().query(q).run(...params);
+        await audit(200, `changes=${r.changes}`);
+        return asJsonText({ changes: r.changes, lastInsertRowid: String(r.lastInsertRowid) });
       }
-      const stmt = client.query(q);
-      const r = stmt.run(...params);
-      return asJsonText({ changes: r.changes, lastInsertRowid: String(r.lastInsertRowid) });
+      if (!/^\s*(WITH|SELECT|EXPLAIN|PRAGMA)\b/i.test(q)) {
+        await audit(400, "refused: not a read");
+        throw new Error("non-SELECT requires allow_write: true (and the mcp:admin scope); prefer the typed tools");
+      }
+      // Reads go through the admin SQL runner: a separate read-only
+      // connection with query_only on (so a PRAGMA can't change the server's
+      // own connection) and the same time budget.
+      const file = getRawClient().filename;
+      if (!file || file === ":memory:") {
+        // An in-memory database (tests) has no file a second connection can
+        // open: keyword-check and read it in place.
+        const bad = detectMutation(q);
+        if (bad) throw new Error(`'${bad}' is blocked without allow_write: true`);
+        const all = getRawClient().query(q).all(...params) as unknown[];
+        await audit(200, `rows=${all.length}`);
+        return asJsonText({ rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
+      }
+      const res = await runSql({ sql: q, params, dbPath: file, mode: "readonly" });
+      if (!res.ok) {
+        await audit(400, `error: ${res.error ?? ""}`);
+        throw new Error(res.error ?? "query failed");
+      }
+      await audit(200, `rows=${res.rowCount}`);
+      const rows = res.rows.slice(0, 100).map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+      return asJsonText({ rowCount: res.rowCount, truncatedTo: rows.length, rows });
     },
   });
 

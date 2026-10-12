@@ -64,6 +64,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   another admin answers `403`, and the **Superusers** page only offers Edit on your own
   row. Reset another admin's password from the server with
   `vaultbase setup-admin --email … --password … --force`.
+- **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
+  still read; `allow_write: true` now answers with an error unless the token also has
+  `mcp:admin` (or `admin`).
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -165,6 +168,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   request. Queries now run in a separate process (read-only mode) or worker (sandbox) and
   are stopped when the limit is reached. The sandbox also refuses `ATTACH`, `DETACH` and
   `VACUUM`, which could reach the live database or write files outside it.
+- **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
+  `allow_write` flag was the caller's own choice, reads ran on the server's own
+  connection (where a `PRAGMA` could change its behaviour for every later request), and
+  nothing was audited. Writes now also need the `mcp:admin` scope, reads use a separate
+  read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
 - **The hosted magic-link page now works for accounts with two-factor sign-in.** It used
