@@ -479,6 +479,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Trust boundaries and password policy documented.** The security docs now say which
+  settings and credentials are trusted (admin-configured integration URLs, `read`
+  tokens, hook code) and how to tighten the password policy (`password.hibp_check`,
+  `password.min_length`).
 - **Docs and help drift.** `vaultbase --help` and the install docs named
   `VAULTBASE_CLUSTER_WORKERS`; the variable `vaultbase cluster` reads is
   `VAULTBASE_WORKERS`. `docker-compose.web.yml` pointed at directories that don't exist

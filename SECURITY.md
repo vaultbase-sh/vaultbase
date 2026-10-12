@@ -67,6 +67,17 @@ DNS rebinding (attacker controls the hostname's DNS, flips the answer
 between our resolve check and `fetch()`'s internal resolve). Use
 kernel-level filtering when you need bulletproof guarantees.
 
+**Admin-configured integration URLs are trusted.** The SMTP host, S3 /
+storage endpoint, OAuth/OIDC endpoints (`oauth2.*` URLs, including a custom
+OIDC token and userinfo URL) and push-notification providers are set by
+admins and are **not** passed through the egress guard: they often point at
+internal services (Mailpit, MinIO, a corporate IdP) on purpose. Anyone who
+can change these settings can make the server connect anywhere and can
+redirect a stored secret (SMTP password, client secret) to a host they
+control, so the settings API is admin-only for that reason too. Webhooks
+(whose deliveries carry record data) and hook/route/job code do use the
+guard.
+
 `helpers.fetch` goes through the same guard as `helpers.http` (it used to be
 raw `fetch`): every redirect hop is re-checked, only `http:`/`https:` are
 allowed, and credentials are dropped on a cross-origin redirect.
