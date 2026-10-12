@@ -399,6 +399,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Read-only batches no longer block writes.** A `/batch` of only `GET`s took the
+  exclusive write gate, so a batch of 100 slow lists stalled every write in the process.
+  Read-only batches now run without it; each read sees committed data, with no snapshot
+  across the batch.
 - **Shutdown waits for requests in flight.** `SIGTERM`/`SIGINT` used to exit as soon as
   logs were flushed, dropping any request being handled. The server now stops taking
   connections, gives in-flight requests up to 10 s, stops background work and closes the

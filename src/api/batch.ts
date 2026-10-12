@@ -140,6 +140,50 @@ async function dispatchOp(
   }
 }
 
+/** Map an error thrown by request `at` of a batch to its response. */
+function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { status?: number | string }): { error: string; code: number; details?: unknown } {
+  if (e instanceof RuleDeniedError) {
+    set.status = 403;
+    return { error: `Batch failed at request ${at}: forbidden by ${e.ruleName}`, code: 403 };
+  }
+  if (e instanceof ValidationError) {
+    set.status = 422;
+    return { error: `Batch failed at request ${at}: ${e.message}`, code: 422, details: e.details };
+  }
+  if (e instanceof CascadeForbiddenError) {
+    set.status = 403;
+    return { error: `Batch failed at request ${at}: forbidden`, code: 403 };
+  }
+  if (e instanceof RestrictError) {
+    set.status = 409;
+    // As on DELETE /:collection/:id: only admins learn which
+    // collections still reference the record.
+    return auth?.type === "admin"
+      ? { error: `Batch failed at request ${at}: ${e.message}`, code: 409, details: e.details }
+      : { error: `Batch failed at request ${at}: the record is referenced by other records`, code: 409 };
+  }
+  if (e instanceof RecordBusyError) {
+    set.status = 409;
+    return { error: `Batch failed at request ${at}: ${e.message}`, code: 409 };
+  }
+  if (e instanceof ReadOnlyCollectionError) {
+    set.status = 405;
+    return { error: `Batch failed at request ${at}: ${e.message}`, code: 405 };
+  }
+  if (e instanceof FilterError) {
+    set.status = 400;
+    return { error: `Batch failed at request ${at}: ${e.message}`, code: 400 };
+  }
+  if (e instanceof AccessRuleError) {
+    process.stderr.write(`[batch] ${e.message}\n`);
+    set.status = 403;
+    return { error: `Batch failed at request ${at}: forbidden by list_rule`, code: 403 };
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  set.status = 500;
+  return { error: `Batch failed at request ${at}: ${msg}`, code: 500 };
+}
+
 export function makeBatchPlugin(jwtSecret: string) {
   return new Elysia({ name: "batch" }).post(
     "/batch",
@@ -164,6 +208,22 @@ export function makeBatchPlugin(jwtSecret: string) {
         parsed.push(p);
       }
 
+      // A batch of reads changes nothing, so it runs without the exclusive
+      // write gate: holding it stalled every write in the process for as
+      // long as up to 100 lists took. Each read sees committed data; there
+      // is no snapshot across the batch.
+      if (parsed.every((op) => op.kind === "list" || op.kind === "get")) {
+        const results: BatchResult[] = [];
+        try {
+          for (let i = 0; i < parsed.length; i++) {
+            results.push(await dispatchOp(request, parsed[i]!, requests[i]!.body, principalFor(auth, parsed[i]!)));
+          }
+          return { data: results };
+        } catch (e) {
+          return batchError(e, results.length, auth, set);
+        }
+      }
+
       const client = (getDb() as unknown as { $client: Database }).$client;
       // Atomic: BEGIN ... COMMIT or ROLLBACK. The transaction lives on the
       // shared connection and spans awaits, so the write gate keeps every
@@ -182,46 +242,7 @@ export function makeBatchPlugin(jwtSecret: string) {
         } catch (e) {
           if (client.inTransaction) client.exec("ROLLBACK");
           tx.rollback();
-          if (e instanceof RuleDeniedError) {
-            set.status = 403;
-            return { error: `Batch failed at request ${results.length}: forbidden by ${e.ruleName}`, code: 403 };
-          }
-          if (e instanceof ValidationError) {
-            set.status = 422;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };
-          }
-          if (e instanceof CascadeForbiddenError) {
-            set.status = 403;
-            return { error: `Batch failed at request ${results.length}: forbidden`, code: 403 };
-          }
-          if (e instanceof RestrictError) {
-            set.status = 409;
-            // As on DELETE /:collection/:id: only admins learn which
-            // collections still reference the record.
-            return auth?.type === "admin"
-              ? { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details }
-              : { error: `Batch failed at request ${results.length}: the record is referenced by other records`, code: 409 };
-          }
-          if (e instanceof RecordBusyError) {
-            set.status = 409;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409 };
-          }
-          if (e instanceof ReadOnlyCollectionError) {
-            set.status = 405;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 405 };
-          }
-          if (e instanceof FilterError) {
-            set.status = 400;
-            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 400 };
-          }
-          if (e instanceof AccessRuleError) {
-            process.stderr.write(`[batch] ${e.message}\n`);
-            set.status = 403;
-            return { error: `Batch failed at request ${results.length}: forbidden by list_rule`, code: 403 };
-          }
-          const msg = e instanceof Error ? e.message : String(e);
-          set.status = 500;
-          return { error: `Batch failed at request ${results.length}: ${msg}`, code: 500 };
+          return batchError(e, results.length, auth, set);
         }
       });
     },
