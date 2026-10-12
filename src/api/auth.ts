@@ -16,6 +16,7 @@ import {
   ISSUER,
   clientIp,
   redactEmail,
+  requestIsHttps,
   revokeToken,
   signAuthToken,
   verifyAuthToken,
@@ -55,6 +56,16 @@ import {
   reserveAttempt,
   releaseAttempt,
 } from "../core/security.ts";
+
+/**
+ * Whether auth cookies get `Secure`: the request came over HTTPS (directly
+ * or via a trusted proxy's X-Forwarded-Proto), or the app is configured on
+ * an https URL. Taken from request.url alone, it was never set behind a
+ * TLS-terminating proxy.
+ */
+function cookieSecure(request: Request): boolean {
+  return requestIsHttps(request) || getAppUrl().startsWith("https://");
+}
 
 /** Client IP for lockout keying, by the trusted-proxy rule (see sec.ts clientIp). */
 function clientIpForLockout(request: Request): string | null {
@@ -655,7 +666,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           jti, admin_id: a.id, admin_email: a.email,
           issued_at: iat, expires_at: exp, request,
         });
-        const isHttps = new URL(request.url).protocol === "https:";
+        const isHttps = cookieSecure(request);
         const secureFlag = isHttps ? " Secure;" : "";
         const cookie = `vaultbase_admin_token=${token}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=${ttl}`;
         return new Response(JSON.stringify({ data: { token, admin: { id: a.id, email: a.email } } }), {
@@ -1321,7 +1332,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // leaving it live (and fetchable with the old token for 30 s).
         await endRefreshedReplacement(token, jwtSecret);
       }
-      const isHttps = new URL(request.url).protocol === "https:";
+      const isHttps = cookieSecure(request);
       const secureFlag = isHttps ? " Secure;" : "";
       const headers = new Headers({ "content-type": "application/json" });
       headers.append("set-cookie", `vaultbase_admin_token=; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=0`);

@@ -328,6 +328,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
   list now applies to rate limiting too (it used to read only the env var). The nginx
   and Caddy SSE locations also pointed at the old `/api/realtime` path; they now match
   `/api/v1/realtime`.
+- **Admin and auth responses could be cached.** Nothing under `/api/v1/admin` or
+  `/api/v1/auth` sent a `Cache-Control` header, so responses carrying settings secrets,
+  tokens and session lists could be kept by the browser or a shared proxy (a cached
+  `401` from `/admin/auth/me` even caused a sign-in loop). They are now `no-store`.
+  Record reads keep their ETag revalidation.
+- **The admin cookie lacked `Secure` behind a TLS proxy.** The flag was taken from the
+  request URL, which is plain http behind a TLS-terminating proxy. It is now set when a
+  trusted proxy reports `X-Forwarded-Proto: https` or `app.url` is https.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

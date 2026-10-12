@@ -194,10 +194,17 @@ export function createServer(config: Config) {
     })
     // Attach security headers globally. CSP applies to non-API surface.
     .onAfterHandle(({ request, set }) => {
-      const isApi = new URL(request.url).pathname.startsWith("/api/");
+      const path = new URL(request.url).pathname;
+      const isApi = path.startsWith("/api/");
       const headers = securityHeaders({ isApi });
       for (const [k, v] of Object.entries(headers)) {
         if (!set.headers[k]) set.headers[k] = v;
+      }
+      // Admin and auth responses carry secrets (settings, tokens, sessions):
+      // never let a browser or shared proxy cache them. Record reads under
+      // /api/v1/<collection> keep their ETag revalidation, so not all of /api.
+      if (/^\/api\/(v1\/)?(admin|auth)\//.test(path) && !set.headers["cache-control"] && !set.headers["Cache-Control"]) {
+        set.headers["Cache-Control"] = "no-store";
       }
       // CORS response headers on every request — same envelope as security.
       applyCorsHeaders(request, set as { headers: Record<string, string | undefined> });

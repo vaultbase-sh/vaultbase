@@ -389,6 +389,18 @@ export function rememberPeer(request: Request, ip: string | null): void {
 }
 
 /**
+ * Whether the client reached us over HTTPS: the request URL itself, or a
+ * trusted proxy saying so in X-Forwarded-Proto (a TLS-terminating proxy, the
+ * deployment the guide recommends, hands us plain http).
+ */
+export function requestIsHttps(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  const peer = requestPeers.get(request);
+  if (!peer || !isTrustedProxy(peer)) return false;
+  return (request.headers.get("x-forwarded-proto") ?? "").split(",")[0]!.trim().toLowerCase() === "https";
+}
+
+/**
  * The client's address for `request`, by the trusted-proxy rule above. Null
  * when the peer is unknown (a request that didn't come through the server),
  * rather than trusting a header nothing vouched for.
