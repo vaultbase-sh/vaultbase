@@ -129,7 +129,7 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
       .where(eq(admin.email, opts.email));
     // A reset is how an operator gets back in after a lockout: clear it.
     const { clearAttemptFailures } = await import("./core/security.ts");
-    await clearAttemptFailures(`email:${opts.email.trim().toLowerCase()}`);
+    await clearAttemptFailures(`email:id:${sameEmail[0]!.id}`);
     process.stdout.write(`vaultbase: admin '${opts.email}' password reset.\n`);
   } else {
     const id = crypto.randomUUID();

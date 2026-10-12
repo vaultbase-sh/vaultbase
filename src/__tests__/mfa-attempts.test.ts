@@ -83,7 +83,7 @@ describe("MFA step-2 attempt budget", () => {
     // Two different valid second factors, so replay protection on the TOTP
     // step can't be what stops the second one.
     const jwt = await signUserJwt(userId, EMAIL, "users", SECRET);
-    const regen = await post("/auth/users/totp/recovery/regenerate", {}, jwt);
+    const regen = await post("/auth/users/totp/recovery/regenerate", { code: generateCode(totpSecret, Math.floor(Date.now() / 1000) - 30) }, jwt);
     const recovery = (await regen.json() as { data: { codes: string[] } }).data.codes[0]!;
     const t = await ticket();
     const results = await Promise.all([
@@ -147,7 +147,7 @@ describe("/totp/disable attempt budget", () => {
 describe("recovery codes", () => {
   it("one recovery code can't be spent twice by racing two tickets", async () => {
     const jwt = await signUserJwt(userId, EMAIL, "users", SECRET);
-    const regen = await post("/auth/users/totp/recovery/regenerate", {}, jwt);
+    const regen = await post("/auth/users/totp/recovery/regenerate", { code: generateCode(totpSecret, Math.floor(Date.now() / 1000) - 30) }, jwt);
     const code = (await regen.json() as { data: { codes: string[] } }).data.codes[0]!;
     const [t1, t2] = [await ticket(), await ticket()];
     const results = await Promise.all([

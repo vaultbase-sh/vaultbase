@@ -51,7 +51,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `POST /auth/refresh` now revokes the token it was called with, so keep the new token
   and drop the old one (the SDK already does). Refreshing the same token again within
   30 seconds — another tab, a retried request — returns the same new token rather than
-  an error. A sign-in can be kept alive by refreshing
+  an error. Signing out with the old token in that window ends the new one too. A sign-in can be kept alive by refreshing
   for at most 30 days from the original sign-in; after that `/refresh` answers `401` and
   the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
   Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
@@ -67,6 +67,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
+- **Regenerating recovery codes needs a current TOTP code.** Send
+  `{ "code": "123456" }` to `/totp/recovery/regenerate`; without it the call answers
+  `401`. `/totp/confirm` now returns the first set of recovery codes as
+  `recovery_codes`, so enrolling doesn't need a separate regenerate call.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -150,11 +154,20 @@ Binaries, checksums, signatures and SBOMs for every version are on
   /auth/:collection/totp/setup` overwrote the secret even with MFA already on, with no
   code required, after which the attacker's authenticator passed every MFA check. Setup
   now answers `409` while MFA is enabled; disable it with a current code first.
+- **A stolen session could mint new MFA recovery codes.** `POST
+  /auth/:collection/totp/recovery/regenerate` needed only a session; it now needs a
+  current authenticator code, under the same attempt limit as sign-in.
+- **The account lockout could be reset from a look-alike account.** Address lookups are
+  case-sensitive, but the lockout was keyed by the lower-cased address, so signing in to
+  `VICTIM@example.com` cleared the failures recorded against `victim@example.com`. The
+  lockout is now keyed by the account itself.
 - **Registration and email change could reveal which addresses have accounts.** Register
   skipped password hashing (and validation) when the address was taken, so the response
   came back measurably faster; both branches now do the same work and validate first.
   `request-email-change` answered "Email already in use" for a taken address; it now
-  answers like any other request and sends nothing.
+  answers like any other request and sends nothing. Reset, OTP and email-change requests
+  no longer wait for the mail server before answering, which made addresses with an
+  account measurably slower, and `promote` checks the password before the address.
 - **One-time tokens were stored in plaintext.** Password-reset, verification, OTP and
   invitation links, MFA tickets and OAuth merge tokens were kept verbatim in the
   database, so anyone with a copy of it (a backup, read-only SQL access) could use a

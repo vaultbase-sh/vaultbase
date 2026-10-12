@@ -53,8 +53,14 @@ describe("user login lockout", () => {
     expect((await userLogin("bob@test.local", PASSWORD)).status).toBe(200);
   });
 
-  it("email case doesn't give a fresh budget", async () => {
-    for (let i = 0; i < 10; i++) await userLogin(i % 2 ? "ALICE@test.local" : "alice@test.local", `guess-${i}`);
+  it("a case-variant account can't reset the victim's count", async () => {
+    // Address lookups are case-sensitive, so ALICE@ is a different account
+    // the attacker controls; signing in to it must not clear alice@'s failures.
+    await seedAuthUser({ collection: "users", email: "ALICE@test.local", passwordHash: await Bun.password.hash("attacker-pw-123") });
+    for (let round = 0; round < 2; round++) {
+      for (let i = 0; i < 5; i++) await userLogin("alice@test.local", `guess-${round}-${i}`);
+      expect((await userLogin("ALICE@test.local", "attacker-pw-123")).status).toBe(200);
+    }
     expect((await userLogin("alice@test.local", PASSWORD)).status).toBe(429);
   });
 
@@ -77,7 +83,7 @@ describe("user login lockout", () => {
     // (429) before any check runs; what must hold is that at most 10 ran.
     expect(results.filter((r) => r.status === 401).length).toBeLessThanOrEqual(10);
     const col = (await getCollection("users"))!;
-    const rows = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `user:${col.id}:alice@test.local`));
+    const rows = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `user:${col.id}:id:${(await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id}`));
     expect(rows.length).toBeLessThanOrEqual(10);
   });
 

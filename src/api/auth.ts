@@ -477,6 +477,20 @@ async function repeatRefresh(token: string, jwtSecret: string): Promise<string |
   }
 }
 
+/** Revoke the token that replaced `token` in the last refresh window, if any. */
+async function endRefreshedReplacement(token: string, jwtSecret: string): Promise<void> {
+  try {
+    const { payload } = await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { issuer: ISSUER });
+    if (typeof payload.jti !== "string") return;
+    const id = `refresh_rotation:${payload.jti}`;
+    const row = (await getDb().select().from(authTokens).where(eq(authTokens.id, id)).limit(1))[0];
+    if (!row?.payload) return;
+    const r = JSON.parse(row.payload) as { jti: string; iat: number; ttl: number };
+    await revokeToken(r.jti, r.iat + r.ttl);
+    await getDb().delete(authTokens).where(eq(authTokens.id, id));
+  } catch { /* not ours or malformed: nothing to end */ }
+}
+
 export function makeAuthPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth" })
     .get("/admin/setup/status", async () => {
@@ -537,16 +551,16 @@ export function makeAuthPlugin(jwtSecret: string) {
         const ip = clientIpForLockout(request);
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
-        const attempt = await reserveLoginAttempt({ email: body.email, ip });
+        const db = getDb();
+        const rows = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
+        const a = rows[0];
+        const attempt = await reserveLoginAttempt({ email: body.email, subject: a?.id, ip });
         if (!attempt) {
           return new Response(JSON.stringify({ error: "Too many failed attempts. Try again later.", code: 429 }), {
             status: 429,
             headers: { "content-type": "application/json" },
           });
         }
-        const db = getDb();
-        const rows = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
-        const a = rows[0];
         const hashToCheck = a?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
         if (!a || !valid) {
@@ -712,13 +726,13 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         // Per-account lockout, charged before the password is checked. The
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
-        const lockout = { scope: `user:${col.id}`, email: body.email, ip: clientIpForLockout(request) };
+        // Per-collection email lookup (vb_<col> first, legacy fallback).
+        const u = findUserByEmail(col, body.email);
+        const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: clientIpForLockout(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
         }
-        // Per-collection email lookup (vb_<col> first, legacy fallback).
-        const u = findUserByEmail(col, body.email);
         // Always verify (against dummy hash on miss) so timing is constant.
         const hashToCheck = u?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
@@ -861,7 +875,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     // Mint 10 fresh recovery codes (replaces all existing). Returns plaintext.
     .post(
       "/auth/:collection/totp/recovery/regenerate",
-      async ({ params, request, set }) => {
+      async ({ params, request, body, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -872,9 +886,22 @@ export function makeAuthPlugin(jwtSecret: string) {
         const db = getDb();
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
+        if (u.totp_enabled !== 1 || !u.totp_secret) { set.status = 422; return { error: "MFA is not enabled", code: 422 }; }
+        // A fresh set of recovery codes is a second factor in its own right:
+        // a session alone (a stolen token) must not be able to mint one.
+        // Same proof and budget as /totp/disable.
+        const attempt = await reserveAttempt(`mfa:${col.id}:${u.id}`, MAX_ACCOUNT_CODE_FAILURES, ATTEMPT_WINDOW_SECONDS);
+        if (!attempt) { set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 }; }
+        const totp = typeof body?.code === "string" ? await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code) : "invalid";
+        if (totp !== "ok") {
+          if (totp === "replayed" || typeof body?.code !== "string") await releaseAttempt(attempt);
+          set.status = 401; return { error: "A current authenticator code is required", code: 401 };
+        }
+        await releaseAttempt(attempt);
         const codes = await generateRecoveryCodesFor(u.id, col.id, jwtSecret);
         return { data: { codes } };
-      }
+      },
+      { body: t.Optional(t.Object({ code: t.Optional(t.String()) })) }
     )
     // Counts of recovery codes (never plaintext). Used by the UI to nag users
     // to regenerate when they're running low.
@@ -957,12 +984,12 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const u = findUserByEmail(col, body.email);
+        // Not awaited: waiting for the mail server only when the address has
+        // an account would let the response time tell the two apart.
         if (u) {
-          try {
-            await issueAndSend("reset", { id: u.id, email: u.email }, col.id, col.name);
-          } catch (e) {
+          issueAndSend("reset", { id: u.id, email: u.email }, col.id, col.name).catch((e) => {
             console.error("[auth] password reset email failed for", redactEmail(u.email), "—", e instanceof Error ? e.message : e);
-          }
+          });
         }
         return { data: { sent: true } };
       },
@@ -1046,7 +1073,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         await db.update(authTokens).set({ used_at: now }).where(and(
           eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at), ne(authTokens.id, stored),
         ));
-        await sendTemplated("email_change", newEmail, token, col.name);
+        // Not awaited: a taken address returns without sending, so waiting on
+        // the mail server here would make free addresses measurably slower.
+        sendTemplated("email_change", newEmail, token, col.name).catch((e) => {
+          console.error("[auth] email change link failed for", redactEmail(newEmail), "—", e instanceof Error ? e.message : e);
+        });
         return { data: { sent: true } };
       },
       { body: t.Object({ newEmail: t.String() }) }
@@ -1067,7 +1098,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         // The password is the only thing a stolen session lacks here, so it
         // gets the same lockout as sign-in.
-        const lockout = { scope: `user:${col.id}`, email: u.email, ip: clientIpForLockout(request) };
+        const lockout = { scope: `user:${col.id}`, email: u.email, subject: u.id, ip: clientIpForLockout(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
@@ -1181,12 +1212,12 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!isAuthFeatureEnabled("otp")) { set.status = 422; return { error: "OTP login is disabled", code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const u = findUserByEmail(col, body.email);
+        // Not awaited, for the same reason as password reset: no timing
+        // difference between addresses with and without an account.
         if (u && u.is_anonymous !== 1) {
-          try {
-            await issueOtpAndSend({ id: u.id, email: u.email }, col.id, col.name);
-          } catch (e) {
+          issueOtpAndSend({ id: u.id, email: u.email }, col.id, col.name).catch((e) => {
             console.error("[auth] otp email failed for", redactEmail(u.email), "—", e instanceof Error ? e.message : e);
-          }
+          });
         }
         return { data: { sent: true } };
       },
@@ -1200,6 +1231,10 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (token) {
         const ctx = await verifyAuthToken(token, jwtSecret, { recheckPrincipal: false });
         if (ctx?.jti && ctx.exp) await revokeToken(ctx.jti, ctx.exp);
+        // A tab still holding a token that was just refreshed elsewhere is
+        // signing out that session: end the replacement too, rather than
+        // leaving it live (and fetchable with the old token for 30 s).
+        await endRefreshedReplacement(token, jwtSecret);
       }
       const isHttps = new URL(request.url).protocol === "https:";
       const secureFlag = isHttps ? " Secure;" : "";
@@ -1351,7 +1386,11 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
         await updateUserById(col, u.id, { totp_enabled: 1, updated_at: Math.floor(Date.now() / 1000) });
-        return { data: { enabled: true } };
+        // Hand out the first set of recovery codes here, where the code that
+        // proves the authenticator works was just checked. Regenerating later
+        // takes a fresh code.
+        const codes = await generateRecoveryCodesFor(u.id, col.id, jwtSecret);
+        return { data: { enabled: true, recovery_codes: codes } };
       },
       { body: t.Object({ code: t.String() }) }
     )
@@ -1468,14 +1507,18 @@ export function makeAuthPlugin(jwtSecret: string) {
           }
           throw e;
         }
+        // Password first: checked after the duplicate lookup, a weak password
+        // answered 409 or 422 depending only on whether the address was
+        // taken, a free probe that creates nothing. (A valid request to a
+        // taken address still gets 409: promote has to say why it failed.)
+        {
+          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
+          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
+        }
         // Email uniqueness within the collection (excluding self).
         const dup = findUserByEmail(col, body.email);
         if (dup && dup.id !== u.id) {
           set.status = 409; return { error: "Email already in use", code: 409 };
-        }
-        {
-          const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
-          if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const hash = await hashPassword(body.password);
         const now = Math.floor(Date.now() / 1000);
@@ -1823,7 +1866,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       let proven = false;
       if (typeof body.password === "string" && body.password !== "") {
         // A password guess here is a sign-in attempt: same lockout.
-        const lockout = { scope: `user:${col.id}`, email: user.email, ip: clientIpForLockout(request) };
+        const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: clientIpForLockout(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };

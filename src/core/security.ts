@@ -145,6 +145,20 @@ export function getLockoutPolicy(): LockoutPolicy {
  */
 const IP_LOCKOUT_MULTIPLIER = 5;
 
+interface LockoutOpts {
+  scope?: string;
+  email: string;
+  /**
+   * Id of the account the email resolved to, when it did. Keying by id
+   * rather than by address matters because address lookups are
+   * case-sensitive: keyed by a lower-cased address, `VICTIM@x` (an account
+   * an attacker registered) and `victim@x` shared one counter, and each
+   * successful sign-in to the attacker's account wiped the victim's failures.
+   */
+  subject?: string | null | undefined;
+  ip: string | null;
+}
+
 /**
  * Lockout keys for a sign-in. `scope` separates principals that share an
  * address: admins use `email:<addr>`, auth-collection users
@@ -152,10 +166,10 @@ const IP_LOCKOUT_MULTIPLIER = 5;
  * The IP key is scoped the same way, so users behind a shared address can't
  * lock the admin sign-in out.
  */
-function lockoutKeys(opts: { scope?: string; email: string; ip: string | null }): { account: string; ip: string | null } {
+function lockoutKeys(opts: LockoutOpts): { account: string; ip: string | null } {
   const scope = opts.scope ?? "email";
   return {
-    account: `${scope}:${opts.email.trim().toLowerCase()}`,
+    account: opts.subject ? `${scope}:id:${opts.subject}` : `${scope}:${opts.email.trim().toLowerCase()}`,
     ip: opts.ip ? `ip:${scope === "email" ? "" : `${scope}:`}${opts.ip}` : null,
   };
 }
@@ -174,7 +188,7 @@ export interface LoginAttempt {
  * can't all read the same count, the way a check-then-record lockout lets
  * them. With the lockout off, an inert attempt is returned.
  */
-export async function reserveLoginAttempt(opts: { scope?: string; email: string; ip: string | null }): Promise<LoginAttempt | null> {
+export async function reserveLoginAttempt(opts: LockoutOpts): Promise<LoginAttempt | null> {
   const keys = lockoutKeys(opts);
   const policy = getLockoutPolicy();
   if (!policy.enabled) return { account: keys.account, ipReservation: null };
