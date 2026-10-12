@@ -1,8 +1,8 @@
 /**
  * Password-reset and OTP emails go to an address anyone can type. With only
  * the per-IP rate limit in the way, a victim's inbox could be flooded from
- * many addresses. Each user now gets at most one email per kind per minute
- * and five per hour; the endpoints still answer 200 so nothing is revealed.
+ * many addresses. Each user now gets at most one email per kind per minute;
+ * the endpoints still answer 200 so nothing is revealed.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { and, eq } from "drizzle-orm";
@@ -16,7 +16,7 @@ import { setLogsDir } from "../core/file-logger.ts";
 import { setSetting } from "../api/settings.ts";
 import { authTokens } from "../db/schema.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
-import { seedAuthUser } from "./_helpers.ts";
+import { seedAuthUser, signUserJwt } from "./_helpers.ts";
 import { startSmtpSink, type SmtpSink } from "./_smtp.ts";
 
 const SECRET = "test-secret-email-cooldown";
@@ -78,13 +78,13 @@ for (const f of flows) {
       expect(smtp.messages).toHaveLength(2);
     });
 
-    it("at most five per hour", async () => {
+    it("has no hourly cap a stranger could use up: one per minute keeps going", async () => {
       for (let i = 0; i < 7; i++) {
         await post(f.path, { email: EMAIL });
         await age(f.purpose, 61);
       }
       await settle();
-      expect(smtp.messages).toHaveLength(5);
+      expect(smtp.messages).toHaveLength(7);
     });
 
     it("parallel requests send one email", async () => {
@@ -100,5 +100,25 @@ describe("register with a taken address", () => {
     for (let i = 0; i < 3; i++) await post("/auth/users/register", { email: EMAIL, password: "another-password-1" });
     await settle();
     expect(smtp.messages.filter((m) => m.includes("reset"))).toHaveLength(1);
+  });
+});
+
+describe("request-email-change cooldown", () => {
+  it("a signed-in user can't use it to flood a stranger's inbox", async () => {
+    const jwt = await signUserJwt(userId, EMAIL, "users", SECRET);
+    const send = (to: string) => makeAuthPlugin(SECRET).handle(new Request("http://localhost/auth/users/request-email-change", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ newEmail: to }),
+    }));
+    expect((await send("stranger@test.local")).status).toBe(200);
+    expect((await send("stranger@test.local")).status).toBe(429);
+    // A taken address answers the same 429 inside the window: no oracle.
+    await seedAuthUser({ collection: "users", email: "taken@test.local" });
+    expect((await send("taken@test.local")).status).toBe(429);
+    await settle();
+    expect(smtp.messages).toHaveLength(1);
+    await age("email_change", 61);
+    expect((await send("stranger@test.local")).status).toBe(200);
   });
 });

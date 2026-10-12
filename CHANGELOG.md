@@ -49,7 +49,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   install that had explicitly saved `0` keeps it off.
 - **Refreshing a token revokes the old one, and sessions have a maximum age.**
   `POST /auth/refresh` now revokes the token it was called with, so keep the new token
-  and drop the old one (the SDK already does). A sign-in can be kept alive by refreshing
+  and drop the old one (the SDK already does). Refreshing the same token again within
+  30 seconds — another tab, a retried request — returns the same new token rather than
+  an error. A sign-in can be kept alive by refreshing
   for at most 30 days from the original sign-in; after that `/refresh` answers `401` and
   the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
   Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
@@ -123,9 +125,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   lockout when resetting the password.
 - **A victim's inbox could be flooded with reset and sign-in emails.** Password-reset,
   OTP and verification emails were limited only per client IP. Each user now gets at most
-  one email of each kind per minute and five per hour; extra requests to the public
-  endpoints still answer `200` but send nothing, and `request-verify` answers `429`. A
-  held-back OTP request no longer voids the code that was already sent.
+  one email of each kind per minute; extra requests to the public endpoints still answer
+  `200` but send nothing, and `request-verify` answers `429`. A held-back OTP request
+  doesn't void the code that was already sent. `request-email-change`, which mails an
+  address the caller chooses, has the same one-a-minute limit (`429`).
 - **A stolen token could be kept alive forever.** `/auth/refresh` left the old token
   valid until its own expiry and re-stamped the expiry on every call, with no limit on
   the session's total age. Admin refreshes also didn't appear in **Settings → Security →

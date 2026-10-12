@@ -109,6 +109,8 @@ describe("email change", () => {
     const { token } = await user();
     await post("/auth/users/request-email-change", { newEmail: "first@test.local" }, token);
     const first = tokenFrom(await waitForMail("first@test.local"));
+    // Past the one-a-minute cooldown on email-change requests.
+    getRawClient().run("UPDATE vaultbase_auth_tokens SET created_at = created_at - 120 WHERE purpose = 'email_change'");
     await post("/auth/users/request-email-change", { newEmail: "second@test.local" }, token);
     await waitForMail("second@test.local");
     expect((await post("/auth/users/confirm-email-change", { token: first, password: "correct-horse-1" })).status).toBe(400);

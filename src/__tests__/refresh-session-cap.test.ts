@@ -12,9 +12,9 @@ import { eq } from "drizzle-orm";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setSetting } from "../api/settings.ts";
-import { admin, adminSessions } from "../db/schema.ts";
+import { admin, adminSessions, authTokens } from "../db/schema.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
-import { signAuthToken, verifyAuthToken } from "../core/sec.ts";
+import { revokeToken, signAuthToken, verifyAuthToken } from "../core/sec.ts";
 import { seedAuthUser } from "./_helpers.ts";
 
 const SECRET = "test-secret-refresh-cap";
@@ -59,9 +59,39 @@ describe("refresh revokes the token it replaces", () => {
     expect(await verifyAuthToken(r.token!, SECRET)).not.toBeNull();
   });
 
-  it("the old token can't be refreshed a second time", async () => {
+  it("refreshing the old token again returns the same replacement, then stops", async () => {
     const old = await userToken();
-    expect((await refresh(old)).status).toBe(200);
+    const first = await refresh(old);
+    expect(first.status).toBe(200);
+    // Another tab or a retried request within 30 s: same session, no 401.
+    const again = await refresh(old);
+    expect(again.status).toBe(200);
+    expect(again.token).toBe(first.token);
+    // Past the window, the old token is just revoked.
+    await getDb().update(authTokens).set({ expires_at: 0 }).where(eq(authTokens.purpose, "refresh_rotation"));
+    expect((await refresh(old)).status).toBe(401);
+  });
+
+  it("parallel refreshes of one token all get the same replacement", async () => {
+    const old = await userToken();
+    const results = await Promise.all(Array.from({ length: 5 }, () => refresh(old)));
+    // Nobody gets a 401 (which would sign every tab out), and there is one session.
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
+    expect(new Set(results.map((r) => r.token)).size).toBe(1);
+  });
+
+  it("the repeat window doesn't revive a replacement that was signed out", async () => {
+    const old = await userToken();
+    const first = await refresh(old);
+    const ctx = (await verifyAuthToken(first.token!, SECRET))!;
+    await revokeToken(ctx.jti!, ctx.exp!);
+    expect((await refresh(old)).status).toBe(401);
+  });
+
+  it("a replacement that was itself refreshed can't be fetched again with the old token", async () => {
+    const old = await userToken();
+    const first = await refresh(old);
+    expect((await refresh(first.token!)).status).toBe(200);
     expect((await refresh(old)).status).toBe(401);
   });
 
@@ -107,6 +137,12 @@ describe("absolute session lifetime", () => {
   it("is configurable, and 0 turns it off", async () => {
     setSetting("auth.session.max_seconds", "0");
     expect((await refresh(await userToken({}, 400 * DAY))).status).toBe(200);
+  });
+
+  it("a guest token for an account that was promoted is no longer exempt", async () => {
+    const id = await seedAuthUser({ collection: "users", isAnonymous: false });
+    const old = await aged({ id, email: "x@test.local", collection: "users", anonymous: true }, "user", 60 * DAY);
+    expect((await refresh(old)).status).toBe(401);
   });
 
   it("anonymous sessions are exempt: a guest has no way to sign in again", async () => {

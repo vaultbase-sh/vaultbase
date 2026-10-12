@@ -284,9 +284,8 @@ function buildLink(appUrl: string, kind: keyof typeof LINK_PATHS, collection: st
   return `${base}${path}?token=${token}&collection=${encodeURIComponent(collection)}`;
 }
 
-/** One email per kind per user per minute, and at most this many an hour. */
+/** One email per kind per user per minute. */
 const EMAIL_COOLDOWN_SECONDS = 60;
-const MAX_EMAILS_PER_HOUR = 5;
 
 /**
  * Whether the just-inserted token `id` may be emailed, or falls inside the
@@ -294,19 +293,23 @@ const MAX_EMAILS_PER_HOUR = 5;
  * form, so without this their inbox is only as safe as the per-IP rate limit.
  *
  * The token row is inserted first and then ranked by rowid among the user's
- * recent tokens of the same purpose: it may send only if nothing earlier was
- * issued in the last minute and fewer than `MAX_EMAILS_PER_HOUR` in the last
- * hour. Ranking by insertion order means a burst of parallel requests sends
- * exactly one email instead of racing a check-then-insert.
+ * tokens of the same purpose from the last minute: it may send only if none
+ * was issued before it. Ranking by insertion order means a burst of parallel
+ * requests sends exactly one email instead of racing a check-then-insert.
+ *
+ * There is deliberately no hourly cap on top: anyone can make these requests,
+ * so a cap would let a stranger use up the owner's quota and lock them out of
+ * OTP sign-in and password reset. The cooldown bounds a flood to one email a
+ * minute while the owner is never kept waiting longer than that.
  */
 function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): boolean {
-  const now = Math.floor(Date.now() / 1000);
-  const earlier = (since: number) => (getRawClient().query(
+  const since = Math.floor(Date.now() / 1000) - EMAIL_COOLDOWN_SECONDS;
+  const row = getRawClient().query(
     `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
       WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ?
         AND rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`,
-  ).get(userId, collectionId, purpose, since, id) as { n: number }).n;
-  return earlier(now - EMAIL_COOLDOWN_SECONDS) === 0 && earlier(now - 3600) < MAX_EMAILS_PER_HOUR;
+  ).get(userId, collectionId, purpose, since, id) as { n: number };
+  return row.n === 0;
 }
 
 /** Returns false when the email was held back by the per-user cooldown. */
@@ -413,6 +416,37 @@ async function issueOtpAndSend(
     text: renderTemplate(tpl.body, vars),
   });
   return true;
+}
+
+/** How long refreshing an already-refreshed token returns the same replacement. */
+const REFRESH_REPEAT_SECONDS = 30;
+
+/**
+ * `/auth/refresh` for a token whose refresh already happened in the last
+ * `REFRESH_REPEAT_SECONDS`: re-mint the identical replacement (same jti, iat
+ * and claims, so the same bytes) and hand it back, as long as that
+ * replacement itself still verifies — a logout, revocation or password reset
+ * since then still wins. Two tabs refreshing one token at once both end up
+ * holding the same session, rather than the loser's 401 signing everyone out.
+ * Whoever holds the old token in that window could already have refreshed it
+ * first, so this grants nothing new.
+ */
+async function repeatRefresh(token: string, jwtSecret: string): Promise<string | null> {
+  try {
+    const { payload } = await jose.jwtVerify(token, new TextEncoder().encode(jwtSecret), { issuer: ISSUER });
+    if (typeof payload.jti !== "string") return null;
+    const row = (await getDb().select().from(authTokens)
+      .where(eq(authTokens.id, `refresh_rotation:${payload.jti}`)).limit(1))[0];
+    if (!row || row.purpose !== "refresh_rotation" || row.expires_at < Math.floor(Date.now() / 1000) || !row.payload) return null;
+    const r = JSON.parse(row.payload) as { claims: jose.JWTPayload; audience: "user" | "admin"; ttl: number; jti: string; iat: number };
+    const { token: again } = await signAuthToken({
+      payload: r.claims, audience: r.audience, expiresInSeconds: r.ttl, jwtSecret,
+      reissue: { jti: r.jti, iat: r.iat },
+    });
+    return (await verifyAuthToken(again, jwtSecret)) ? again : null;
+  } catch {
+    return null;
+  }
 }
 
 export function makeAuthPlugin(jwtSecret: string) {
@@ -951,23 +985,38 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, session.id);
         if (!u) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         if (newEmail.toLowerCase() === u.email.toLowerCase()) { set.status = 422; return { error: "That is already your email", code: 422 }; }
-        // A taken address gets the same answer as a free one, and no link:
-        // the response mustn't tell a signed-in user who else has an account.
-        // (Confirming re-checks, in case the address is taken in between.)
-        if (findUserByEmail(col, newEmail)) return { data: { sent: true } };
 
         const db = getDb();
-        // One pending change at a time: a new request voids older links.
-        await db.delete(authTokens).where(and(eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at)));
         const token = newToken();
+        const now = Math.floor(Date.now() / 1000);
         await db.insert(authTokens).values({
           id: token,
           user_id: u.id,
           collection_id: col.id,
           purpose: "email_change",
           payload: newEmail,
-          expires_at: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+          expires_at: now + TOKEN_TTL_SECONDS,
         });
+        // The link goes to an address the caller chooses, so the same
+        // cooldown applies: a signed-in user can't use this to flood a
+        // stranger's inbox. Held back, the earlier link stays valid.
+        if (!emailAllowed(token, u.id, col.id, "email_change")) {
+          await db.delete(authTokens).where(eq(authTokens.id, token));
+          set.status = 429; return { error: "An email change was requested recently. Try again in a minute.", code: 429 };
+        }
+        // A taken address gets the same answer as a free one, and no link:
+        // the response mustn't tell a signed-in user who else has an account.
+        // Checked after the cooldown so the two can't be told apart by a 429.
+        // (Confirming re-checks, in case the address is taken in between.)
+        // The row stays (spent) so it still counts towards the cooldown.
+        if (findUserByEmail(col, newEmail)) {
+          await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, token));
+          return { data: { sent: true } };
+        }
+        // One pending change at a time: a new request voids older links.
+        await db.update(authTokens).set({ used_at: now }).where(and(
+          eq(authTokens.user_id, u.id), eq(authTokens.purpose, "email_change"), isNull(authTokens.used_at), ne(authTokens.id, token),
+        ));
         await sendTemplated("email_change", newEmail, token, col.name);
         return { data: { sent: true } };
       },
@@ -1864,7 +1913,14 @@ export function makeAuthPlugin(jwtSecret: string) {
       const token = request.headers.get("authorization")?.replace("Bearer ", "");
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret);
-      if (!ctx) { set.status = 401; return { error: "Token expired or invalid", code: 401 }; }
+      if (!ctx) {
+        // A token refreshed moments ago (another tab, a retried request)
+        // gets the same replacement back instead of a 401 that would sign
+        // every tab out.
+        const again = await repeatRefresh(token, jwtSecret);
+        if (again) return { data: { token: again } };
+        set.status = 401; return { error: "Token expired or invalid", code: 401 };
+      }
       // API tokens are not sessions: refreshing one would mint an admin JWT
       // free of the token's scopes.
       if ((ctx.type !== "user" && ctx.type !== "admin") || ctx.viaApiToken) {
@@ -1883,7 +1939,15 @@ export function makeAuthPlugin(jwtSecret: string) {
       const claims: jose.JWTPayload = { id: ctx.id };
       if (ctx.email) claims.email = ctx.email;
       if (typeof prev["collection"] === "string") claims["collection"] = prev["collection"];
-      const anonymous = prev["anonymous"] === true;
+      // Anonymous by the account, not just the claim: a guest token refreshed
+      // while the account is being promoted must not keep its exemption from
+      // the session cap.
+      let anonymous = prev["anonymous"] === true;
+      if (anonymous) {
+        const col = ctx.collection ? await getCollection(ctx.collection) : null;
+        const u = col ? findUserById(col, ctx.id) : null;
+        if (!u || u.is_anonymous !== 1) anonymous = false;
+      }
       if (anonymous) claims["anonymous"] = true;
       const now = Math.floor(Date.now() / 1000);
       let ttl = tokenWindowSeconds(anonymous ? "anonymous" : "refresh");
@@ -1921,6 +1985,18 @@ export function makeAuthPlugin(jwtSecret: string) {
       });
       if (ctx.type === "admin") {
         await recordAdminSession({ jti, admin_id: ctx.id, admin_email: ctx.email ?? "", issued_at: iat, expires_at: exp, request });
+      }
+      if (ctx.jti) {
+        // Remember how to re-mint this replacement for REFRESH_REPEAT_SECONDS.
+        // Only its claims are kept, never the token itself.
+        await getDb().insert(authTokens).values({
+          id: `refresh_rotation:${ctx.jti}`,
+          user_id: ctx.id,
+          collection_id: "",
+          purpose: "refresh_rotation",
+          payload: JSON.stringify({ claims, audience: ctx.type, ttl, jti, iat }),
+          expires_at: now + REFRESH_REPEAT_SECONDS,
+        }).onConflictDoNothing();
       }
       return { data: { token: newToken } };
     });

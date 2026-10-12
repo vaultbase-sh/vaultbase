@@ -231,10 +231,12 @@ export async function signAuthToken(opts: {
   audience: "user" | "admin" | "file" | "api";
   expiresInSeconds: number;
   jwtSecret: string;
+  /** Re-mint a token that was already issued: same jti and iat give the same bytes. */
+  reissue?: { jti: string; iat: number };
 }): Promise<{ token: string; jti: string; exp: number; iat: number }> {
-  const iat = Math.floor(Date.now() / 1000);
+  const iat = opts.reissue?.iat ?? Math.floor(Date.now() / 1000);
   const exp = iat + opts.expiresInSeconds;
-  const jti = crypto.randomUUID();
+  const jti = opts.reissue?.jti ?? crypto.randomUUID();
   const token = await new jose.SignJWT({ ...opts.payload, jti })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
