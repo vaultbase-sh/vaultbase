@@ -4,7 +4,7 @@ import * as jose from "jose";
 import { getDb, getRawClient } from "../db/client.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields } from "../core/collections.ts";
-import { findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
+import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
 import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
 import { getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
@@ -15,6 +15,7 @@ import {
   hmacRecoveryCode,
   ISSUER,
   redactEmail,
+  revokeToken,
   signAuthToken,
   verifyAuthToken,
 } from "../core/sec.ts";
@@ -1373,11 +1374,21 @@ export function makeAuthPlugin(jwtSecret: string) {
           is_anonymous: 0,
           updated_at: now,
         };
-        // Custom fields land as top-level keys; updateUserById whitelists
-        // against the per-collection table schema. Legacy dual-write merges
-        // them into the `data` JSON.
-        for (const [k, v] of Object.entries(extra)) update[k] = v;
+        // Only the collection's own declared fields may come from the body.
+        // updateUserById only checks that a key is a column, and the system
+        // columns (`id`, `email_verified`, `totp_*`, `password_reset_at`, …)
+        // are columns too.
+        const declared = new Set(
+          parseFields(col.fields).filter((f) => !f.system && !f.implicit).map((f) => f.name),
+        );
+        for (const [k, v] of Object.entries(extra)) {
+          if (declared.has(k) && !(AUTH_USER_COLUMNS as readonly string[]).includes(k)) update[k] = v;
+        }
+        // Ending the guest's sessions: the anonymous token (and any copy of
+        // it) stops working once the account has a real owner.
+        update["password_reset_at"] = now;
         await updateUserById(col, u.id, update);
+        if (session.jti && session.exp) await revokeToken(session.jti, session.exp);
         const { token: jwt } = await signAuthToken({
           payload: { id: u.id, email: email as string, collection: col.name },
           audience: "user",

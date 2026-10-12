@@ -122,6 +122,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   valid until its own expiry and re-stamped the expiry on every call, with no limit on
   the session's total age. Admin refreshes also didn't appear in **Settings → Security →
   Sessions**, so they couldn't be revoked from there. See the upgrade note above.
+- **Promoting a guest account could set protected columns.** `POST
+  /auth/:collection/promote` copied every extra body field into the user row, so a guest
+  could mark their new email verified, set MFA columns, or change the record's `id`. Only
+  the collection's own declared fields are accepted now (the same rule is enforced when
+  creating users). Promoting also ends the guest session: the anonymous token stops
+  working and the caller keeps the new token from the response.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
