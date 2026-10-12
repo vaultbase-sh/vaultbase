@@ -113,6 +113,8 @@ function makeCollectionLookup(): CollectionLookup {
 export const DEFAULT_PER_PAGE = 30;
 /** Largest page size a client-facing endpoint may request. */
 export const MAX_PER_PAGE = 500;
+/** The most records a list request may skip with `page` (its SQL OFFSET). */
+export const MAX_LIST_OFFSET = 100_000;
 
 function positiveInt(v: number | undefined, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : fallback;
@@ -441,6 +443,12 @@ export async function listRecords(
   const page = positiveInt(opts.page, 1);
   const perPage = positiveInt(opts.perPage, DEFAULT_PER_PAGE);
   const offset = (page - 1) * perPage;
+  // SQLite walks every skipped row to reach an OFFSET, so a huge page number
+  // makes one cheap request scan the whole table (and past 2^53 the value
+  // isn't even an exact integer). Deeper reads narrow with a filter instead.
+  if (offset > MAX_LIST_OFFSET) {
+    throw new FilterError(`page is too deep: at most ${MAX_LIST_OFFSET} records can be skipped; narrow the query with a filter`);
+  }
 
   const { whereSql, whereParams } = await compileListWhere(col, opts);
   // A search with no explicit sort orders by relevance (bm25): the SELECT

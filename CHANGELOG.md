@@ -72,6 +72,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **`GET /collections` and `/collections/:id` need an admin token.** Non-admin callers
   get `401`. For a schema your app can read, enable the public OpenAPI document
   (`api.openapi_public`), which leaves out admin-only collections.
+- **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
+  answers `400`; narrow deep reads with a filter (for example on `created`) instead of
+  paging.
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
@@ -218,6 +221,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   record. And for `~`, a `%` or `_` sent by the caller acted as a wildcard. List rules
   now see the request, and values from the request are matched as plain text with `~`
   (patterns written into a rule or filter keep their wildcards).
+- **A list request could make the database scan the whole table.** `page` had no upper
+  bound, and SQLite walks every skipped row to reach an offset. A list may now skip at
+  most 100,000 records; deeper pages answer `400`.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
