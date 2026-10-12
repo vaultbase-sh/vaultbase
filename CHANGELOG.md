@@ -374,7 +374,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   @request.auth.id`) only banned its first entry. A rule now passes when some row of the
   collection (that the caller may view) makes it true, with every reference to the same
   collection and alias bound to that one row; `!=` and `!~` against such a reference
-  mean no row matches.
+  mean no row matches (and are false when some rows are hidden from the caller). An
+  expression may join at most 3 collections/aliases, and a non-admin `?filter=` at most
+  1, so a client filter can no longer stack aliases into a cross join that stalls the
+  server.
 - **The same address could be registered twice in different case.** Promoting an
   anonymous account, changing email and magic-link sign-up checked for an existing
   address case-sensitively, so `ALICE@example.com` could be added beside

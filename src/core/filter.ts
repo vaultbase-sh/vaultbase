@@ -90,7 +90,17 @@ export interface ParseFilterOpts {
    * compiles, and the private-field guard above applies regardless.
    */
   hostFilterable?: (name: string) => boolean;
+  /**
+   * Most `@collection.*` joins one expression may create (default 3). Each
+   * distinct collection/alias is joined against every other, so a client
+   * filter repeating aliases multiplied rows: three aliases over a 300-row
+   * collection ran for seconds, four for minutes, on the main thread.
+   */
+  maxJoins?: number;
 }
+
+/** Default cap on `@collection.*` joins per expression (see ParseFilterOpts.maxJoins). */
+export const MAX_COLLECTION_JOINS = 3;
 
 export function parseFilter(
   expr: string,
@@ -135,6 +145,7 @@ export function compileToSql(
     joinDepth: 0,
     hoist: null,
     aliasSeq: { n: 0 },
+    maxJoins: opts.maxJoins ?? MAX_COLLECTION_JOINS,
   };
   const sql = compileScoped(ast, ctx);
   return { sql, params: ctx.params };
@@ -156,6 +167,8 @@ interface CompileCtx {
   hoist: HoistScope | null;
   /** Shared counter for join aliases, unique across nested scopes. */
   aliasSeq: { n: number };
+  /** Cap on aliasSeq.n for this compile. */
+  maxJoins: number;
 }
 
 interface HoistJoin { alias: string; table: string; on: string; onParams: unknown[] }
@@ -251,19 +264,20 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
   // `@collection.X.f != v` / `!~ v` (either side): no row of X the caller
   // may view matches. Bound to the joined row instead, it meant "some row
   // differs" — and a ban list with two entries banned nobody.
-  const leftColl = ast.left.kind === "collection" && !ast.left.modifier;
-  const rightColl = ast.right.kind === "collection" && !ast.right.modifier;
+  // Modifiers (`:lower`, `:length`) count too; `:each` was handled above.
+  const leftColl = ast.left.kind === "collection";
+  const rightColl = ast.right.kind === "collection";
   if (leftColl !== rightColl && (op === "!=" || op === "!~")) {
     const coll = (leftColl ? ast.left : ast.right) as Extract<Operand, { kind: "collection" }>;
     const other = leftColl ? ast.right : ast.left;
-    return `NOT ${compileCollectionRef(coll, ctx, (inner) => {
+    return compileCollectionRef(coll, ctx, (inner) => {
       if (op === "!~") {
         if (leftColl) return likeSql(inner, "~", other, ctx);
         return `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
       }
       const otherSql = compileOperand(other, ctx);
       return leftColl ? `${inner} = ${otherSql}` : `${otherSql} = ${inner}`;
-    })}`;
+    }, true);
   }
 
   // Standard scalar comparison
@@ -437,6 +451,7 @@ function compileCollectionRef(
   op: Extract<Operand, { kind: "collection" }>,
   ctx: CompileCtx,
   exists?: (inner: string) => string,
+  negate = false,
 ): string {
   if (!IDENT_RE.test(op.collection)) throw new Error(`invalid collection: ${op.collection}`);
   for (const p of op.path) if (!IDENT_RE.test(p)) throw new Error(`invalid path: ${p}`);
@@ -456,6 +471,9 @@ function compileCollectionRef(
       const key = `${op.collection}\u0000${op.alias ?? ""}`;
       let join = ctx.hoist.byKey.get(key);
       if (!join) {
+        if (ctx.aliasSeq.n >= ctx.maxJoins) {
+          throw new Error(`too many @collection references in one expression (at most ${ctx.maxJoins})`);
+        }
         const alias = `_vbj${++ctx.aliasSeq.n}`;
         const onParams: unknown[] = [];
         const on = collectionRowGuard(op.collection, alias, { ...ctx, params: onParams });
@@ -478,10 +496,9 @@ function compileCollectionRef(
     }
 
     // Inherit the joined collection's view_rule. Anonymous-rule-eval (no
-    // lookup provided) returns `null` view_rule which is fail-CLOSED on
-    // the SQL path (caller passes a NULL parameter so the equality match
-    // can never satisfy a non-trivial join condition). Provided lookups
-    // return the configured rule and we compile it against the target table.
+    // lookup provided) is fail-CLOSED for non-admins. A function, because a
+    // negated comparison needs the guard twice (each use pushes its params).
+    const buildWhere = (): string => {
     let where = "";
     if (ctx.lookup) {
       const meta = ctx.lookup(op.collection);
@@ -513,10 +530,20 @@ function compileCollectionRef(
       // No lookup + non-admin caller → admin-trust shortcut, deny.
       where = " WHERE 1=0";
     }
+    return where;
+    };
+    const where = buildWhere();
 
     if (exists) {
       const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
-      return `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(inner)})`;
+      const match = `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
+      if (!negate) return match;
+      if (!where) return `NOT ${match}`;
+      // "No row matches" can only be shown over rows the caller may see. If
+      // some rows are hidden from them (an admin-only ban list, say), it
+      // fails closed: counting only visible rows let every banned user pass.
+      const hiddenGuard = buildWhere().slice(" WHERE ".length);
+      return `(NOT ${match} AND NOT EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE NOT coalesce((${hiddenGuard}), 0)))`;
     }
     return applyModifierToSql(
       `(SELECT ${inner} FROM ${escapeIdent(targetTable)}${where} LIMIT 1)`,

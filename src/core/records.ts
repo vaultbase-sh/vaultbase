@@ -389,7 +389,9 @@ export async function compileListWhere(
   if (opts.filter) {
     let compiled;
     try {
-      compiled = parseFilter(opts.filter, tname, filterOpts);
+      // A caller's own filter gets one @collection join; rules (written by
+      // admins) get the default. See ParseFilterOpts.maxJoins.
+      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1 });
     } catch (e) {
       throw new FilterError(e instanceof Error ? e.message : String(e));
     }
