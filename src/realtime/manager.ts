@@ -22,6 +22,10 @@ export interface WSAuth {
   token?: string;
   /** Token expiry (unix seconds): past it the connection is anonymous again. */
   exp?: number;
+  /** As on AuthContext, for @request.auth.collectionName / .anonymous / .verified. */
+  collection?: string;
+  anonymous?: boolean;
+  verified?: boolean;
 }
 
 /** Topics one connection may hold. */
@@ -287,8 +291,17 @@ function shouldSendTo(id: string, opts: BroadcastOpts | undefined, collectionWid
   if (!opts || opts.viewRule === undefined) return true;
   const auth = currentAuth(id);
   if (auth?.type === "admin") return true;
+  // Everything rules can see, not just id/type/email: without collection /
+  // anonymous / verified, a rule excluding guests or another auth collection
+  // passed over realtime while HTTP refused.
   const ctx: AuthContext | null = auth
-    ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) }
+    ? {
+        id: auth.id, type: auth.type,
+        ...(auth.email ? { email: auth.email } : {}),
+        ...(auth.collection ? { collection: auth.collection } : {}),
+        ...(auth.anonymous ? { anonymous: true } : {}),
+        ...(auth.verified ? { verified: true } : {}),
+      }
     : null;
   const passes = (rule: string | null) =>
     rule === null ? true : rule === "" ? false : evaluateRule(rule, ctx, opts.record ?? null);

@@ -105,3 +105,32 @@ describe("review 11 follow-ups", () => {
     expect((await reader.read()).done).toBe(true);
   });
 });
+
+describe("realtime sees the same auth props as HTTP (review 16 F-2)", () => {
+  const exp = () => Math.floor(Date.now() / 1000) + 3600;
+  const rec = { id: "r1", owner: "u1" };
+
+  it("a guest session doesn't get events a guest-excluding rule refuses", () => {
+    const ws = fakeWs("g1");
+    subscribe(ws, ["notes"]);
+    setWSAuth(ws, { id: "u1", type: "user", exp: exp(), collection: "users", anonymous: true });
+    broadcast("notes", event, { viewRule: "@request.auth.anonymous = false", listRule: null, record: rec } as never);
+    expect(ws.got.filter((m) => m.includes('"create"'))).toHaveLength(0);
+  });
+
+  it("another auth collection's user doesn't either", () => {
+    const ws = fakeWs("c2");
+    subscribe(ws, ["notes"]);
+    setWSAuth(ws, { id: "u1", type: "user", exp: exp(), collection: "customers" });
+    broadcast("notes", event, { viewRule: '@request.auth.collectionName = "staff"', listRule: null, record: rec } as never);
+    expect(ws.got.filter((m) => m.includes('"create"'))).toHaveLength(0);
+  });
+
+  it("a matching account still does (legitimate path)", () => {
+    const ws = fakeWs("s1");
+    subscribe(ws, ["notes"]);
+    setWSAuth(ws, { id: "u1", type: "user", exp: exp(), collection: "staff", verified: true });
+    broadcast("notes", event, { viewRule: '@request.auth.collectionName = "staff" && @request.auth.verified = true', listRule: null, record: rec } as never);
+    expect(ws.got.filter((m) => m.includes('"create"'))).toHaveLength(1);
+  });
+});

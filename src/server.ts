@@ -85,6 +85,9 @@ async function verifyTokenForWS(token: string, jwtSecret: string): Promise<WSAut
   // the manager drops auth at expiry and re-verifies the token on a timer.
   const out: WSAuth = { id: p.id, type: p.type, token };
   if (p.email) out.email = p.email;
+  if (p.collection) out.collection = p.collection;
+  if (p.anonymous) out.anonymous = true;
+  if (p.verified) out.verified = true;
   if (typeof verified?.exp === "number") out.exp = verified.exp;
   return out;
 }
