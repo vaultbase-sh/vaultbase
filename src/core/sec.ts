@@ -375,24 +375,21 @@ function isTrustedProxy(ip: string): boolean {
 }
 
 const LOOPBACK_CIDRS = ["127.0.0.0/8", "::1/128"].map((c) => parseCidr(c)!);
-const PRIVATE_NETWORK_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "fe80::/10"].map((c) => parseCidr(c)!);
 
 /**
  * The address to apply a per-client cap to, or null to skip that cap. With
  * no trusted proxies configured, every client behind a reverse proxy shares
- * the proxy's address, and a per-IP cap on it is a cap on the whole site. So
- * the cap is skipped for a loopback peer (a proxy on this host), and for a
- * private-network peer that forwarded the request (`X-Forwarded-For` set — a
- * proxy in a container network or VPC). A private-network client connecting
- * directly is still capped. Global caps always apply.
+ * the proxy's address, and a per-IP cap on it is a cap on the whole site; so
+ * the cap is skipped for a loopback peer (a proxy on this host). Any other
+ * peer is capped by its own address — whether a request is "forwarded" can't
+ * be told from headers the client writes. A proxy on another host needs
+ * `security.trusted_proxies`. Global caps always apply.
  */
 export function perClientLimitIp(request: Request | null, peerIp: string | null): string | null {
   if (!peerIp) return null;
   peerIp = normalizePeerIp(peerIp);
   if (!getTrustedProxies()) {
     if (LOOPBACK_CIDRS.some((c) => ipInCidr(peerIp!, c))) return null;
-    const forwarded = !!request?.headers.get("x-forwarded-for");
-    if (forwarded && PRIVATE_NETWORK_CIDRS.some((c) => ipInCidr(peerIp!, c))) return null;
     return peerIp;
   }
   return request ? trustedClientIp(request, peerIp) : peerIp;

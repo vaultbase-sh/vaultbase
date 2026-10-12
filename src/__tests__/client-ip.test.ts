@@ -62,8 +62,11 @@ describe("perClientLimitIp (realtime per-address caps)", () => {
     expect(perClientLimitIp(req(), "127.0.0.1")).toBeNull();
     expect(perClientLimitIp(req(), "::1")).toBeNull();
     expect(perClientLimitIp(req(), "::ffff:127.0.0.1")).toBeNull();
-    // A container-network proxy forwards the request.
-    expect(perClientLimitIp(req("203.0.113.5"), "172.18.0.4")).toBeNull();
+  });
+
+  it("a private-network client can't opt out by sending X-Forwarded-For (review 16 F-7)", () => {
+    setSetting("security.trusted_proxies", "");
+    expect(perClientLimitIp(req("203.0.113.5"), "10.0.0.5")).toBe("10.0.0.5");
   });
 
   it("still caps a private-network client that connects directly (review 15 F-6)", () => {
