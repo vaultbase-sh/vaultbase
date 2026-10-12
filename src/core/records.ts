@@ -670,9 +670,8 @@ async function updateRecordImpl(
 
   const tableRef = quoteIdent(userTableName(col.name));
   const writeKey = `${col.name}:${id}`;
-  // A guarded write holds the record's lock from the version check to the
-  // write; any other write to the record waits for whichever lock is held.
-  const unlock = guard.ifUnchanged ? await lockRecord(writeKey) : (await waitForRecordLock(writeKey), null);
+  // Held from the version read to the write (see recordLocks).
+  const unlock = await lockRecord(writeKey);
   try {
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
@@ -743,7 +742,7 @@ async function updateRecordImpl(
   });
   return result;
   } finally {
-    unlock?.();
+    unlock();
   }
 }
 
@@ -800,35 +799,58 @@ export class CascadeForbiddenError extends Error {
 }
 
 /**
- * Per-record locks held by guarded (If-Match) writes. While one is held,
- * other requests' writes to that record wait, so the version the guard
- * checked is the version it writes over. The holder's own request — its
- * beforeUpdate hooks writing the same row — passes straight through.
+ * Per-record write locks. Every update and delete of a record holds its
+ * lock from reading the record to writing it, so an If-Match check can't be
+ * overtaken by a write already in flight, and two writes to one record never
+ * interleave. The holder's own request — its hooks touching the same record —
+ * passes straight through (re-entrant by request). Waiting is bounded: hooks
+ * in two requests that write each other's records would otherwise wait on
+ * each other forever, so after LOCK_WAIT_MS one of them fails with
+ * RecordBusyError instead.
  */
 const recordLocks = new Map<string, { owner: unknown; released: Promise<void> }>();
 const NO_REQUEST = Symbol("no request");
+let LOCK_WAIT_MS = 10_000;
+
+/** Test hook: shorten the lock wait. */
+export function _setRecordLockWaitForTests(ms: number): void {
+  LOCK_WAIT_MS = ms;
+}
+
+/** A record stayed locked by another request for longer than LOCK_WAIT_MS. */
+export class RecordBusyError extends Error {
+  constructor() { super("Record is busy (another write holds it); try again"); }
+}
 
 async function waitForRecordLock(key: string): Promise<void> {
   const self = getActiveHookRequest() ?? NO_REQUEST;
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
-    await held.released;
+    const left = deadline - Date.now();
+    if (left <= 0) throw new RecordBusyError();
+    await Promise.race([held.released, Bun.sleep(left)]);
   }
 }
 
 async function lockRecord(key: string): Promise<() => void> {
   const self = getActiveHookRequest() ?? NO_REQUEST;
-  // Check and take the lock with no await in between, or two requests could
-  // both find it free.
+  // Wait inline: the loop's final check and the set below must run with no
+  // await between them (awaiting a helper costs a tick even when the lock is
+  // free), or two requests can both find it free and both take it.
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
-    await held.released;
+    const left = deadline - Date.now();
+    if (left <= 0) throw new RecordBusyError();
+    await Promise.race([held.released, Bun.sleep(left)]);
   }
+  // Re-entrant: the outer write of this request releases it.
+  if (recordLocks.get(key)?.owner === self) return () => {};
   let release!: () => void;
   const released = new Promise<void>((r) => { release = r; });
   const lock = { owner: self, released };
   recordLocks.set(key, lock);
   return () => { if (recordLocks.get(key) === lock) recordLocks.delete(key); release(); };
 }
-
 
 export class RestrictError extends Error {
   details: Record<string, string>;
@@ -1010,9 +1032,8 @@ async function deleteRecordInternal(
 
   const tableRef = quoteIdent(userTableName(col.name));
   const writeKey = `${col.name}:${id}`;
-  // A guarded write holds the record's lock from the version check to the
-  // write; any other write to the record waits for whichever lock is held.
-  const unlock = guard.ifUnchanged ? await lockRecord(writeKey) : (await waitForRecordLock(writeKey), null);
+  // Held from the version read to the write (see recordLocks).
+  const unlock = await lockRecord(writeKey);
   try {
   const existing = await getRecord(collectionName, id);
   if (!existing) {
@@ -1058,7 +1079,7 @@ async function deleteRecordInternal(
     });
   });
   } finally {
-    unlock?.();
+    unlock();
   }
 }
 

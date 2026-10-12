@@ -13,6 +13,7 @@ import {
   clientPaging,
   CascadeForbiddenError,
   PreconditionFailedError,
+  RecordBusyError,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
@@ -434,6 +435,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           if (e instanceof ValidationError) return validationResponse(set, e);
           if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
           if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
+          if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
           throw e;
         }
       },
@@ -468,12 +470,17 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
         if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
+        if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         // Generic on purpose: naming the child collection would tell the
         // caller that related records they can't see exist.
         if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: "Forbidden", code: 403 }; }
         if (e instanceof RestrictError) {
           set.status = 409;
-          return { error: e.message, code: 409, details: e.details };
+          // Admins get the referencing collections; anyone else a generic
+          // answer, since those may be collections they can't see.
+          return auth?.type === "admin"
+            ? { error: e.message, code: 409, details: e.details }
+            : { error: "Cannot delete: the record is referenced by other records", code: 409 };
         }
         throw e;
       }
