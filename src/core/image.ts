@@ -261,12 +261,41 @@ export function canThumbnail(format: ThumbFormat): boolean {
  * GIF unless a format is requested, which renders its first frame. Throws
  * for formats `canThumbnail` rejects.
  */
+/** Largest source image (width × height) a thumbnail is decoded from. */
+export const MAX_SOURCE_PIXELS = 50_000_000;
+/** Largest total (frames × width × height) an animated GIF is decoded for. */
+export const MAX_ANIMATION_PIXELS = 200_000_000;
+
+/** The source is over the decode budget; callers serve the original instead. */
+export class ImageTooLargeError extends Error {}
+
+/**
+ * Frames in a GIF, counted from its graphic-control extensions without
+ * decoding anything (an upper bound, which is what a budget needs).
+ */
+function gifFrameCount(bytes: Uint8Array): number {
+  let n = 0;
+  for (let i = 0; i + 2 < bytes.length; i++) {
+    if (bytes[i] === 0x21 && bytes[i + 1] === 0xf9 && bytes[i + 2] === 0x04) n++;
+  }
+  return Math.max(1, n);
+}
+
 export async function generateThumbnail(
   bytes: Uint8Array,
   spec: ThumbSpec,
   format: ThumbFormat
 ): Promise<Uint8Array> {
   if (format === "avif") throw new Error("thumbnails are not supported for avif");
+  // Check the size from the header before decoding anything: a small file
+  // can declare a huge canvas (a decompression bomb), and decoding happens
+  // on the request path.
+  const { width, height } = await new Bun.Image(bytes).metadata();
+  if (!(width > 0 && height > 0) || width * height > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
+  if (format === "gif" && !spec.format && gifFrameCount(bytes) * width * height > MAX_ANIMATION_PIXELS) {
+    // Too much to decode every frame: render the first one.
+    return await thumbnailStill(bytes, spec, "png");
+  }
   if (spec.format) return await thumbnailStill(bytes, spec, spec.format);
   if (format === "gif") return await thumbnailGif(bytes, spec);
   return await thumbnailStill(bytes, spec, format);
@@ -391,6 +420,24 @@ export function thumbVariantCount(uploadDir: string, filename: string): number {
 
 export function noteThumbVariant(filename: string): void {
   if (variantCounts) variantCounts.set(filename, (variantCounts.get(filename) ?? 0) + 1);
+}
+
+/**
+ * Take one of a file's MAX_THUMB_VARIANTS slots, or return false if none is
+ * left. The check and the increment happen together: checking first and
+ * counting after generation let concurrent requests for different sizes all
+ * pass the check.
+ */
+export function reserveThumbVariant(uploadDir: string, filename: string): boolean {
+  if (thumbVariantCount(uploadDir, filename) >= MAX_THUMB_VARIANTS) return false;
+  noteThumbVariant(filename);
+  return true;
+}
+
+/** Give back a slot from reserveThumbVariant (generation failed). */
+export function releaseThumbVariant(filename: string): void {
+  const n = variantCounts?.get(filename);
+  if (n !== undefined) variantCounts!.set(filename, Math.max(0, n - 1));
 }
 
 /** Forget counts after thumbs are deleted: one file, or all when omitted. */

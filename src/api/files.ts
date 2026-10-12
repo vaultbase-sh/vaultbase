@@ -12,6 +12,8 @@ import {
   generateThumbnail,
   MAX_THUMB_VARIANTS,
   noteThumbVariant,
+  releaseThumbVariant,
+  reserveThumbVariant,
   parseOutputOptions,
   parseThumbSpec,
   thumbCachePath,
@@ -354,6 +356,9 @@ export function maxUploadBytes(): number {
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_UPLOAD_BYTES;
   return Math.min(Math.max(n, MIN_UPLOAD_BYTES), MAX_UPLOAD_BYTES);
 }
+
+/** This file's thumbnail variants are used up. */
+class ThumbLimitError extends Error {}
 
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
@@ -704,15 +709,22 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
 
       try {
         const thumb = await generateThumbOnce(cachePath, async () => {
-          const out = await generateThumbnail(bytes, spec, format as ThumbFormat);
-          noteThumbVariant(params.filename);
-          return out;
+          // Runs once per variant; the slot is taken atomically here.
+          if (auth?.type === "admin") noteThumbVariant(params.filename);
+          else if (!reserveThumbVariant(uploadDir, params.filename)) throw new ThumbLimitError();
+          try {
+            return await generateThumbnail(bytes, spec, format as ThumbFormat);
+          } catch (e) {
+            releaseThumbVariant(params.filename);
+            throw e;
+          }
         });
         const outFormat = detectFormat(thumb) ?? format;
         return new Response(thumb, {
           headers: { ...baseHeaders, "Content-Type": thumbMime(outFormat) },
         });
-      } catch {
+      } catch (e) {
+        if (e instanceof ThumbLimitError) return original("limit");
         const r = await fileResponse(params.filename);
         if (!r) return new Response(null, { status: 404 });
         for (const [k, v] of Object.entries(baseHeaders)) r.headers.set(k, v);
