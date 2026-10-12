@@ -7,7 +7,7 @@ import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb
 import Icon from "../components/Icon.tsx";
 import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
 
-const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "file", "relation", "select", "json"];
+const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "color", "file", "relation", "select", "json"];
 
 const SYSTEM_FIELDS: FieldDef[] = [
   { name: "id",      type: "text",     required: true, system: true },

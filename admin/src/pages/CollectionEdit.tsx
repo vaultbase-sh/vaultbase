@@ -29,7 +29,7 @@ import { toast } from "../stores/toast.ts";
 
 const FIELD_TYPES: FieldDef["type"][] = [
   "text", "number", "bool", "email", "url", "date",
-  "password", "editor", "geoPoint",
+  "password", "editor", "geoPoint", "color",
   "file", "relation", "select", "json", "autodate",
 ];
 
@@ -48,6 +48,7 @@ const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
   password: "Bcrypt-hashed. Never returned in API responses.",
   editor:   "Rich text / HTML body.",
   geoPoint: "Latitude / longitude coordinates.",
+  color:    "Hex color (#rrggbb), optional alpha channel.",
 };
 
 type Rules = RuleSet;
@@ -940,6 +941,7 @@ function describeField(f: FieldDef): string {
     }
     if (opts["pattern"]) bits.push(`/${opts["pattern"]}/`);
   }
+  if (f.type === "color" && opts["alpha"]) bits.push("alpha");
   if (f.type === "number") {
     if (opts["min"] !== undefined || opts["max"] !== undefined) {
       bits.push(`${opts["min"] ?? "−∞"}–${opts["max"] ?? "∞"}`);
@@ -1149,6 +1151,13 @@ function FieldOptionsBody({
         }}>
           Stored as <SchemaCode>{`{ lat, lng }`}</SchemaCode> JSON. Latitude in [-90, 90], longitude in [-180, 180].
         </div>
+      )}
+      {sel.type === "color" && (
+        <OptionRow
+          title="Allow alpha channel"
+          on={!!sel.options?.["alpha"]}
+          onChange={(v) => updateSelOptions({ alpha: v })}
+        />
       )}
       {sel.type === "number" && (
         <>
