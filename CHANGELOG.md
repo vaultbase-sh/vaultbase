@@ -150,6 +150,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   answers like any other request and sends nothing.
 
 ### Fixed
+- **The hosted magic-link page now works for accounts with two-factor sign-in.** It used
+  the link and then showed "Invalid or expired link", because it didn't know what to do
+  with the MFA step. It now asks for the authenticator (or recovery) code and finishes the
+  sign-in.
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
 - **The installer works on stock Alpine.** It no longer requires `useradd` (from the `shadow` package, absent on Alpine) and falls back to busybox `adduser` / `addgroup`. It also installs `xz` when missing, so musl hosts download the ~30 MB compressed asset instead of the ~100 MB raw binary.
 - **`--version`, `--port` or `--install-dir` as the final argument** no longer aborts with `shift: can't shift that many` and exit 2. This hit dash — `/bin/sh` on Debian and Ubuntu, i.e. the documented `curl … | sudo sh` path.

@@ -382,11 +382,19 @@ function verifyPage(token: string, collection: string): string {
 function otpPage(token: string, collection: string): string {
   const body = /* html */ `
 <h1>Sign in</h1>
-<p class="sub">Authenticating with your magic link...</p>
+<p class="sub" id="lead">Authenticating with your magic link...</p>
 <div id="msg" class="msg" style="display:none"></div>
 <div id="loading" class="center" style="margin: 18px 0;">
   <div class="spinner" style="border-color: rgba(255,255,255,0.1); border-top-color: var(--accent); margin: 0 auto;"></div>
 </div>
+<form id="mfa" style="display:none">
+  <p class="sub">This account uses two-factor authentication. Enter the 6-digit code from your authenticator app, or one of your recovery codes.</p>
+  <div class="field">
+    <label for="code">Code</label>
+    <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" required />
+  </div>
+  <button type="submit" id="verify" class="primary">Verify</button>
+</form>
 <div id="result" style="display:none">
   <p class="sub">You're signed in. The token below is valid for the next hour.</p>
   <div class="field">
@@ -399,9 +407,11 @@ function otpPage(token: string, collection: string): string {
 (function () {
   var token = ${js(token)};
   var collection = ${js(collection)};
+  var base = '/api/v1/auth/' + encodeURIComponent(collection);
   var msg = document.getElementById('msg');
   var loading = document.getElementById('loading');
   var result = document.getElementById('result');
+  var mfa = document.getElementById('mfa');
 
   function show(kind, text) {
     loading.style.display = 'none';
@@ -410,28 +420,66 @@ function otpPage(token: string, collection: string): string {
     msg.textContent = text;
   }
 
+  function signedIn(jwt) {
+    loading.style.display = 'none';
+    mfa.style.display = 'none';
+    msg.style.display = 'none';
+    result.style.display = 'block';
+    var ta = document.getElementById('jwt');
+    ta.value = jwt;
+    try { localStorage.setItem('vaultbase_user_token', jwt); } catch (_) {}
+    document.getElementById('copy').addEventListener('click', function () {
+      ta.select();
+      navigator.clipboard.writeText(ta.value);
+      var b = document.getElementById('copy');
+      var prev = b.textContent;
+      b.textContent = 'Copied';
+      setTimeout(function () { b.textContent = prev; }, 1200);
+    });
+  }
+
+  // The link is spent by now; for an MFA account the server answered with a
+  // short-lived ticket, so finish the sign-in here with the second factor
+  // rather than dead-ending on an error.
+  function askForCode(ticket) {
+    loading.style.display = 'none';
+    document.getElementById('lead').style.display = 'none';
+    mfa.style.display = 'block';
+    mfa.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var v = document.getElementById('code').value.trim();
+      var body = /^[0-9]{6}$/.test(v) ? { mfa_token: ticket, code: v } : { mfa_token: ticket, recovery_code: v };
+      document.getElementById('verify').disabled = true;
+      fetch(base + '/login/mfa', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(async function (res) {
+        var json = await res.json().catch(function () { return {}; });
+        document.getElementById('verify').disabled = false;
+        if (res.ok && json && json.data && json.data.token) { signedIn(json.data.token); return; }
+        msg.style.display = 'block';
+        msg.className = 'msg error';
+        msg.textContent = (json && json.error) || 'Invalid code.';
+      }).catch(function () {
+        document.getElementById('verify').disabled = false;
+        show('error', 'Network error. Please try again.');
+      });
+    });
+  }
+
   if (!token || !collection) { show('error', 'Missing token or collection. Use the link from the email.'); return; }
 
-  fetch('/api/v1/auth/' + encodeURIComponent(collection) + '/otp/auth', {
+  fetch(base + '/otp/auth', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ token: token }),
   }).then(async function (res) {
     var json = await res.json().catch(function () { return {}; });
     if (res.ok && json && json.data && json.data.token) {
-      loading.style.display = 'none';
-      result.style.display = 'block';
-      var ta = document.getElementById('jwt');
-      ta.value = json.data.token;
-      try { localStorage.setItem('vaultbase_user_token', json.data.token); } catch (_) {}
-      document.getElementById('copy').addEventListener('click', function () {
-        ta.select();
-        navigator.clipboard.writeText(ta.value);
-        var b = document.getElementById('copy');
-        var prev = b.textContent;
-        b.textContent = 'Copied';
-        setTimeout(function () { b.textContent = prev; }, 1200);
-      });
+      signedIn(json.data.token);
+    } else if (res.ok && json && json.data && json.data.mfa_required && json.data.mfa_token) {
+      askForCode(json.data.mfa_token);
     } else {
       show('error', (json && json.error) || 'Invalid or expired link.');
     }
