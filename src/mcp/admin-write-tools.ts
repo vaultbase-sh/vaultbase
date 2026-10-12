@@ -644,7 +644,12 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         // open: keyword-check and read it in place.
         const bad = detectMutation(q);
         if (bad) throw new Error(`'${bad}' is blocked without allow_write: true`);
-        const all = getRawClient().query(q).all(...params) as unknown[];
+        // query_only makes SQLite itself refuse writes, whatever the keyword
+        // scan missed.
+        const client = getRawClient();
+        client.exec("PRAGMA query_only = ON");
+        let all: unknown[];
+        try { all = client.query(q).all(...params) as unknown[]; } finally { client.exec("PRAGMA query_only = OFF"); }
         await audit(200, `rows=${all.length}`);
         return asJsonText({ rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
       }

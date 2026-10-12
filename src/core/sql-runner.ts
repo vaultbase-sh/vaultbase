@@ -99,6 +99,11 @@ export function scanSql(sql: string): { words: string[]; statements: number } {
   const words: string[] = [];
   let statements = 0;
   let pending = false; // anything since the last `;`
+  // A trigger body holds its own `;`-separated statements between BEGIN and
+  // END (and CASE … END may nest inside), so inside CREATE TRIGGER a `;` only
+  // ends the statement at depth 0.
+  let inTrigger = false;
+  let depth = 0;
   let i = 0;
   const n = sql.length;
   while (i < n) {
@@ -124,13 +129,20 @@ export function scanSql(sql: string): { words: string[]; statements: number } {
       i = j;
       pending = true;
     } else if (c === ";") {
-      if (pending) statements++;
-      pending = false;
+      if (!(inTrigger && depth > 0)) {
+        if (pending) statements++;
+        pending = false;
+        inTrigger = false;
+      }
       i++;
     } else if (/[A-Za-z_]/.test(c)) {
       let j = i + 1;
       while (j < n && /[A-Za-z0-9_$]/.test(sql[j]!)) j++;
-      words.push(sql.slice(i, j).toUpperCase());
+      const word = sql.slice(i, j).toUpperCase();
+      words.push(word);
+      if (word === "TRIGGER") inTrigger = true;
+      if (inTrigger && (word === "BEGIN" || word === "CASE")) depth++;
+      if (inTrigger && word === "END" && depth > 0) depth--;
       pending = true;
       i = j;
     } else {
@@ -155,7 +167,12 @@ function detectKeyword(sql: string, keywords: readonly string[]): string | null 
  * open the live database (or any file) read-write, and `VACUUM INTO` writes
  * a file anywhere the server can.
  */
-const FORBIDDEN_SANDBOX_KEYWORDS = ["ATTACH", "DETACH", "VACUUM"];
+const FORBIDDEN_SANDBOX_KEYWORDS = [
+  "ATTACH", "DETACH", "VACUUM",
+  // Deprecated pragmas that set a process-wide directory: run in the sandbox
+  // they would change where the live database's connection writes too.
+  "TEMP_STORE_DIRECTORY", "DATA_STORE_DIRECTORY",
+];
 
 const sandboxTails = new Map<string, Promise<unknown>>();
 
@@ -209,7 +226,9 @@ export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
         const current = getSandboxDb(adminId);
         if (!current) throw new Error("Sandbox not initialised — reset the sandbox first.");
         const res = await execOnImage(current.serialize(), req, timeout);
-        if (res.image) replaceSandboxDb(adminId, Database.deserialize(res.image));
+        // Only if the sandbox is still the one this query started from: a
+        // reset while it ran must not be undone by the old image coming back.
+        if (res.image) replaceSandboxDb(adminId, Database.deserialize(res.image), current);
         return res;
       });
       out = r.out;

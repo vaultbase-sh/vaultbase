@@ -143,11 +143,12 @@ export function resetSandbox(adminId: string, livePath: string): SandboxInfo {
 
 /**
  * Swap in a new database for an admin's sandbox — the image a statement run
- * off the main thread produced. Keeps the slot's metadata.
+ * off the main thread produced — if the slot still holds `expected` (the
+ * database the statement ran against). Keeps the slot's metadata.
  */
-export function replaceSandboxDb(adminId: string, db: Database): void {
+export function replaceSandboxDb(adminId: string, db: Database, expected: Database): void {
   const slot = _sandboxes.get(adminId);
-  if (!slot) { try { db.close(); } catch { /* noop */ } return; }
+  if (!slot || slot.db !== expected) { try { db.close(); } catch { /* noop */ } return; }
   try { slot.db.close(); } catch { /* already closed */ }
   slot.db = db;
   slot.lastUsedAt = Math.floor(Date.now() / 1000);

@@ -14,7 +14,7 @@ import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { runSql, scanSql } from "../core/sql-runner.ts";
-import { resetSandbox, _resetSandboxRegistryForTests } from "../core/sql-sandbox.ts";
+import { getSandboxDb, resetSandbox, _resetSandboxRegistryForTests } from "../core/sql-sandbox.ts";
 
 const RUNAWAY = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c";
 let tmpDir: string;
@@ -144,5 +144,37 @@ describe("concurrent sandbox queries", () => {
     await Promise.all([1, 2, 3, 4].map((n) => runSql({ sql: `INSERT INTO c VALUES (${n})`, dbPath, adminId: "a1", mode: "sandbox" })));
     const r = await runSql({ sql: "SELECT count(*) AS n FROM c", dbPath, adminId: "a1", mode: "sandbox" });
     expect(r.rows).toEqual([[4]]);
+  });
+});
+
+describe("sandbox details (review 08)", () => {
+  it("CREATE TRIGGER with a multi-statement body is one statement", async () => {
+    resetSandbox("a1", dbPath);
+    await runSql({ sql: "CREATE TABLE tr (x)", dbPath, adminId: "a1", mode: "sandbox" });
+    const r = await runSql({
+      sql: "CREATE TRIGGER t1 AFTER INSERT ON tr BEGIN UPDATE tr SET x = CASE WHEN new.x > 0 THEN new.x ELSE 0 END; DELETE FROM tr WHERE x < 0; END",
+      dbPath, adminId: "a1", mode: "sandbox",
+    });
+    expect(r.ok).toBe(true);
+    const two = await runSql({ sql: "CREATE TRIGGER t2 AFTER INSERT ON tr BEGIN SELECT 1; END; ATTACH 'x' AS y", dbPath, adminId: "a1", mode: "sandbox" });
+    expect(two.ok).toBe(false);
+  });
+
+  it("process-wide directory pragmas are refused", async () => {
+    resetSandbox("a1", dbPath);
+    const r = await runSql({ sql: `PRAGMA temp_store_directory = '${tmpDir}'`, dbPath, adminId: "a1", mode: "sandbox" });
+    expect(r.errorCode).toBe("VAULTBASE_SANDBOX");
+  });
+
+  it("a reset during a running query isn't undone when the query finishes", async () => {
+    resetSandbox("a1", dbPath);
+    const running = runSql({
+      sql: "CREATE TABLE big AS WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 400000) SELECT x FROM c",
+      dbPath, adminId: "a1", mode: "sandbox",
+    });
+    await Bun.sleep(20);
+    resetSandbox("a1", dbPath);
+    await running;
+    expect(getSandboxDb("a1")!.query("SELECT name FROM sqlite_master WHERE name = 'big'").all()).toHaveLength(0);
   });
 });
