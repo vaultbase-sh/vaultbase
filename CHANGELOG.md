@@ -60,6 +60,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   call `/totp/disable` with a current code, then `/totp/setup` and `/totp/confirm` again.
 - **`request-email-change` no longer reports a taken address.** It answers
   `{ "sent": true }` and sends nothing; the old `422 Email already in use` is gone.
+- **Admins can only edit their own email and password.** `PATCH /admin/admins/:id` on
+  another admin answers `403`, and the **Superusers** page only offers Edit on your own
+  row. Reset another admin's password from the server with
+  `vaultbase setup-admin --email … --password … --force`.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -153,6 +157,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   database, so anyone with a copy of it (a backup, read-only SQL access) could use a
   pending reset link. They are now stored as SHA-256 hashes. Links issued before the
   upgrade keep working until they expire.
+- **Any admin could take over another admin's account.** `PATCH /admin/admins/:id`
+  changed any admin's email and password; it now only changes the caller's own (`403`
+  otherwise). A locked-out admin is recovered with `vaultbase setup-admin --force`.
 
 ### Fixed
 - **The hosted magic-link page now works for accounts with two-factor sign-in.** It used
