@@ -325,8 +325,7 @@ async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Respo
   // block (we re-throw without retrying — see request() below). Settings
   // override via `hooks.http.deny` / `hooks.http.allow` /
   // `hooks.http.deny = "off"`. See core/hook-egress.ts.
-  const { assertEgressAllowed } = await import("./hook-egress.ts");
-  await assertEgressAllowed(opts.url);
+  const { guardedFetch } = await import("./hook-egress.ts");
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -351,7 +350,8 @@ async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Respo
       signal: ctrl.signal,
     };
     if (body !== undefined) init.body = body as unknown as RequestInit["body"];
-    return await fetch(opts.url, init);
+    // Every hop is checked, redirects included.
+    return await guardedFetch(opts.url, init);
   } finally {
     clearTimeout(t);
   }

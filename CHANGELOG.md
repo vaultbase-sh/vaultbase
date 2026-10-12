@@ -97,6 +97,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   Facebook, Microsoft, Twitch, Spotify and Notion emails no longer merge into existing
   accounts or count as verified, and an existing address answers `409`. Resetting a
   password removes the account's provider links.
+- **Hook egress is stricter.** `helpers.fetch` is now filtered like `helpers.http`;
+  redirects are followed by hand (at most 5) with each hop checked; a host that doesn't
+  resolve is blocked; and cloud metadata addresses can't be allowed. A hook that reached
+  an internal service through one of these gaps needs a `hooks.http.allow` entry.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -292,6 +296,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `https://app.com.evil.tld`. Five providers' unverified emails were trusted for account
   merging. A password reset left provider links in place. All fixed — see the upgrade
   note.
+- **The hook egress filter could be bypassed.** IPv6 addresses carrying an IPv4 one
+  (`[::ffff:169.254.169.254]`, NAT64, 6to4) weren't matched against the IPv4 ranges,
+  only the first DNS answer was checked, a name that failed to resolve was let through,
+  `helpers.http` followed redirects without checking where they went, and
+  `helpers.fetch` wasn't filtered at all. All of these are now checked, for webhook
+  deliveries too, and cloud metadata endpoints stay blocked even when the allow list
+  covers them or the filter is turned off.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

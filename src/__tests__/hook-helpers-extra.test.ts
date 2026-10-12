@@ -129,7 +129,7 @@ describe("http", () => {
     };
     try {
       const r = await h.http.request({
-        url: "http://example.invalid/",
+        url: "http://93.184.216.34/",
         retries: 5,
         retryDelayMs: 1,
       });
@@ -151,12 +151,14 @@ describe("http", () => {
       return new Response('{"echoed":true}', { status: 200, headers: { "content-type": "application/json" } });
     };
     try {
-      await h.http.postJson("http://example.invalid/", { a: 1 });
+      await h.http.postJson("http://93.184.216.34/", { a: 1 });
       expect(captured).not.toBeNull();
-      const body = captured!.init?.body;
+      // The egress-checked fetch passes the body as bytes and headers as a
+      // Headers object; compare what goes on the wire.
+      const raw = captured!.init?.body;
+      const body = typeof raw === "string" ? raw : new TextDecoder().decode(raw as ArrayBuffer);
       expect(body).toBe(JSON.stringify({ a: 1 }));
-      const ct = (captured!.init?.headers as Record<string, string>)["Content-Type"];
-      expect(ct).toBe("application/json");
+      expect(new Headers(captured!.init?.headers).get("content-type")).toBe("application/json");
     } finally {
       globalThis.fetch = origFetch;
     }
