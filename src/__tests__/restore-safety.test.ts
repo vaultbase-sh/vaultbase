@@ -70,3 +70,18 @@ describe("restore", () => {
     expect((await restoreLatest()).status).toBe(409);
   });
 });
+
+describe("restore keeps sign-out-everywhere (review 17 F-3)", () => {
+  it("an admin token ended by a password_reset_at bump stays dead after restore", async () => {
+    const { verifyAuthToken } = await import("../core/sec.ts");
+    const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 3600, jwtSecret: SECRET });
+    await runBackup();
+    await Bun.sleep(1100);
+    getRawClient().prepare(`UPDATE vaultbase_admin SET password_reset_at = ? WHERE id = 'a1'`).run(Math.floor(Date.now() / 1000));
+    expect(await verifyAuthToken(token, SECRET, { audience: "admin" })).toBeNull();
+    // Restore with a fresh admin token (the old one is dead).
+    await Bun.sleep(1100);
+    expect((await restoreLatest()).status).toBe(200);
+    expect(await verifyAuthToken(token, SECRET, { audience: "admin" })).toBeNull();
+  });
+});

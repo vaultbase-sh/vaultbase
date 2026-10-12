@@ -81,12 +81,17 @@ async function restoreDatabase(dbPath: string, staging: string): Promise<string 
     const revoked = getRawClient()
       .prepare(`SELECT jti, expires_at, revoked_at FROM vaultbase_token_revocations WHERE expires_at > ?`)
       .all(now) as Array<{ jti: string; expires_at: number; revoked_at: number }>;
+    // "Sign out everywhere" and password resets work by raising a
+    // principal's password_reset_at; the restored rows would lower it again
+    // and revive every token those ended (API tokens follow their admin).
+    const resets = currentResetStamps();
     const err = await swapInDb(dbPath, staging);
     if (err) return err;
     const keep = getRawClient().prepare(
       `INSERT OR IGNORE INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?)`,
     );
     for (const r of revoked) keep.run(r.jti, r.expires_at, r.revoked_at);
+    reapplyResetStamps(resets);
     for (const reset of [
       _resetCollectionCache, invalidateSensitiveSchema, invalidateHookCache, invalidateRoutesCache,
       invalidateJobsCache, invalidateWorkerCache, invalidateWebhookCache, invalidateFlagCache,
@@ -98,6 +103,38 @@ async function restoreDatabase(dbPath: string, staging: string): Promise<string 
     }
     return null;
   });
+}
+
+type ResetStamps = Array<{ table: string; rows: Array<{ id: string; password_reset_at: number }> }>;
+
+/** password_reset_at of every admin and every auth-collection user. */
+function currentResetStamps(): ResetStamps {
+  const db = getRawClient();
+  const tables = ["vaultbase_admin"];
+  try {
+    const cols = db.prepare(`SELECT name FROM vaultbase_collections WHERE type = 'auth'`).all() as Array<{ name: string }>;
+    for (const c of cols) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(c.name)) tables.push(`vb_${c.name}`);
+  } catch { /* no collections table */ }
+  const out: ResetStamps = [];
+  for (const table of tables) {
+    try {
+      const rows = db.prepare(`SELECT id, password_reset_at FROM "${table}" WHERE password_reset_at > 0`).all() as Array<{ id: string; password_reset_at: number }>;
+      out.push({ table, rows });
+    } catch { /* table or column missing */ }
+  }
+  return out;
+}
+
+/** Raise password_reset_at back to the pre-restore value where the restore lowered it. */
+function reapplyResetStamps(stamps: ResetStamps): void {
+  const db = getRawClient();
+  for (const { table, rows } of stamps) {
+    let stmt;
+    try {
+      stmt = db.prepare(`UPDATE "${table}" SET password_reset_at = ? WHERE id = ? AND password_reset_at < ?`);
+    } catch { continue; /* table not in the restored database */ }
+    for (const r of rows) stmt.run(r.password_reset_at, r.id, r.password_reset_at);
+  }
 }
 
 /**
