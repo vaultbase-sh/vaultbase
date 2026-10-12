@@ -21,6 +21,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   request value, auth field or column that is empty or missing, used to match every
   record; it now matches none, and `!~` matches all. A `!~` filter now also includes
   records whose field is NULL, as single-record rule checks already did.
+- **An uncaught exception now stops the process.** It used to be logged and ignored,
+  leaving the server running in an unknown state. It is still logged, then the server
+  shuts down gracefully with exit code 1 — run Vaultbase under a supervisor that
+  restarts it (the installer's systemd unit does). Hook code that throws from a timer
+  callback is one way to trigger this.
 - **Rules can now see the request body.** `@request.body.<field>` was always empty, so
   `:isset` was always false and comparisons against the body always failed. Rules that
   use it now behave as written — check any that only worked because the body was empty.
@@ -394,6 +399,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Shutdown waits for requests in flight.** `SIGTERM`/`SIGINT` used to exit as soon as
+  logs were flushed, dropping any request being handled. The server now stops taking
+  connections, gives in-flight requests up to 10 s, stops background work and closes the
+  database before exiting. A second signal exits at once.
 - **Migrations no longer hide failures.** Adding a column ignored every error as "the
   column already exists", so a locked or read-only database, or a full disk, left the
   schema half-migrated with nothing logged. Only that one error is ignored now; anything

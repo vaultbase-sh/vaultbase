@@ -1,6 +1,12 @@
 import { loadConfig, loadServiceEnvFile } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
-import { initDb, getDb } from "./db/client.ts";
+import { initDb, getDb, closeDb } from "./db/client.ts";
+import { shutdownGracefully } from "./core/shutdown.ts";
+import { stopScheduler } from "./core/jobs.ts";
+import { stopQueueScheduler } from "./core/queues.ts";
+import { stopWebhookDispatcher } from "./core/webhooks.ts";
+import { stopBackupScheduler } from "./core/backups.ts";
+import { stopUpdateCheckScheduler } from "./core/update-check.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { admin } from "./db/schema.ts";
 import { createServer } from "./server.ts";
@@ -15,8 +21,14 @@ process.on("unhandledRejection", (reason) => {
   const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
   process.stderr.write(`[unhandled-rejection] ${msg}\n`);
 });
+// An uncaught exception leaves the process in an unknown state (a half-run
+// write, a lock never released), so log it and shut down; the service
+// manager restarts us. It used to be logged and ignored.
+let onFatal: ((e: Error) => void) | null = null;
 process.on("uncaughtException", (e) => {
   process.stderr.write(`[uncaught-exception] ${e.stack ?? e.message}\n`);
+  if (onFatal) onFatal(e);
+  else process.exit(1);
 });
 
 interface CliFlags {
@@ -373,16 +385,30 @@ async function main() {
   const hostname = process.env["VAULTBASE_HOST"]?.trim() || "0.0.0.0";
   server.listen({ port: config.port, hostname, ...(isWorker ? { reusePort: true } : {}) });
 
-  // Graceful shutdown: drain the buffered log writer so the last 50ms of
-  // entries reach disk before exit. Two layers — async on signals (loop
-  // still runs) + sync on `exit` (defensive, loop is dead).
-  const shutdown = async (signal: string): Promise<void> => {
-    process.stderr.write(`\nvaultbase: received ${signal}, draining logs...\n`);
-    try { await drainLogBuffer(); } catch { /* ignore */ }
-    process.exit(0);
+  // Graceful shutdown: stop taking connections, let in-flight requests
+  // finish (up to 10 s), stop background work, flush logs, close the
+  // database. A second signal exits at once. The sync drain on `exit` is a
+  // last line of defence when the loop is already dead.
+  let shuttingDown = false;
+  const shutdown = async (reason: string, code: number): Promise<void> => {
+    if (shuttingDown) process.exit(code);
+    shuttingDown = true;
+    process.stderr.write(`\nvaultbase: ${reason}, finishing in-flight requests...\n`);
+    const outcome = await shutdownGracefully({
+      stopServer: () => (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false),
+      cleanup: [
+        stopScheduler, stopQueueScheduler, stopWebhookDispatcher, stopBackupScheduler, stopUpdateCheckScheduler,
+        () => drainLogBuffer(),
+        () => closeDb(),
+      ],
+      timeoutMs: 10_000,
+    });
+    if (outcome === "timeout") process.stderr.write("vaultbase: requests still running after 10s; exiting anyway\n");
+    process.exit(code);
   };
-  process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
-  process.on("SIGINT",  () => { void shutdown("SIGINT");  });
+  onFatal = () => { void shutdown("uncaught exception", 1); };
+  process.on("SIGTERM", () => { void shutdown("received SIGTERM", 0); });
+  process.on("SIGINT",  () => { void shutdown("received SIGINT", 0);  });
   process.on("exit", () => { drainLogBufferSync(); });
 
   const base = `http://localhost:${config.port}`;
