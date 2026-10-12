@@ -244,22 +244,40 @@ const STUCK_AFTER_SECONDS = 60 * 60;
 
 /**
  * Put jobs stuck in `running` (claimed at or before `startedBefore`) back on
- * the queue, counting the interrupted run as an attempt. Returns how many.
+ * the queue, counting the interrupted run as an attempt. A job already out
+ * of attempts (its own `retry_max`, else its worker's, else 3) is marked
+ * dead instead: re-queuing it regardless let a job that crashes the process
+ * restart it in a loop. Returns how many were re-queued.
  */
 export async function recoverInterruptedJobs(startedBefore: number): Promise<number> {
-  const rows = await getDb()
-    .update(jobsLog)
-    .set({
-      status: "queued",
-      attempt: sql`${jobsLog.attempt} + 1`,
-      worker_id: null,
-      started_at: null,
-      scheduled_at: Math.floor(Date.now() / 1000),
-      error: "interrupted: the process running this job stopped",
-    })
-    .where(and(eq(jobsLog.status, "running"), lte(jobsLog.started_at, startedBefore)))
-    .returning({ id: jobsLog.id });
-  return rows.length;
+  const client = (getDb() as unknown as { $client: { prepare: (sql: string) => { run: (...p: unknown[]) => { changes: number } } } }).$client;
+  const now = Math.floor(Date.now() / 1000);
+  const maxAttempts = `coalesce(j.retry_max,
+      (SELECT max(w.retry_max) FROM vaultbase_workers w WHERE w.queue = j.queue AND w.enabled = 1), 3)`;
+  client.prepare(
+    `UPDATE vaultbase_jobs_log AS j
+        SET status = 'dead', finished_at = ?, error = 'interrupted: the process running this job stopped, and no attempts are left'
+      WHERE j.status = 'running' AND j.started_at <= ? AND j.attempt >= ${maxAttempts}`,
+  ).run(now, startedBefore);
+  return client.prepare(
+    `UPDATE vaultbase_jobs_log AS j
+        SET status = 'queued', attempt = j.attempt + 1, worker_id = NULL, started_at = NULL,
+            scheduled_at = ?, error = 'interrupted: the process running this job stopped'
+      WHERE j.status = 'running' AND j.started_at <= ?`,
+  ).run(now, startedBefore).changes;
+}
+
+/**
+ * Wait (up to `timeoutMs`) for jobs this process is running to finish, so a
+ * shutdown doesn't leave finished work marked `running` to be re-run.
+ */
+export async function waitForRunningJobs(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while ([...inFlight.values()].some((n) => n > 0)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return true;
 }
 
 async function tick(): Promise<void> {

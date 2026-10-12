@@ -3,7 +3,7 @@ import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
 import { initDb, getDb, closeDb } from "./db/client.ts";
 import { shutdownGracefully } from "./core/shutdown.ts";
 import { stopScheduler } from "./core/jobs.ts";
-import { stopQueueScheduler } from "./core/queues.ts";
+import { stopQueueScheduler, waitForRunningJobs } from "./core/queues.ts";
 import { stopWebhookDispatcher } from "./core/webhooks.ts";
 import { stopBackupScheduler } from "./core/backups.ts";
 import { stopUpdateCheckScheduler } from "./core/update-check.ts";
@@ -409,6 +409,8 @@ async function main() {
       stopServer: () => (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false),
       cleanup: [
         stopScheduler, stopQueueScheduler, stopWebhookDispatcher, stopBackupScheduler, stopUpdateCheckScheduler,
+        // Jobs already running finish (bounded) rather than being re-run after restart.
+        () => waitForRunningJobs(10_000),
         () => drainLogBuffer(),
         () => closeDb(),
       ],

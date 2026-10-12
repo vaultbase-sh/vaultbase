@@ -472,8 +472,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   that hook, route, job and worker code is trusted with the server's full privileges.
 - **Queue jobs interrupted by a restart or crash ran again.** A job left in `running`
   when its process stopped stayed there for good. At startup those jobs go back on the
-  queue (the interrupted run counts as an attempt). In cluster mode, where a sibling may
-  still be running them, only jobs running for over an hour are taken back.
+  queue (the interrupted run counts as an attempt; a job with no attempts left is marked
+  dead). In cluster mode, where a sibling may still be running them, only jobs running
+  for over an hour are taken back. Shutdown waits up to 10 s for running jobs to finish.
 - **Vector search returned `400` for `nearLimit` above 25.** The top matches were
   loaded with one `id = … || …` filter, longer than the filter parser accepts. They are
   now loaded in chunks, so `nearLimit` works up to its documented 1000.
