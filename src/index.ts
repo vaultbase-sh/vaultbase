@@ -2,6 +2,7 @@ import { loadConfig, loadServiceEnvFile } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
 import { initDb, getDb, closeDb } from "./db/client.ts";
 import { shutdownGracefully } from "./core/shutdown.ts";
+import { CLUSTER_LIMITS_WARNING, isClusterWorker, runsSingletonDuties } from "./core/cluster-role.ts";
 import { stopScheduler } from "./core/jobs.ts";
 import { stopQueueScheduler, waitForRunningJobs } from "./core/queues.ts";
 import { stopWebhookDispatcher } from "./core/webhooks.ts";
@@ -425,6 +426,7 @@ async function main() {
   process.on("exit", () => { drainLogBufferSync(); });
 
   const base = `http://localhost:${config.port}`;
+  if (isClusterWorker() && runsSingletonDuties()) process.stderr.write(CLUSTER_LIMITS_WARNING);
 
 
   if (!adminExists) {

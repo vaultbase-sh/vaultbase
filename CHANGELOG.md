@@ -38,6 +38,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   so the database, uploads, logs and backups it creates are readable by its user and
   group only. If another user (not in the service's group) reads those files directly,
   add it to the group.
+- **Cluster mode is documented as stateless REST scaling.** Caches, realtime and rate
+  limits are per worker; worker 0 prints these limits at startup. Cron jobs, daily
+  maintenance, the update check and the orphan-file sweep now run on worker 0 only
+  (cron ran every job once per worker). Online restore answers `409` in cluster mode.
 - **An uncaught exception now stops the process.** It used to be logged and ignored,
   leaving the server running in an unknown state. It is still logged, then the server
   shuts down gracefully with exit code 1 — run Vaultbase under a supervisor that

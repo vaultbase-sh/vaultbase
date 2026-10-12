@@ -1,4 +1,5 @@
 import Elysia, { t } from "elysia";
+import { runsSingletonDuties } from "./core/cluster-role.ts";
 import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
 import * as jose from "jose";
@@ -161,24 +162,29 @@ export function createServer(config: Config) {
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
   registerNotificationsWorker();
-  startScheduler();
+  // Once-per-install work runs on one cluster worker only (cron had no
+  // run claim, so every worker ran every job). See core/cluster-role.ts.
+  const singleton = runsSingletonDuties();
+  if (singleton) startScheduler();
   startQueueScheduler();
-  startUpdateCheckScheduler();
+  if (singleton) startUpdateCheckScheduler();
   startWebhookDispatcher();
   startFileTokenUsesPrune();
   setInterval(() => {
     void reverifyRealtimeAuth((token) => verifyTokenForWS(token, config.jwtSecret)).catch(() => { /* next tick */ });
   }, REALTIME_REVERIFY_MS).unref?.();
   startBackupScheduler();
-  startOrphanFileSweeper();
+  if (singleton) startOrphanFileSweeper();
   startApiTokenUsageFlusher();
-  // Prune expired/long-revoked API token rows once a day.
-  setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
-  setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
-  // Finished jobs / webhook deliveries past retention, expired revocations
-  // and one-time auth tokens (see core/maintenance.ts).
-  setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
-  setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
+  if (singleton) {
+    // Prune expired/long-revoked API token rows once a day.
+    setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
+    setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
+    // Finished jobs / webhook deliveries past retention, expired revocations
+    // and one-time auth tokens (see core/maintenance.ts).
+    setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
+    setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
+  }
   // Sweep idle SQL sandboxes hourly. They're per-admin, so a forgotten
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.
