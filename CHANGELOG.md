@@ -75,6 +75,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
+- **Flag evaluation sets `auth` itself.** An `auth` key in the context sent to
+  `POST /flags/evaluate` is replaced with the caller's verified session (or removed).
+  Target trusted attributes as `auth.id`, `auth.email`, `auth.collection`.
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
@@ -224,6 +227,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **A list request could make the database scan the whole table.** `page` had no upper
   bound, and SQLite walks every skipped row to reach an offset. A list may now skip at
   most 100,000 records; deeper pages answer `400`.
+- **Anyone could evaluate feature flags as any user.** `POST /flags/evaluate` takes the
+  targeting context from the caller, so a caller could claim another user's id and read
+  their treatment. The server now sets the context's `auth` attribute from the caller's
+  session (and removes it for anonymous callers), so rules targeting `auth.*` can be
+  trusted, and `flags.public_evaluate = 0` limits evaluation to signed-in callers.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
