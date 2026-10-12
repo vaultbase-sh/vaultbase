@@ -188,6 +188,32 @@ export async function recentAttemptFailures(key: string, windowSeconds: number):
   return rows.length;
 }
 
+/**
+ * Charge one attempt against `key` *before* the secret is checked. Returns the
+ * reservation id, or null when the budget is spent (the charge is withdrawn).
+ *
+ * Checking the count first and recording the failure afterwards let parallel
+ * guesses all read the same count and all get through. Recording first means
+ * each request counts every reservation made before it, so at most `max`
+ * attempts are ever in flight or failed inside the window. On success the
+ * caller hands the id to `releaseAttempt`; on failure the row stays as the
+ * recorded failure.
+ */
+export async function reserveAttempt(key: string, max: number, windowSeconds: number): Promise<string | null> {
+  const id = crypto.randomUUID();
+  await getDb().insert(loginFailures).values({ id, key, at: Math.floor(Date.now() / 1000) });
+  if (await recentAttemptFailures(key, windowSeconds) > max) {
+    await releaseAttempt(id);
+    return null;
+  }
+  return id;
+}
+
+/** Withdraw a reservation from `reserveAttempt` (the attempt succeeded). */
+export async function releaseAttempt(id: string): Promise<void> {
+  await getDb().delete(loginFailures).where(eq(loginFailures.id, id));
+}
+
 export async function clearAttemptFailures(key: string): Promise<void> {
   await getDb().delete(loginFailures).where(eq(loginFailures.key, key));
 }

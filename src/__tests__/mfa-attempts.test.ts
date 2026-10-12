@@ -9,7 +9,10 @@
  * 90-second window. These tests drive the real routes.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb } from "../db/client.ts";
+import { eq } from "drizzle-orm";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { authTokens, loginFailures } from "../db/schema.ts";
+import { getCollection } from "../core/collections.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { ensureAuthCollection, signUserJwt } from "./_helpers.ts";
@@ -91,11 +94,33 @@ describe("MFA step-2 attempt budget", () => {
   });
 });
 
+describe("MFA step-2 under concurrency", () => {
+  it("parallel guesses across many tickets stop at the account limit", async () => {
+    const tickets = await Promise.all(Array.from({ length: 6 }, () => ticket()));
+    // 6 tickets x 5 guesses = 30 guesses in flight; only 10 may be compared.
+    await Promise.all(tickets.flatMap((t) => Array.from({ length: 5 }, () => mfa(t, wrong()))));
+    // A burst may be refused before any code is compared; what must hold is
+    // that at most 10 comparisons ran.
+    const failures = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `mfa:${(await getCollection("users"))!.id}:${userId}`));
+    expect(failures.length).toBeLessThanOrEqual(10);
+    const rows = await getDb().select().from(authTokens).where(eq(authTokens.purpose, "mfa_ticket"));
+    expect(rows.reduce((n, r) => n + r.attempts, 0)).toBeLessThanOrEqual(10);
+  });
+});
+
 describe("TOTP replay", () => {
   it("a code that was just used can't be used again on a new ticket", async () => {
     const code = current();
     expect((await mfa(await ticket(), code)).status).toBe(200);
     expect((await mfa(await ticket(), code)).status).toBe(401);
+  });
+
+  it("re-sending a spent code (a double submit) isn't counted as a guess", async () => {
+    const code = current();
+    expect((await mfa(await ticket(), code)).status).toBe(200);
+    for (let i = 0; i < 3; i++) expect((await mfa(await ticket(), code)).status).toBe(401);
+    const failures = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `mfa:${(await getCollection("users"))!.id}:${userId}`));
+    expect(failures).toHaveLength(0);
   });
 
   it("/totp/disable refuses a code already spent on sign-in", async () => {

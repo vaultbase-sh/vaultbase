@@ -83,15 +83,17 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **OTP sign-in codes could be guessed without limit.** A wrong code was never counted
   against the attempt limit, and requesting a new code left the older ones valid. Each code
   now allows 5 attempts, a new code voids the previous one, used and expired codes are
-  never matched, and an account allows 10 failed codes per 15 minutes in total; past that,
-  `POST /auth/:collection/otp/auth` answers `429` until the window passes.
+  never matched, and an address allows 10 failed codes per 15 minutes in total; past that,
+  `POST /auth/:collection/otp/auth` answers `429` until the window passes. Both limits
+  are charged before the code is compared, so parallel guesses can't race past them.
 - **The MFA code limit could be reset by signing in again.** The 5-attempt limit on the
   second step of MFA sign-in was kept per sign-in ticket, so anyone holding the password
   could fetch a new ticket and keep guessing; parallel guesses could also slip past the
   count. Failed TOTP and recovery codes now count per account (10 per 15 minutes, then
   `429`), including on `POST /auth/:collection/totp/disable`, and the counter is updated
-  atomically. A TOTP code is accepted once: replaying a code that has just been used is
-  refused. A recovery code or MFA ticket can no longer be used twice by sending two
+  atomically, before the code is checked, so guesses sent in parallel can't get past
+  either limit. A TOTP code is accepted once: replaying a code that has just been used is
+  refused (and isn't counted as a failed guess). A recovery code or MFA ticket can no longer be used twice by sending two
   requests at the same time.
 
 ### Fixed

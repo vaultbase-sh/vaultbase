@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
@@ -50,8 +50,8 @@ import {
   clearLoginFailures,
   isLockedOut,
   getTrustedProxiesRaw,
-  recordAttemptFailure,
-  recentAttemptFailures,
+  reserveAttempt,
+  releaseAttempt,
 } from "../core/security.ts";
 
 /** Best-effort client IP for lockout keying. Honours trusted-proxies setting. */
@@ -106,18 +106,17 @@ function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 /**
- * Count one failed attempt on a one-time token. The increment is a single
- * UPDATE so concurrent guesses can't each read the same count; the token is
- * burned once the count reaches `MAX_OTP_ATTEMPTS`.
+ * Spend one attempt on a one-time token *before* the code is compared.
+ * Returns false when the token is used or its `MAX_OTP_ATTEMPTS` are gone.
+ * The check and the increment are one UPDATE, so parallel guesses can't all
+ * read the same count: at most `MAX_OTP_ATTEMPTS` comparisons ever run.
  */
-async function countTokenFailure(id: string, now: number): Promise<void> {
+async function spendTokenAttempt(id: string): Promise<boolean> {
   const rows = await getDb().update(authTokens)
     .set({ attempts: sql`${authTokens.attempts} + 1` })
-    .where(eq(authTokens.id, id))
-    .returning({ attempts: authTokens.attempts });
-  if ((rows[0]?.attempts ?? MAX_OTP_ATTEMPTS) >= MAX_OTP_ATTEMPTS) {
-    await getDb().update(authTokens).set({ used_at: now }).where(eq(authTokens.id, id));
-  }
+    .where(and(eq(authTokens.id, id), isNull(authTokens.used_at), lt(authTokens.attempts, MAX_OTP_ATTEMPTS)))
+    .returning({ id: authTokens.id });
+  return rows.length > 0;
 }
 
 /**
@@ -126,24 +125,20 @@ async function countTokenFailure(id: string, now: number): Promise<void> {
  * soon as its owner has used it. The spent step is a row keyed by
  * collection, user and step, so two racing requests can't both claim it.
  */
-async function verifyTotpOnce(collectionId: string, userId: string, secret: string, code: string): Promise<boolean> {
+async function verifyTotpOnce(collectionId: string, userId: string, secret: string, code: string): Promise<"ok" | "invalid" | "replayed"> {
   const step = matchingTotpStep(secret, code);
-  if (step === null) return false;
+  if (step === null) return "invalid";
   const now = Math.floor(Date.now() / 1000);
-  try {
-    await getDb().insert(authTokens).values({
-      id: `totp_step:${collectionId}:${userId}:${step}`,
-      user_id: userId,
-      collection_id: collectionId,
-      purpose: "totp_step",
-      used_at: now,
-      // Past the ±1 step drift window the code can't match anyway.
-      expires_at: now + 120,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  const rows = await getDb().insert(authTokens).values({
+    id: `totp_step:${collectionId}:${userId}:${step}`,
+    user_id: userId,
+    collection_id: collectionId,
+    purpose: "totp_step",
+    used_at: now,
+    // Past the ±1 step drift window the code can't match anyway.
+    expires_at: now + 120,
+  }).onConflictDoNothing().returning({ id: authTokens.id });
+  return rows.length > 0 ? "ok" : "replayed";
 }
 
 /**
@@ -336,14 +331,6 @@ async function issueOtpAndSend(
   const code = newOtpCode();
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + OTP_TTL_SECONDS;
-  // One live code per user: a new one voids the rest, so each code only ever
-  // has its own attempt budget to spend.
-  await getDb().update(authTokens).set({ used_at: now }).where(and(
-    eq(authTokens.user_id, user.id),
-    eq(authTokens.collection_id, collectionId),
-    eq(authTokens.purpose, "otp"),
-    isNull(authTokens.used_at),
-  ));
   await getDb().insert(authTokens).values({
     id: token,
     user_id: user.id,
@@ -352,6 +339,16 @@ async function issueOtpAndSend(
     code,
     expires_at: expiresAt,
   });
+  // One live code per user: the new one voids the rest, so each code only
+  // ever has its own attempt budget to spend. Voiding after the insert means
+  // two racing requests can't both leave a code live.
+  await getDb().update(authTokens).set({ used_at: now }).where(and(
+    eq(authTokens.user_id, user.id),
+    eq(authTokens.collection_id, collectionId),
+    eq(authTokens.purpose, "otp"),
+    isNull(authTokens.used_at),
+    ne(authTokens.id, token),
+  ));
   const tpl = getTemplate("otp");
   const appUrl = getAppUrl();
   const vars = {
@@ -659,15 +656,24 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Brute-force gate per account, across every ticket: `/login` mints a
         // fresh ticket for anyone with the password, so a per-ticket count
         // alone would let them walk the code space.
-        const failKey = `mfa:${col.id}:${u.id}`;
-        if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+        // Both budgets are charged before the code is compared, so parallel
+        // guesses can't all read the same count.
+        const attempt = await reserveAttempt(`mfa:${col.id}:${u.id}`, MAX_ACCOUNT_CODE_FAILURES, ATTEMPT_WINDOW_SECONDS);
+        if (!attempt) {
           set.status = 429;
           return { error: "Too many failed attempts. Try again later.", code: 429 };
         }
+        if (!(await spendTokenAttempt(tok.id))) {
+          await releaseAttempt(attempt);
+          set.status = 400;
+          return { error: "Invalid or expired MFA ticket", code: 400 };
+        }
         if (hasCode) {
-          if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code!))) {
-            await countTokenFailure(tok.id, now);
-            await recordAttemptFailure(failKey);
+          const totp = await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code!);
+          if (totp !== "ok") {
+            // A spent code is the right code sent twice (a double submit),
+            // not a guess, so it doesn't eat into the account's budget.
+            if (totp === "replayed") await releaseAttempt(attempt);
             set.status = 401;
             return { error: "Invalid code", code: 401 };
           }
@@ -704,13 +710,12 @@ export function makeAuthPlugin(jwtSecret: string) {
                 .returning({ id: mfaRecoveryCodes.id })
             : [];
           if (spent.length === 0) {
-            await countTokenFailure(tok.id, now);
-            await recordAttemptFailure(failKey);
             set.status = 401;
             return { error: "Invalid recovery code", code: 401 };
           }
           await db.delete(mfaRecoveryLookup).where(eq(mfaRecoveryLookup.recovery_id, matchId!));
         }
+        await releaseAttempt(attempt);
         if (!(await consumeToken(tok.id, now))) {
           set.status = 400;
           return { error: "Invalid or expired MFA ticket", code: 400 };
@@ -1070,16 +1075,18 @@ export function makeAuthPlugin(jwtSecret: string) {
           // Code lookups need the email too — codes alone are 6 digits and
           // cross-user collisions during the 10-minute window are realistic.
           if (!body.email) { set.status = 422; return { error: "code requires email", code: 422 }; }
-          const userByEmail = findUserByEmail(col, body.email);
-          if (!userByEmail) { set.status = 400; return { error: "Invalid or expired code", code: 400 }; }
-          // Failures count per account, across every code sent in the window.
-          const failKey = `otp:${col.id}:${userByEmail.id}`;
-          if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+          // Failures count per address, across every code sent in the window,
+          // and are charged before anything is compared so parallel guesses
+          // can't all read the same count. Unknown addresses are charged too,
+          // so a 429 doesn't tell whether the account exists.
+          const attempt = await reserveAttempt(`otp:${col.id}:${body.email.trim().toLowerCase()}`, MAX_ACCOUNT_CODE_FAILURES, ATTEMPT_WINDOW_SECONDS);
+          if (!attempt) {
             set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
           }
+          const userByEmail = findUserByEmail(col, body.email);
           // Look up the user's live code, then compare. Looking up *by* code
           // meant a wrong guess matched nothing and was never counted.
-          const tokenRows = await db
+          const tokenRows = userByEmail ? await db
             .select()
             .from(authTokens)
             .where(and(
@@ -1090,13 +1097,12 @@ export function makeAuthPlugin(jwtSecret: string) {
               gte(authTokens.expires_at, now),
             ))
             .orderBy(desc(authTokens.created_at))
-            .limit(1);
+            .limit(1) : [];
           tok = tokenRows[0];
-          if (tok && !(tok.code && timingSafeEqualStr(tok.code, body.code!))) {
-            await countTokenFailure(tok.id, now);
-            await recordAttemptFailure(failKey);
+          if (!tok || !(await spendTokenAttempt(tok.id)) || !(tok.code && timingSafeEqualStr(tok.code, body.code!))) {
             set.status = 400; return { error: "Invalid or expired code", code: 400 };
           }
+          await releaseAttempt(attempt);
         }
         if (!tok || tok.purpose !== "otp" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
@@ -1107,8 +1113,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         const u = findUserById(col, tok.user_id);
         if (!u) {
-          await countTokenFailure(tok.id, now);
-          set.status = 400; return { error: "User not found", code: 400 };
+          set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
 
         if (!(await consumeToken(tok.id, now))) {
@@ -1183,7 +1188,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "Run /totp/setup first", code: 400 }; }
-        if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code))) {
+        if ((await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code)) !== "ok") {
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
         await updateUserById(col, u.id, { totp_enabled: 1, updated_at: Math.floor(Date.now() / 1000) });
@@ -1207,14 +1212,16 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u.totp_secret) { set.status = 400; return { error: "MFA not configured", code: 400 }; }
         // Same per-account budget as sign-in: a stolen session must not be
         // able to guess its way past the code that guards this.
-        const failKey = `mfa:${col.id}:${u.id}`;
-        if (await recentAttemptFailures(failKey, ATTEMPT_WINDOW_SECONDS) >= MAX_ACCOUNT_CODE_FAILURES) {
+        const attempt = await reserveAttempt(`mfa:${col.id}:${u.id}`, MAX_ACCOUNT_CODE_FAILURES, ATTEMPT_WINDOW_SECONDS);
+        if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
         }
-        if (!(await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code))) {
-          await recordAttemptFailure(failKey);
+        const totp = await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code);
+        if (totp !== "ok") {
+          if (totp === "replayed") await releaseAttempt(attempt);
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
+        await releaseAttempt(attempt);
         await updateUserById(col, u.id, { totp_enabled: 0, totp_secret: null, updated_at: Math.floor(Date.now() / 1000) });
         // Wipe recovery codes — they're useless without TOTP, and leaving
         // them around would let a re-enabled MFA inherit stale codes.

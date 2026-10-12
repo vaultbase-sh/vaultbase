@@ -16,10 +16,11 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { setSetting } from "../api/settings.ts";
-import { authTokens } from "../db/schema.ts";
+import { authTokens, loginFailures } from "../db/schema.ts";
+import { getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { seedAuthUser } from "./_helpers.ts";
-import { startSmtpSink, type SmtpSink } from "./_smtp.ts";
+import { startSmtpSink, tokenFrom, type SmtpSink } from "./_smtp.ts";
 
 const SECRET = "test-secret-otp-bruteforce";
 const EMAIL = "victim@test.local";
@@ -124,5 +125,41 @@ describe("OTP code brute force", () => {
     for (let i = 0; i < 12; i++) await post("/auth/users/otp/auth", { email: "other@test.local", code: "000000" });
     const code = await requestCode();
     expect((await auth(code)).status).toBe(200);
+  });
+
+  // A burst may be refused outright (429) before any code is compared; what
+  // must hold is how many comparisons ever run: 5 per code, 10 per account.
+  it("parallel guesses can't race past the per-code limit", async () => {
+    await requestCode();
+    await Promise.all(Array.from({ length: 40 }, () => auth("000000")));
+    const [tok] = await getDb().select().from(authTokens).where(and(eq(authTokens.user_id, userId), eq(authTokens.purpose, "otp")));
+    expect(tok!.attempts).toBeLessThanOrEqual(5);
+  });
+
+  it("parallel guesses spread over many codes stop at the account limit", async () => {
+    for (let round = 0; round < 4; round++) {
+      await requestCode();
+      await ageOtpTokens(120);
+      await Promise.all(Array.from({ length: 10 }, () => auth("000000")));
+    }
+    const rows = await getDb().select().from(authTokens).where(and(eq(authTokens.user_id, userId), eq(authTokens.purpose, "otp")));
+    expect(rows.reduce((n, r) => n + r.attempts, 0)).toBeLessThanOrEqual(10);
+    const failures = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `otp:${(await getCollection("users"))!.id}:${EMAIL}`));
+    expect(failures.length).toBeLessThanOrEqual(10);
+  });
+
+  it("requesting a new code also voids the old magic link", async () => {
+    await requestCode();
+    const link = tokenFrom(smtp.messages[smtp.messages.length - 1]);
+    await ageOtpTokens(120);
+    await requestCode();
+    expect((await post("/auth/users/otp/auth", { token: link })).status).toBe(400);
+  });
+
+  it("an unknown address hits the same 429, so the limit doesn't reveal accounts", async () => {
+    for (let i = 0; i < 10; i++) {
+      expect((await post("/auth/users/otp/auth", { email: "nobody@test.local", code: "123456" })).status).toBe(400);
+    }
+    expect((await post("/auth/users/otp/auth", { email: "nobody@test.local", code: "123456" })).status).toBe(429);
   });
 });
