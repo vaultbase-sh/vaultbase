@@ -98,10 +98,19 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   }
 }
 
-/** `~`: an empty or missing needle matches nothing (same as the SQL compiler). */
+/**
+ * `~`, as SQLite's LIKE does it in list queries: an empty or missing needle
+ * matches nothing, and ASCII letters match regardless of case (other letters
+ * don't). Matching case-sensitively here let `title !~ "confidential"` hide
+ * "CONFIDENTIAL plan" from lists but serve it by id and over realtime.
+ */
 function contains(haystack: unknown, needle: unknown): boolean {
   const n = needle === null || needle === undefined ? "" : String(needle);
-  return n !== "" && String(haystack ?? "").includes(n);
+  return n !== "" && asciiLower(String(haystack ?? "")).includes(asciiLower(n));
+}
+
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
 }
 
 function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalContext): boolean {

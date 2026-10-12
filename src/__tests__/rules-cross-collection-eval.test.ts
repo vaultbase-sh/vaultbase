@@ -28,3 +28,15 @@ describe("single-record rules with @collection / _via_", () => {
     expect(evaluateRule('status = "public"', banned, rec)).toBe(true);
   });
 });
+
+describe("~ case handling matches list queries (review 15 F-4)", () => {
+  it("ignores ASCII case, as SQLite's LIKE does", () => {
+    const doc = { id: "d1", title: "CONFIDENTIAL plan" };
+    expect(evaluateRule('title !~ "confidential"', banned, doc)).toBe(false);
+    expect(evaluateRule('title ~ "confidential"', banned, doc)).toBe(true);
+  });
+
+  it("leaves non-ASCII case alone, as LIKE does", () => {
+    expect(evaluateRule('title ~ "é"', banned, { id: "d2", title: "É" })).toBe(false);
+  });
+});

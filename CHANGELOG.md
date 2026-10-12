@@ -322,7 +322,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`
   back-relation — the SQL filter compared against `%%` and matched everything. An empty
   or missing value now matches nothing with `~` (and everything with `!~`), in list
-  filters and in single-record rule checks alike.
+  filters and in single-record rule checks alike. Single-record checks also ignore ASCII
+  case now, as list queries always did, so `title !~ "confidential"` can't hide
+  "CONFIDENTIAL plan" from lists yet serve it by id or over realtime.
 - **A list request could make the database scan the whole table.** `page` had no upper
   bound, and SQLite walks every skipped row to reach an offset. A list may now skip at
   most 100,000 records; deeper pages answer `400`.
