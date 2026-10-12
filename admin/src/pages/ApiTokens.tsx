@@ -53,7 +53,7 @@ const SCOPE_OPTIONS = [
   { id: "read",      label: "read",      description: "Reads ALL data — records, files, logs — ignoring collection rules (read-only admin)" },
   { id: "write",     label: "write",     description: "POST/PATCH/DELETE on records (collection rules apply)" },
   { id: "mcp:read",  label: "mcp:read",  description: "MCP server: read-only tools, over ALL data (rules don't apply)" },
-  { id: "mcp:write", label: "mcp:write", description: "MCP server: mutating tools" },
+  { id: "mcp:write", label: "mcp:write", description: "MCP server: mutating tools, acting as admin (rules don't apply)" },
   { id: "mcp:admin", label: "mcp:admin", description: "MCP server: full admin tools" },
   { id: "mcp:sql",   label: "mcp:sql",   description: "MCP server: raw SQL tool" },
 ];
