@@ -312,6 +312,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   now generates a setup key when none is configured and requires it (compared in
   constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
   listened on all interfaces; it is now used.
+- **Admin actions from the admin UI were audited without an actor.** The audit log read
+  the admin only from the `Authorization` header, so actions by an admin signed in with
+  the session cookie were recorded with no actor. It now reads the same token sources
+  as the admin routes. New `audit.retention_days` setting (default `0`, keep forever)
+  bounds how long entries are kept.
 - **Data files were world-readable outside the installer.** No umask was set, so with the
   usual `022` the database, uploads, logs and backups were readable by every local user
   unless the installer had locked down the data directory. The server now uses `027`.

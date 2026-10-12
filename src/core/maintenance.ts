@@ -26,6 +26,16 @@ export interface PruneResult {
   tokenRevocations: number;
   authTokens: number;
   logFiles: number;
+  auditEntries: number;
+}
+
+/**
+ * `audit.retention_days`: audit entries older than this are deleted. 0 (the
+ * default) keeps them forever — the log is otherwise append-only.
+ */
+export function auditRetentionDays(): number {
+  const n = parseInt(getSetting("audit.retention_days", "0"), 10);
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
 export async function pruneHistory(): Promise<PruneResult> {
@@ -53,5 +63,9 @@ export async function pruneHistory(): Promise<PruneResult> {
     authTokens: run(`DELETE FROM vaultbase_auth_tokens WHERE expires_at < ?`, expiredCutoff),
     // Daily request-log files follow the same retention.
     logFiles: days === 0 ? 0 : pruneLogFiles(days),
+    auditEntries: auditRetentionDays() === 0 ? 0 : run(
+      `DELETE FROM vaultbase_audit_log WHERE at < ?`,
+      now - auditRetentionDays() * 24 * 60 * 60,
+    ),
   };
 }

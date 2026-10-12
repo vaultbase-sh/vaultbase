@@ -206,7 +206,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
             const err = validateMaxUploadSize(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
-          if (k === "maintenance.retention_days") {
+          if (k === "maintenance.retention_days" || k === "audit.retention_days") {
             const err = validateRetentionDays(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }

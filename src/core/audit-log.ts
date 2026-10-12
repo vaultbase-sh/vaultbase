@@ -5,9 +5,8 @@
  * request to `/api/admin/*` (POST/PATCH/PUT/DELETE; not GET). Each row
  * captures actor + action + target + status + IP, in append-only form.
  *
- * Append-only: no UPDATE / DELETE paths through application code. Operators
- * who genuinely need to prune historical rows (storage budget) can do so at
- * the SQL layer with a documented retention command.
+ * Append-only: no UPDATE / DELETE paths through application code, except
+ * the opt-in `audit.retention_days` prune in maintenance.ts.
  */
 import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";

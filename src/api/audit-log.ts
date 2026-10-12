@@ -1,10 +1,13 @@
 import Elysia, { t } from "elysia";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { extractBearer, verifyAuthToken } from "../core/sec.ts";
 import { isAdminApiPath } from "../core/api-paths.ts";
 
 async function getAdmin(request: Request, jwtSecret: string): Promise<{ id: string; email: string } | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  // Same token sources the admin routes accept, the session cookie included:
+  // reading only `Authorization` left actions taken in the admin UI with no
+  // actor in the log.
+  const token = extractBearer(request);
   if (!token) return null;
   const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
   if (!ctx) return null;
