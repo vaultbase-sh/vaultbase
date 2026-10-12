@@ -82,6 +82,8 @@ function fieldTypeSchema(f: FieldDef): Record<string, unknown> {
       return { type: "string", format: "email", description: hint(f) };
     case "url":
       return { type: "string", format: "uri", description: hint(f) };
+    case "color":
+      return { type: "string", description: `${hint(f)} (hex color, e.g. #e85a4f${f.options?.alpha ? " or #e85a4f80" : ""})` };
     default:
       return { type: "string", description: hint(f) };
   }

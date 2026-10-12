@@ -9,7 +9,7 @@ import { parseThumbSpec } from "./image.ts";
 export type FieldType =
   | "text" | "number" | "bool" | "file" | "relation"
   | "select" | "autodate" | "email" | "url" | "date" | "json"
-  | "password" | "editor" | "geoPoint" | "vector";
+  | "password" | "editor" | "geoPoint" | "vector" | "color";
 
 export interface FieldOptions {
   min?: number;
@@ -70,6 +70,11 @@ export interface FieldOptions {
    * shorter / longer arrays fail validation.
    */
   dimensions?: number;
+  /**
+   * Color-only. Also accept an alpha channel (`#rgba` / `#rrggbbaa`); the
+   * value is then stored as `#rrggbbaa`. Default: `#rrggbb` only.
+   */
+  alpha?: boolean;
   /**
    * text / editor / email / url. Include the field in the collection's
    * full-text index, queried with `?search=` on the list endpoint. Not

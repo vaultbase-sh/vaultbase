@@ -181,6 +181,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   but the running process kept serving the old one until someone restarted it by hand.
 
 ### Added
+- **`color` field type.** Stores a hex color as lowercase `#rrggbb`; `#rgb` and any case
+  are accepted and normalised, so equality filters and unique checks match regardless of
+  how the value was typed. The `alpha` option also accepts `#rgba` / `#rrggbbaa`. The admin
+  shows a color picker in the record form and a swatch in the records table.
 - **The installer detects the platform.** `curl -fsSL https://get.vaultbase.dev | sh` now works on macOS (Intel and Apple silicon, including from a Rosetta shell) as well as Linux. On macOS it installs the binary only. New `--install-dir` flag.
 - **Windows installer.** `irm https://get.vaultbase.dev/install.ps1 | iex` downloads the Windows binary, checks it against `SHA256SUMS`, installs it to `%LOCALAPPDATA%\Programs\Vaultbase` and adds it to the user `PATH`.
 - **Queue stats are windowed.** `GET /admin/queues/stats` accepts `?window=<seconds>` (default 24h, clamped to 30d) and each queue now also reports `succeeded_window`, `failed_window`, `dead_window` and `oldest_queued_at`. The all-time `queued` / `running` / `succeeded` / `failed` / `dead` counters are unchanged, so existing callers are unaffected.

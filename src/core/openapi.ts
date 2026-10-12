@@ -25,6 +25,11 @@ function fieldSchema(f: FieldDef): Schema {
     case "bool": return { type: "boolean" };
     case "email": return { type: "string", format: "email" };
     case "url": return { type: "string", format: "uri" };
+    case "color": return {
+      type: "string",
+      pattern: f.options?.alpha ? "^#[0-9a-f]{6}([0-9a-f]{2})?$" : "^#[0-9a-f]{6}$",
+      description: "Hex color; #rgb / #RRGGBB accepted on write and stored lowercase",
+    };
     case "date":
     case "autodate": return { type: "integer", description: "Unix seconds" };
     case "select": return list(f.options?.values?.length ? { type: "string", enum: f.options.values } : { type: "string" });

@@ -370,6 +370,7 @@ const FIELD_TYPE_COLOR: Record<string, string> = {
   password: "#ee7a70",
   editor:   "#9bb6ff",
   geoPoint: "#62cc9c",
+  color:    "#e879f9",
   file:     "#f0b056",
   relation: "#b8a0ff",
   select:   "#9bb6ff",

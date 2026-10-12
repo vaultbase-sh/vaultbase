@@ -35,7 +35,7 @@ const BUCKET_FMT: Record<Bucket, string> = {
 const NUMERIC = new Set(["number"]);
 const TIME = new Set(["date", "autodate"]);
 /** Types whose stored value is a scalar worth grouping or comparing. */
-const SCALAR = new Set(["text", "number", "bool", "select", "relation", "email", "url", "date", "autodate", "editor"]);
+const SCALAR = new Set(["text", "number", "bool", "select", "relation", "email", "url", "date", "autodate", "editor", "color"]);
 
 export interface AggregateOptions extends Pick<ListOptions, "filter" | "search" | "accessRule" | "auth" | "request"> {
   agg?: string;

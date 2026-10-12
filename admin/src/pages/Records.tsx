@@ -567,6 +567,16 @@ function FieldInput({
       />
     );
   }
+  if (field.type === "color") {
+    return (
+      <ColorInput
+        value={typeof value === "string" ? value : ""}
+        alpha={field.options?.["alpha"] === true}
+        onChange={(v) => onChange(v)}
+        readOnly={readOnly}
+      />
+    );
+  }
   if (field.type === "geoPoint") {
     const v = (value && typeof value === "object" ? value : {}) as { lat?: number; lng?: number };
     const setLat = (lat: number) => onChange({ lat, lng: v.lng ?? 0 });
@@ -638,6 +648,44 @@ const DrawerFieldRow: React.FC<{
   </div>
 );
 
+/**
+ * Native color picker plus the hex text. The picker only knows #rrggbb, so
+ * an alpha suffix typed in the text box is kept when the picker changes.
+ */
+const ColorInput: React.FC<{
+  value: string;
+  alpha: boolean;
+  onChange: (v: string) => void;
+  readOnly?: boolean;
+}> = ({ value, alpha, onChange, readOnly }) => {
+  const rgb = /^#[0-9a-f]{6}/i.test(value) ? value.slice(0, 7).toLowerCase() : "#000000";
+  const suffix = alpha && /^#[0-9a-f]{8}$/i.test(value) ? value.slice(7) : "";
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input
+        type="color"
+        value={rgb}
+        onChange={(e) => onChange(e.target.value + suffix)}
+        disabled={readOnly}
+        aria-label="Pick a color"
+        style={{
+          width: 36, height: 32, padding: 2, flex: "none",
+          background: "transparent", border: "1px solid var(--vb-border)",
+          borderRadius: 6, cursor: readOnly ? "default" : "pointer",
+        }}
+      />
+      <VbInput
+        mono
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
+        placeholder={alpha ? "#rrggbb or #rrggbbaa" : "#rrggbb"}
+        style={{ flex: 1 }}
+      />
+    </div>
+  );
+};
+
 const PasswordInput: React.FC<{
   value: string;
   onChange: (v: string) => void;
@@ -703,6 +751,7 @@ function recordColumns(
     const fdef = fieldsByName.get(c);
     const isFile = fdef?.type === "file";
     const isGeo = fdef?.type === "geoPoint";
+    const isColor = fdef?.type === "color";
     cols.push({
       key: c,
       label: c,
@@ -717,6 +766,19 @@ function recordColumns(
               collectionName={collection.name}
               recordId={String(r.id)}
             />
+          );
+        }
+        if (isColor) {
+          const text = cellValue(r, c);
+          if (text === "—") return <span style={{ color: "var(--vb-fg-3)" }}>—</span>;
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)" }}>
+              <span aria-hidden="true" style={{
+                width: 12, height: 12, borderRadius: 3, flex: "none",
+                background: text, border: "1px solid var(--vb-border)",
+              }} />
+              {text}
+            </span>
           );
         }
         if (isGeo) {

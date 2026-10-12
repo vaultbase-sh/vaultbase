@@ -15,6 +15,20 @@ export class ValidationError extends Error {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
+const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/**
+ * A `color` field value in its stored form: lowercase `#rrggbb`, or
+ * `#rrggbbaa` when `alpha` is allowed. Short forms (`#rgb`, `#rgba`) are
+ * expanded. Returns null for anything that isn't an accepted hex color.
+ */
+export function normalizeColor(value: unknown, alpha: boolean): string | null {
+  if (typeof value !== "string" || !HEX_COLOR_RE.test(value)) return null;
+  let hex = value.slice(1).toLowerCase();
+  if (hex.length <= 4) hex = [...hex].map((c) => c + c).join("");
+  if (hex.length === 8 && !alpha) return null;
+  return `#${hex}`;
+}
 
 /**
  * Validate a record against its collection schema.
@@ -75,9 +89,15 @@ export async function validateRecord(
       data[field.name] = sanitizeHtml(value);
     }
 
+    // One stored form per color, so equality filters and unique checks work.
+    if (field.type === "color") {
+      data[field.name] = normalizeColor(value, field.options?.alpha === true);
+    }
+
     // Unique check (DB query)
     if (field.options?.unique) {
-      const isUnique = await checkUnique(collection, field.name, value, existingId);
+      // The stored form (normalised color, sanitised HTML), not the raw input.
+      const isUnique = await checkUnique(collection, field.name, data[field.name], existingId);
       if (!isUnique) errors[field.name] = `${field.name} must be unique`;
     }
 
@@ -131,6 +151,14 @@ function validateValue(field: FieldDef, value: unknown): string | null {
 
     case "url":
       if (typeof value !== "string" || !URL_RE.test(value)) return `${field.name} must be a valid URL`;
+      return null;
+
+    case "color":
+      if (normalizeColor(value, field.options?.alpha === true) === null) {
+        return field.options?.alpha
+          ? `${field.name} must be a hex color (#rgb, #rgba, #rrggbb or #rrggbbaa)`
+          : `${field.name} must be a hex color (#rgb or #rrggbb)`;
+      }
       return null;
 
     case "select": {

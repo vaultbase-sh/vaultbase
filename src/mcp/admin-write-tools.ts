@@ -750,6 +750,8 @@ function generateFakeValue(f: FieldDef, idx: number): unknown {
       return `user${idx}_${Math.random().toString(36).slice(2, 8)}@example.com`;
     case "url":
       return `https://example.com/${Math.random().toString(36).slice(2, 10)}`;
+    case "color":
+      return `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")}`;
     case "date":
     case "autodate": {
       const now = Math.floor(Date.now() / 1000);
