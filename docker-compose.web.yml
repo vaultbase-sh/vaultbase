@@ -2,6 +2,9 @@
 #
 # Run:  docker compose -f docker-compose.web.yml up -d --build
 #
+# Expects the landing and docs repos checked out next to this one
+# (../landing, ../docs).
+#
 # Each service is a self-contained Bun-build → nginx-serve image. No volumes,
 # no shared state, fully replaceable. Front them with a reverse proxy
 # (Caddy / Cloudflare / Traefik) terminating TLS and routing by hostname.
@@ -9,7 +12,7 @@
 services:
   landing:
     build:
-      context: ./landing
+      context: ../landing
     image: vaultbase/landing:latest
     container_name: vaultbase-landing
     restart: unless-stopped
@@ -23,7 +26,7 @@ services:
 
   docs:
     build:
-      context: ./site
+      context: ../docs
     image: vaultbase/docs:latest
     container_name: vaultbase-docs
     restart: unless-stopped

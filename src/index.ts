@@ -205,7 +205,7 @@ Subcommands:
                                   --email <e> --password <p> [--force]
 
   cluster                         Spawn N worker processes (multi-core deployments)
-                                  Set VAULTBASE_CLUSTER_WORKERS=N (default: CPU count).
+                                  Set VAULTBASE_WORKERS=N (default: CPU count).
 
   mcp                             Run the MCP server over stdio.
                                   Connect Claude Desktop / Cursor / Continue / Cline.
@@ -241,7 +241,7 @@ Environment:
   VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
   VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (required to use encrypted fields)
-  VAULTBASE_CLUSTER_WORKERS       Worker count for \`vaultbase cluster\`
+  VAULTBASE_WORKERS               Worker count for \`vaultbase cluster\`
   VAULTBASE_TRUSTED_PROXIES       Comma-separated peer IPs trusted for X-Forwarded-For
   NODE_ENV / VAULTBASE_ENV        Triggers production guardrails on \`wipe\`.
 

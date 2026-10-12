@@ -433,6 +433,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Docs and help drift.** `vaultbase --help` and the install docs named
+  `VAULTBASE_CLUSTER_WORKERS`; the variable `vaultbase cluster` reads is
+  `VAULTBASE_WORKERS`. `docker-compose.web.yml` pointed at directories that don't exist
+  in this repo. `SECURITY.md` said `helpers.query` applies collection rules (it doesn't)
+  and that `helpers.fetch` skips the egress guard (it no longer does); it now spells out
+  that hook, route, job and worker code is trusted with the server's full privileges.
 - **Queue jobs interrupted by a restart or crash ran again.** A job left in `running`
   when its process stopped stayed there for good. At startup those jobs go back on the
   queue (the interrupted run counts as an attempt). In cluster mode, where a sibling may
