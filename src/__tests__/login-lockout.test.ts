@@ -9,7 +9,7 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setSetting } from "../api/settings.ts";
 import { eq } from "drizzle-orm";
-import { admin, loginFailures } from "../db/schema.ts";
+import { admin, authTokens, loginFailures } from "../db/schema.ts";
 import { getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { seedAuthUser } from "./_helpers.ts";
@@ -72,10 +72,12 @@ describe("user login lockout", () => {
   });
 
   it("parallel wrong passwords can't race past the limit", async () => {
-    await Promise.all(Array.from({ length: 30 }, (_, i) => userLogin("alice@test.local", `guess-${i}`)));
+    const results = await Promise.all(Array.from({ length: 30 }, (_, i) => userLogin("alice@test.local", `guess-${i}`)));
+    // A 401 means the password was actually checked. A burst may be refused
+    // (429) before any check runs; what must hold is that at most 10 ran.
+    expect(results.filter((r) => r.status === 401).length).toBeLessThanOrEqual(10);
     const col = (await getCollection("users"))!;
     const rows = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `user:${col.id}:alice@test.local`));
-    // A burst may be refused before any password is checked; at most 10 are.
     expect(rows.length).toBeLessThanOrEqual(10);
   });
 
@@ -94,5 +96,57 @@ describe("admin login lockout", () => {
 
   it("the right password signs in (legitimate path)", async () => {
     expect((await adminLogin(PASSWORD)).status).toBe(200);
+  });
+});
+
+describe("IP key", () => {
+  const fromIp = (path: string, body: unknown) =>
+    makeAuthPlugin(SECRET).handle(new Request(`http://localhost${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.7" },
+      body: JSON.stringify(body),
+    }));
+
+  it("users failing behind a shared address don't lock the admin out", async () => {
+    setSetting("security.trusted_proxies", "127.0.0.1");
+    for (let i = 0; i < 12; i++) await fromIp("/auth/users/login", { email: `user${i}@test.local`, password: "nope" });
+    expect((await fromIp("/admin/auth/login", { email: "admin@test.local", password: PASSWORD })).status).toBe(200);
+  });
+
+  it("signing in to your own account doesn't reset the IP's count", async () => {
+    setSetting("security.trusted_proxies", "127.0.0.1");
+    for (let i = 0; i < 49; i++) await fromIp("/auth/users/login", { email: `spray${i}@test.local`, password: "nope" });
+    expect((await fromIp("/auth/users/login", { email: "bob@test.local", password: PASSWORD })).status).toBe(200);
+    expect((await fromIp("/auth/users/login", { email: "spray-x@test.local", password: "nope" })).status).toBe(401);
+    expect((await fromIp("/auth/users/login", { email: "alice@test.local", password: PASSWORD })).status).toBe(429);
+  });
+});
+
+describe("other password checks share the lockout", () => {
+  it("confirm-email-change: guessing the password with a stolen link is capped", async () => {
+    const col = (await getCollection("users"))!;
+    const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    await getDb().insert(authTokens).values({
+      id: "change-token", user_id: userId, collection_id: col.id, purpose: "email_change",
+      payload: "attacker@test.local", expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+    for (let i = 0; i < 10; i++) {
+      expect((await post("/auth/users/confirm-email-change", { token: "change-token", password: `guess-${i}` })).status).toBe(401);
+    }
+    expect((await post("/auth/users/confirm-email-change", { token: "change-token", password: PASSWORD })).status).toBe(429);
+  });
+
+  it("oauth2/merge-confirm: password guesses are capped", async () => {
+    const col = (await getCollection("users"))!;
+    const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    await getDb().insert(authTokens).values({
+      id: "merge-token", user_id: userId, collection_id: col.id, purpose: "oauth2_merge",
+      code: JSON.stringify({ provider: "github", provider_user_id: "gh-1", email: "alice@test.local", name: null }),
+      expires_at: Math.floor(Date.now() / 1000) + 900,
+    });
+    for (let i = 0; i < 10; i++) {
+      expect((await post("/auth/users/oauth2/merge-confirm", { merge_token: "merge-token", password: `guess-${i}` })).status).toBe(401);
+    }
+    expect((await post("/auth/users/oauth2/merge-confirm", { merge_token: "merge-token", password: PASSWORD })).status).toBe(429);
   });
 });

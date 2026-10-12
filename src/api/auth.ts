@@ -48,7 +48,7 @@ import { validatePassword } from "../core/password-policy.ts";
 import {
   recordAdminSession,
   reserveLoginAttempt,
-  clearLoginFailures,
+  loginSucceeded,
   getTrustedProxiesRaw,
   reserveAttempt,
   releaseAttempt,
@@ -465,7 +465,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         const ip = clientIpForLockout(request);
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
-        if (!(await reserveLoginAttempt({ email: body.email, ip }))) {
+        const attempt = await reserveLoginAttempt({ email: body.email, ip });
+        if (!attempt) {
           return new Response(JSON.stringify({ error: "Too many failed attempts. Try again later.", code: 429 }), {
             status: 429,
             headers: { "content-type": "application/json" },
@@ -482,7 +483,7 @@ export function makeAuthPlugin(jwtSecret: string) {
             headers: { "content-type": "application/json" },
           });
         }
-        await clearLoginFailures({ email: body.email, ip });
+        await loginSucceeded(attempt);
         const ttl = tokenWindowSeconds("admin");
         const { token, jti, exp, iat } = await signAuthToken({
           payload: { id: a.id, email: a.email },
@@ -635,7 +636,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Per-account lockout, charged before the password is checked. The
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
         const lockout = { scope: `user:${col.id}`, email: body.email, ip: clientIpForLockout(request) };
-        if (!(await reserveLoginAttempt(lockout))) {
+        const attempt = await reserveLoginAttempt(lockout);
+        if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
         }
         // Per-collection email lookup (vb_<col> first, legacy fallback).
@@ -644,7 +646,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const hashToCheck = u?.password_hash ?? dummyPasswordHash();
         const valid = await Bun.password.verify(body.password, hashToCheck).catch(() => false);
         if (!u || !valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
-        await clearLoginFailures(lockout);
+        await loginSucceeded(attempt);
 
         const db = getDb();
         if (u.totp_enabled === 1) {
@@ -955,7 +957,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     )
     .post(
       "/auth/:collection/confirm-email-change",
-      async ({ params, body, set }) => {
+      async ({ params, body, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -966,8 +968,17 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
         const u = findUserById(col, tok.user_id);
-        const valid = u ? await Bun.password.verify(body.password, u.password_hash).catch(() => false) : false;
-        if (!u || !valid) { set.status = 401; return { error: "Invalid password", code: 401 }; }
+        if (!u) { set.status = 401; return { error: "Invalid password", code: 401 }; }
+        // The password is the only thing a stolen session lacks here, so it
+        // gets the same lockout as sign-in.
+        const lockout = { scope: `user:${col.id}`, email: u.email, ip: clientIpForLockout(request) };
+        const attempt = await reserveLoginAttempt(lockout);
+        if (!attempt) {
+          set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
+        }
+        const valid = await Bun.password.verify(body.password, u.password_hash).catch(() => false);
+        if (!valid) { set.status = 401; return { error: "Invalid password", code: 401 }; }
+        await loginSucceeded(attempt);
         const taken = findUserByEmail(col, tok.payload);
         if (taken && taken.id !== u.id) { set.status = 422; return { error: "Email already in use", code: 422 }; }
         // The link proves the new address; ending old sessions makes every
@@ -1709,7 +1720,14 @@ export function makeAuthPlugin(jwtSecret: string) {
       //   2. an Authorization: Bearer <user-jwt> belonging to this user.
       let proven = false;
       if (typeof body.password === "string" && body.password !== "") {
-        proven = await Bun.password.verify(body.password, user.password_hash);
+        // A password guess here is a sign-in attempt: same lockout.
+        const lockout = { scope: `user:${col.id}`, email: user.email, ip: clientIpForLockout(request) };
+        const attempt = await reserveLoginAttempt(lockout);
+        if (!attempt) {
+          set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
+        }
+        proven = await Bun.password.verify(body.password, user.password_hash).catch(() => false);
+        if (proven) await loginSucceeded(attempt);
       }
       if (!proven) {
         const headerToken = request.headers.get("authorization")?.replace("Bearer ", "");

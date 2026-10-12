@@ -112,7 +112,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Passwords could be guessed without an account lockout.** User sign-in had no
   per-account limit, only the per-IP rate limit, and the admin lockout was off by default.
   See the upgrade note above. The lockout is also charged before the password is checked,
-  so parallel attempts can't slip past it.
+  so parallel attempts can't slip past it, and it now also guards the password checks in
+  `confirm-email-change` and `oauth2/merge-confirm`. The per-IP limit is five times the
+  per-account one and is kept separately for admin and user sign-in, so people sharing an
+  address can't lock the admin out. `vaultbase setup-admin --force` clears an admin's
+  lockout when resetting the password.
 - **A victim's inbox could be flooded with reset and sign-in emails.** Password-reset,
   OTP and verification emails were limited only per client IP. Each user now gets at most
   one email of each kind per minute and five per hour; extra requests to the public

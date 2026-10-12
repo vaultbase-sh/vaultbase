@@ -139,40 +139,67 @@ export function getLockoutPolicy(): LockoutPolicy {
 }
 
 /**
+ * An IP may fail this many times the per-account limit before it is locked.
+ * One address often fronts many people (an office, a carrier NAT), so the IP
+ * key is a backstop against spraying many accounts, not a per-person limit.
+ */
+const IP_LOCKOUT_MULTIPLIER = 5;
+
+/**
  * Lockout keys for a sign-in. `scope` separates principals that share an
  * address: admins use `email:<addr>`, auth-collection users
  * `user:<collection-id>:<addr>`, so failing against one never locks the other.
+ * The IP key is scoped the same way, so users behind a shared address can't
+ * lock the admin sign-in out.
  */
-function lockoutKeys(opts: { scope?: string; email: string; ip: string | null }): string[] {
-  const keys = [`${opts.scope ?? "email"}:${opts.email.trim().toLowerCase()}`];
-  if (opts.ip) keys.push(`ip:${opts.ip}`);
-  return keys;
+function lockoutKeys(opts: { scope?: string; email: string; ip: string | null }): { account: string; ip: string | null } {
+  const scope = opts.scope ?? "email";
+  return {
+    account: `${scope}:${opts.email.trim().toLowerCase()}`,
+    ip: opts.ip ? `ip:${scope === "email" ? "" : `${scope}:`}${opts.ip}` : null,
+  };
+}
+
+/** A charged sign-in attempt, from `reserveLoginAttempt`. */
+export interface LoginAttempt {
+  account: string;
+  ipReservation: string | null;
 }
 
 /**
  * Charge one sign-in attempt against the account (and IP) before the password
- * is checked. Returns false while either key is locked out. The charge stays
- * as the recorded failure unless the sign-in succeeds and the caller runs
- * `clearLoginFailures`. Charging first means parallel attempts can't all read
- * the same count, the way a check-then-record lockout lets them.
+ * is checked. Returns null while either key is locked out. The charge stays
+ * as the recorded failure unless the sign-in succeeds and the caller passes
+ * the attempt to `loginSucceeded`. Charging first means parallel attempts
+ * can't all read the same count, the way a check-then-record lockout lets
+ * them. With the lockout off, an inert attempt is returned.
  */
-export async function reserveLoginAttempt(opts: { scope?: string; email: string; ip: string | null }): Promise<boolean> {
+export async function reserveLoginAttempt(opts: { scope?: string; email: string; ip: string | null }): Promise<LoginAttempt | null> {
+  const keys = lockoutKeys(opts);
   const policy = getLockoutPolicy();
-  if (!policy.enabled) return true;
-  const held: string[] = [];
-  for (const key of lockoutKeys(opts)) {
-    const id = await reserveAttempt(key, policy.max_attempts, policy.duration_seconds);
-    if (!id) {
-      for (const h of held) await releaseAttempt(h);
-      return false;
+  if (!policy.enabled) return { account: keys.account, ipReservation: null };
+  const held = await reserveAttempt(keys.account, policy.max_attempts, policy.duration_seconds);
+  if (!held) return null;
+  let ipReservation: string | null = null;
+  if (keys.ip) {
+    ipReservation = await reserveAttempt(keys.ip, policy.max_attempts * IP_LOCKOUT_MULTIPLIER, policy.duration_seconds);
+    if (!ipReservation) {
+      await releaseAttempt(held);
+      return null;
     }
-    held.push(id);
   }
-  return true;
+  return { account: keys.account, ipReservation };
 }
 
-export async function clearLoginFailures(opts: { scope?: string; email: string; ip: string | null }): Promise<void> {
-  for (const key of lockoutKeys(opts)) await clearAttemptFailures(key);
+/**
+ * The attempt succeeded: forget the account's failures and withdraw this
+ * attempt's charge on the IP. Earlier IP failures are kept — otherwise an
+ * attacker spraying many accounts from one address could reset the IP budget
+ * by signing in to an account of their own now and then.
+ */
+export async function loginSucceeded(attempt: LoginAttempt): Promise<void> {
+  await clearAttemptFailures(attempt.account);
+  if (attempt.ipReservation) await releaseAttempt(attempt.ipReservation);
 }
 
 // ── Per-account attempt budgets ─────────────────────────────────────────────
