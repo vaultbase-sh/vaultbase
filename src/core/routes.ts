@@ -161,7 +161,9 @@ export async function dispatchCustomRoute(
   }
 
   const auth = await extractAuth(request, jwtSecret);
-  if (match.route.requireAuth && !auth) {
+  // A guest session (`/auth/:collection/anonymous`) is self-issued by
+  // anyone, so it doesn't count as signed in.
+  if (match.route.requireAuth && (!auth || auth.anonymous)) {
     return { status: 401, headers: {}, body: { error: "Unauthorized", code: 401 } };
   }
   const helpers = makeHookHelpers({

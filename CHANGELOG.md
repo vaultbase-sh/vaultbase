@@ -338,7 +338,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `/api/v1/custom/` answer before the rest of the pipeline, so none of the three applied,
   and an uncaught error returned its message (SQL, file paths) to the caller. They now
   get all three and a generic `500`. Routes can also require sign-in (`require_auth`,
-  **Require sign-in** in the editor); existing routes stay public.
+  **Require sign-in** in the editor; guest sessions don't count); existing routes stay
+  public.
 - **Restoring a backup revived revoked sessions and kept stale caches.** A restore rolled
   back `token_revocations`, so sessions signed out and API tokens revoked since the
   backup worked again; it kept serving collections, hooks and routes from the replaced

@@ -82,4 +82,17 @@ describe("custom route hardening", () => {
     const ok = (await get("/mine", { authorization: `Bearer ${await signUserJwt(id, "u@test.local", "users", SECRET)}` }))!;
     expect(ok.status).toBe(200);
   });
+
+  it("require_auth doesn't accept a self-issued guest session (review 17 F-7)", async () => {
+    await route("/mine", `return { ok: true };`, 1);
+    const jose = await import("jose");
+    const id = await seedAuthUser({ collection: "users", email: "g@test.local", isAnonymous: true });
+    const now = Math.floor(Date.now() / 1000);
+    const guest = await new jose.SignJWT({ id, email: "", collection: "users", anonymous: true })
+      .setProtectedHeader({ alg: "HS256" }).setIssuer("vaultbase").setAudience("user")
+      .setIssuedAt(now).setExpirationTime("1h").setJti(crypto.randomUUID())
+      .sign(new TextEncoder().encode(SECRET));
+    // Own peer address, so rate-limit buckets from other tests can't interfere.
+    expect((await get("/mine", { authorization: `Bearer ${guest}` }, "198.51.100.77"))!.status).toBe(401);
+  });
 });
