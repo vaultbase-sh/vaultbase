@@ -178,7 +178,11 @@ interface CompileCtx {
   aliasSeq: { n: number };
   /** Cap on aliasSeq.n for this compile. */
   maxJoins: number;
-  /** Cross-collection operands used by this expression (not by inherited view rules). */
+  /**
+   * Cross-collection operands charged to this compile, shared with every
+   * derived context — inherited view rules included, so a client filter's
+   * one reference can't pull in more through the referenced collection.
+   */
   crossRefs: { n: number; max: number };
 }
 

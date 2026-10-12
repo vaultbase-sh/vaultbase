@@ -28,6 +28,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read without it. To switch to the env var later, set it to the file's contents. The
   server refuses to start if the key doesn't decrypt the stored secrets, or if the key
   file exists but can't be read, rather than replacing it.
+- **Client filters may use one cross-collection reference.** A non-admin `?filter=` with
+  more than one `@collection.*` / `_via_` operand — including one whose referenced
+  collection's view rule itself uses them — now answers `400`. Admin requests and rules
+  are not limited this way.
 - **Custom routes are rate limited and return a generic `500`.** A custom route that
   throws now answers `{"error":"Internal error"}`; read the message in the logs. They
   count against the `/api/*` rate-limit rules like other API requests.
@@ -379,8 +383,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   collection and alias bound to that one row; `!=` and `!~` against such a reference
   mean no row matches (and are false for non-admins unless the collection is public).
   An expression may join at most 3 collections/aliases, and a non-admin `?filter=` may
-  use only one `@collection.*` or `_via_` operand, so a client filter can no longer
-  build a cross join that stalls the server.
+  use only one `@collection.*` or `_via_` operand — counting any in the view rule of the
+  collection it references — so a client filter can no longer build a cross join that
+  stalls the server.
 - **The same address could be registered twice in different case.** Promoting an
   anonymous account, changing email and magic-link sign-up checked for an existing
   address case-sensitively, so `ALICE@example.com` could be added beside
