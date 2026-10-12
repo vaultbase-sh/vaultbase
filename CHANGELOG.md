@@ -160,6 +160,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Any admin could take over another admin's account.** `PATCH /admin/admins/:id`
   changed any admin's email and password; it now only changes the caller's own (`403`
   otherwise). A locked-out admin is recovered with `vaultbase setup-admin --force`.
+- **The admin SQL time limit never worked.** A query ran on the server's own thread, so
+  the 5-second limit couldn't interrupt it and one slow query stalled every other
+  request. Queries now run in a separate process (read-only mode) or worker (sandbox) and
+  are stopped when the limit is reached. The sandbox also refuses `ATTACH`, `DETACH` and
+  `VACUUM`, which could reach the live database or write files outside it.
 
 ### Fixed
 - **The hosted magic-link page now works for accounts with two-factor sign-in.** It used

@@ -16,7 +16,8 @@
  *     timer (see `pruneStaleSandboxes`).
  *
  * Both modes apply:
- *   • 5s wall-clock budget enforced via `db.interrupt()` from a setTimeout.
+ *   • 5s wall-clock budget, enforced by running the statement off the main
+ *     thread and killing it when the budget runs out (see sql-exec.ts).
  *   • 1000-row hard cap on result sets (truncated flag in the response).
  *   • SQLite errors flow back as structured `{error, code}` rather than
  *     thrown — the calling endpoint returns 200 OK with the error body
@@ -24,7 +25,8 @@
  */
 
 import { Database } from "bun:sqlite";
-import { getSandboxDb } from "./sql-sandbox.ts";
+import { getSandboxDb, replaceSandboxDb } from "./sql-sandbox.ts";
+import { execOnImage, execReadOnly, ExecTimeout, type ExecResult } from "./sql-exec.ts";
 
 export const MAX_SQL_RESULT_ROWS = 1000;
 export const SQL_QUERY_TIMEOUT_MS = 5000;
@@ -82,137 +84,87 @@ export interface RunSqlResult {
  * the literal "DELETE" in a WHERE doesn't false-positive.
  */
 export function detectMutation(sql: string): string | null {
+  return detectKeyword(sql, FORBIDDEN_RO_KEYWORDS);
+}
+
+function detectKeyword(sql: string, keywords: readonly string[]): string | null {
   const stripped = sql
     .replace(/--[^\n]*/g, " ")           // line comments
     .replace(/\/\*[\s\S]*?\*\//g, " ")    // block comments
     .replace(/'(?:[^']|'')*'/g, "''")     // single-quoted strings
     .replace(/"(?:[^"]|"")*"/g, '""');    // double-quoted identifiers/strings
   const upper = stripped.toUpperCase();
-  for (const kw of FORBIDDEN_RO_KEYWORDS) {
+  for (const kw of keywords) {
     const re = new RegExp(`\\b${kw}\\b`);
     if (re.test(upper)) return kw;
   }
   return null;
 }
 
+/**
+ * Never allowed in the sandbox: they reach files outside it. `ATTACH` can
+ * open the live database (or any file) read-write, and `VACUUM INTO` writes
+ * a file anywhere the server can.
+ */
+const FORBIDDEN_SANDBOX_KEYWORDS = ["ATTACH", "DETACH", "VACUUM"];
+
 export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
   const start = Date.now();
   const timeout = Math.min(Math.max(opts.timeoutMs ?? SQL_QUERY_TIMEOUT_MS, 100), 30_000);
+  const fail = (error: string, errorCode: string): RunSqlResult => ({
+    ok: false,
+    columns: [], rows: [], rowCount: 0, truncated: false,
+    durationMs: Date.now() - start,
+    error, errorCode,
+  });
 
   // Read-only safety: reject mutating SQL before opening the connection.
   if (opts.mode === "readonly") {
     const bad = detectMutation(opts.sql);
-    if (bad) {
-      return {
-        ok: false,
-        columns: [], rows: [], rowCount: 0, truncated: false,
-        durationMs: Date.now() - start,
-        error: `${bad} statements are blocked in read-only mode. Switch to sandbox to run them safely.`,
-        errorCode: "VAULTBASE_READONLY",
-      };
-    }
+    if (bad) return fail(`${bad} statements are blocked in read-only mode. Switch to sandbox to run them safely.`, "VAULTBASE_READONLY");
+  } else {
+    const bad = detectKeyword(opts.sql, FORBIDDEN_SANDBOX_KEYWORDS);
+    if (bad) return fail(`${bad} is not allowed in the sandbox: it reaches files outside it.`, "VAULTBASE_SANDBOX");
   }
 
-  let db: Database | null = null;
-  // True only for the live-DB path — sandbox handles are owned by the
-  // sandbox registry and must not be closed here.
-  let ownsConnection = true;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let timedOut = false;
-
+  const req = { sql: opts.sql, params: opts.params ?? [], maxRows: MAX_SQL_RESULT_ROWS };
+  let out: ExecResult;
   try {
     if (opts.mode === "sandbox") {
-      if (!opts.adminId) {
-        return {
-          ok: false,
-          columns: [], rows: [], rowCount: 0, truncated: false,
-          durationMs: Date.now() - start,
-          error: "adminId is required for sandbox mode",
-          errorCode: "VAULTBASE_NO_SANDBOX",
-        };
-      }
+      if (!opts.adminId) return fail("adminId is required for sandbox mode", "VAULTBASE_NO_SANDBOX");
       const sb = getSandboxDb(opts.adminId);
-      if (!sb) {
-        return {
-          ok: false,
-          columns: [], rows: [], rowCount: 0, truncated: false,
-          durationMs: Date.now() - start,
-          error: "Sandbox not initialised — reset the sandbox first.",
-          errorCode: "VAULTBASE_NO_SANDBOX",
-        };
-      }
-      db = sb;
-      ownsConnection = false;
+      if (!sb) return fail("Sandbox not initialised — reset the sandbox first.", "VAULTBASE_NO_SANDBOX");
+      const r = await execOnImage(sb.serialize(), req, timeout);
+      if (r.image) replaceSandboxDb(opts.adminId, Database.deserialize(r.image));
+      out = r.out;
     } else {
-      db = new Database(opts.dbPath, { readonly: true, create: false });
-      try { db.exec("PRAGMA query_only = ON"); } catch { /* noop */ }
+      out = await execReadOnly(opts.dbPath, req, timeout);
     }
-
-    timer = setTimeout(() => {
-      timedOut = true;
-      // bun:sqlite exposes `interrupt` to abort an in-flight statement.
-      const anyDb = db as unknown as { interrupt?: () => void };
-      try { anyDb.interrupt?.(); } catch { /* noop */ }
-    }, timeout);
-
-    const params = (opts.params ?? []) as ReadonlyArray<unknown>;
-
-    // For row-returning statements (SELECT / EXPLAIN / RETURNING) we need
-    // a prepared Statement to read columnNames + rows. For mutations
-    // (INSERT/UPDATE/DELETE/DDL) we use Database.run(), which is the
-    // path bun:sqlite documents for changes-only execution. Distinguish
-    // by preparing once + checking columnNames.
-    const stmt = db.prepare(opts.sql);
-    const colNames = (stmt as unknown as { columnNames?: string[] }).columnNames ?? [];
-
-    let rows: unknown[] = [];
-    let changes: number | undefined;
-    if (colNames.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const out = (stmt as unknown as { all(...a: unknown[]): unknown }).all(...params);
-      rows = Array.isArray(out) ? out : [];
-    } else {
-      // Database.run handles statements that don't return rows. Returns
-      // { changes, lastInsertRowid }.
-      const r = (db as unknown as { run(sql: string, ...p: unknown[]): { changes: number } })
-        .run(opts.sql, ...params);
-      changes = typeof r.changes === "number" ? r.changes : undefined;
-    }
-
-    const total = rows.length;
-    const truncated = total > MAX_SQL_RESULT_ROWS;
-    const sliced = truncated ? rows.slice(0, MAX_SQL_RESULT_ROWS) : rows;
-    const columns = sliced[0] && typeof sliced[0] === "object"
-      ? Object.keys(sliced[0] as Record<string, unknown>)
-      : [];
-    const positional = sliced.map((r) =>
-      columns.map((c) => (r as Record<string, unknown>)[c]),
-    );
-
-    return {
-      ok: true,
-      columns,
-      rows: positional,
-      rowCount: total,
-      truncated,
-      durationMs: Date.now() - start,
-      ...(changes !== undefined ? { changes } : {}),
-    };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      columns: [], rows: [], rowCount: 0, truncated: false,
-      durationMs: Date.now() - start,
-      error: timedOut ? `Query exceeded ${timeout}ms time budget` : msg,
-      errorCode: timedOut ? "TIMEOUT" : extractSqliteCode(e) ?? "SQLITE_ERROR",
-    };
-  } finally {
-    if (timer) clearTimeout(timer);
-    if (ownsConnection) {
-      try { db?.close(); } catch { /* ignore */ }
-    }
+    if (e instanceof ExecTimeout) return fail(`Query exceeded ${timeout}ms time budget`, "TIMEOUT");
+    return fail(e instanceof Error ? e.message : String(e), "SQLITE_ERROR");
   }
+  if (!out.ok) return fail(out.error, out.code ?? "SQLITE_ERROR");
+
+  const total = out.total;
+  const sliced = out.rows;
+  const truncated = total > MAX_SQL_RESULT_ROWS;
+  const columns = sliced[0] && typeof sliced[0] === "object"
+    ? Object.keys(sliced[0] as Record<string, unknown>)
+    : [];
+  const positional = sliced.map((r) =>
+    columns.map((c) => (r as Record<string, unknown>)[c]),
+  );
+
+  return {
+    ok: true,
+    columns,
+    rows: positional,
+    rowCount: total,
+    truncated,
+    durationMs: Date.now() - start,
+    ...(out.changes !== undefined ? { changes: out.changes } : {}),
+  };
 }
 
 function extractSqliteCode(e: unknown): string | null {
