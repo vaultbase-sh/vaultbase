@@ -156,3 +156,23 @@ describe("other password checks share the lockout", () => {
     expect((await post("/auth/users/oauth2/merge-confirm", { merge_token: "merge-token", password: PASSWORD })).status).toBe(429);
   });
 });
+
+describe("lockout keys", () => {
+  it("failing against a look-alike address doesn't reveal whether the real one exists", async () => {
+    // alice@ exists, ghost@ doesn't. Failing against their upper-case twins
+    // must leave both answering the same way.
+    for (let i = 0; i < 10; i++) {
+      await userLogin("ALICE@test.local", `guess-${i}`);
+      await userLogin("GHOST@test.local", `guess-${i}`);
+    }
+    expect((await userLogin("alice@test.local", "wrong")).status).toBe(401);
+    expect((await userLogin("ghost@test.local", "wrong")).status).toBe(401);
+  });
+
+  it("an address shaped like an internal key can't lock an account it doesn't own", async () => {
+    const col = (await getCollection("users"))!;
+    const aliceId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    for (let i = 0; i < 12; i++) await userLogin(`id:${aliceId}`, "x");
+    expect((await userLogin("alice@test.local", PASSWORD)).status).toBe(200);
+  });
+});

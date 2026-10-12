@@ -169,7 +169,12 @@ interface LockoutOpts {
 function lockoutKeys(opts: LockoutOpts): { account: string; ip: string | null } {
   const scope = opts.scope ?? "email";
   return {
-    account: opts.subject ? `${scope}:id:${opts.subject}` : `${scope}:${opts.email.trim().toLowerCase()}`,
+    // `id:` and `addr:` never overlap, whatever address is typed. An address
+    // that matches no account is keyed exactly as typed, the way lookups
+    // match it: lower-casing made `VICTIM@x` and `victim@x` share a counter,
+    // so a 429 (or not) after failing against one told whether the other
+    // was an account.
+    account: opts.subject ? `${scope}:id:${opts.subject}` : `${scope}:addr:${opts.email.trim()}`,
     ip: opts.ip ? `ip:${scope === "email" ? "" : `${scope}:`}${opts.ip}` : null,
   };
 }

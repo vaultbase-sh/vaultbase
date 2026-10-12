@@ -82,6 +82,27 @@ describe("recovery codes need a second factor", () => {
   });
 });
 
+describe("/totp/confirm", () => {
+  it("refuses when MFA is already on, so it can't mint recovery codes", async () => {
+    const col = await ensureAuthCollection("users");
+    const id = crypto.randomUUID();
+    const secret = generateSecret();
+    const now = Math.floor(Date.now() / 1000);
+    await insertUser(col, { id, email: "on@test.local", password_hash: "x", totp_secret: secret, totp_enabled: 1, created_at: now, updated_at: now });
+    const jwt = await signUserJwt(id, "on@test.local", "users", SECRET);
+    expect((await post("/auth/users/totp/confirm", { code: generateCode(secret) }, jwt)).status).toBe(409);
+  });
+
+  it("guesses at a pending enrolment are capped", async () => {
+    const id = await seedAuthUser({ collection: "users", email: "p@test.local" });
+    const jwt = await signUserJwt(id, "p@test.local", "users", SECRET);
+    const { secret } = (await (await post("/auth/users/totp/setup", {}, jwt)).json() as { data: { secret: string } }).data;
+    const wrong = String((Number(generateCode(secret)) + 500_000) % 1_000_000).padStart(6, "0");
+    for (let i = 0; i < 10; i++) expect((await post("/auth/users/totp/confirm", { code: wrong }, jwt)).status).toBe(401);
+    expect((await post("/auth/users/totp/confirm", { code: generateCode(secret) }, jwt)).status).toBe(429);
+  });
+});
+
 describe("request endpoints don't wait for the mail server", () => {
   let silent: TCPSocketListener<unknown>;
   beforeEach(() => {

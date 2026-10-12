@@ -107,4 +107,17 @@ describe("one-time tokens at rest", () => {
     expect(row!.code).toBeNull();
     expect(row!.used_at).not.toBeNull();
   });
+
+  it("a pre-upgrade row whose hashed id is already taken doesn't stop the migration", async () => {
+    const col = (await getCollection("users"))!;
+    const x = "state-chosen-by-a-caller";
+    const exp = Math.floor(Date.now() / 1000) + 600;
+    await getDb().insert(authTokens).values([
+      { id: x, user_id: "", collection_id: col.id, purpose: "oauth2_pkce", expires_at: exp },
+      { id: hashedTokenId(x), user_id: "", collection_id: col.id, purpose: "oauth2_pkce", expires_at: exp },
+    ]);
+    await runMigrations();
+    const ids = (await getDb().select().from(authTokens)).map((r) => r.id);
+    expect(ids).not.toContain(x);
+  });
 });

@@ -56,7 +56,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
   Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
   sessions are exempt.
-- **`/totp/setup` refuses while MFA is on.** To move a user to a new authenticator,
+- **`/totp/setup` and `/totp/confirm` refuse while MFA is on.** To move a user to a new authenticator,
   call `/totp/disable` with a current code, then `/totp/setup` and `/totp/confirm` again.
 - **`request-email-change` no longer reports a taken address.** It answers
   `{ "sent": true }` and sends nothing; the old `422 Email already in use` is gone.

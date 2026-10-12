@@ -471,9 +471,13 @@ function hashLegacyAuthTokens(client: Database): void {
     `SELECT id FROM vaultbase_auth_tokens
       WHERE id NOT LIKE 'h:%' AND purpose NOT IN ('totp_step', 'refresh_rotation')`,
   ).all() as Array<{ id: string }>;
-  const rekey = client.prepare(`UPDATE vaultbase_auth_tokens SET id = ? WHERE id = ?`);
+  // OR IGNORE, then drop what couldn't move: a row whose hashed id is
+  // already taken (a raw id can be anything a caller chose, e.g. an OAuth
+  // `state` of "h:…") must not stop the server from booting.
+  const rekey = client.prepare(`UPDATE OR IGNORE vaultbase_auth_tokens SET id = ? WHERE id = ?`);
+  const drop = client.prepare(`DELETE FROM vaultbase_auth_tokens WHERE id = ?`);
   for (const r of rows) {
-    rekey.run("h:" + new Bun.CryptoHasher("sha256").update(r.id).digest("hex"), r.id);
+    if (rekey.run("h:" + new Bun.CryptoHasher("sha256").update(r.id).digest("hex"), r.id).changes === 0) drop.run(r.id);
   }
 }
 

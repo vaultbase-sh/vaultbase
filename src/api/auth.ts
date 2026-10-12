@@ -1383,9 +1383,18 @@ export function makeAuthPlugin(jwtSecret: string) {
         const u = findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "Run /totp/setup first", code: 400 }; }
-        if ((await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code)) !== "ok") {
+        // Confirming hands out recovery codes, so it must not double as a way
+        // round /recovery/regenerate: only a pending enrolment can be
+        // confirmed, under the same per-account budget.
+        if (u.totp_enabled === 1) { set.status = 409; return { error: "MFA is already enabled", code: 409 }; }
+        const attempt = await reserveAttempt(`mfa:${col.id}:${u.id}`, MAX_ACCOUNT_CODE_FAILURES, ATTEMPT_WINDOW_SECONDS);
+        if (!attempt) { set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 }; }
+        const totp = await verifyTotpOnce(col.id, u.id, u.totp_secret, body.code);
+        if (totp !== "ok") {
+          if (totp === "replayed") await releaseAttempt(attempt);
           set.status = 401; return { error: "Invalid code", code: 401 };
         }
+        await releaseAttempt(attempt);
         await updateUserById(col, u.id, { totp_enabled: 1, updated_at: Math.floor(Date.now() / 1000) });
         // Hand out the first set of recovery codes here, where the code that
         // proves the authenticator works was just checked. Regenerating later
