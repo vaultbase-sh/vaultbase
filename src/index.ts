@@ -1,5 +1,13 @@
-import { loadConfig } from "./config.ts";
-import { initDb, getDb } from "./db/client.ts";
+import { loadConfig, loadServiceEnvFile } from "./config.ts";
+import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
+import { initDb, getDb, closeDb } from "./db/client.ts";
+import { shutdownGracefully } from "./core/shutdown.ts";
+import { CLUSTER_LIMITS_WARNING, isClusterWorker, runsSingletonDuties } from "./core/cluster-role.ts";
+import { stopScheduler } from "./core/jobs.ts";
+import { stopQueueScheduler, waitForRunningJobs } from "./core/queues.ts";
+import { stopWebhookDispatcher } from "./core/webhooks.ts";
+import { stopBackupScheduler } from "./core/backups.ts";
+import { stopUpdateCheckScheduler } from "./core/update-check.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { admin } from "./db/schema.ts";
 import { createServer } from "./server.ts";
@@ -14,8 +22,14 @@ process.on("unhandledRejection", (reason) => {
   const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
   process.stderr.write(`[unhandled-rejection] ${msg}\n`);
 });
+// An uncaught exception leaves the process in an unknown state (a half-run
+// write, a lock never released), so log it and shut down; the service
+// manager restarts us. It used to be logged and ignored.
+let onFatal: ((e: Error) => void) | null = null;
 process.on("uncaughtException", (e) => {
   process.stderr.write(`[uncaught-exception] ${e.stack ?? e.message}\n`);
+  if (onFatal) onFatal(e);
+  else process.exit(1);
 });
 
 interface CliFlags {
@@ -127,6 +141,9 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     await db.update(admin)
       .set({ password_hash: hash, password_reset_at: now })
       .where(eq(admin.email, opts.email));
+    // A reset is how an operator gets back in after a lockout: clear it.
+    const { clearAttemptFailures } = await import("./core/security.ts");
+    await clearAttemptFailures(`email:id:${sameEmail[0]!.id}`);
     process.stdout.write(`vaultbase: admin '${opts.email}' password reset.\n`);
   } else {
     const id = crypto.randomUUID();
@@ -189,7 +206,7 @@ Subcommands:
                                   --email <e> --password <p> [--force]
 
   cluster                         Spawn N worker processes (multi-core deployments)
-                                  Set VAULTBASE_CLUSTER_WORKERS=N (default: CPU count).
+                                  Set VAULTBASE_WORKERS=N (default: CPU count).
 
   mcp                             Run the MCP server over stdio.
                                   Connect Claude Desktop / Cursor / Continue / Cline.
@@ -220,10 +237,12 @@ Server flags:
 Environment:
   VAULTBASE_DATA_DIR              Data directory (default: ./vaultbase_data)
   VAULTBASE_PORT                  HTTP port (default: 8091)
-  VAULTBASE_HOST                  Bind host (default: 0.0.0.0)
+  VAULTBASE_HOST                  Bind host (default: all interfaces, IPv4 and IPv6)
+  VAULTBASE_SETUP_KEY             Key for first-admin setup (default: generated, printed at boot)
+  VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
-  VAULTBASE_ENCRYPTION_KEY        Encrypted-fields key (required to use encrypted fields)
-  VAULTBASE_CLUSTER_WORKERS       Worker count for \`vaultbase cluster\`
+  VAULTBASE_ENCRYPTION_KEY        At-rest key for secrets and encrypted fields (default: <dataDir>/.encryption-key, generated)
+  VAULTBASE_WORKERS               Worker count for \`vaultbase cluster\`
   VAULTBASE_TRUSTED_PROXIES       Comma-separated peer IPs trusted for X-Forwarded-For
   NODE_ENV / VAULTBASE_ENV        Triggers production guardrails on \`wipe\`.
 
@@ -328,8 +347,14 @@ async function main() {
     }
   }
 
-  const config = await loadConfig();
   const flags = parseCliArgs(process.argv.slice(2));
+  // `sudo vaultbase setup-admin` used to ignore the service's env file and
+  // write the admin into a throwaway ./vaultbase_data in the current dir.
+  if (flags.setupAdmin) {
+    const envFile = loadServiceEnvFile();
+    if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+  }
+  const config = await loadConfig();
 
   initDb(`file:${config.dbPath}`);
   await runMigrations();
@@ -340,6 +365,27 @@ async function main() {
   if (flags.setupAdmin) {
     await setupAdminFromCli(flags.setupAdmin);
     process.exit(0);
+  }
+
+  // Refuse to run with a key that can't read the stored secrets.
+  {
+    const { encryptionKeyMatchesData } = await import("./api/settings.ts");
+    if (!encryptionKeyMatchesData()) {
+      process.stderr.write(
+        "vaultbase: the encryption key does not decrypt the stored secrets. If you set VAULTBASE_ENCRYPTION_KEY, " +
+        `set it to the contents of ${config.dataDir}/.encryption-key (or unset it); a lost key can't be recovered.\n`,
+      );
+      process.exit(1);
+    }
+  }
+  // Secret settings saved before an encryption key existed are still
+  // plaintext in data.db (and its backups); encrypt them now.
+  try {
+    const { encryptPlaintextSecretSettings } = await import("./api/settings.ts");
+    const n = encryptPlaintextSecretSettings();
+    if (n > 0) process.stderr.write(`vaultbase: encrypted ${n} secret setting(s) stored in plaintext\n`);
+  } catch (e) {
+    process.stderr.write(`vaultbase: could not encrypt plaintext secret settings: ${e instanceof Error ? e.message : String(e)}\n`);
   }
 
   if (flags.applySnapshot) {
@@ -356,26 +402,55 @@ async function main() {
   // connections (SO_REUSEPORT). Single-process mode behaves exactly as
   // before — no flag, no behavior change.
   const isWorker = !!process.env["VAULTBASE_WORKER_ID"];
-  server.listen({ port: config.port, ...(isWorker ? { reusePort: true } : {}) });
+  // VAULTBASE_HOST was documented but never read, so the server always
+  // listened on every interface. Unset keeps Bun's default (all interfaces,
+  // IPv4 and IPv6).
+  const hostname = process.env["VAULTBASE_HOST"]?.trim();
+  server.listen({ port: config.port, ...(hostname ? { hostname } : {}), ...(isWorker ? { reusePort: true } : {}) });
 
-  // Graceful shutdown: drain the buffered log writer so the last 50ms of
-  // entries reach disk before exit. Two layers — async on signals (loop
-  // still runs) + sync on `exit` (defensive, loop is dead).
-  const shutdown = async (signal: string): Promise<void> => {
-    process.stderr.write(`\nvaultbase: received ${signal}, draining logs...\n`);
-    try { await drainLogBuffer(); } catch { /* ignore */ }
-    process.exit(0);
+  // Graceful shutdown: stop taking connections, let in-flight requests
+  // finish (up to 10 s), stop background work, flush logs, close the
+  // database. A second signal exits at once. The sync drain on `exit` is a
+  // last line of defence when the loop is already dead.
+  let shuttingDown = false;
+  const shutdown = async (reason: string, code: number): Promise<void> => {
+    if (shuttingDown) process.exit(code);
+    shuttingDown = true;
+    process.stderr.write(`\nvaultbase: ${reason}, finishing in-flight requests...\n`);
+    const outcome = await shutdownGracefully({
+      stopServer: () => (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false),
+      cleanup: [
+        stopScheduler, stopQueueScheduler, stopWebhookDispatcher, stopBackupScheduler, stopUpdateCheckScheduler,
+        // Jobs already running finish (bounded) rather than being re-run after restart.
+        () => waitForRunningJobs(10_000),
+        () => drainLogBuffer(),
+        () => closeDb(),
+      ],
+      timeoutMs: 10_000,
+    });
+    if (outcome === "timeout") process.stderr.write("vaultbase: requests still running after 10s; exiting anyway\n");
+    process.exit(code);
   };
-  process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
-  process.on("SIGINT",  () => { void shutdown("SIGINT");  });
+  onFatal = () => { void shutdown("uncaught exception", 1); };
+  process.on("SIGTERM", () => { void shutdown("received SIGTERM", 0); });
+  process.on("SIGINT",  () => { void shutdown("received SIGINT", 0);  });
   process.on("exit", () => { drainLogBufferSync(); });
 
   const base = `http://localhost:${config.port}`;
+  if (isClusterWorker() && runsSingletonDuties()) process.stderr.write(CLUSTER_LIMITS_WARNING);
 
 
   if (!adminExists) {
+    // Setup needs a key; print where to use it. A key from
+    // VAULTBASE_SETUP_KEY is the operator's own and isn't echoed.
+    const key = requiredSetupKey({ quiet: true });
+    const link = setupKeyFromEnv()
+      ? `${base}/_/setup  (setup key: VAULTBASE_SETUP_KEY)`
+      : `${base}/_/setup#key=${encodeURIComponent(key)}`;
     console.log(
-      `\n┌─────────────────────────────────────────────┐\n│  Vaultbase is running at ${base}   │\n│  Set up your admin account:                  │\n│  ${base}/_/setup                  │\n└─────────────────────────────────────────────┘\n`
+      `\nVaultbase is running at ${base}\n` +
+      `No admin exists yet. Create one at:\n  ${link}\n` +
+      (setupKeyFromEnv() ? "" : `Setup key: ${key}\n`)
     );
   } else {
     const tag = process.env["VAULTBASE_WORKER_ID"]

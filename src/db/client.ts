@@ -32,6 +32,11 @@ export function initDb(url: string): DB {
   if (url.startsWith("file:")) path = url.slice(5);
   _client = new Database(path, { create: true });
   const isMemory = path === ":memory:";
+  // Wait up to 5 s for a lock instead of failing at once. Set first: the
+  // WAL switch below needs a lock, and with several processes opening the
+  // database together (cluster workers, a CLI next to the server) it used to
+  // fail with SQLITE_BUSY before any timeout applied.
+  _client.exec("PRAGMA busy_timeout = 5000;");
   // ── Performance pragmas ───────────────────────────────────────────────
   if (!isMemory) {
     // WAL: concurrent readers + single writer (massively better for read load).
@@ -58,8 +63,6 @@ export function initDb(url: string): DB {
   _client.exec("PRAGMA cache_size = -32000;");
   // Temp tables / sort buffers in RAM.
   _client.exec("PRAGMA temp_store = MEMORY;");
-  // Per-connection statement timeout to bound pathological queries.
-  _client.exec("PRAGMA busy_timeout = 5000;");
   // Improve PRAGMA optimize's plan quality without making it slow at boot.
   // Default analysis sample size is 100 rows per index; 400 gives noticeably
   // better stats on tables with skewed distributions (audit log, log files,

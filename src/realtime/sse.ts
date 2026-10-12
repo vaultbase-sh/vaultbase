@@ -1,4 +1,4 @@
-import { registerSSEClient, unregisterSSEClient, type WSLike } from "./manager.ts";
+import { admitConnection, registerSSEClient, unregisterSSEClient, type WSLike } from "./manager.ts";
 
 /**
  * Server-Sent Events fallback for clients that can't use WebSockets (locked-down
@@ -11,6 +11,12 @@ import { registerSSEClient, unregisterSSEClient, type WSLike } from "./manager.t
  */
 
 const HEARTBEAT_MS = 30_000;
+/**
+ * Bytes an SSE client may have queued and unread. Past this the client isn't
+ * keeping up (or has stopped reading without closing), and buffering for it
+ * would grow without bound — it is disconnected instead.
+ */
+const MAX_QUEUED_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 
 function formatEvent(eventType: string | null, data: string): Uint8Array {
@@ -33,24 +39,35 @@ interface SSEHandle {
  * Open an SSE stream and register a client with the realtime manager.
  * Returns a Response whose body streams events until the client disconnects.
  */
-export function openSSEStream(): SSEHandle {
+export function openSSEStream(ip?: string | null): SSEHandle | null {
   const clientId = crypto.randomUUID();
+  if (!admitConnection(clientId, ip)) return null;
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
 
-  const cleanup = () => {
+  /** End the stream; `abort` drops anything still queued (a stalled reader). */
+  const cleanup = (abort = false) => {
     if (closed) return;
     closed = true;
     if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     unregisterSSEClient(clientId);
-    try { controller?.close(); } catch { /* already closed */ }
+    try {
+      if (abort) controller?.error(new Error("SSE client too slow"));
+      else controller?.close();
+    } catch { /* already closed */ }
     controller = null;
   };
 
   const adapter: WSLike = {
+    close() { cleanup(); },
     send(data: string) {
       if (closed || !controller) throw new Error("SSE stream closed");
+      // desiredSize goes negative once more than MAX_QUEUED_BYTES is waiting.
+      if ((controller.desiredSize ?? 0) < 0) {
+        cleanup(true);
+        throw new Error("SSE client too slow");
+      }
       try {
         controller.enqueue(formatEvent("message", data));
       } catch (e) {
@@ -84,7 +101,7 @@ export function openSSEStream(): SSEHandle {
     cancel() {
       cleanup();
     },
-  });
+  }, { highWaterMark: MAX_QUEUED_BYTES, size: (chunk) => chunk?.byteLength ?? 0 });
 
   const response = new Response(stream, {
     status: 200,

@@ -155,7 +155,9 @@ export function sanitizeHtml(input: string): string {
           // (see WHATWG URL §basic-url-parse), so `java&#9;script:` resolves
           // to `javascript:` at render time. Replicate that quirk here so
           // the scheme check sees what the browser will see.
-          const normalized = stripUrlControlChars(v.trim());
+          // The URL parser also drops every leading C0 control or space
+          // (U+0000–U+0020), which trim() leaves: `\x01javascript:` runs.
+          const normalized = stripUrlControlChars(v).replace(/^[\u0000-\u0020]+/, "");
           if (DENIED_SCHEMES.test(normalized)) continue;
           if (DENIED_DATA_SCHEME.test(normalized) && !ALLOWED_DATA_IMAGE.test(normalized)) continue;
         }

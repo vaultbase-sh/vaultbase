@@ -43,6 +43,18 @@ async function setupUserWithTotp(): Promise<{ id: string; email: string; token: 
   return { id, email, token, totpSecret };
 }
 
+/**
+ * Regenerating takes a current authenticator code, and each code works once.
+ * Alternate between the previous and next 30 s step (both inside the drift
+ * window) so a test can regenerate twice, and leave the current step free
+ * for sign-in.
+ */
+let regenStep = 0;
+function regenCode(secret: string): { code: string } {
+  regenStep++;
+  return { code: generateCode(secret, Math.floor(Date.now() / 1000) + (regenStep % 2 ? -30 : 30)) };
+}
+
 function authReq(method: string, url: string, token: string | null, body?: unknown): Request {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -53,9 +65,9 @@ function authReq(method: string, url: string, token: string | null, body?: unkno
 
 describe("totp/recovery/regenerate", () => {
   it("returns 10 fresh plaintext codes formatted XXXX-XXXX", async () => {
-    const { token } = await setupUserWithTotp();
+    const { token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    const res = await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    const res = await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     expect(res.status).toBe(200);
     const body = await res.json() as { data: { codes: string[] } };
     expect(body.data.codes).toHaveLength(10);
@@ -67,12 +79,12 @@ describe("totp/recovery/regenerate", () => {
   });
 
   it("replaces all existing codes (regenerate is destructive)", async () => {
-    const { id, token } = await setupUserWithTotp();
+    const { id, token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const firstRows = await getDb().select().from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.user_id, id));
     expect(firstRows).toHaveLength(10);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const secondRows = await getDb().select().from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.user_id, id));
     expect(secondRows).toHaveLength(10);
     // Hashes must differ from first round
@@ -92,22 +104,22 @@ describe("totp/recovery/regenerate", () => {
 
 describe("totp/recovery/status", () => {
   it("reports totals and remaining counts", async () => {
-    const { token } = await setupUserWithTotp();
+    const { token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
     let res = await app.handle(authReq("GET", "/auth/users/totp/recovery/status", token));
     let body = await res.json() as { data: { total: number; remaining: number } };
     expect(body.data).toEqual({ total: 0, remaining: 0 });
 
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     res = await app.handle(authReq("GET", "/auth/users/totp/recovery/status", token));
     body = await res.json() as { data: { total: number; remaining: number } };
     expect(body.data).toEqual({ total: 10, remaining: 10 });
   });
 
   it("never returns plaintext or hashes", async () => {
-    const { token } = await setupUserWithTotp();
+    const { token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const res = await app.handle(authReq("GET", "/auth/users/totp/recovery/status", token));
     const text = await res.text();
     expect(text).not.toContain("code_hash");
@@ -120,8 +132,9 @@ describe("login/mfa with recovery_code", () => {
     const { authTokens } = await import("../db/schema.ts");
     const ticket = "mfa-test-" + crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    const { hashedTokenId } = await import("./_helpers.ts");
     await getDb().insert(authTokens).values({
-      id: ticket,
+      id: hashedTokenId(ticket),
       user_id: userId,
       collection_id: collectionId,
       purpose: "mfa_ticket",
@@ -131,9 +144,9 @@ describe("login/mfa with recovery_code", () => {
   }
 
   it("accepts an unused recovery code and rejects it on reuse", async () => {
-    const { id, token } = await setupUserWithTotp();
+    const { id, token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    const regen = await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    const regen = await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const codes = ((await regen.json()) as { data: { codes: string[] } }).data.codes;
     const code = codes[0]!;
 
@@ -152,9 +165,9 @@ describe("login/mfa with recovery_code", () => {
   });
 
   it("rejects a bogus recovery code", async () => {
-    const { id, token } = await setupUserWithTotp();
+    const { id, token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const col = await (await import("../core/collections.ts")).getCollection("users");
     const ticket = await freshLoginTicket(id, col!.id);
     const res = await app.handle(authReq("POST", "/auth/users/login/mfa", null, { mfa_token: ticket, recovery_code: "AAAA-AAAA" }));
@@ -189,7 +202,7 @@ describe("totp/disable wipes recovery codes", () => {
   it("removes all rows for the user when MFA is disabled", async () => {
     const { id, token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token));
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
     const before = await getDb().select().from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.user_id, id));
     expect(before.length).toBe(10);
 

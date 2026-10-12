@@ -1,3 +1,4 @@
+import type { Collection } from "../db/schema.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { evaluateRule } from "../core/rules.ts";
 import { recordRuleEval, type RuleOutcome } from "../core/request-context.ts";
@@ -205,4 +206,19 @@ export function recordListRule(
     reason,
   });
   return allowed;
+}
+
+/**
+ * The cascade check for a delete made by `auth`: each row the delete would
+ * remove (or null out) through a relation must pass that collection's own
+ * delete (or update) rule. Admins skip it, as they skip the rules.
+ */
+export function cascadeRuleCheck(
+  request: Request,
+  auth: AuthContext | null,
+): ((col: Collection, record: Record<string, unknown>, change: Record<string, unknown> | null) => boolean) | undefined {
+  if (auth?.type === "admin") return undefined;
+  return (col, record, change) => change === null
+    ? checkRule(request, "delete_rule", col.name, col.delete_rule, auth, record)
+    : checkUpdateRule(request, col.name, col.update_rule, auth, record, change);
 }

@@ -3,10 +3,12 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { admin } from "../db/schema.ts";
+import { configureSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 
 const SECRET = "test-setup-status";
 
 beforeEach(async () => {
+  configureSetupKey(null);
   initDb(":memory:");
   await runMigrations();
 });
@@ -26,7 +28,9 @@ async function postSetup(email: string, password: string): Promise<Response> {
   return app.handle(
     new Request("http://localhost/admin/setup", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Setup always needs a key now (it used to be open without
+      // VAULTBASE_SETUP_KEY); see setup-key.test.ts.
+      headers: { "content-type": "application/json", "x-setup-key": requiredSetupKey({ quiet: true }) },
       body: JSON.stringify({ email, password }),
     })
   );

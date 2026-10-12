@@ -245,6 +245,8 @@ export const routes = sqliteTable("vaultbase_routes", {
   path: text("path").notNull(),
   code: text("code").notNull().default(""),
   enabled: integer("enabled").notNull().default(1),
+  /** 1 = answer 401 to callers without a valid user/admin token. */
+  require_auth: integer("require_auth").notNull().default(0),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });

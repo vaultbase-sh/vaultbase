@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { guardedFetch } from "./hook-egress.ts";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
@@ -299,7 +300,9 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
       } as Parameters<typeof listRecords>[1]);
       return { data: r.data as unknown as Record<string, unknown>[], totalItems: r.totalItems };
     },
-    fetch: globalThis.fetch.bind(globalThis),
+    // Same egress check as helpers.http: `fetch` was raw globalThis.fetch,
+    // which made the whole guard optional for hook code.
+    fetch: guardedFetch as typeof globalThis.fetch,
     log(...args: unknown[]) {
       const message = args.map(formatLogArg).join(" ");
       console.log("[hook]", message);

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq, or } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
+import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
 import { parseThumbSpec } from "./image.ts";
@@ -165,6 +166,7 @@ export function getSchemaVersion(): number {
 export function _resetCollectionCache(): void {
   schemaVersion++;
   cache.clear();
+  sensitiveCache = null;
   // Schema mutated — drop cached prepared statements (their SQL embeds table
   // / column names that may have changed).
   void clearPreparedStatementsOnSchemaChange();
@@ -211,7 +213,11 @@ export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
  */
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
   const out = new Set<string>();
-  if (col.type === "auth") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
+  // Views too: a view over an auth table (`SELECT * FROM vb_users`) carries
+  // the same columns under the same names, and `SELECT *` over a collection
+  // with a password field carries that field.
+  if (col.type === "auth" || col.type === "view") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
+  if (col.type === "view") for (const f of sensitiveSchema().passwordFields) out.add(f);
   try {
     for (const f of parseFields(col.fields)) {
       if (f.type === "password") out.add(f.name);
@@ -369,28 +375,97 @@ export function ensureAuthColumns(collectionName: string): void {
  * and obvious abuse, not a sandbox: a sufficiently determined admin can still
  * read sensitive tables in their SELECT and that's their responsibility.
  */
+const VIEW_BANNED_WORDS = new Set([
+  "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "ATTACH", "DETACH", "PRAGMA",
+  "REPLACE", "TRUNCATE", "VACUUM", "REINDEX", "LOAD_EXTENSION", "WITH", "RECURSIVE",
+]);
+
 export function validateViewQuery(query: string): void {
   const q = query.trim();
   if (!q) throw new Error("View query is empty");
-  const body = q.replace(/;\s*$/, "");
-  if (body.includes(";")) throw new Error("View query must be a single statement");
-  // Strip /* ... */ and -- ... line comments before keyword scanning so
-  // attackers can't hide banned tokens inside comments.
-  const stripped = body
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ");
-  if (!/^select\b/i.test(stripped.trim())) throw new Error("View query must begin with SELECT");
-  const banned = /\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|truncate|vacuum|reindex|load_extension|with|recursive)\b/i;
-  if (banned.test(stripped)) throw new Error("View query may only SELECT");
-  // `\bpragma\b` above misses the table-valued function forms —
-  // `pragma_table_info(...)`, `pragma_database_list()` — because `_` is a word
-  // character, so there is no boundary after "pragma". Those functions, and the
-  // `sqlite_*` metadata tables, disclose the schema and the DB's absolute file
-  // path to anyone who can read the resulting view. No legitimate view
-  // references them.
-  if (/\b(pragma_|sqlite_)/i.test(stripped)) {
+  // One scanner pass that knows strings, quoted identifiers and comments.
+  // Stripping comments with a regex first let a `'--'` inside a string hide
+  // the rest of the line from every check below.
+  const { words, identifiers, statements } = scanSql(q);
+  if (statements !== 1) throw new Error("View query must be a single statement");
+  if (words[0] !== "SELECT") throw new Error("View query must begin with SELECT");
+  if (words.some((w) => VIEW_BANNED_WORDS.has(w))) throw new Error("View query may only SELECT");
+  // The table-valued `pragma_*()` functions and the `sqlite_*` metadata
+  // tables disclose the schema and the DB's absolute file path to anyone who
+  // can read the resulting view. No legitimate view references them.
+  const names = [...words, ...identifiers];
+  if (names.some((w) => w.startsWith("PRAGMA_") || w.startsWith("SQLITE_"))) {
     throw new Error("View query may not reference SQLite metadata");
   }
+  // Auth secrets and password-type fields can't be selected by name (or
+  // renamed with AS). `SELECT *` keeps their names, and those are stripped
+  // from view rows and filters.
+  invalidateSensitiveSchema(); // judge against the schema as it is right now
+  const sensitive = sensitiveSchema();
+  if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()) || sensitive.passwordFields.has(w.toLowerCase()))) {
+    throw new Error("View query may not read password hashes, TOTP secrets, password_reset_at or password fields");
+  }
+  // A compound SELECT takes its column names from its first part, so
+  // `SELECT 1 AS a, … UNION SELECT * FROM vb_users` renames the secrets by
+  // position, past the name check above.
+  if (words.some((w) => w === "UNION" || w === "INTERSECT" || w === "EXCEPT") &&
+      [...words, ...identifiers].some((w) => sensitive.tables.has(w.toLowerCase()))) {
+    throw new Error("View query may not combine (UNION / INTERSECT / EXCEPT) results from tables with private columns");
+  }
+}
+
+/**
+ * Names the view check treats as private: every password-type field of any
+ * collection, and the tables that hold private columns — auth collections,
+ * collections with a password field, and (transitively) views that read
+ * from either, so `UNION` through an intermediate view is caught too. Read
+ * straight from the collections table so the check stays synchronous;
+ * cached for a moment because row output consults it.
+ */
+let sensitiveCache: { at: number; value: { passwordFields: Set<string>; tables: Set<string> } } | null = null;
+
+export function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> } {
+  if (sensitiveCache && Date.now() - sensitiveCache.at < 2_000) return sensitiveCache.value;
+  const passwordFields = new Set<string>();
+  const tables = new Set<string>();
+  let rows: Array<{ name: string; type: string; fields: string; view_query: string | null }> = [];
+  try {
+    rows = rawClient().prepare("SELECT name, type, fields, view_query FROM vaultbase_collections").all() as typeof rows;
+  } catch { /* no collections table yet */ }
+  for (const r of rows) {
+    let hasPassword = false;
+    try {
+      for (const f of parseFields(r.fields)) {
+        if (f.type === "password") { passwordFields.add(f.name.toLowerCase()); hasPassword = true; }
+      }
+    } catch { /* unparseable: treat by type only */ }
+    if (r.type === "auth" || hasPassword) tables.add(userTableName(r.name).toLowerCase());
+  }
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const r of rows) {
+      const t = userTableName(r.name).toLowerCase();
+      if (r.type !== "view" || !r.view_query || tables.has(t)) continue;
+      const { words, identifiers } = scanSql(r.view_query);
+      if ([...words, ...identifiers].some((w) => tables.has(w.toLowerCase()))) { tables.add(t); changed = true; }
+    }
+  }
+  const value = { passwordFields, tables };
+  sensitiveCache = { at: Date.now(), value };
+  return value;
+}
+
+/** Drop the cached sensitive-schema answer (schema changed). */
+export function invalidateSensitiveSchema(): void {
+  sensitiveCache = null;
+}
+
+/**
+ * A view row column name as SQLite reports it: a name repeated in the
+ * select list (a join over two auth rows) comes back as `name:1`, `name:2`.
+ */
+export function baseColumnName(name: string): string {
+  return name.replace(/:\d+$/, "");
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */

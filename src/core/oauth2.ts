@@ -140,8 +140,9 @@ async function facebookProfile(token: string): Promise<NormalizedProfile> {
   const profile: NormalizedProfile = {
     id: String(j["id"] ?? ""),
     email: typeof j["email"] === "string" ? (j["email"] as string) : "",
-    // Facebook doesn't expose email_verified; treat as verified since they require email confirmation themselves.
-    emailVerified: typeof j["email"] === "string" && j["email"] !== "",
+    // Facebook doesn't say whether the address was verified, so it can't
+    // be trusted to link to an existing account with that address.
+    emailVerified: false,
   };
   if (typeof j["name"] === "string") profile.name = j["name"];
   return profile;
@@ -159,8 +160,9 @@ async function microsoftProfile(token: string): Promise<NormalizedProfile> {
   const profile: NormalizedProfile = {
     id: String(j["id"] ?? ""),
     email,
-    // Azure AD email is operationally verified by tenant admin; treat as verified.
-    emailVerified: email !== "",
+    // `mail` / `userPrincipalName` are set by whoever runs the tenant, not
+    // proven by a mailbox round trip: any tenant can claim any address.
+    emailVerified: false,
   };
   if (typeof j["displayName"] === "string") profile.name = j["displayName"];
   return profile;
@@ -199,7 +201,8 @@ async function twitchProfile(token: string): Promise<NormalizedProfile> {
   const profile: NormalizedProfile = {
     id: String(u["id"] ?? ""),
     email: typeof u["email"] === "string" ? (u["email"] as string) : "",
-    emailVerified: typeof u["email"] === "string" && u["email"] !== "",
+    // Twitch returns the address without saying whether it was verified.
+    emailVerified: false,
   };
   if (typeof u["display_name"] === "string") profile.name = u["display_name"];
   return profile;
@@ -208,7 +211,8 @@ async function twitchProfile(token: string): Promise<NormalizedProfile> {
 async function spotifyProfile(token: string): Promise<NormalizedProfile> {
   return jsonProfile("https://api.spotify.com/v1/me", token, {
     id: "id", email: "email", name: "display_name",
-  }).then((p) => ({ ...p, emailVerified: p.email !== "" }));
+    // Spotify doesn't say whether the address was verified.
+  }).then((p) => ({ ...p, emailVerified: false }));
 }
 
 async function linkedinProfile(token: string): Promise<NormalizedProfile> {
@@ -272,7 +276,8 @@ async function notionProfile(token: string): Promise<NormalizedProfile> {
   const profile: NormalizedProfile = {
     id: String(j["id"] ?? ""),
     email,
-    emailVerified: email !== "",
+    // Notion doesn't say whether the workspace owner's address was verified.
+    emailVerified: false,
   };
   if (typeof j["name"] === "string") profile.name = j["name"];
   return profile;
@@ -715,6 +720,28 @@ export async function verifyChallenge(verifier: string, challenge: string): Prom
 // ── Authorize URL ────────────────────────────────────────────────────────────
 
 /** True for providers that require PKCE be auto-engaged (e.g. Twitter). */
+/** Providers that issue an OIDC id_token and honour `nonce`. */
+export function providerUsesNonce(name: string): boolean {
+  return name === "apple" || name === "oidc" || name === "google";
+}
+
+/**
+ * The `nonce` claim of the id_token in a token response, or null when there
+ * is no id_token. The token came straight from the provider's token endpoint
+ * over TLS, which is what OIDC requires for trusting its claims without a
+ * signature check (Apple's is verified anyway when its profile is read).
+ */
+export function idTokenNonce(tokenResponse: Record<string, unknown>): string | null | undefined {
+  const idToken = tokenResponse["id_token"];
+  if (typeof idToken !== "string" || !idToken) return undefined;
+  try {
+    const claims = jose.decodeJwt(idToken);
+    return typeof claims["nonce"] === "string" ? claims["nonce"] : null;
+  } catch {
+    return null;
+  }
+}
+
 export function providerRequiresPkce(name: string): boolean {
   return PROVIDERS[name]?.requiresPkce === true;
 }
@@ -727,6 +754,8 @@ export function buildAuthorizeUrl(opts: {
   /** PKCE — when set, appended as `code_challenge` + `code_challenge_method` (defaults to S256). */
   codeChallenge?: string;
   codeChallengeMethod?: "S256" | "plain";
+  /** OIDC `nonce`, echoed back in the id_token. */
+  nonce?: string;
 }): string {
   const def = PROVIDERS[opts.provider];
   if (!def) throw new Error(`Unknown OAuth2 provider: ${opts.provider}`);
@@ -765,6 +794,7 @@ export function buildAuthorizeUrl(opts: {
     params.set("response_type", "code id_token");
     params.set("response_mode", "form_post");
   }
+  if (opts.nonce) params.set("nonce", opts.nonce);
   if (opts.codeChallenge) {
     params.set("code_challenge", opts.codeChallenge);
     params.set("code_challenge_method", opts.codeChallengeMethod ?? "S256");

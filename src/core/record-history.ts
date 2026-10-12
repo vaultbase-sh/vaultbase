@@ -134,7 +134,15 @@ export interface ListHistoryOpts {
   perPage?: number;
   /** 1-indexed. */
   page?: number;
+  /**
+   * Keep only versions the caller may see. Paging and totals then count the
+   * visible versions, so filtering happens before the page is cut (over the
+   * newest `MAX_FILTERED_HISTORY` versions).
+   */
+  visible?: (entry: HistoryEntry) => boolean;
 }
+
+const MAX_FILTERED_HISTORY = 2000;
 
 export interface HistoryListResponse {
   data: HistoryEntry[];
@@ -158,6 +166,30 @@ export async function listRecordHistory(
     eq(recordHistory.collection, collectionName),
     eq(recordHistory.record_id, recordId),
   );
+
+  const decode = async (r: typeof recordHistory.$inferSelect): Promise<HistoryEntry> => ({
+    id: r.id,
+    collection: r.collection,
+    record_id: r.record_id,
+    op: r.op as HistoryOp,
+    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot)),
+    actor_id: r.actor_id,
+    actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
+    at: r.at,
+  });
+
+  if (opts.visible) {
+    const all = await db.select().from(recordHistory).where(where)
+      .orderBy(desc(recordHistory.at)).limit(MAX_FILTERED_HISTORY);
+    const kept = (await Promise.all(all.map(decode))).filter(opts.visible);
+    return {
+      data: kept.slice(offset, offset + perPage),
+      page,
+      perPage,
+      totalItems: kept.length,
+      totalPages: Math.max(1, Math.ceil(kept.length / perPage)),
+    };
+  }
 
   const totalRow = await db
     .select({ n: sql<number>`COUNT(*)` })

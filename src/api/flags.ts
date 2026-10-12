@@ -18,7 +18,8 @@
  *      one flag map you can refresh on websocket deltas later.
  */
 import Elysia, { t } from "elysia";
-import { verifyAuthToken } from "../core/sec.ts";
+import { extractBearer, verifyAuthToken } from "../core/sec.ts";
+import { getSetting } from "./settings.ts";
 import {
   listFlags, getFlag, upsertFlag, deleteFlag, evaluate, evaluateAll,
   listSegments, getSegment, upsertSegment, deleteSegment,
@@ -36,6 +37,21 @@ async function requireAdmin(request: Request, jwtSecret: string): Promise<boolea
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
   return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
+}
+
+/** The verified user or admin behind the request, as flag rules see it. */
+async function callerSession(request: Request, jwtSecret: string): Promise<Record<string, unknown> | null> {
+  const token = extractBearer(request);
+  if (!token) return null;
+  const ctx = await verifyAuthToken(token, jwtSecret);
+  if (!ctx || (ctx.type !== "user" && ctx.type !== "admin") || ctx.viaApiToken) return null;
+  return {
+    id: ctx.id,
+    type: ctx.type,
+    ...(ctx.email ? { email: ctx.email } : {}),
+    ...(ctx.collection ? { collection: ctx.collection } : {}),
+    ...(ctx.anonymous ? { anonymous: true } : {}),
+  };
 }
 
 export function makeFlagsPlugin(jwtSecret: string) {
@@ -199,8 +215,18 @@ export function makeFlagsPlugin(jwtSecret: string) {
     })
 
     // ── Public bulk eval ──────────────────────────────────────────────────
-    .post("/flags/evaluate", async ({ body }) => {
-      const ctx = (body.context ?? {}) as Record<string, unknown>;
+    .post("/flags/evaluate", async ({ body, request, set }) => {
+      // The targeting context is the caller's to send, except `auth`, which
+      // the server sets from the caller's session (and drops for anonymous
+      // callers). Rules that target `auth.*` can rely on it; anything else
+      // in the context is whatever the caller claims.
+      const session = await callerSession(request, jwtSecret);
+      if (!session && getSetting("flags.public_evaluate", "1") === "0") {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
+      const ctx: Record<string, unknown> = { ...((body.context ?? {}) as Record<string, unknown>) };
+      delete ctx["auth"];
+      if (session) ctx["auth"] = session;
       if (Array.isArray(body.keys) && body.keys.length > 0) {
         const out: Record<string, FlagValue> = {};
         for (const k of body.keys) {

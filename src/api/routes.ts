@@ -1,3 +1,6 @@
+import { checkRateLimit } from "./ratelimit.ts";
+import { applyCorsHeaders } from "../core/cors.ts";
+import { rememberedPeer, securityHeaders } from "../core/sec.ts";
 import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
@@ -25,28 +28,31 @@ function validatePath(path: string): string | null {
  * Wired into the main Elysia app's onRequest hook so it fires before route
  * resolution (preventing collisions with built-in /api/:collection routes).
  */
+/**
+ * Custom routes answer from `onRequest`, ahead of the rest of the pipeline,
+ * so they used to skip the rate limiter, the security headers and CORS.
+ * They now go through the same three here.
+ */
 export async function tryDispatchCustom(request: Request, jwtSecret: string): Promise<Response | undefined> {
   const url = new URL(request.url);
   const inner = customInnerPath(url.pathname);
   if (inner === null) return undefined;
+  const respond = (status: number, body: unknown, extra: Record<string, string> = {}): Response => {
+    const set = { headers: { "content-type": "application/json", ...securityHeaders({ isApi: true }), ...extra } as Record<string, string | undefined> };
+    applyCorsHeaders(request, set);
+    const text = typeof body === "string" ? body : JSON.stringify(body);
+    return new Response(text, { status, headers: set.headers as Record<string, string> });
+  };
+  const limited = await checkRateLimit(request, rememberedPeer(request), jwtSecret);
+  if (limited) return respond(429, limited.body, { "Retry-After": String(limited.retryAfter) });
   try {
     const result = await dispatchCustomRoute(request, inner, jwtSecret);
-    if (!result) {
-      return new Response(JSON.stringify({ error: "No matching custom route", code: 404 }), {
-        status: 404,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    const headers: Record<string, string> = { "content-type": "application/json", ...result.headers };
-    const body = typeof result.body === "string" ? result.body : JSON.stringify(result.body);
-    return new Response(body, { status: result.status, headers });
+    if (!result) return respond(404, { error: "No matching custom route", code: 404 });
+    return respond(result.status, result.body, result.headers);
   } catch (e) {
+    // Details go to the log, not to the caller.
     console.error("[routes] tryDispatchCustom failed:", e);
-    const msg = e instanceof Error ? e.message : String(e);
-    return new Response(JSON.stringify({ error: `Custom route dispatch failed: ${msg}`, code: 500 }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
+    return respond(500, { error: "Internal error", code: 500 });
   }
 }
 
@@ -81,6 +87,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
           path: body.path,
           code: body.code ?? "",
           enabled: body.enabled === false ? 0 : 1,
+          require_auth: body.require_auth === true ? 1 : 0,
           created_at: now,
           updated_at: now,
         });
@@ -95,6 +102,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
           path: t.String(),
           code: t.Optional(t.String()),
           enabled: t.Optional(t.Boolean()),
+          require_auth: t.Optional(t.Boolean()),
         }),
       }
     )
@@ -105,7 +113,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
         if (!(await isAdmin(request, jwtSecret))) {
           set.status = 401; return { error: "Unauthorized", code: 401 };
         }
-        const update: { name?: string; method?: string; path?: string; code?: string; enabled?: number; updated_at: number } = {
+        const update: { name?: string; method?: string; path?: string; code?: string; enabled?: number; require_auth?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
         if (body.name !== undefined) update.name = body.name;
@@ -123,6 +131,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
         }
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
+        if (body.require_auth !== undefined) update.require_auth = body.require_auth ? 1 : 0;
         await getDb().update(routes).set(update).where(eq(routes.id, params.id));
         invalidateRoutesCache();
         const row = await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1);
@@ -136,6 +145,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
           path: t.Optional(t.String()),
           code: t.Optional(t.String()),
           enabled: t.Optional(t.Boolean()),
+          require_auth: t.Optional(t.Boolean()),
         }),
       }
     )

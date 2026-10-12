@@ -35,7 +35,7 @@ async function drain(reader: AnyReader, quietMs = 80): Promise<string> {
 
 describe("SSE realtime", () => {
   it("opens a stream and sends a connect event with the clientId", async () => {
-    const { response, clientId } = openSSEStream();
+    const { response, clientId } = openSSEStream()!;
     expect(typeof clientId).toBe("string");
     expect(clientId.length).toBeGreaterThan(8);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
@@ -48,14 +48,14 @@ describe("SSE realtime", () => {
   });
 
   it("registers the client so the manager can find it by id", () => {
-    const { clientId } = openSSEStream();
+    const { clientId } = openSSEStream()!;
     expect(getSSEClient(clientId)).toBeDefined();
     unregisterSSEClient(clientId);
     expect(getSSEClient(clientId)).toBeUndefined();
   });
 
   it("delivers broadcast events as SSE 'message' frames", async () => {
-    const { response, clientId } = openSSEStream();
+    const { response, clientId } = openSSEStream()!;
     setSSESubscriptions(clientId, ["posts"]);
     broadcast("posts", {
       type: "create",
@@ -74,7 +74,7 @@ describe("SSE realtime", () => {
   });
 
   it("setSSESubscriptions replaces the topic list (PUT semantics)", async () => {
-    const { response, clientId } = openSSEStream();
+    const { response, clientId } = openSSEStream()!;
 
     setSSESubscriptions(clientId, ["posts"]);
     setSSESubscriptions(clientId, ["users"]); // replace, drop "posts"
@@ -90,7 +90,7 @@ describe("SSE realtime", () => {
   });
 
   it("respects view_rule filtering via the same shouldSendTo path as WS", async () => {
-    const { response, clientId } = openSSEStream();
+    const { response, clientId } = openSSEStream()!;
     setSSESubscriptions(clientId, ["posts"]);
     broadcast(
       "posts",
@@ -104,7 +104,7 @@ describe("SSE realtime", () => {
   });
 
   it("unregister drops the client from subscriptions and the registry", () => {
-    const { clientId } = openSSEStream();
+    const { clientId } = openSSEStream()!;
     setSSESubscriptions(clientId, ["posts", "users"]);
     expect(getSSEClient(clientId)).toBeDefined();
     unregisterSSEClient(clientId);

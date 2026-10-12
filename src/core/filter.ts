@@ -1,5 +1,5 @@
 import type { AuthContext } from "./rules.ts";
-import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
+import type { Expr, Operand, AnyCmpOp, FieldModifier, AuthProp } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 
 /** Parameterized SQL fragment + bound values. */
@@ -90,7 +90,25 @@ export interface ParseFilterOpts {
    * compiles, and the private-field guard above applies regardless.
    */
   hostFilterable?: (name: string) => boolean;
+  /**
+   * Most `@collection.*` joins one expression may create (default 3). Each
+   * distinct collection/alias is joined against every other, so a client
+   * filter repeating aliases multiplied rows: three aliases over a 300-row
+   * collection ran for seconds, four for minutes, on the main thread.
+   */
+  maxJoins?: number;
+  /**
+   * Most cross-collection operands (`@collection.*`, `_via_`) the expression
+   * itself may use, joined or not (default unlimited). Two in one comparison
+   * cost |host| × |A| × |B|: `@collection.tags.name != comments_via_post.body`
+   * took ~30 s at 1000 rows each, on the main thread. A client filter gets 1,
+   * which keeps it at most quadratic.
+   */
+  maxCrossRefs?: number;
 }
+
+/** Default cap on `@collection.*` joins per expression (see ParseFilterOpts.maxJoins). */
+export const MAX_COLLECTION_JOINS = 3;
 
 export function parseFilter(
   expr: string,
@@ -133,8 +151,12 @@ export function compileToSql(
     params: [],
     /** Track recursion depth on @collection.* / _via_ joins to bound work. */
     joinDepth: 0,
+    hoist: null,
+    aliasSeq: { n: 0 },
+    maxJoins: opts.maxJoins ?? MAX_COLLECTION_JOINS,
+    crossRefs: { n: 0, max: opts.maxCrossRefs ?? Number.POSITIVE_INFINITY },
   };
-  const sql = compileNode(ast, ctx);
+  const sql = compileScoped(ast, ctx);
   return { sql, params: ctx.params };
 }
 
@@ -150,6 +172,56 @@ interface CompileCtx {
   hostPrivateField: (name: string) => boolean;
   /** Allow-list for the same table, or undefined to skip validation. */
   hostFilterable: ((name: string) => boolean) | undefined;
+  /** Joined `@collection.*` rows for the expression being compiled (see compileScoped). */
+  hoist: HoistScope | null;
+  /** Shared counter for join aliases, unique across nested scopes. */
+  aliasSeq: { n: number };
+  /** Cap on aliasSeq.n for this compile. */
+  maxJoins: number;
+  /** Cross-collection operands used by this expression (not by inherited view rules). */
+  crossRefs: { n: number; max: number };
+}
+
+function chargeCrossRef(ctx: CompileCtx): void {
+  if (++ctx.crossRefs.n > ctx.crossRefs.max) {
+    throw new Error(`too many @collection / _via_ references in one filter (at most ${ctx.crossRefs.max})`);
+  }
+}
+
+/**
+ * Context for compiling an inherited view rule. Its cross-collection
+ * operands count against the caller's budget too: each one runs once per
+ * joined row, so a client filter's single `@collection.X` over an X whose
+ * view rule uses `_via_` or another `@collection` was cubic again.
+ */
+function guardCtx(ctx: CompileCtx, overrides: Partial<CompileCtx>): CompileCtx {
+  return { ...ctx, ...overrides };
+}
+
+interface HoistJoin { alias: string; table: string; on: string; onParams: unknown[] }
+interface HoistScope { joins: HoistJoin[]; byKey: Map<string, HoistJoin> }
+
+/**
+ * Compile an expression in which every `@collection.X` reference (per alias)
+ * is bound to one row of X: the expression becomes
+ * `EXISTS (SELECT 1 FROM (SELECT 1) LEFT JOIN X AS j ON <X's view rule> … WHERE <expr>)`.
+ * So `@collection.members.grp = grp && @collection.members.user = @request.auth.id`
+ * needs one membership row matching both, and a LEFT JOIN keeps
+ * `public = true || @collection.…` true when X has no visible rows.
+ */
+function compileScoped(ast: Expr, ctx: CompileCtx): string {
+  const scope: HoistScope = { joins: [], byKey: new Map() };
+  const exprParams: unknown[] = [];
+  const sub: CompileCtx = { ...ctx, params: exprParams, hoist: scope };
+  const sql = compileNode(ast, sub);
+  if (scope.joins.length === 0) {
+    ctx.params.push(...exprParams);
+    return sql;
+  }
+  for (const j of scope.joins) ctx.params.push(...j.onParams);
+  ctx.params.push(...exprParams);
+  const joins = scope.joins.map((j) => `LEFT JOIN ${escapeIdent(j.table)} AS ${j.alias} ON ${j.on}`).join(" ");
+  return `EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one ${joins} WHERE ${sql})`;
 }
 
 const MAX_JOIN_DEPTH = 4;
@@ -216,12 +288,29 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return compileEach(ast.left, ast.right, op, ctx);
   }
 
+  // `@collection.X.f != v` / `!~ v` (either side): no row of X the caller
+  // may view matches. Bound to the joined row instead, it meant "some row
+  // differs" — and a ban list with two entries banned nobody.
+  // Modifiers (`:lower`, `:length`) count too; `:each` was handled above.
+  const leftColl = ast.left.kind === "collection";
+  const rightColl = ast.right.kind === "collection";
+  if (leftColl !== rightColl && (op === "!=" || op === "!~")) {
+    const coll = (leftColl ? ast.left : ast.right) as Extract<Operand, { kind: "collection" }>;
+    const other = leftColl ? ast.right : ast.left;
+    return compileCollectionRef(coll, ctx, (inner) => {
+      if (op === "!~") {
+        if (leftColl) return likeSql(inner, "~", other, ctx);
+        return `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
+      }
+      const otherSql = compileOperand(other, ctx);
+      return leftColl ? `${inner} = ${otherSql}` : `${otherSql} = ${inner}`;
+    }, true);
+  }
+
   // Standard scalar comparison
   if (op === "~" || op === "!~") {
     const left = compileOperand(ast.left, ctx);
-    const v = operandValue(ast.right, ctx);
-    ctx.params.push(`%${String(v ?? "")}%`);
-    return `${left} ${op === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    return likeSql(left, op, ast.right, ctx);
   }
 
   const left = compileOperand(ast.left, ctx);
@@ -255,9 +344,7 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
   const arraySql = compileOperand(stripped, ctx);
   let cmp: string;
   if (op === "~" || op === "!~") {
-    const v = operandValue(scalarOperand, ctx);
-    ctx.params.push(`%${String(v ?? "")}%`);
-    cmp = `value ${op === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    cmp = likeSql("value", op, scalarOperand, ctx);
   } else {
     const right = compileOperand(scalarOperand, ctx);
     cmp = `value ${sqlOpFor(op)} ${right}`;
@@ -288,9 +375,7 @@ function compileArrayCmp(
   const innerCtx: CompileCtx = { ...ctx, params: inner };
   let cmp: string;
   if (scalarOp === "~" || scalarOp === "!~") {
-    const v = operandValue(scalarOperand, innerCtx);
-    inner.push(`%${String(v ?? "")}%`);
-    cmp = `value ${scalarOp === "~" ? "LIKE" : "NOT LIKE"} ?`;
+    cmp = likeSql("value", scalarOp, scalarOperand, innerCtx);
   } else {
     const right = compileOperand(scalarOperand, innerCtx);
     cmp = `value ${sqlOpFor(scalarOp)} ${right}`;
@@ -359,7 +444,41 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
   return applyModifierToSql(expr, op.modifier);
 }
 
-function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx: CompileCtx): string {
+/**
+ * `@collection.X.f`. Normally a column of the row of X joined for this
+ * expression (see compileScoped), so every reference to X shares one row.
+ * With `exists`, a standalone `EXISTS (SELECT 1 FROM X WHERE <view rule> AND
+ * exists(f))`, used for negated comparisons. It used to be
+ * `(SELECT f FROM X LIMIT 1)`, one arbitrary row: a members list only worked
+ * for its first member, a ban list only banned its first entry.
+ */
+/**
+ * Which rows of `collection` (joined as `alias`) the caller may see: its
+ * view rule compiled against the alias, `1=0` when admin-only (or no lookup
+ * to check it with) for non-admins.
+ */
+function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx): string {
+  if (!ctx.lookup) return ctx.auth?.type === "admin" ? "1" : "1=0";
+  const meta = ctx.lookup(collection);
+  if (!meta) throw new Error(`unknown collection in @collection.*: ${collection}`);
+  if (meta.viewRule === null) return "1";
+  if (meta.viewRule === "") return ctx.auth?.type === "admin" ? "1" : "1=0";
+  const innerAst = parseExpression(meta.viewRule);
+  if (!innerAst) return "1=0";
+  const innerCtx: CompileCtx = guardCtx(ctx, {
+    tableName: alias,
+    hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
+    hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
+  });
+  return compileScoped(innerAst, innerCtx);
+}
+
+function compileCollectionRef(
+  op: Extract<Operand, { kind: "collection" }>,
+  ctx: CompileCtx,
+  exists?: (inner: string) => string,
+  negate = false,
+): string {
   if (!IDENT_RE.test(op.collection)) throw new Error(`invalid collection: ${op.collection}`);
   for (const p of op.path) if (!IDENT_RE.test(p)) throw new Error(`invalid path: ${p}`);
   if (++ctx.joinDepth > MAX_JOIN_DEPTH) {
@@ -370,6 +489,29 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
     const head = op.path[0]!;
+    if (!exists && ctx.hoist) {
+      const targetMeta0 = ctx.lookup?.(op.collection);
+      if (targetMeta0 && (targetMeta0.isPrivateField(head) || !targetMeta0.isFilterable(head))) {
+        throw new PrivateFieldError(head);
+      }
+      const key = `${op.collection}\u0000${op.alias ?? ""}`;
+      let join = ctx.hoist.byKey.get(key);
+      if (!join) {
+        if (ctx.aliasSeq.n >= ctx.maxJoins) {
+          throw new Error(`too many @collection references in one expression (at most ${ctx.maxJoins})`);
+        }
+        chargeCrossRef(ctx);
+        const alias = `_vbj${++ctx.aliasSeq.n}`;
+        const onParams: unknown[] = [];
+        const on = collectionRowGuard(op.collection, alias, { ...ctx, params: onParams });
+        join = { alias, table: targetTable, on, onParams };
+        ctx.hoist.byKey.set(key, join);
+        ctx.hoist.joins.push(join);
+      }
+      let col = `${join.alias}.${escapeIdent(head)}`;
+      for (let i = 1; i < op.path.length; i++) col = `json_extract(${col}, '$.${op.path[i]}')`;
+      return applyModifierToSql(col, op.modifier);
+    }
     // `@collection.users.password_hash` is the same oracle as a local ref.
     const targetMeta = ctx.lookup?.(op.collection);
     if (targetMeta && (targetMeta.isPrivateField(head) || !targetMeta.isFilterable(head))) {
@@ -380,11 +522,26 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
       inner = `json_extract(${inner}, '$.${op.path[i]}')`;
     }
 
+    if (negate) {
+      chargeCrossRef(ctx);
+      // "No row matches" can only be shown over rows the caller may see.
+      // For a non-admin, any view rule on X may hide rows (an admin-only ban
+      // list, other users' entries), so the negation is false — decided
+      // from the rule alone. Counting only visible rows let every banned user
+      // pass; probing for hidden rows leaked whether any existed.
+      const meta = ctx.lookup?.(op.collection);
+      if (ctx.lookup && !meta) throw new Error(`unknown collection in @collection.*: ${op.collection}`);
+      if (ctx.auth?.type !== "admin" && !(meta && meta.viewRule === null)) {
+        // Still refuse private fields, as every other path does.
+        if (meta && (meta.isPrivateField(head) || !meta.isFilterable(head))) throw new PrivateFieldError(head);
+        return "0";
+      }
+    }
+
     // Inherit the joined collection's view_rule. Anonymous-rule-eval (no
-    // lookup provided) returns `null` view_rule which is fail-CLOSED on
-    // the SQL path (caller passes a NULL parameter so the equality match
-    // can never satisfy a non-trivial join condition). Provided lookups
-    // return the configured rule and we compile it against the target table.
+    // lookup provided) is fail-CLOSED for non-admins. A function, because a
+    // negated comparison needs the guard twice (each use pushes its params).
+    const buildWhere = (): string => {
     let where = "";
     if (ctx.lookup) {
       const meta = ctx.lookup(op.collection);
@@ -400,13 +557,12 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
         const innerAst = parseExpression(meta.viewRule);
         if (innerAst) {
           // Recursively compile against the target table; share params.
-          const innerCtx: CompileCtx = {
-            ...ctx,
+          const innerCtx: CompileCtx = guardCtx(ctx, {
             tableName: targetTable,
             hostPrivateField: (n) => ctx.lookup?.(op.collection)?.isPrivateField(n) ?? false,
             hostFilterable: (n) => ctx.lookup?.(op.collection)?.isFilterable(n) ?? true,
-          };
-          const sql = compileNode(innerAst, innerCtx);
+          });
+          const sql = compileScoped(innerAst, innerCtx);
           // copy back joinDepth so siblings see the work
           ctx.joinDepth = innerCtx.joinDepth;
           where = ` WHERE ${sql}`;
@@ -416,7 +572,15 @@ function compileCollectionRef(op: Extract<Operand, { kind: "collection" }>, ctx:
       // No lookup + non-admin caller → admin-trust shortcut, deny.
       where = " WHERE 1=0";
     }
+    return where;
+    };
+    const where = buildWhere();
 
+    if (exists) {
+      const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
+      const match = `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
+      return negate ? `NOT ${match}` : match;
+    }
     return applyModifierToSql(
       `(SELECT ${inner} FROM ${escapeIdent(targetTable)}${where} LIMIT 1)`,
       op.modifier,
@@ -434,6 +598,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
     throw new Error("_via_ join depth exceeded");
   }
   try {
+    chargeCrossRef(ctx);
     const targetTable = `vb_${op.targetCollection}`;
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
@@ -482,7 +647,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
             hostPrivateField: (n) => ctx.lookup?.(op.targetCollection)?.isPrivateField(n) ?? false,
             hostFilterable: (n) => ctx.lookup?.(op.targetCollection)?.isFilterable(n) ?? true,
           };
-          const ruleSql = compileNode(innerAst, innerCtx);
+          const ruleSql = compileScoped(innerAst, innerCtx);
           ctx.joinDepth = innerCtx.joinDepth;
           where += ` AND (${ruleSql})`;
         }
@@ -546,6 +711,66 @@ function applyModifierToValue(v: unknown, m?: FieldModifier): unknown {
   }
 }
 
+/**
+ * The bound pattern for `~` / `!~`: the value wrapped in `%…%`. A literal
+ * the filter or rule author wrote keeps LIKE's wildcards (`%`, `_`). A value
+ * that arrives at runtime — `@request.*`, `@request.auth.*` — is matched as
+ * plain text, the way the in-process rule engine already matches it:
+ * otherwise a caller who sends `%` makes `field ~ @request.body.x` match
+ * every row.
+ */
+/**
+ * `left ~ right` / `left !~ right` as SQL. An empty or NULL right side
+ * matches nothing for `~` (and everything for `!~`) — before, it became the
+ * pattern '%%' and a rule like `tags ~ @request.auth.team` let anonymous
+ * callers see every row. coalesce() keeps `!~` the exact negation of `~`, as
+ * in the rule engine.
+ */
+function likeSql(leftSql: string, op: "~" | "!~", operand: Operand, ctx: CompileCtx): string {
+  const match = `coalesce(${leftSql} LIKE ${likeParam(operand, ctx)}, 0)`;
+  return op === "~" ? match : `NOT ${match}`;
+}
+
+function isValueOperand(operand: Operand): boolean {
+  switch (operand.kind) {
+    case "literal":
+    case "macro":
+      return true;
+    case "auth":
+    case "request":
+    case "requestMap":
+      return !operand.modifier;
+    default:
+      return false;
+  }
+}
+
+/** A LIKE pattern matching SQL value `col` as plain text; NULL when it is empty or NULL. */
+function sqlLikePattern(col: string): string {
+  return `'%' || replace(replace(replace(nullif(${col}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+}
+
+/** The LIKE pattern for `right`; NULL when the right side is empty or NULL. */
+function likeParam(operand: Operand, ctx: CompileCtx): string {
+  // Anything evaluated in SQL — a column (`a ~ b`), a `_via_` back-relation,
+  // a function, a modified operand: operandValue() has no value for it, so
+  // this used to bind '%%' and match every row. Build the pattern in SQL,
+  // escaping the operand's own wildcards.
+  if (!isValueOperand(operand)) return sqlLikePattern(compileOperand(operand, ctx));
+  const raw = operandValue(operand, ctx);
+  const v = raw === null || raw === undefined ? "" : String(raw);
+  if (v === "") {
+    ctx.params.push(null);
+    return "?";
+  }
+  if (operand.kind === "literal" || operand.kind === "macro") {
+    ctx.params.push(`%${v}%`);
+    return "?";
+  }
+  ctx.params.push(`%${v.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+  return "? ESCAPE '\\'";
+}
+
 function operandValue(op: Operand, ctx: CompileCtx): unknown {
   switch (op.kind) {
     case "literal": return coerceLiteral(op.value);
@@ -585,10 +810,15 @@ function bodyChanged(op: Extract<Operand, { kind: "requestMap" }>, ctx: CompileC
   return "?";
 }
 
-function authValue(auth: AuthContext | null, prop: "id" | "email" | "type"): string | null {
+function authValue(auth: AuthContext | null, prop: AuthProp): string | number | null {
   if (!auth) return null;
   if (prop === "id")   return auth.id || null;
   if (prop === "type") return auth.type;
+  // Without these, `@request.auth.id != ""` was the only "signed in" test,
+  // and it admits guests (anonymous sessions) and every auth collection.
+  if (prop === "collectionName") return auth.collection ?? null;
+  if (prop === "verified")  return auth.verified ? 1 : 0;
+  if (prop === "anonymous") return auth.anonymous ? 1 : 0;
   return auth.email ?? null;
 }
 

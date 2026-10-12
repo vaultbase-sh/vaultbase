@@ -5,31 +5,18 @@
  * request to `/api/admin/*` (POST/PATCH/PUT/DELETE; not GET). Each row
  * captures actor + action + target + status + IP, in append-only form.
  *
- * Append-only: no UPDATE / DELETE paths through application code. Operators
- * who genuinely need to prune historical rows (storage budget) can do so at
- * the SQL layer with a documented retention command.
+ * Append-only: no UPDATE / DELETE paths through application code, except
+ * the opt-in `audit.retention_days` prune in maintenance.ts.
  */
 import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { auditLog } from "../db/schema.ts";
+import { clientIp as trustedIp } from "./sec.ts";
 import { normalizeApiPath } from "./api-paths.ts";
 
-/**
- * Extract the client IP, honouring `x-forwarded-for` when the request
- * appears to come through a configured proxy. Best-effort — never throws.
- */
+/** The client IP, by the trusted-proxy rule (see sec.ts clientIp). */
 function clientIp(request: Request): string | null {
-  // We don't have peer-IP plumbing at the audit layer (Bun.serve sets it on
-  // a different code path). Read the XFF header verbatim only when at least
-  // one trusted-proxy CIDR is configured — otherwise fall back to null,
-  // matching ratelimit's defensive default. Operators who want exact IPs
-  // here should set VAULTBASE_TRUSTED_PROXIES.
-  const trustedRaw = process.env["VAULTBASE_TRUSTED_PROXIES"] ?? "";
-  if (!trustedRaw.trim()) return null;
-  const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return null;
-  const first = xff.split(",")[0]?.trim();
-  return first || null;
+  return trustedIp(request);
 }
 
 /** Verbs we audit. GET reads are intentionally omitted (volume + low value). */
@@ -132,6 +119,39 @@ export async function recordAuditEntry(opts: RecordOpts): Promise<void> {
   } catch {
     // Audit must never break a request. Real failures still surface in
     // the file logger via the parent onAfterHandle.
+  }
+}
+
+/**
+ * Persist an audit row for an action that doesn't arrive as an admin HTTP
+ * request — e.g. an MCP tool call made with an API token. Same table and
+ * columns as `recordAuditEntry`; errors are swallowed for the same reason.
+ */
+export async function recordAuditEvent(opts: {
+  actor: { id: string; email?: string } | null;
+  method: string;
+  path: string;
+  action: string;
+  target?: string | null;
+  status: number;
+  summary?: string | null;
+}): Promise<void> {
+  try {
+    await getDb().insert(auditLog).values({
+      id: crypto.randomUUID(),
+      actor_id: opts.actor?.id ?? null,
+      actor_email: opts.actor?.email ?? null,
+      method: opts.method,
+      path: opts.path,
+      action: opts.action,
+      target: opts.target ?? null,
+      status: opts.status,
+      ip: null,
+      summary: opts.summary ? trim(opts.summary, 1024) : null,
+      at: Math.floor(Date.now() / 1000),
+    });
+  } catch {
+    // Audit must never break the action it records.
   }
 }
 

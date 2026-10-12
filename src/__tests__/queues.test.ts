@@ -261,3 +261,61 @@ describe("queues — per-job retry overrides", () => {
     expect(j.scheduled_at).toBeGreaterThanOrEqual(t0 + 110);
   });
 });
+
+describe("jobs interrupted by a restart", () => {
+  // A job left in `running` when its process died was never picked up again.
+  it("are re-queued at startup and run", async () => {
+    await insertWorker({ queue: "q-restart", code: "/* done */" });
+    const { jobId } = await enqueue("q-restart", { n: 1 });
+    // Simulate a previous process that claimed it and died.
+    await getDb().update(jobsLog).set({ status: "running", started_at: Math.floor(Date.now() / 1000) - 5 }).where(eq(jobsLog.id, jobId));
+    startQueueScheduler();
+    await waitForStatus(jobId, "succeeded");
+    expect((await getJob(jobId))!.attempt).toBe(2);
+  });
+
+  it("in a cluster, only ones running for over an hour are taken back", async () => {
+    const { recoverInterruptedJobs } = await import("../core/queues.ts");
+    const now = Math.floor(Date.now() / 1000);
+    const { jobId: fresh } = await enqueue("q-cluster", {});
+    const { jobId: stale } = await enqueue("q-cluster", {});
+    await getDb().update(jobsLog).set({ status: "running", started_at: now - 30 }).where(eq(jobsLog.id, fresh));
+    await getDb().update(jobsLog).set({ status: "running", started_at: now - 7200 }).where(eq(jobsLog.id, stale));
+    expect(await recoverInterruptedJobs(now - 3600)).toBe(1);
+    expect((await getJob(fresh))!.status).toBe("running");
+    expect((await getJob(stale))!.status).toBe("queued");
+  });
+});
+
+describe("interrupted-job recovery limits (review 16 F-5/F-6)", () => {
+  it("a job out of attempts is marked dead, not re-queued", async () => {
+    const { recoverInterruptedJobs } = await import("../core/queues.ts");
+    await insertWorker({ queue: "q-crashy", code: "/* */", retry_max: 1 });
+    const { jobId } = await enqueue("q-crashy", {});
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().update(jobsLog).set({ status: "running", started_at: now - 5 }).where(eq(jobsLog.id, jobId));
+    expect(await recoverInterruptedJobs(now)).toBe(0);
+    expect((await getJob(jobId))!.status).toBe("dead");
+  });
+
+  it("the job's own retry budget wins over the worker's", async () => {
+    const { recoverInterruptedJobs } = await import("../core/queues.ts");
+    await insertWorker({ queue: "q-own", code: "/* */", retry_max: 1 });
+    const { jobId } = await enqueue("q-own", {}, { retries: 5 });
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().update(jobsLog).set({ status: "running", started_at: now - 5 }).where(eq(jobsLog.id, jobId));
+    expect(await recoverInterruptedJobs(now)).toBe(1);
+    expect((await getJob(jobId))!.status).toBe("queued");
+  });
+
+  it("shutdown waits for a running job to finish", async () => {
+    const { waitForRunningJobs } = await import("../core/queues.ts");
+    await insertWorker({ queue: "q-slow", code: "await new Promise((r) => setTimeout(r, 300));" });
+    const { jobId } = await enqueue("q-slow", {});
+    startQueueScheduler();
+    await waitForStatus(jobId, "running");
+    stopQueueScheduler();
+    expect(await waitForRunningJobs(5000)).toBe(true);
+    expect((await getJob(jobId))!.status).toBe("succeeded");
+  });
+});

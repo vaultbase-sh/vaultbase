@@ -13,7 +13,8 @@ describe("Phase 1 — !~ NOT LIKE operator", () => {
 
   it("compiles to NOT LIKE in SQL", () => {
     const r = parseFilter(`title !~ "spam"`, "vb_posts", USER);
-    expect(r?.sql).toContain("NOT LIKE");
+    // `!~` is NOT of the `~` match (coalesce'd so an empty needle negates cleanly).
+    expect(r?.sql).toMatch(/NOT coalesce\(.* LIKE /);
     expect(r?.params).toContain("%spam%");
   });
 });

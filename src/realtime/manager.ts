@@ -3,6 +3,8 @@ import { evaluateRule, type AuthContext } from "../core/rules.ts";
 
 export interface WSLike {
   send(data: string): void;
+  /** End the underlying connection (SSE streams). */
+  close?(): void;
 }
 
 export type RealtimeEvent =
@@ -16,6 +18,59 @@ export interface WSAuth {
   id: string;
   type: "user" | "admin";
   email?: string;
+  /** The token it came from, re-verified periodically (revocation, resets). */
+  token?: string;
+  /** Token expiry (unix seconds): past it the connection is anonymous again. */
+  exp?: number;
+  /** As on AuthContext, for @request.auth.collectionName / .anonymous / .verified. */
+  collection?: string;
+  anonymous?: boolean;
+  verified?: boolean;
+}
+
+/** Topics one connection may hold. */
+export const MAX_TOPICS_PER_CONNECTION = 100;
+/** Longest topic string accepted (a collection name plus a record id fits easily). */
+export const MAX_TOPIC_LENGTH = 200;
+/** Open realtime connections from one client address. */
+export const MAX_CONNECTIONS_PER_IP = 100;
+
+const connsByIp = new Map<string, number>();
+const ipOfConn = new Map<string, string>();
+/** Open realtime connections (WS + SSE) per process. */
+export const MAX_REALTIME_CONNECTIONS = 10_000;
+
+/** Live connection ids, for the connection cap. */
+const liveConns = new Set<string>();
+
+/**
+ * Count a new connection in. Returns false when the process is already at
+ * `MAX_REALTIME_CONNECTIONS`; the caller refuses the connection.
+ */
+export function admitConnection(id: string, ip?: string | null): boolean {
+  if (liveConns.has(id)) return true;
+  if (liveConns.size >= MAX_REALTIME_CONNECTIONS) return false;
+  // Per address too: without it one client could fill the global cap and
+  // lock everyone else out.
+  if (ip) {
+    const n = connsByIp.get(ip) ?? 0;
+    if (n >= MAX_CONNECTIONS_PER_IP) return false;
+    connsByIp.set(ip, n + 1);
+    ipOfConn.set(id, ip);
+  }
+  liveConns.add(id);
+  return true;
+}
+
+/** Stop counting a connection (it closed or was dropped). */
+function releaseConnection(id: string): void {
+  if (!liveConns.delete(id)) return;
+  const ip = ipOfConn.get(id);
+  if (ip === undefined) return;
+  ipOfConn.delete(id);
+  const n = (connsByIp.get(ip) ?? 1) - 1;
+  if (n <= 0) connsByIp.delete(ip);
+  else connsByIp.set(ip, n);
 }
 
 /**
@@ -33,6 +88,13 @@ export interface WSAuth {
  */
 export interface BroadcastOpts {
   viewRule?: string | null;
+  /**
+   * The collection's list rule. Collection-wide topics (`<collection>`, `*`,
+   * `<collection>.<event>`, `*.<event>`) are a live list, so they follow it
+   * as well as the view rule; a per-record topic needs only the view rule.
+   * Undefined → collection-wide topics follow the view rule alone.
+   */
+  listRule?: string | null;
   record?: Record<string, unknown> | null;
 }
 
@@ -77,6 +139,51 @@ export function getWSAuth(ws: WSLike): WSAuth | undefined {
   return wsAuth.get(connId(ws));
 }
 
+/** Live auth for `id`: none once the token has expired. */
+function currentAuth(id: string): WSAuth | undefined {
+  const auth = wsAuth.get(id);
+  if (auth?.exp !== undefined && auth.exp <= Math.floor(Date.now() / 1000)) {
+    wsAuth.delete(id);
+    return undefined;
+  }
+  return auth;
+}
+
+/**
+ * Re-check every connection's token (revocation, sign-out, password reset,
+ * deleted user). Auth was only checked when it was set, so a connection kept
+ * receiving a signed-out user's events for as long as it stayed open. A
+ * connection whose token no longer verifies drops back to anonymous and is
+ * told so. Run on a timer by the server.
+ */
+export async function reverifyRealtimeAuth(verify: (token: string) => Promise<WSAuth | null>): Promise<void> {
+  for (const [id, auth] of [...wsAuth]) {
+    if (!auth.token) continue;
+    const fresh = await verify(auth.token);
+    if (wsAuth.get(id) !== auth) continue; // changed while we awaited
+    if (fresh && fresh.id === auth.id && fresh.type === auth.type) {
+      // Same principal: take the refreshed flags (an account that lost
+      // email verification stops passing `@request.auth.verified = true`).
+      wsAuth.set(id, fresh);
+      continue;
+    }
+    wsAuth.delete(id);
+    const ws = connAdapter(id);
+    try { ws?.send(JSON.stringify({ type: "auth_expired" })); } catch { /* gone */ }
+  }
+}
+
+/** Any adapter currently registered for `id`. */
+function connAdapter(id: string): WSLike | undefined {
+  const sse = sseClients.get(id);
+  if (sse) return sse;
+  for (const t of topicsByConn.get(id) ?? []) {
+    const ws = subs.get(t)?.get(id);
+    if (ws) return ws;
+  }
+  return undefined;
+}
+
 /**
  * Canonicalise a topic string. The internal store keys are:
  *
@@ -99,7 +206,7 @@ const EVENT_KINDS = new Set(["create", "update", "delete"]);
 export function normalizeTopic(raw: string): string | null {
   if (typeof raw !== "string") return null;
   const t = raw.trim();
-  if (!t) return null;
+  if (!t || t.length > MAX_TOPIC_LENGTH) return null;
   if (t === "*") return "*";
   if (t.endsWith(".*")) return t.slice(0, -2) || null;
   if (t.endsWith("/*")) return t.slice(0, -2) || null;
@@ -119,6 +226,9 @@ export function subscribe(ws: WSLike, topics: string[]): string[] {
   for (const raw of topics) {
     const t = normalizeTopic(raw);
     if (!t) continue;
+    // Every topic is a map entry held for the life of the connection.
+    const held = topicsByConn.get(id);
+    if ((held?.size ?? 0) >= MAX_TOPICS_PER_CONNECTION && !held?.has(t)) break;
     let inner = subs.get(t);
     if (!inner) { inner = new Map(); subs.set(t, inner); }
     inner.set(id, ws);
@@ -168,6 +278,7 @@ export function disconnectAll(ws: WSLike): void {
   const id = connId(ws);
   leaveAll(id);
   wsAuth.delete(id);
+  releaseConnection(id);
 }
 
 /** Test hook: number of live topics. */
@@ -181,17 +292,26 @@ export function _topicCount(): number {
  * supplied, everyone passes (back-compat). When supplied, behavior matches
  * the records HTTP `view_rule` semantics.
  */
-function shouldSendTo(id: string, opts?: BroadcastOpts): boolean {
+function shouldSendTo(id: string, opts: BroadcastOpts | undefined, collectionWide: boolean): boolean {
   if (!opts || opts.viewRule === undefined) return true;
-  const auth = wsAuth.get(id);
+  const auth = currentAuth(id);
   if (auth?.type === "admin") return true;
-  const rule = opts.viewRule;
-  if (rule === null) return true;       // public
-  if (rule === "") return false;        // admin only
+  // Everything rules can see, not just id/type/email: without collection /
+  // anonymous / verified, a rule excluding guests or another auth collection
+  // passed over realtime while HTTP refused.
   const ctx: AuthContext | null = auth
-    ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) }
+    ? {
+        id: auth.id, type: auth.type,
+        ...(auth.email ? { email: auth.email } : {}),
+        ...(auth.collection ? { collection: auth.collection } : {}),
+        ...(auth.anonymous ? { anonymous: true } : {}),
+        ...(auth.verified ? { verified: true } : {}),
+      }
     : null;
-  return evaluateRule(rule, ctx, opts.record ?? null);
+  const passes = (rule: string | null) =>
+    rule === null ? true : rule === "" ? false : evaluateRule(rule, ctx, opts.record ?? null);
+  if (!passes(opts.viewRule)) return false;
+  return collectionWide && opts.listRule !== undefined ? passes(opts.listRule) : true;
 }
 
 /**
@@ -202,30 +322,34 @@ function shouldSendTo(id: string, opts?: BroadcastOpts): boolean {
  * are skipped silently.
  */
 export function broadcast(collection: string, event: RealtimeEvent, opts?: BroadcastOpts): void {
-  const targets: (string | undefined)[] = [
-    collection,                          // collection-level
-    WILDCARD,                            // global
-    `${collection}.${event.type}`,       // event-typed per collection
-    `${WILDCARD}.${event.type}`,         // event-typed global
-  ];
+  // Per-record topic first, so a connection subscribed both ways is judged
+  // by the view rule alone (it asked for this record by id).
+  const targets: (string | undefined)[] = [];
   if (event.type === "create" || event.type === "update") {
     targets.push(`${collection}/${event.record.id}`);
   } else if (event.type === "delete") {
     targets.push(`${collection}/${event.id}`);
   }
+  const perRecord = targets.length;
+  targets.push(
+    collection,                          // collection-level
+    WILDCARD,                            // global
+    `${collection}.${event.type}`,       // event-typed per collection
+    `${WILDCARD}.${event.type}`,         // event-typed global
+  );
   const payload = JSON.stringify(event);
   // Dedup: a connection subscribed to both "posts" and "*" should still receive
   // the event once.
   const sent = new Set<string>();
   const dead: string[] = [];
-  for (const topic of targets) {
+  for (const [i, topic] of targets.entries()) {
     if (!topic) continue;
     const inner = subs.get(topic);
     if (!inner) continue;
     for (const [id, ws] of inner) {
       if (sent.has(id)) continue;
+      if (!shouldSendTo(id, opts, i >= perRecord)) continue;
       sent.add(id);
-      if (!shouldSendTo(id, opts)) continue;
       try {
         ws.send(payload);
       } catch {
@@ -279,12 +403,31 @@ export function getSSEClient(clientId: string): WSLike | undefined {
   return sseClients.get(clientId);
 }
 
+/**
+ * The principal (`type:id`) that first authenticated an SSE client. Once set,
+ * changing that client's subscriptions or closing it takes a token for the
+ * same principal: the clientId alone travels in URLs and logs.
+ */
+const sseOwners = new Map<string, string>();
+
+export function sseOwnerOf(clientId: string): string | undefined {
+  return sseOwners.get(clientId);
+}
+
+export function setSSEOwner(clientId: string, owner: string): void {
+  if (!sseOwners.has(clientId)) sseOwners.set(clientId, owner);
+}
+
 /** Drop the client + remove from every topic + clear stored auth. */
 export function unregisterSSEClient(clientId: string): void {
   const adapter = sseClients.get(clientId);
   if (!adapter) return;
   disconnectAll(adapter);
   sseClients.delete(clientId);
+  sseOwners.delete(clientId);
+  // Close the stream too: unregistering only stopped counting it, leaving
+  // the connection open and uncounted.
+  try { adapter.close?.(); } catch { /* already closed */ }
 }
 
 /** Replace the client's topic list (PocketBase-style: PUT semantics). */
@@ -302,4 +445,9 @@ export function _reset(): void {
   subs.clear();
   topicsByConn.clear();
   sseClients.clear();
+  sseOwners.clear();
+  liveConns.clear();
+  connsByIp.clear();
+  ipOfConn.clear();
+  wsAuth.clear();
 }

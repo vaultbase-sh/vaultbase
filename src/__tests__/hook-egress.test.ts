@@ -133,16 +133,18 @@ describe("operator overrides via settings", () => {
     invalidateEgressCache();
   }
 
-  it("hooks.http.deny=off disables filtering entirely", async () => {
+  it("hooks.http.deny=off disables the list (cloud metadata stays blocked)", async () => {
     await setSetting("hooks.http.deny", "off");
-    const r = await assertEgressAllowed("http://169.254.169.254/");
-    expect(r).toBeNull();
+    expect(await assertEgressAllowed("http://10.0.0.1/")).not.toBeNull();
+    await expect(assertEgressAllowed("http://169.254.169.254/")).rejects.toBeInstanceOf(EgressBlockedError);
   });
 
   it("hooks.http.deny custom list replaces the default", async () => {
-    // Custom list: only block 10/8. Public IPs and even 169.254/16 pass.
+    // Custom list: only block 10/8. Public IPs and even 169.254/16 pass —
+    // except the metadata endpoints, which are always blocked.
     await setSetting("hooks.http.deny", "10.0.0.0/8");
-    expect(await assertEgressAllowed("http://169.254.169.254/")).not.toBeNull();
+    expect(await assertEgressAllowed("http://169.254.1.1/")).not.toBeNull();
+    await expect(assertEgressAllowed("http://169.254.169.254/")).rejects.toBeInstanceOf(EgressBlockedError);
     await expect(assertEgressAllowed("http://10.0.0.1/")).rejects.toBeInstanceOf(EgressBlockedError);
   });
 

@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
+import type { RequestContextLike } from "./filter.ts";
 import {
   getCollection,
   getCollectionCached,
@@ -9,7 +11,7 @@ import {
   parseFields,
   userTableName,
   type CascadeMode,
-  type FieldDef, AUTH_PRIVATE_COLUMNS, privateFieldNames } from "./collections.ts";
+  type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { maybeRecordHistory } from "./record-history.ts";
@@ -112,6 +114,8 @@ function makeCollectionLookup(): CollectionLookup {
 export const DEFAULT_PER_PAGE = 30;
 /** Largest page size a client-facing endpoint may request. */
 export const MAX_PER_PAGE = 500;
+/** The most records a list request may skip with `page` (its SQL OFFSET). */
+export const MAX_LIST_OFFSET = 100_000;
 
 function positiveInt(v: number | undefined, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : fallback;
@@ -147,8 +151,8 @@ import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./wr
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { dispatchEvent } from "./webhooks.ts";
-import { validateRecord } from "./validate.ts";
-import { makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
+import { validateRecord, type CanSeeRecord } from "./validate.ts";
+import { getActiveHookRequest, makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
 
 const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json"]);
@@ -181,6 +185,10 @@ async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown>
  * Mirrors the contract enforced by /admin/users/:col in v0.10.
  */
 
+function viewPrivate(name: string): boolean {
+  return AUTH_PRIVATE_COLUMNS.has(name) || sensitiveSchema().passwordFields.has(name.toLowerCase());
+}
+
 function buildRecord(
   row: Record<string, unknown>,
   col: Collection,
@@ -195,8 +203,10 @@ function buildRecord(
   };
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
-    // Auth-system columns are private — never emit on the wire.
+    // Auth-system columns are private — never emit on the wire. In a view,
+    // also password fields, and duplicates SQLite renames to `name:1`.
     if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
+    if (col.type === "view" && viewPrivate(baseColumnName(k))) continue;
     const def = fieldByName.get(k);
     // Never expose password hashes via the API
     if (def?.type === "password") continue;
@@ -248,6 +258,16 @@ export interface ListOptions {
   search?: string;
   accessRule?: string;
   auth?: AuthContext | null;
+  /**
+   * The request, as rules see it (`@request.headers.*`, `@request.query.*`).
+   * Without it those operands compiled to NULL in the SQL access filter.
+   */
+  request?: RequestContextLike | null;
+  /**
+   * Internal callers that walk a whole table page by page (the admin CSV
+   * export) aren't held to MAX_LIST_OFFSET. Never set from client input.
+   */
+  allowDeepPaging?: boolean;
 }
 
 export interface ListResult {
@@ -343,7 +363,7 @@ type Binding = string | number | bigint | boolean | null | Uint8Array;
  */
 export async function compileListWhere(
   col: Collection,
-  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search">,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request">,
 ): Promise<{ whereSql: string; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
   const whereParts: string[] = [];
@@ -356,6 +376,7 @@ export async function compileListWhere(
   const hostCols = filterableColumns(col);
   const filterOpts = {
     auth: opts.auth ?? null,
+    request: opts.request ?? null,
     lookup,
     hostIdField: "id",
     hostPrivateField: (n: string) => hostPrivate.has(n),
@@ -368,7 +389,10 @@ export async function compileListWhere(
   if (opts.filter) {
     let compiled;
     try {
-      compiled = parseFilter(opts.filter, tname, filterOpts);
+      // A caller's own filter gets one @collection join and one
+      // cross-collection operand in all; rules (written by admins) get the
+      // defaults. See ParseFilterOpts.maxJoins / maxCrossRefs.
+      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1, maxCrossRefs: 1 });
     } catch (e) {
       throw new FilterError(e instanceof Error ? e.message : String(e));
     }
@@ -434,12 +458,18 @@ export async function listRecords(
   const page = positiveInt(opts.page, 1);
   const perPage = positiveInt(opts.perPage, DEFAULT_PER_PAGE);
   const offset = (page - 1) * perPage;
+  // SQLite walks every skipped row to reach an OFFSET, so a huge page number
+  // makes one cheap request scan the whole table (and past 2^53 the value
+  // isn't even an exact integer). Deeper reads narrow with a filter instead.
+  if (offset > MAX_LIST_OFFSET && !opts.allowDeepPaging) {
+    throw new FilterError(`page is too deep: at most ${MAX_LIST_OFFSET} records can be skipped; narrow the query with a filter`);
+  }
 
   const { whereSql, whereParams } = await compileListWhere(col, opts);
   // A search with no explicit sort orders by relevance (bm25): the SELECT
   // joins the match set itself, so it skips the search clause in WHERE.
   const match = opts.sort === undefined ? searchMatch(col, opts.search) : null;
-  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null }) : null;
+  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
   // updated_at, so skip the default sort there — caller can opt in by passing
@@ -456,6 +486,7 @@ export async function listRecords(
     "id", "created_at", "updated_at",
     ...fields.filter((f) => !f.system).map((f) => f.name),
   ]);
+  const sortPrivate = privateFieldNames(col);
   const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses: string[] = [];
   for (const s of sortSpec.split(",").map((x) => x.trim()).filter(Boolean)) {
@@ -467,6 +498,9 @@ export async function listRecords(
     // the SELECT and may not be fully reflected in `fields`); base + auth
     // collections strictly whitelist.
     if (col.type !== "view" && !sortableCols.has(colName)) continue;
+    // Never order by a private column: the row order alone leaks it one
+    // comparison at a time (a password field, or auth secrets in a view).
+    if (sortPrivate.has(colName)) continue;
     // Defense-in-depth even after whitelist: reject any value that doesn't
     // match a SQL identifier regex. Whitelist covers it for non-view, this
     // is the view-collection-fallback safety net.
@@ -510,7 +544,7 @@ export async function listRecords(
   // Expand
   if (opts.expand) {
     const expandPaths = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
-    await expandRelations(items, expandPaths, fields, opts.auth ?? null);
+    await expandRelations(items, expandPaths, fields, opts.auth ?? null, opts.request ?? null);
   }
 
   // Field projection
@@ -551,7 +585,8 @@ export async function getRecord(
 async function createRecordImpl(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
@@ -571,7 +606,7 @@ async function createRecordImpl(
   const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth, helpers });
 
-  await validateRecord(col, data, "create");
+  await validateRecord(col, data, "create", undefined, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -617,6 +652,7 @@ async function createRecordImpl(
   afterCommit(() => {
     broadcast(col.name, { type: "create", collection: col.name, record: result }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: result as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
@@ -631,7 +667,8 @@ async function updateRecordImpl(
   collectionName: string,
   id: string,
   data: Record<string, unknown> | null | undefined,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
@@ -651,8 +688,16 @@ async function updateRecordImpl(
     data = stripped;
   }
 
+  const tableRef = quoteIdent(userTableName(col.name));
+  const writeKey = `${col.name}:${id}`;
+  // Held from the version read to the write (see recordLocks).
+  const unlock = await lockRecord(writeKey);
+  try {
   const existing = await getRecord(collectionName, id);
   if (!existing) throw new Error("Record not found");
+  if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
+    throw new PreconditionFailedError();
+  }
 
   // beforeUpdate hook
   const helpers = makeHookHelpers();
@@ -663,7 +708,7 @@ async function updateRecordImpl(
     helpers,
   });
 
-  await validateRecord(col, data, "update", id);
+  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);
@@ -687,7 +732,6 @@ async function updateRecordImpl(
   setCols.push(`"updated_at" = ?`);
   setVals.push(now);
 
-  const tableRef = quoteIdent(userTableName(col.name));
   const client = rawClient();
 
   if (setCols.length > 1) {
@@ -707,6 +751,7 @@ async function updateRecordImpl(
   afterCommit(() => {
     broadcast(col.name, { type: "update", collection: col.name, record: result }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: result as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
@@ -717,9 +762,133 @@ async function updateRecordImpl(
     });
   });
   return result;
+  } finally {
+    unlock();
+  }
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
+
+/**
+ * The record changed between the caller's precondition check (an HTTP
+ * `If-Match`) and the write. The caller answers 412.
+ */
+export class PreconditionFailedError extends Error {
+  constructor() { super("Precondition Failed: record was modified"); }
+}
+
+/**
+ * Write preconditions. `ifUnchanged` is the record (as `getRecord` returned
+ * it) the caller checked its precondition against; the write goes ahead only
+ * if the record is still exactly that.
+ */
+export interface WriteGuard {
+  ifUnchanged?: Record<string, unknown>;
+  /**
+   * Validate relation fields as this caller: a relation may only point at a
+   * record the caller can view. Set by the API for non-admin callers.
+   */
+  relationsAs?: { auth: AuthContext | null; request?: RequestContextLike | null };
+  /**
+   * The caller's rules for rows a delete reaches through cascades: `change`
+   * is null for a cascaded delete, or the fields a `setNull` cascade writes.
+   * Returning false aborts the whole delete (it runs in a transaction).
+   * Unset for admins and internal callers.
+   */
+  cascadeAllowed?: (col: Collection, record: Record<string, unknown>, change: Record<string, unknown> | null) => boolean;
+}
+
+/** Relation check for `auth`: the target record must pass its collection's view rule. */
+export function canSeeAs(auth: AuthContext | null, request: RequestContextLike | null = null): CanSeeRecord {
+  return async (target, id) => {
+    if (auth?.type === "admin" || target.view_rule === null) return true;
+    if (target.view_rule === "") return false;
+    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request });
+    const tableRef = quoteIdent(userTableName(target.name));
+    const row = rawClient().prepare(
+      `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
+    ).get(id, ...whereParams);
+    return !!row;
+  };
+}
+
+/** A cascade would delete or change a row the caller's rules don't allow. */
+export class CascadeForbiddenError extends Error {
+  constructor(readonly collection: string) {
+    super(`Forbidden: deleting this record would change records in '${collection}' you can't modify`);
+  }
+}
+
+/**
+ * Per-record write locks. Every update and delete of a record holds its
+ * lock from reading the record to writing it, so an If-Match check can't be
+ * overtaken by a write already in flight, and two writes to one record never
+ * interleave. The holder's own request — its hooks touching the same record —
+ * passes straight through (re-entrant by request). Waiting is bounded: hooks
+ * in two requests that write each other's records would otherwise wait on
+ * each other forever, so after LOCK_WAIT_MS one of them fails with
+ * RecordBusyError instead.
+ */
+const recordLocks = new Map<string, { owner: unknown; released: Promise<void> }>();
+
+/**
+ * Who a write belongs to, for lock re-entrancy: the HTTP request, or — for
+ * internal writers with no request (jobs, queues, MCP) — one owner per
+ * top-level call, inherited by the hooks and nested writes it causes.
+ * Sharing one owner among all internal writers let them overtake each
+ * other's locks.
+ */
+const writeOwner = new AsyncLocalStorage<unknown>();
+
+function withWriteOwner<T>(fn: () => Promise<T>): Promise<T> {
+  if (writeOwner.getStore() !== undefined) return fn();
+  return writeOwner.run(getActiveHookRequest() ?? Symbol("internal write"), fn);
+}
+
+function currentWriteOwner(): unknown {
+  return writeOwner.getStore() ?? getActiveHookRequest() ?? Symbol("unowned write");
+}
+let LOCK_WAIT_MS = 10_000;
+
+/** Test hook: shorten the lock wait. */
+export function _setRecordLockWaitForTests(ms: number): void {
+  LOCK_WAIT_MS = ms;
+}
+
+/** A record stayed locked by another request for longer than LOCK_WAIT_MS. */
+export class RecordBusyError extends Error {
+  constructor() { super("Record is busy (another write holds it); try again"); }
+}
+
+async function waitForRecordLock(key: string): Promise<void> {
+  const self = currentWriteOwner();
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new RecordBusyError();
+    await Promise.race([held.released, Bun.sleep(left)]);
+  }
+}
+
+async function lockRecord(key: string): Promise<() => void> {
+  const self = currentWriteOwner();
+  // Wait inline: the loop's final check and the set below must run with no
+  // await between them (awaiting a helper costs a tick even when the lock is
+  // free), or two requests can both find it free and both take it.
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new RecordBusyError();
+    await Promise.race([held.released, Bun.sleep(left)]);
+  }
+  // Re-entrant: the outer write of this request releases it.
+  if (recordLocks.get(key)?.owner === self) return () => {};
+  let release!: () => void;
+  const released = new Promise<void>((r) => { release = r; });
+  const lock = { owner: self, released };
+  recordLocks.set(key, lock);
+  return () => { if (recordLocks.get(key) === lock) recordLocks.delete(key); release(); };
+}
 
 export class RestrictError extends Error {
   details: Record<string, string>;
@@ -814,7 +983,8 @@ async function applyCascades(
   targetColName: string,
   id: string,
   auth: AuthContext | null,
-  visited: Set<string>
+  visited: Set<string>,
+  guard: WriteGuard = {},
 ): Promise<void> {
   const key = `${targetColName}:${id}`;
   if (visited.has(key)) return;
@@ -827,13 +997,25 @@ async function applyCascades(
   for (const ref of refs) {
     const refTable = quoteIdent(userTableName(ref.collection.name));
     const fieldQ = quoteIdent(ref.fieldName);
+    // The full definition (rules included) is only needed to check rules.
+    const refCol = guard.cascadeAllowed ? await getCollection(ref.collection.name) : null;
 
     if (ref.cascade === "setNull") {
       const affected = client
         .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
         .all(id) as Array<{ id: string }>;
       if (affected.length === 0) continue;
+      if (guard.cascadeAllowed) {
+        for (const r of affected) {
+          const rec = await getRecord(ref.collection.name, r.id);
+          if (rec && refCol && !guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, { [ref.fieldName]: null })) {
+            throw new CascadeForbiddenError(ref.collection.name);
+          }
+        }
+      }
       const now = Math.floor(Date.now() / 1000);
+      for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
+      const refListRule = refCol ? refCol.list_rule : ((await getCollection(ref.collection.name))?.list_rule ?? "");
       client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
         .run(now, id);
@@ -844,6 +1026,7 @@ async function applyCascades(
         const rec = await getRecord(ref.collection.name, r.id);
         if (rec) afterCommit(() => broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
           viewRule: ref.collection.view_rule,
+          listRule: refListRule,
           record: rec as unknown as Record<string, unknown>,
         }));
       }
@@ -855,7 +1038,13 @@ async function applyCascades(
         .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
         .all(id) as Array<{ id: string }>;
       for (const r of affected) {
-        await deleteRecordInternal(ref.collection.name, r.id, auth, visited);
+        if (guard.cascadeAllowed) {
+          const rec = await getRecord(ref.collection.name, r.id);
+          if (rec && refCol && !guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, null)) {
+            throw new CascadeForbiddenError(ref.collection.name);
+          }
+        }
+        await deleteRecordInternal(ref.collection.name, r.id, auth, visited, { ...(guard.cascadeAllowed ? { cascadeAllowed: guard.cascadeAllowed } : {}) });
       }
     }
   }
@@ -864,23 +1053,36 @@ async function applyCascades(
 async function deleteRecordImpl(
   collectionName: string,
   id: string,
-  auth: AuthContext | null = null
+  auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<void> {
-  return deleteRecordInternal(collectionName, id, auth, new Set<string>());
+  return deleteRecordInternal(collectionName, id, auth, new Set<string>(), guard);
 }
 
 async function deleteRecordInternal(
   collectionName: string,
   id: string,
   auth: AuthContext | null,
-  visited: Set<string>
+  visited: Set<string>,
+  guard: WriteGuard = {},
 ): Promise<void> {
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
 
+  const tableRef = quoteIdent(userTableName(col.name));
+  const writeKey = `${col.name}:${id}`;
+  // Held from the version read to the write (see recordLocks).
+  const unlock = await lockRecord(writeKey);
+  try {
   const existing = await getRecord(collectionName, id);
-  if (!existing) return;
+  if (!existing) {
+    if (guard.ifUnchanged) throw new PreconditionFailedError();
+    return;
+  }
+  if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
+    throw new PreconditionFailedError();
+  }
 
   // Order matters: restrict refs (no side effects) → beforeDelete hook (may
   // abort) → cascades → delete. Cascading before the hook left children
@@ -894,9 +1096,8 @@ async function deleteRecordInternal(
     auth, helpers,
   });
 
-  await applyCascades(col.name, id, auth, visited);
+  await applyCascades(col.name, id, auth, visited, guard);
 
-  const tableRef = quoteIdent(userTableName(col.name));
   rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
@@ -908,6 +1109,7 @@ async function deleteRecordInternal(
   afterCommit(() => {
     broadcast(col.name, { type: "delete", collection: col.name, id }, {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       record: existing as unknown as Record<string, unknown>,
     });
     void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });
@@ -917,6 +1119,9 @@ async function deleteRecordInternal(
       auth, helpers,
     });
   });
+  } finally {
+    unlock();
+  }
 }
 
 // ── Relation expand ─────────────────────────────────────────────────────────
@@ -943,6 +1148,7 @@ async function expandRelations(
   expandPaths: string[],
   schema: FieldDef[],
   auth: AuthContext | null,
+  request: RequestContextLike | null = null,
 ): Promise<void> {
   if (items.length === 0 || expandPaths.length === 0) return;
   const client = rawClient();
@@ -971,6 +1177,7 @@ async function expandRelations(
     } else if (view !== null && auth?.type !== "admin") {
       const compiled = parseFilter(view, userTableName(targetCol.name), {
         auth,
+        request,
         lookup: makeCollectionLookup(),
         hostPrivateField: (n) => privateFieldNames(targetCol).has(n),
       });
@@ -1006,7 +1213,7 @@ async function expandRelations(
 
     // Recurse: expand the remaining paths on the just-loaded target records
     if (restPaths.length > 0) {
-      await expandRelations(expanded, restPaths, targetFields, auth);
+      await expandRelations(expanded, restPaths, targetFields, auth, request);
     }
   }
 }
@@ -1019,8 +1226,9 @@ export function createRecord(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => createRecordImpl(collectionName, data, auth));
+  return withWriteOwner(() => withSharedWrite(() => createRecordImpl(collectionName, data, auth, guard)));
 }
 
 export function updateRecord(
@@ -1028,8 +1236,9 @@ export function updateRecord(
   id: string,
   data: Record<string, unknown> | null | undefined,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth));
+  return withWriteOwner(() => withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth, guard)));
 }
 
 /**
@@ -1038,16 +1247,26 @@ export function updateRecord(
  * batch), or a savepoint inside an enclosing batch. A plain delete with
  * nothing to cascade is a single statement and stays on the shared path.
  */
-export async function deleteRecord(
+export function deleteRecord(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null,
+  guard: WriteGuard = {},
+): Promise<void> {
+  return withWriteOwner(() => deleteRecordOwned(collectionName, id, auth, guard));
+}
+
+async function deleteRecordOwned(
+  collectionName: string,
+  id: string,
+  auth: AuthContext | null,
+  guard: WriteGuard,
 ): Promise<void> {
   const col = await getCollection(collectionName);
   const cascades = col
     ? (await findIncomingRefs(col.name)).some((r) => r.cascade !== "restrict")
     : false;
-  const run = () => deleteRecordImpl(collectionName, id, auth);
+  const run = () => deleteRecordImpl(collectionName, id, auth, guard);
   if (!cascades) return withSharedWrite(run);
 
   const mode = gateMode();

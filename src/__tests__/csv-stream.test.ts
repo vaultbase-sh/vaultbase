@@ -207,3 +207,21 @@ describe("streaming CSV export", () => {
     expect(text.includes("\r\n")).toBe(false);
   });
 });
+
+describe("export past the list offset cap", () => {
+  it("streams every row of a table larger than 100,000 records", async () => {
+    await createCollection({ name: "big", fields: JSON.stringify([{ name: "n", type: "number" }]) });
+    const { getRawClient } = await import("../db/client.ts");
+    getRawClient().exec(`
+      INSERT INTO vb_big (id, n, created_at, updated_at)
+      WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 100600)
+      SELECT printf('id%07d', x), x, x, x FROM c`);
+    const token = await signAdmin();
+    const res = await makeCsvPlugin(SECRET).handle(new Request("http://localhost/admin/export/big", {
+      headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.split("\r\n").length).toBe(100600 + 1);
+  }, 60_000);
+});

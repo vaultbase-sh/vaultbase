@@ -1,7 +1,9 @@
 import Elysia, { t } from "elysia";
+import { runsSingletonDuties } from "./core/cluster-role.ts";
+import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
 import * as jose from "jose";
-import { dataPrincipal, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
+import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
@@ -49,7 +51,11 @@ import { startWebhookDispatcher } from "./core/webhooks.ts";
 import { registerNotificationsWorker } from "./core/notifications.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 import {
+  admitConnection,
+  reverifyRealtimeAuth,
+  setSSEOwner,
   setWSAuth,
+  sseOwnerOf,
   subscribe,
   unsubscribe,
   disconnectAll,
@@ -73,11 +79,38 @@ interface ClientMessage {
 
 async function verifyTokenForWS(token: string, jwtSecret: string): Promise<WSAuth | null> {
   // Subscriptions only read; API tokens need the `read` (or `admin`) scope.
-  const p = dataPrincipal(await verifyAuthToken(token, jwtSecret), "read");
+  const verified = await verifyAuthToken(token, jwtSecret);
+  const p = dataPrincipal(verified, "read");
   if (!p) return null;
-  const out: WSAuth = { id: p.id, type: p.type };
+  // Keep the token and its expiry: the connection outlives the check, so
+  // the manager drops auth at expiry and re-verifies the token on a timer.
+  const out: WSAuth = { id: p.id, type: p.type, token };
   if (p.email) out.email = p.email;
+  if (p.collection) out.collection = p.collection;
+  if (p.anonymous) out.anonymous = true;
+  if (p.verified) out.verified = true;
+  if (typeof verified?.exp === "number") out.exp = verified.exp;
   return out;
+}
+
+/** How often open realtime connections have their tokens re-verified. */
+const REALTIME_REVERIFY_MS = 60_000;
+
+/**
+ * The caller may change an SSE client: once the client has authenticated,
+ * only a token for that same principal will do (in the Authorization header
+ * or the body). An unauthenticated client is managed by its clientId alone,
+ * as before — there is nothing behind it to take over.
+ */
+async function mayManageSSEClient(clientId: string, request: Request, bodyToken: string | undefined, jwtSecret: string): Promise<boolean> {
+  const owner = sseOwnerOf(clientId);
+  if (!owner) return true;
+  for (const token of [extractBearer(request), bodyToken]) {
+    if (!token) continue;
+    const auth = await verifyTokenForWS(token, jwtSecret);
+    if (auth && `${auth.type}:${auth.id}` === owner) return true;
+  }
+  return false;
 }
 
 /**
@@ -91,8 +124,15 @@ async function verifyTokenForWS(token: string, jwtSecret: string): Promise<WSAut
  * they like, so requiring one blocks nothing but honest clients. They still
  * authenticate by token. Covered by realtime-origin.test.ts.
  */
-function isOriginAllowed(origin: string | null): boolean {
+function isOriginAllowed(origin: string | null, request?: Request): boolean {
   if (!origin) return true;
+  // The page this server itself serves (the admin, the hosted auth pages, an
+  // app served from the same host) is never cross-site.
+  if (request) {
+    try {
+      if (new URL(origin).host === request.headers.get("host")) return true;
+    } catch { /* malformed Origin: fall through to the list */ }
+  }
   const settings = getAllSettings();
   const raw = settings["security.allowed_origins"] ?? "";
   if (!raw) return false;
@@ -117,34 +157,49 @@ export function createServer(config: Config) {
   setUploadDir(config.uploadDir);
   setSandboxDir(`${config.dataDir}/sandboxes`);
   setBackupsDir(`${config.dataDir}/backups`);
+  configureSetupKey(config.dataDir);
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
   registerNotificationsWorker();
-  startScheduler();
+  // Once-per-install work runs on one cluster worker only (cron had no
+  // run claim, so every worker ran every job). See core/cluster-role.ts.
+  const singleton = runsSingletonDuties();
+  if (singleton) startScheduler();
   startQueueScheduler();
-  startUpdateCheckScheduler();
+  if (singleton) startUpdateCheckScheduler();
   startWebhookDispatcher();
   startFileTokenUsesPrune();
+  setInterval(() => {
+    void reverifyRealtimeAuth((token) => verifyTokenForWS(token, config.jwtSecret)).catch(() => { /* next tick */ });
+  }, REALTIME_REVERIFY_MS).unref?.();
   startBackupScheduler();
-  startOrphanFileSweeper();
+  if (singleton) startOrphanFileSweeper();
   startApiTokenUsageFlusher();
-  // Prune expired/long-revoked API token rows once a day.
-  setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
-  setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
-  // Finished jobs / webhook deliveries past retention, expired revocations
-  // and one-time auth tokens (see core/maintenance.ts).
-  setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
-  setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
+  if (singleton) {
+    // Prune expired/long-revoked API token rows once a day.
+    setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
+    setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
+    // Finished jobs / webhook deliveries past retention, expired revocations
+    // and one-time auth tokens (see core/maintenance.ts).
+    setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
+    setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
+  }
   // Sweep idle SQL sandboxes hourly. They're per-admin, so a forgotten
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.
   setInterval(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000).unref?.();
-  return new Elysia()
+  // Client realtime messages are small JSON commands; Bun closes a socket
+  // sending anything larger (1009). This is server-wide websocket config —
+  // a limit on the .ws() route is ignored.
+  return new Elysia({ websocket: { maxPayloadLength: 64 * 1024 } })
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
-    .onRequest(({ request }) => {
+    .onRequest(({ request, server }) => {
       attachTimer(request, new RequestTimer());
+      // Record the socket peer so every client-IP reader applies the
+      // trusted-proxy rule (sec.ts clientIp) instead of trusting headers.
+      rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
     })
     // CORS preflight short-circuit — must run before any normal route.
     .onRequest(({ request }) => {
@@ -153,10 +208,17 @@ export function createServer(config: Config) {
     })
     // Attach security headers globally. CSP applies to non-API surface.
     .onAfterHandle(({ request, set }) => {
-      const isApi = new URL(request.url).pathname.startsWith("/api/");
+      const path = new URL(request.url).pathname;
+      const isApi = path.startsWith("/api/");
       const headers = securityHeaders({ isApi });
       for (const [k, v] of Object.entries(headers)) {
         if (!set.headers[k]) set.headers[k] = v;
+      }
+      // Admin and auth responses carry secrets (settings, tokens, sessions):
+      // never let a browser or shared proxy cache them. Record reads under
+      // /api/v1/<collection> keep their ETag revalidation, so not all of /api.
+      if (/^\/api\/(v1\/)?(admin|auth)\//.test(path) && !set.headers["cache-control"] && !set.headers["Cache-Control"]) {
+        set.headers["Cache-Control"] = "no-store";
       }
       // CORS response headers on every request — same envelope as security.
       applyCorsHeaders(request, set as { headers: Record<string, string | undefined> });
@@ -182,7 +244,7 @@ export function createServer(config: Config) {
       const res = await tryDispatchCustom(request, config.jwtSecret);
       if (res) return res;
     })
-    .use(makeRateLimitPlugin())
+    .use(makeRateLimitPlugin(config.jwtSecret))
     // ── API-token usage telemetry ────────────────────────────────────
     // Fires AFTER the handler so we don't add latency to the hot path.
     // Records last_used_at + IP + UA for any request that arrived
@@ -256,29 +318,35 @@ export function createServer(config: Config) {
     }))
     // SSE fallback for clients that can't open WebSockets. Pairs with
     // `POST /api/v1/realtime` for setting subscriptions.
-    .get("/api/v1/realtime", ({ request, set }) => {
+    .get("/api/v1/realtime", ({ request, server, set }) => {
       const origin = request.headers.get("origin");
       // Browsers always send Origin, so a present Origin must be allow-listed
       // (blocks cross-site use). A missing Origin is a non-browser client
       // (server-side SDK, scripts): requiring one adds nothing since those
       // can send any value, and protected data still needs a token.
-      if (!isOriginAllowed(origin)) {
+      if (!isOriginAllowed(origin, request)) {
         set.status = 403;
         return { error: "Origin not allowed", code: 403 };
       }
-      const { response } = openSSEStream();
+      const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      const sse = openSSEStream(perClientLimitIp(request, peer));
+      if (!sse) { set.status = 503; return { error: "Too many realtime connections", code: 503 }; }
       set.headers["content-type"] = "text/event-stream; charset=utf-8";
-      return response;
+      return sse.response;
     })
     .post(
       "/api/v1/realtime",
-      async ({ body, set }) => {
+      async ({ body, request, set }) => {
         const adapter = getSSEClient(body.clientId);
         if (!adapter) { set.status = 404; return { error: "Unknown clientId — open GET /api/v1/realtime first", code: 404 }; }
+        if (!(await mayManageSSEClient(body.clientId, request, body.token, config.jwtSecret))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
+        }
         // Optional fresh auth (parallel to WS `{type:"auth"}`).
         if (body.token) {
           const auth = await verifyTokenForWS(body.token, config.jwtSecret);
           setWSAuth(adapter, auth);
+          if (auth) setSSEOwner(body.clientId, `${auth.type}:${auth.id}`);
         }
         const topics = body.topics ?? body.subscriptions ?? body.collections ?? [];
         setSSESubscriptions(body.clientId, topics);
@@ -294,7 +362,10 @@ export function createServer(config: Config) {
         }),
       }
     )
-    .delete("/api/v1/realtime/:clientId", ({ params }) => {
+    .delete("/api/v1/realtime/:clientId", async ({ params, request, set }) => {
+      if (!(await mayManageSSEClient(params.clientId, request, undefined, config.jwtSecret))) {
+        set.status = 403; return { error: "Forbidden", code: 403 };
+      }
       unregisterSSEClient(params.clientId);
       return { data: null };
     })
@@ -305,7 +376,7 @@ export function createServer(config: Config) {
           const origin = req.headers.get("origin");
           // Same policy as SSE: present Origin must be allow-listed, missing
           // Origin (non-browser client) is allowed and authenticates by token.
-          if (!isOriginAllowed(origin)) {
+          if (!isOriginAllowed(origin, req)) {
             ws.send(JSON.stringify({ type: "error", reason: "origin_not_allowed" }));
             ws.close();
             return;
@@ -317,10 +388,17 @@ export function createServer(config: Config) {
         // wrappers to `open` vs `message`, so identity-based keying drops
         // unsubscribe + disconnectAll on the floor.
         const wsAny = ws as unknown as { data: { connId?: string } | undefined };
+        const newId = crypto.randomUUID();
         if (!wsAny.data || typeof wsAny.data !== "object") {
-          (wsAny as { data: object }).data = { connId: crypto.randomUUID() };
+          (wsAny as { data: object }).data = { connId: newId };
         } else {
-          wsAny.data.connId = crypto.randomUUID();
+          wsAny.data.connId = newId;
+        }
+        const peer = (ws as unknown as { remoteAddress?: string }).remoteAddress ?? null;
+        if (!admitConnection(newId, perClientLimitIp(req ?? null, peer))) {
+          ws.send(JSON.stringify({ type: "error", reason: "too_many_connections" }));
+          ws.close();
+          return;
         }
         // Auth via {type:"auth", token} message. Tokens in the URL query are
         // no longer accepted (logs/Referer leak risk).

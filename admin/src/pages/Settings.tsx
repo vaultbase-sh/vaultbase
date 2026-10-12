@@ -985,7 +985,7 @@ function ActiveSessionsCard() {
 
 function BruteForceCard() {
   const [enabled, setEnabled] = useState(false);
-  const [maxAttempts, setMaxAttempts] = useState("5");
+  const [maxAttempts, setMaxAttempts] = useState("10");
   const [duration, setDuration] = useState("900");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -993,9 +993,10 @@ function BruteForceCard() {
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
-        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "0", 10);
+        // Unset means the server default: on, 10 attempts.
+        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "10", 10);
         setEnabled(m > 0);
-        setMaxAttempts(m > 0 ? String(m) : "5");
+        setMaxAttempts(m > 0 ? String(m) : "10");
         setDuration(res.data["auth.lockout.duration_seconds"] ?? "900");
       }
       setLoaded(true);
@@ -1016,7 +1017,7 @@ function BruteForceCard() {
   return (
     <SubCard
       title="Brute-force lockout"
-      meta="per-email + per-IP failed-login throttle"
+      meta="per-account + per-IP failed-login throttle (admins and users)"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Toggle on={enabled} onChange={setEnabled} />
@@ -1041,8 +1042,9 @@ function BruteForceCard() {
           </VbField>
         </div>
         <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
-          Tracks both <VbCode>email:&lt;addr&gt;</VbCode> and <VbCode>ip:&lt;addr&gt;</VbCode> keys so a
-          spray attack across emails from one IP gets caught alongside a single-account attack.
+          Applies to admin sign-in and to every auth collection's <VbCode>/login</VbCode>. Tracks a
+          per-account key and an <VbCode>ip:&lt;addr&gt;</VbCode> key so a spray attack across
+          emails from one IP gets caught alongside a single-account attack.
           Per-IP keying requires <VbCode>VAULTBASE_TRUSTED_PROXIES</VbCode> (or the proxies card below)
           to surface real client IPs through your reverse proxy.
         </div>
@@ -1429,9 +1431,10 @@ function MetricsSection() {
         label="Bearer token (optional)"
         hint={
           <>
-            When set, scrapers must send <VbCode>Authorization: Bearer &lt;token&gt;</VbCode>.
-            Leave blank to expose <VbCode>/api/v1/metrics</VbCode> publicly — only do this
-            if the endpoint is protected at the proxy layer.
+            When set, scrapers can send <VbCode>Authorization: Bearer &lt;token&gt;</VbCode>.
+            Blank means only signed-in admins can read <VbCode>/api/v1/metrics</VbCode>.
+            Copy a generated token before saving: once saved it reads back as
+            <VbCode>********</VbCode>, like every secret setting.
           </>
         }
       >
@@ -2404,8 +2407,12 @@ const PRESETS: Array<{ label: string; seconds: number }> = [
   { label: "90 days", seconds: 90 * 86400 },
 ];
 
+const SESSION_MAX_DEFAULT = 30 * 86400;
+
 function SessionLifetimesSection() {
   const [values, setValues] = useState<Record<string, string>>({});
+  // Absolute cap on how long refreshing can keep one sign-in alive.
+  const [maxSession, setMaxSession] = useState(String(SESSION_MAX_DEFAULT));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -2418,6 +2425,7 @@ function SessionLifetimesSection() {
           next[k.kind] = v ?? String(k.defaultSeconds);
         }
         setValues(next);
+        setMaxSession(res.data["auth.session.max_seconds"] ?? String(SESSION_MAX_DEFAULT));
       }
       setLoading(false);
     });
@@ -2440,11 +2448,17 @@ function SessionLifetimesSection() {
         return;
       }
     }
+    const max = parseInt(maxSession, 10);
+    if (!Number.isFinite(max) || (max !== 0 && max < 3600)) {
+      toast("Maximum session age: 0 (no cap) or at least 3600 seconds", "info");
+      return;
+    }
     setSaving(true);
     const payload: Record<string, string> = {};
     for (const k of SESSION_KINDS) {
       payload[`auth.${k.kind}.window_seconds`] = String(parseInt(values[k.kind] ?? "0", 10));
     }
+    payload["auth.session.max_seconds"] = String(max);
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
@@ -2524,6 +2538,29 @@ function SessionLifetimesSection() {
             </div>
           );
         })}
+        <div style={{
+          border: "1px solid var(--vb-border)", borderRadius: 7,
+          padding: "12px 14px", background: "var(--vb-bg-2)",
+        }}>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Maximum session age</div>
+            <div style={{ fontSize: 11, lineHeight: 1.55, color: "var(--vb-fg-3)", marginTop: 2 }}>
+              How long <VbCode>/refresh</VbCode> can keep one sign-in alive, counted from the original
+              sign-in. After that the user or admin signs in again. Anonymous sessions are exempt.
+              0 = no cap. Default 30 days.
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <VbInput
+              mono type="number" min={0}
+              value={maxSession}
+              onChange={(e) => setMaxSession(e.target.value)}
+              disabled={loading}
+              style={{ width: 140 }}
+            />
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>seconds</span>
+          </div>
+        </div>
       </div>
 
       <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
@@ -3464,11 +3501,10 @@ function NotificationsSection() {
   const [fcmTestSending, setFcmTestSending] = useState(false);
 
   function refresh(): Promise<void> {
-    // `reveal=1` asks the server to include the actual secrets — admin
-    // already has full DB access so it's not a new exposure path; we
-    // gain a real reveal toggle in the UI for verifying values match.
+    // Secrets are write-only: the response says whether each is set, and a
+    // save only sends one the admin typed in.
     return api
-      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers?reveal=1")
+      .get<ApiResponse<NotificationProvidersResponse>>("/api/v1/admin/notifications/providers")
       .then((res) => {
         if (res.data) {
           setCfg(res.data);

@@ -197,6 +197,19 @@ async function promptYesNo(question: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * How to treat the release signature. With cosign installed, a release
+ * missing its signature is refused: it used to be installed silently, so
+ * stripping the .sig/.pem assets (or a compromised release with a matching
+ * .sha256) skipped verification without a word. Without cosign we can't
+ * verify anything and say so.
+ */
+export function signaturePlan(opts: { skipVerify: boolean; hasSignature: boolean; hasCosign: boolean }): "verify" | "skip" | "no-cosign" | "refuse" {
+  if (opts.skipVerify) return "skip";
+  if (!opts.hasCosign) return "no-cosign";
+  return opts.hasSignature ? "verify" : "refuse";
+}
+
 export async function runUpdate(argv: string[]): Promise<void> {
   const flags = parseFlags(argv);
   const log = (s: string) => { if (!flags.quiet) process.stdout.write(`${s}\n`); };
@@ -263,8 +276,15 @@ export async function runUpdate(argv: string[]): Promise<void> {
   log("  ✓ SHA-256 ok");
 
   // Cosign verify (when cosign present and not skipped)
+  const plan = signaturePlan({ skipVerify: flags.skipVerify, hasSignature: !!(sigAsset && certAsset), hasCosign: hasCosign() });
+  if (plan === "refuse") {
+    throw new Error(
+      `release ${target} has no cosign signature for '${platform.artifact}' — refusing to update. ` +
+      `Pass --no-verify to install it with only the SHA-256 check.`,
+    );
+  }
   if (!flags.skipVerify) {
-    if (sigAsset && certAsset && hasCosign()) {
+    if (sigAsset && certAsset && plan === "verify") {
       const sigPath = join(tmp, `${platform.artifact}.sig`);
       const certPath = join(tmp, `${platform.artifact}.pem`);
       await downloadTo(sigAsset.browser_download_url, sigPath, log);

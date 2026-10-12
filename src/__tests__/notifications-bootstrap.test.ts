@@ -163,3 +163,21 @@ describe("PATCH provider triggers bootstrap on enable", () => {
     expect(body.bootstrap).toBeUndefined();
   });
 });
+
+describe("provider secrets are write-only (review 16 F-3)", () => {
+  it("?reveal=1 no longer returns the OneSignal key", async () => {
+    const token = await adminToken();
+    const app = makeNotificationsPlugin(JWT_SECRET);
+    await app.handle(new Request("http://localhost/admin/notifications/providers/onesignal", {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ app_id: "a", api_key: "very-secret-key" }),
+    }));
+    const res = await app.handle(new Request("http://localhost/admin/notifications/providers?reveal=1", {
+      headers: { authorization: `Bearer ${token}` },
+    }));
+    const text = await res.text();
+    expect(text).not.toContain("very-secret-key");
+    expect((JSON.parse(text) as { data: { onesignal: { api_key_set: boolean } } }).data.onesignal.api_key_set).toBe(true);
+  });
+});

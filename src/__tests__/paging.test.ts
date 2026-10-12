@@ -68,3 +68,15 @@ describe("GET /:collection paging", () => {
     expect(r.body.data.length).toBe(30);
   });
 });
+
+describe("OFFSET cap", () => {
+  it("a page past 100,000 skipped records is refused with 400", async () => {
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/items?page=1000000000000&perPage=500"));
+    expect(res.status).toBe(400);
+  });
+
+  it("ordinary deep pages still work (legitimate path)", async () => {
+    const res = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/items?page=200&perPage=500"));
+    expect(res.status).toBe(200);
+  });
+});

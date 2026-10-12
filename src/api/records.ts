@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
+import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal, verifyAuthToken } from "../core/sec.ts";
 import { getCollection } from "../core/collections.ts";
 import {
@@ -11,12 +12,15 @@ import {
   FilterError,
   AccessRuleError,
   clientPaging,
+  CascadeForbiddenError,
+  PreconditionFailedError,
+  RecordBusyError,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
-import { checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import {
   getHistoryAt,
   listRecordHistory,
@@ -117,6 +121,32 @@ function ifMatchFails(request: Request, existing: Record<string, unknown>): { cu
   return { currentEtag: current };
 }
 
+/** Non-admin writes validate relation fields as the caller (see WriteGuard). */
+function relationsAs(auth: AuthContext | null, request?: Request): { relationsAs?: { auth: AuthContext | null; request?: RequestContextLike | null } } {
+  return auth?.type === "admin" ? {} : { relationsAs: { auth, ...(request ? { request: buildRequestContext(request) } : {}) } };
+}
+
+/**
+ * True when If-Match names specific versions. `*` only asks that the record
+ * exists, so it doesn't pin the write to the version that was read.
+ */
+function ifMatchPinsVersion(request: Request): boolean {
+  const header = request.headers.get("if-match");
+  return !!header && parseIfMatch(header).some((t) => t !== "*");
+}
+
+/** 412 for a write whose If-Match stopped holding while it ran. */
+async function preconditionResponse(
+  set: { status?: number | string; headers: Record<string, string | number> },
+  collection: string,
+  id: string,
+) {
+  set.status = 412;
+  const current = recordEtag(await getRecord(collection, id) as unknown as Record<string, unknown> | null);
+  if (current) set.headers["ETag"] = current;
+  return { error: "Precondition Failed: record was modified", code: 412 };
+}
+
 function validationResponse(set: { status?: number | string }, err: ValidationError) {
   set.status = 422;
   return { error: "Validation failed", code: 422, details: err.details };
@@ -164,6 +194,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
         // Apply expression rule as access filter (admins bypass)
+        // Rules see the request: the list rule here, and the related
+        // collections' view rules when expanding.
+        opts.request = buildRequestContext(request);
         if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
           opts.accessRule = col.list_rule;
         }
@@ -207,32 +240,39 @@ export function makeRecordsPlugin(jwtSecret: string) {
           const limit = Number.isFinite(nearLimit) ? Math.max(1, Math.min(1000, nearLimit)) : 10;
           const minScore = query.nearMinScore ? parseFloat(query.nearMinScore) : undefined;
           let ranked: Array<{ id: string; score: number }>;
-          let page: Awaited<ReturnType<typeof listRecords>> | null = null;
+          const loaded: Array<Awaited<ReturnType<typeof listRecords>>["data"][number]> = [];
           try {
             ranked = await searchVectors(col, vecField.name, queryVec, {
               ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
               ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}),
+              ...(opts.request !== undefined ? { request: opts.request } : {}),
               ...(opts.search !== undefined ? { search: opts.search } : {}),
               auth: opts.auth ?? null,
               limit,
               ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
             });
-            if (ranked.length > 0) {
-              const idFilter = ranked.map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
-              page = await listRecords(params.collection, {
+            // Load by id in chunks: the filter parser caps an expression at
+            // 50 operands, so one `id = … || …` for more than 25 matches was
+            // refused with 400. The ranking already applied the caller's
+            // filter; listRecords still applies the access rule.
+            const ID_CHUNK = 20;
+            for (let i = 0; i < ranked.length; i += ID_CHUNK) {
+              const idFilter = ranked.slice(i, i + ID_CHUNK).map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
+              const chunk = await listRecords(params.collection, {
                 ...opts,
-                filter: opts.filter ? `(${opts.filter}) && (${idFilter})` : idFilter,
+                filter: idFilter,
                 page: 1,
-                perPage: ranked.length,
+                perPage: ID_CHUNK,
                 skipTotal: true,
               });
+              loaded.push(...chunk.data);
             }
           } catch (e) {
             const r = listErrorResponse(set, e);
             if (r) return r;
             throw e;
           }
-          const byId = new Map((page?.data ?? []).map((r) => [r.id, r]));
+          const byId = new Map(loaded.map((r) => [r.id, r]));
           const data = ranked
             .map((m) => {
               const rec = byId.get(m.id);
@@ -292,7 +332,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.search) opts.search = query.search;
         if (query.sort) opts.sort = query.sort;
         if (query.limit) opts.limit = Number(query.limit);
-        if (col.list_rule && auth?.type !== "admin") opts.accessRule = col.list_rule;
+        if (col.list_rule && auth?.type !== "admin") {
+          opts.accessRule = col.list_rule;
+          opts.request = buildRequestContext(request);
+        }
         try {
           return await timeFor(request, "db_exec", () => aggregateRecords(col, opts));
         } catch (e) {
@@ -351,7 +394,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }
         try {
           const record = await runWithHookRequest(request, () =>
-            createRecord(params.collection, body as Record<string, unknown>, auth)
+            createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))
           );
           return { data: record };
         } catch (e) {
@@ -385,8 +428,14 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { error: "Precondition Failed: record was modified", code: 412 };
         }
         try {
+          // With If-Match, the write itself re-checks that the record is
+          // still the one the precondition was checked against.
+          const guard = {
+            ...relationsAs(auth, request),
+            ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+          };
           const record = await runWithHookRequest(request, () =>
-            updateRecord(params.collection, params.id, body as Record<string, unknown>, auth)
+            updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
           );
           const etag = recordEtag(record as unknown as Record<string, unknown>);
           if (etag) set.headers["ETag"] = etag;
@@ -394,6 +443,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
           if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+          if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
+          if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
           throw e;
         }
       },
@@ -416,15 +467,29 @@ export function makeRecordsPlugin(jwtSecret: string) {
         return { error: "Precondition Failed: record was modified", code: 412 };
       }
       try {
+        const cascadeAllowed = cascadeRuleCheck(request, auth);
+        const guard = {
+          ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+          ...(cascadeAllowed ? { cascadeAllowed } : {}),
+        };
         await runWithHookRequest(request, () =>
-          deleteRecord(params.collection, params.id, auth)
+          deleteRecord(params.collection, params.id, auth, guard)
         );
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
+        if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
+        // Generic on purpose: naming the child collection would tell the
+        // caller that related records they can't see exist.
+        if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: "Forbidden", code: 403 }; }
         if (e instanceof RestrictError) {
           set.status = 409;
-          return { error: e.message, code: 409, details: e.details };
+          // Admins get the referencing collections; anyone else a generic
+          // answer, since those may be collections they can't see.
+          return auth?.type === "admin"
+            ? { error: e.message, code: 409, details: e.details }
+            : { error: "Cannot delete: the record is referenced by other records", code: 409 };
         }
         throw e;
       }
@@ -461,11 +526,23 @@ export function makeRecordsPlugin(jwtSecret: string) {
       }
       const perPage = query.perPage ? parseInt(String(query.perPage), 10) : 50;
       const page = query.page ? parseInt(String(query.page), 10) : 1;
+      // Admins see every version. Anyone else sees a version only if the view
+      // rule passes against that version as it stood: passing it against the
+      // record as it is *now* let a new owner read everything the previous
+      // owner wrote. Who made each change is only shown when it was the
+      // caller.
+      const isAdminCaller = auth?.type === "admin";
       const out: HistoryListResponse = await listRecordHistory(
         params.collection,
         params.id,
-        { perPage, page },
+        isAdminCaller ? { perPage, page } : {
+          perPage, page,
+          visible: (e) => checkRule(request, "view_rule", col.name, col.view_rule, auth, e.snapshot),
+        },
       );
+      if (!isAdminCaller) {
+        for (const e of out.data) if (e.actor_id !== (auth?.id ?? null)) e.actor_id = null;
+      }
       return { data: out };
     })
 
@@ -522,6 +599,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         throw e;
       }
     });

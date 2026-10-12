@@ -6,6 +6,12 @@ export interface AuthContext {
   id: string;
   type: "user" | "admin";
   email?: string;
+  /** Users: the auth collection the account belongs to. */
+  collection?: string;
+  /** Users: a guest session from `/auth/:collection/anonymous`. */
+  anonymous?: boolean;
+  /** Users: the account's email is verified (as of this request). */
+  verified?: boolean;
 }
 
 export interface EvalContext {
@@ -53,6 +59,11 @@ export function isExpressionRule(rule: string | null): boolean {
 
 // ── AST evaluation ──────────────────────────────────────────────────────────
 
+/**
+ * An operand with no usable value here: an anonymous caller's auth field, or a
+ * cross-collection lookup this engine can't run. Any comparison involving it
+ * is false — whatever the operator, so `!=` can't turn "unknown" into a pass.
+ */
 const UNAUTH_SENTINEL = Symbol("unauth");
 
 function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
@@ -87,10 +98,25 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
     case ">=": return cmp(l, r) >= 0;
     case "<":  return cmp(l, r) < 0;
     case "<=": return cmp(l, r) <= 0;
-    case "~":  return String(l ?? "").includes(String(r ?? ""));
-    case "!~": return !String(l ?? "").includes(String(r ?? ""));
+    case "~":  return contains(l, r);
+    case "!~": return !contains(l, r);
     default:   return false;
   }
+}
+
+/**
+ * `~`, as SQLite's LIKE does it in list queries: an empty or missing needle
+ * matches nothing, and ASCII letters match regardless of case (other letters
+ * don't). Matching case-sensitively here let `title !~ "confidential"` hide
+ * "CONFIDENTIAL plan" from lists but serve it by id and over realtime.
+ */
+function contains(haystack: unknown, needle: unknown): boolean {
+  const n = needle === null || needle === undefined ? "" : String(needle);
+  return n !== "" && asciiLower(String(haystack ?? "")).includes(asciiLower(n));
+}
+
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
 }
 
 function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalContext): boolean {
@@ -124,8 +150,8 @@ function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalCont
       case ">=": return cmp(item, target) >= 0;
       case "<":  return cmp(item, target) < 0;
       case "<=": return cmp(item, target) <= 0;
-      case "~":  return String(item ?? "").includes(String(target ?? ""));
-      case "!~": return !String(item ?? "").includes(String(target ?? ""));
+      case "~":  return contains(item, target);
+      case "!~": return !contains(item, target);
       default:   return false;
     }
   });
@@ -150,8 +176,8 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
       case ">=": match = cmp(item, target) >= 0; break;
       case "<":  match = cmp(item, target) < 0; break;
       case "<=": match = cmp(item, target) <= 0; break;
-      case "~":  match = String(item ?? "").includes(String(target ?? "")); break;
-      case "!~": match = !String(item ?? "").includes(String(target ?? "")); break;
+      case "~":  match = contains(item, target); break;
+      case "!~": match = !contains(item, target); break;
       default:   match = false;
     }
     if (match) return true;
@@ -166,6 +192,9 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
       if (!ctx.auth) return UNAUTH_SENTINEL;
       if (op.prop === "id") return ctx.auth.id || UNAUTH_SENTINEL;
       if (op.prop === "type") return ctx.auth.type;
+      if (op.prop === "collectionName") return ctx.auth.collection ?? null;
+      if (op.prop === "verified") return ctx.auth.verified ? 1 : 0;
+      if (op.prop === "anonymous") return ctx.auth.anonymous ? 1 : 0;
       return ctx.auth.email ?? UNAUTH_SENTINEL;
     }
     case "request": return ctx.request?.[op.prop] ?? null;
@@ -198,16 +227,14 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
       const v = walkPath(head, op.path);
       return applyModifierValue(v, op.modifier);
     }
-    case "collection": {
-      // In-process eval: cross-collection joins require a DB read; we don't
-      // run them here. The SQL filter path (filter.ts) handles them. Returning
-      // null here means rules referencing @collection.* in single-record eval
-      // (view_rule on get-by-id) deny conservatively.
-      return null;
-    }
+    case "collection":
     case "viaRelation": {
-      // Same conservative-deny stance for back-relations in single-record eval.
-      return null;
+      // In-process eval: cross-collection joins require a DB read; we don't
+      // run them here. The SQL filter path (filter.ts) handles them. In
+      // single-record eval (view_rule on get-by-id, realtime) any comparison
+      // with one is false, so the rule can only deny more. Returning null
+      // here used to let `@collection.bans.user != @request.auth.id` pass.
+      return UNAUTH_SENTINEL;
     }
   }
 }

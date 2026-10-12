@@ -23,11 +23,19 @@ const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
  * @param mode "create" requires all required fields; "update" only validates provided fields
  * @param existingId existing record id (skip unique check against self when updating)
  */
+/**
+ * Whether the caller may see record `id` of `target` — set when validating
+ * on behalf of a non-admin caller, so a relation can only point at records
+ * that caller could read.
+ */
+export type CanSeeRecord = (target: Collection, id: string) => Promise<boolean>;
+
 export async function validateRecord(
   collection: Collection,
   data: Record<string, unknown> | null | undefined,
   mode: "create" | "update",
-  existingId?: string
+  existingId?: string,
+  canSee?: CanSeeRecord,
 ): Promise<void> {
   data = data ?? {};
   const schema = parseFields(collection.fields);
@@ -75,7 +83,7 @@ export async function validateRecord(
 
     // Relation target existence check (DB query)
     if (field.type === "relation" && typeof value === "string" && value !== "") {
-      const targetErr = await checkRelationTarget(field, value);
+      const targetErr = await checkRelationTarget(field, value, canSee);
       if (targetErr) errors[field.name] = targetErr;
     }
   }
@@ -228,13 +236,16 @@ async function checkUnique(
   return row === null || row === undefined;
 }
 
-async function checkRelationTarget(field: FieldDef, id: string): Promise<string | null> {
+async function checkRelationTarget(field: FieldDef, id: string, canSee?: CanSeeRecord): Promise<string | null> {
   if (!field.collection) return `${field.name}: relation has no target collection configured`;
   const target = await getCollection(field.collection);
   if (!target) return `${field.name}: target collection '${field.collection}' not found`;
   const client = (getDb() as unknown as { $client: Database }).$client;
   const tableRef = `"${userTableName(target.name)}"`;
   const row = client.prepare(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`).get(id);
-  if (!row) return `${field.name}: referenced ${target.name} '${id}' does not exist`;
+  // A record the caller can't view gets the same answer as one that doesn't
+  // exist: otherwise the error tells them which ids exist in a collection
+  // they can't read, and lets them link to someone else's private record.
+  if (!row || (canSee && !(await canSee(target, id)))) return `${field.name}: related record not found`;
   return null;
 }

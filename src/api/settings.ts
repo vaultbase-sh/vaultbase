@@ -7,7 +7,7 @@ import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache 
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
-import { isAuthWindowKey, validateWindowSeconds } from "../core/auth-tokens.ts";
+import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 import { validateBackupKeep } from "../core/backups.ts";
 import { validateCron } from "../core/jobs.ts";
@@ -102,6 +102,45 @@ function maybeDecrypt(key: string, value: string): string {
   }
 }
 
+/**
+ * Whether the current key decrypts the stored secret settings. False means
+ * the key changed (e.g. VAULTBASE_ENCRYPTION_KEY set to something other than
+ * the generated `.encryption-key`): starting anyway would read every secret
+ * as "" and could overwrite them.
+ */
+export function encryptionKeyMatchesData(): boolean {
+  const rows = rawClient()
+    .prepare(`SELECT key, value FROM vaultbase_settings`)
+    .all() as Array<{ key: string; value: string }>;
+  // Only secret settings, and the key is wrong only if none of them decrypt:
+  // one value copied in from another install (or typed with a "vbenc:"
+  // prefix) mustn't stop every later start.
+  const secrets = rows.filter((r) => shouldEncryptSettingKey(r.key) && isEncrypted(r.value));
+  if (secrets.length === 0) return true;
+  if (!isEncryptionAvailable()) return false;
+  return secrets.some((r) => {
+    try { decryptValueSync(r.value); return true; } catch { return false; }
+  });
+}
+
+/**
+ * Encrypt secret settings still stored in plaintext (written before a key
+ * existed). Run at startup; returns how many were converted.
+ */
+export function encryptPlaintextSecretSettings(): number {
+  if (!isEncryptionAvailable()) return 0;
+  const rows = rawClient()
+    .prepare(`SELECT key, value FROM vaultbase_settings`)
+    .all() as Array<{ key: string; value: string }>;
+  let n = 0;
+  for (const r of rows) {
+    if (!shouldEncryptSettingKey(r.key) || r.value === "" || isEncrypted(r.value)) continue;
+    setSetting(r.key, r.value);
+    n++;
+  }
+  return n;
+}
+
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
   const row = rawClient()
@@ -128,6 +167,23 @@ export function getAllSettings(): Record<string, string> {
     .all() as Array<{ key: string; value: string }>;
   const out: Record<string, string> = {};
   for (const r of rows) out[r.key] = maybeDecrypt(r.key, r.value);
+  return out;
+}
+
+/**
+ * What a secret-valued setting (see shouldEncryptSettingKey) reads as through
+ * the admin API and MCP. They used to come back decrypted, so anything that
+ * could read one admin response had every SMTP password, OAuth client secret
+ * and storage key. A PATCH that sends the mask back leaves the value alone.
+ */
+export const SECRET_SETTING_MASK = "********";
+
+/** getAllSettings() with secret values masked (empty ones stay empty). */
+export function getAllSettingsMasked(): Record<string, string> {
+  const out = getAllSettings();
+  for (const k of Object.keys(out)) {
+    if (shouldEncryptSettingKey(k) && out[k] !== "") out[k] = SECRET_SETTING_MASK;
+  }
   return out;
 }
 
@@ -165,7 +221,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
-      return { data: getAllSettings() };
+      return { data: getAllSettingsMasked() };
     })
     // Update settings (partial — keys not in body are left alone)
     .patch(
@@ -177,6 +233,10 @@ export function makeSettingsPlugin(jwtSecret: string) {
         // Pre-validate auth window keys before any write — reject the whole
         // PATCH on the first invalid value rather than half-applying.
         for (const [k, v] of Object.entries(body)) {
+          if (k === SESSION_MAX_KEY) {
+            const err = validateSessionMaxSeconds(v);
+            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
           if (isAuthWindowKey(k)) {
             const err = validateWindowSeconds(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
@@ -185,7 +245,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
             const err = validateMaxUploadSize(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
-          if (k === "maintenance.retention_days") {
+          if (k === "maintenance.retention_days" || k === "audit.retention_days") {
             const err = validateRetentionDays(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
           }
@@ -199,6 +259,8 @@ export function makeSettingsPlugin(jwtSecret: string) {
           }
         }
         for (const [k, v] of Object.entries(body)) {
+          // The masked value the UI read and sent back: keep what's stored.
+          if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
           setSetting(k, String(v));
         }
         // Bust caches that depend on settings
@@ -215,7 +277,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
           if (String(body["update_check.enabled"]) === "1") startUpdateCheckScheduler();
           else stopUpdateCheckScheduler();
         }
-        return { data: getAllSettings() };
+        return { data: getAllSettingsMasked() };
       },
       { body: t.Record(t.String(), t.Any()) }
     )

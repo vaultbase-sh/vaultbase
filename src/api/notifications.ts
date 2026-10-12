@@ -152,8 +152,10 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };
       }
-      const reveal = query.reveal === "1" || query.reveal === "true";
-      return { data: describeProviders({ reveal }) };
+      // `?reveal=1` used to return the OneSignal key and FCM service account
+      // in clear; secrets are write-only now, as in /admin/settings.
+      void query;
+      return { data: describeProviders() };
     })
     // ── Admin: patch one provider's config ─────────────────────────────────
     .patch(

@@ -80,3 +80,27 @@ export function listAuthWindowKinds(): TokenKind[] {
 }
 
 export const AUTH_WINDOW_BOUNDS = { MIN_SECONDS, MAX_SECONDS };
+
+// ── Absolute session lifetime ───────────────────────────────────────────────
+
+/** Default cap on how long a session can be kept alive by refreshing. */
+export const DEFAULT_SESSION_MAX_SECONDS = 30 * 24 * 60 * 60; // 30d
+export const SESSION_MAX_KEY = "auth.session.max_seconds";
+
+/**
+ * Seconds a sign-in may be kept alive through `/auth/refresh`, counted from
+ * the original sign-in (`auth_time`). 0 means no cap. Malformed values fall
+ * back to the default rather than silently lifting the cap.
+ */
+export function sessionMaxSeconds(): number {
+  const n = parseInt(getSetting(SESSION_MAX_KEY, String(DEFAULT_SESSION_MAX_SECONDS)), 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_SESSION_MAX_SECONDS;
+  return n;
+}
+
+export function validateSessionMaxSeconds(value: unknown): string | null {
+  const n = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n)) return "Must be an integer number of seconds";
+  if (n !== 0 && n < 3600) return "Must be 0 (no cap) or at least 3600 (1 hour)";
+  return null;
+}

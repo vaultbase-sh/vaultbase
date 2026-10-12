@@ -95,11 +95,13 @@ describe("email change", () => {
     expect((await post("/auth/users/confirm-email-change", { token: t, password: "correct-horse-1" })).status).toBe(400);
   });
 
-  it("needs a session and refuses a taken or invalid address", async () => {
+  it("needs a session, refuses an invalid address, and doesn't reveal a taken one", async () => {
     const { token } = await user();
     await seedAuthUser({ collection: "users", email: "taken@test.local" });
     expect((await post("/auth/users/request-email-change", { newEmail: "x@test.local" })).status).toBe(401);
-    expect((await post("/auth/users/request-email-change", { newEmail: "taken@test.local" }, token)).status).toBe(422);
+    // A taken address answers like a free one (no link is sent; see
+    // register-enumeration.test.ts).
+    expect((await post("/auth/users/request-email-change", { newEmail: "taken@test.local" }, token)).status).toBe(200);
     expect((await post("/auth/users/request-email-change", { newEmail: "not-an-email" }, token)).status).toBe(422);
   });
 
@@ -107,6 +109,8 @@ describe("email change", () => {
     const { token } = await user();
     await post("/auth/users/request-email-change", { newEmail: "first@test.local" }, token);
     const first = tokenFrom(await waitForMail("first@test.local"));
+    // Past the one-a-minute cooldown on email-change requests.
+    getRawClient().run("UPDATE vaultbase_auth_tokens SET created_at = created_at - 120 WHERE purpose = 'email_change'");
     await post("/auth/users/request-email-change", { newEmail: "second@test.local" }, token);
     await waitForMail("second@test.local");
     expect((await post("/auth/users/confirm-email-change", { token: first, password: "correct-horse-1" })).status).toBe(400);

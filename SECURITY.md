@@ -21,8 +21,30 @@ Each of these compiles admin-supplied JS via `new AsyncFunction("ctx", code)` an
 - **View collections** — `vaultbase/src/core/collections.ts::createUserView` — admin-supplied SQL backs a `CREATE VIEW`. The `validateViewQuery` guard rejects DDL/DML keywords and obvious abuse, but a determined admin can still read sensitive tables in their `SELECT`.
 
 Each compiled function gets a `helpers` object including `helpers.http` /
-`helpers.fetch` (untrusted-network egress) and `helpers.query` (passes through
-the rule engine).
+`helpers.fetch` (network egress, through the guard below) and `helpers.query`
+/ `helpers.db` (database access with **no** rule checks).
+
+### Trust boundary
+
+Code in hooks, custom routes, cron jobs and queue workers is **trusted as an
+admin**. It runs in the server process with the server's privileges and is
+not sandboxed:
+
+- `helpers.query`, `helpers.find` and `helpers.db.*` read and write every
+  collection and system table directly; collection rules do not apply.
+- `helpers.fs.*` and `helpers.os.env` reach the server's files (database,
+  `.secret`, uploads) and environment (`VAULTBASE_JWT_SECRET`,
+  `VAULTBASE_ENCRYPTION_KEY`).
+- Plain JavaScript in the function body can do anything the runtime allows,
+  including `import()` of Bun modules.
+
+So creating or editing such code is equivalent to shell access on the host,
+and the admin accounts and `mcp:admin` / admin API tokens that can do it must
+be protected accordingly. The egress guard below limits *accidental* SSRF
+from hook code that fetches user-supplied URLs; it is not a sandbox for
+hostile code. Data a hook reads from a request (`ctx.record`, `ctx.request`)
+is untrusted: validate it before using it in `helpers.db.exec` SQL, file
+paths or outbound URLs.
 
 **`helpers.http` SSRF guard (since v0.1.4):** every request runs through
 `core/hook-egress.ts::assertEgressAllowed` before `fetch()`. The default deny
@@ -45,13 +67,23 @@ DNS rebinding (attacker controls the hostname's DNS, flips the answer
 between our resolve check and `fetch()`'s internal resolve). Use
 kernel-level filtering when you need bulletproof guarantees.
 
-`helpers.fetch` (raw Bun `fetch`) is NOT routed through the egress guard —
-it's the unguarded form intentionally exposed for cases where the new SSRF
-guard would interfere. Legacy hooks that called `helpers.fetch` keep working;
-prefer `helpers.http.request` for new code.
+**Admin-configured integration URLs are trusted.** The SMTP host, S3 /
+storage endpoint, OAuth/OIDC endpoints (`oauth2.*` URLs, including a custom
+OIDC token and userinfo URL) and push-notification providers are set by
+admins and are **not** passed through the egress guard: they often point at
+internal services (Mailpit, MinIO, a corporate IdP) on purpose. Anyone who
+can change these settings can make the server connect anywhere and can
+redirect a stored secret (SMTP password, client secret) to a host they
+control, so the settings API is admin-only for that reason too. Webhooks
+(whose deliveries carry record data) and hook/route/job code do use the
+guard.
 
-`helpers.query` does NOT enforce the egress guard — it goes through the
-SQLite rule engine, not the network.
+`helpers.fetch` goes through the same guard as `helpers.http` (it used to be
+raw `fetch`): every redirect hop is re-checked, only `http:`/`https:` are
+allowed, and credentials are dropped on a cross-origin redirect.
+
+`helpers.query` reads through the records layer **without** collection rules
+(see the trust boundary above); it makes no network requests.
 
 ## Token lifecycle
 
@@ -89,7 +121,7 @@ Per-IP token-bucket rate limiting honors `X-Forwarded-For` only when the immedia
 
 ## Setup hardening
 
-`POST /api/admin/setup` accepts the `X-Setup-Key` header when `VAULTBASE_SETUP_KEY` is set. Use this on first boot to close the race where an attacker reaches `/setup` before the operator on a public IP. Print the key from the operator's terminal (e.g., `openssl rand -hex 32`) and pass it on the request.
+While no admin exists, `POST /api/v1/admin/setup` requires a setup key (`X-Setup-Key` header or `setup_key` in the body), so nobody who reaches a fresh install before the operator can claim it. The key is `VAULTBASE_SETUP_KEY` when set; otherwise the server generates one, stores it in `<dataDir>/.setup-key` (mode 0600) and prints it at startup. The file is deleted once the first admin exists. `vaultbase setup-admin` creates an admin locally without the key.
 
 The setup endpoint also enforces a 12-character minimum password and atomically refuses if a concurrent setup landed first.
 
@@ -102,7 +134,8 @@ The setup endpoint also enforces a 12-character minimum password and atomically 
 ## Hardening checklist for production
 
 - Set `VAULTBASE_JWT_SECRET` (don't rely on `.secret` fallback).
-- Set `VAULTBASE_SETUP_KEY` on first boot. Unset after creating the seed admin.
+- Create the first admin with `vaultbase setup-admin`, or with the setup key printed at first boot (or `VAULTBASE_SETUP_KEY`).
+- Set `VAULTBASE_HOST=127.0.0.1` when a reverse proxy on the same host is the only way in.
 - Set `VAULTBASE_TRUSTED_PROXIES` to your front-door peer IPs.
 - Set `security.allowed_origins` for the admin SPA / user app origins.
 - Set `VAULTBASE_ENCRYPTION_KEY` (AES-GCM, 32 bytes base64) if any field type is `encrypted`.

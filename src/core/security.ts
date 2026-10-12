@@ -13,6 +13,7 @@ import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { adminSessions, admin as adminTable, loginFailures, tokenRevocations } from "../db/schema.ts";
 import { getSetting } from "../api/settings.ts";
+import { clientIp } from "./sec.ts";
 
 // ── Trusted proxies ─────────────────────────────────────────────────────────
 
@@ -128,43 +129,148 @@ export interface LockoutPolicy {
   duration_seconds: number;
 }
 
+/** Default failed sign-ins per account (and per IP) before a lockout. */
+export const DEFAULT_LOCKOUT_MAX_ATTEMPTS = 10;
+
 export function getLockoutPolicy(): LockoutPolicy {
-  const max = Number.parseInt(getSetting("auth.lockout.max_attempts", "0"), 10) || 0;
+  const raw = Number.parseInt(getSetting("auth.lockout.max_attempts", String(DEFAULT_LOCKOUT_MAX_ATTEMPTS)), 10);
+  const max = Number.isFinite(raw) && raw > 0 ? raw : 0;
   const dur = Math.max(60, Number.parseInt(getSetting("auth.lockout.duration_seconds", "900"), 10) || 900);
   return { enabled: max > 0, max_attempts: max, duration_seconds: dur };
 }
 
-/** Insert one failure row keyed by `email:<addr>` and `ip:<ip>` (when known). */
-export async function recordLoginFailure(opts: { email: string; ip: string | null }): Promise<void> {
-  const policy = getLockoutPolicy();
-  if (!policy.enabled) return;
-  const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
-  const rows: Array<{ id: string; key: string; at: number }> = [];
-  if (opts.email) rows.push({ id: crypto.randomUUID(), key: `email:${opts.email.toLowerCase()}`, at: now });
-  if (opts.ip)    rows.push({ id: crypto.randomUUID(), key: `ip:${opts.ip}`, at: now });
-  if (rows.length === 0) return;
-  await db.insert(loginFailures).values(rows).catch(() => { /* swallow */ });
+/**
+ * An IP may fail this many times the per-account limit before it is locked.
+ * One address often fronts many people (an office, a carrier NAT), so the IP
+ * key is a backstop against spraying many accounts, not a per-person limit.
+ */
+const IP_LOCKOUT_MULTIPLIER = 5;
+
+interface LockoutOpts {
+  scope?: string;
+  email: string;
+  /**
+   * Id of the account the email resolved to, when it did. Keying by id
+   * rather than by address matters because address lookups are
+   * case-sensitive: keyed by a lower-cased address, `VICTIM@x` (an account
+   * an attacker registered) and `victim@x` shared one counter, and each
+   * successful sign-in to the attacker's account wiped the victim's failures.
+   */
+  subject?: string | null | undefined;
+  ip: string | null;
 }
 
-export async function clearLoginFailures(opts: { email?: string; ip?: string | null }): Promise<void> {
-  const db = getDb();
-  if (opts.email) await db.delete(loginFailures).where(eq(loginFailures.key, `email:${opts.email.toLowerCase()}`));
-  if (opts.ip)    await db.delete(loginFailures).where(eq(loginFailures.key, `ip:${opts.ip}`));
+/**
+ * Lockout keys for a sign-in. `scope` separates principals that share an
+ * address: admins use `email:<addr>`, auth-collection users
+ * `user:<collection-id>:<addr>`, so failing against one never locks the other.
+ * The IP key is scoped the same way, so users behind a shared address can't
+ * lock the admin sign-in out.
+ */
+function lockoutKeys(opts: LockoutOpts): { account: string; ip: string | null } {
+  const scope = opts.scope ?? "email";
+  return {
+    // `id:` and `addr:` never overlap, whatever address is typed. An address
+    // that matches no account is keyed exactly as typed, the way lookups
+    // match it: lower-casing made `VICTIM@x` and `victim@x` share a counter,
+    // so a 429 (or not) after failing against one told whether the other
+    // was an account.
+    account: opts.subject ? `${scope}:id:${opts.subject}` : `${scope}:addr:${opts.email.trim()}`,
+    ip: opts.ip ? `ip:${scope === "email" ? "" : `${scope}:`}${opts.ip}` : null,
+  };
 }
 
-/** True when the principal is in lockout window. */
-export async function isLockedOut(opts: { email: string; ip: string | null }): Promise<boolean> {
+/** A charged sign-in attempt, from `reserveLoginAttempt`. */
+export interface LoginAttempt {
+  account: string;
+  ipReservation: string | null;
+}
+
+/**
+ * Charge one sign-in attempt against the account (and IP) before the password
+ * is checked. Returns null while either key is locked out. The charge stays
+ * as the recorded failure unless the sign-in succeeds and the caller passes
+ * the attempt to `loginSucceeded`. Charging first means parallel attempts
+ * can't all read the same count, the way a check-then-record lockout lets
+ * them. With the lockout off, an inert attempt is returned.
+ */
+export async function reserveLoginAttempt(opts: LockoutOpts): Promise<LoginAttempt | null> {
+  const keys = lockoutKeys(opts);
   const policy = getLockoutPolicy();
-  if (!policy.enabled) return false;
-  const db = getDb();
-  const cutoff = Math.floor(Date.now() / 1000) - policy.duration_seconds;
-  for (const k of [`email:${opts.email.toLowerCase()}`, opts.ip ? `ip:${opts.ip}` : null]) {
-    if (!k) continue;
-    const rows = await db.select().from(loginFailures).where(and(eq(loginFailures.key, k), gte(loginFailures.at, cutoff)));
-    if (rows.length >= policy.max_attempts) return true;
+  if (!policy.enabled) return { account: keys.account, ipReservation: null };
+  const held = await reserveAttempt(keys.account, policy.max_attempts, policy.duration_seconds);
+  if (!held) return null;
+  let ipReservation: string | null = null;
+  if (keys.ip) {
+    ipReservation = await reserveAttempt(keys.ip, policy.max_attempts * IP_LOCKOUT_MULTIPLIER, policy.duration_seconds);
+    if (!ipReservation) {
+      await releaseAttempt(held);
+      return null;
+    }
   }
-  return false;
+  return { account: keys.account, ipReservation };
+}
+
+/**
+ * The attempt succeeded: forget the account's failures and withdraw this
+ * attempt's charge on the IP. Earlier IP failures are kept — otherwise an
+ * attacker spraying many accounts from one address could reset the IP budget
+ * by signing in to an account of their own now and then.
+ */
+export async function loginSucceeded(attempt: LoginAttempt): Promise<void> {
+  await clearAttemptFailures(attempt.account);
+  if (attempt.ipReservation) await releaseAttempt(attempt.ipReservation);
+}
+
+// ── Per-account attempt budgets ─────────────────────────────────────────────
+//
+// Second factors and one-time codes are short (6 digits), so they need a hard
+// failure budget per account that holds no matter how many fresh codes or
+// tickets the caller mints. Unlike the login lockout above, these always apply.
+
+/** Record one failed attempt against `key` (e.g. `otp:<collection>:<user>`). */
+export async function recordAttemptFailure(key: string): Promise<void> {
+  await getDb().insert(loginFailures)
+    .values({ id: crypto.randomUUID(), key, at: Math.floor(Date.now() / 1000) })
+    .catch(() => { /* swallow */ });
+}
+
+/** Failed attempts recorded against `key` within the last `windowSeconds`. */
+export async function recentAttemptFailures(key: string, windowSeconds: number): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
+  const rows = await getDb().select({ id: loginFailures.id }).from(loginFailures)
+    .where(and(eq(loginFailures.key, key), gte(loginFailures.at, cutoff)));
+  return rows.length;
+}
+
+/**
+ * Charge one attempt against `key` *before* the secret is checked. Returns the
+ * reservation id, or null when the budget is spent (the charge is withdrawn).
+ *
+ * Checking the count first and recording the failure afterwards let parallel
+ * guesses all read the same count and all get through. Recording first means
+ * each request counts every reservation made before it, so at most `max`
+ * attempts are ever in flight or failed inside the window. On success the
+ * caller hands the id to `releaseAttempt`; on failure the row stays as the
+ * recorded failure.
+ */
+export async function reserveAttempt(key: string, max: number, windowSeconds: number): Promise<string | null> {
+  const id = crypto.randomUUID();
+  await getDb().insert(loginFailures).values({ id, key, at: Math.floor(Date.now() / 1000) });
+  if (await recentAttemptFailures(key, windowSeconds) > max) {
+    await releaseAttempt(id);
+    return null;
+  }
+  return id;
+}
+
+/** Withdraw a reservation from `reserveAttempt` (the attempt succeeded). */
+export async function releaseAttempt(id: string): Promise<void> {
+  await getDb().delete(loginFailures).where(eq(loginFailures.id, id));
+}
+
+export async function clearAttemptFailures(key: string): Promise<void> {
+  await getDb().delete(loginFailures).where(eq(loginFailures.key, key));
 }
 
 /** GC failures older than the longest lockout window. */
@@ -178,11 +284,7 @@ export async function pruneOldLoginFailures(): Promise<void> {
 // ── IP extraction (mirrors ratelimit / audit-log defensive defaults) ────────
 
 function clientIpFromRequest(request: Request): string | null {
-  const trustedRaw = getTrustedProxiesRaw();
-  if (!trustedRaw) return null;
-  const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return null;
-  return (xff.split(",")[0] ?? "").trim() || null;
+  return clientIp(request);
 }
 
 // ── Fingerprints ────────────────────────────────────────────────────────────

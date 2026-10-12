@@ -4,6 +4,7 @@ import { getDb } from "../db/client.ts";
 import { admin, apiTokens, tokenRevocations } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
+import { getTrustedProxiesRaw } from "./security.ts";
 
 /**
  * Centralized auth-token verification.
@@ -187,6 +188,8 @@ export async function verifyAuthToken(
         if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at > ctx.iat) {
           return null;
         }
+        // Read from the row, not the token, so verifying takes effect at once.
+        if (u.email_verified === 1) ctx.verified = true;
       }
     }
 
@@ -217,6 +220,9 @@ export function dataPrincipal(ctx: VerifiedAuth | null, access: "read" | "write"
   }
   const out: AuthContext = { id: ctx.id, type: ctx.type };
   if (ctx.email) out.email = ctx.email;
+  if (ctx.collection) out.collection = ctx.collection;
+  if (ctx.anonymous) out.anonymous = true;
+  if (ctx.verified) out.verified = true;
   return out;
 }
 
@@ -231,10 +237,12 @@ export async function signAuthToken(opts: {
   audience: "user" | "admin" | "file" | "api";
   expiresInSeconds: number;
   jwtSecret: string;
+  /** Re-mint a token that was already issued: same jti and iat give the same bytes. */
+  reissue?: { jti: string; iat: number };
 }): Promise<{ token: string; jti: string; exp: number; iat: number }> {
-  const iat = Math.floor(Date.now() / 1000);
+  const iat = opts.reissue?.iat ?? Math.floor(Date.now() / 1000);
   const exp = iat + opts.expiresInSeconds;
-  const jti = crypto.randomUUID();
+  const jti = opts.reissue?.jti ?? crypto.randomUUID();
   const token = await new jose.SignJWT({ ...opts.payload, jti })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
@@ -321,7 +329,10 @@ export function isAllowedUploadMime(mime: string): boolean {
 let _trustedProxiesCache: { raw: string; cidrs: ParsedCidr[]; bare: Set<string> } | null = null;
 
 function getTrustedProxies(): { cidrs: ParsedCidr[]; bare: Set<string> } | null {
-  const raw = process.env["VAULTBASE_TRUSTED_PROXIES"] ?? "";
+  // Settings → Security → Trusted proxies wins over the env var, the same
+  // precedence getTrustedProxiesRaw() documents; this used to read the env
+  // var only, so the setting changed lockout keys but not rate limits.
+  const raw = getTrustedProxiesRaw();
   if (!raw) return null;
   if (_trustedProxiesCache && _trustedProxiesCache.raw === raw) {
     return { cidrs: _trustedProxiesCache.cidrs, bare: _trustedProxiesCache.bare };
@@ -341,7 +352,19 @@ function getTrustedProxies(): { cidrs: ParsedCidr[]; bare: Set<string> } | null 
   return { cidrs, bare };
 }
 
+/**
+ * `::ffff:a.b.c.d` → `a.b.c.d`. A server listening on IPv6 sees IPv4 peers
+ * in this mapped form, which never matched `127.0.0.1` or `10.0.0.0/8` in
+ * the trusted-proxy list: the proxy's forwarded address was ignored and every
+ * client shared its rate-limit bucket.
+ */
+export function normalizePeerIp(ip: string): string {
+  const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  return m ? m[1]! : ip;
+}
+
 function isTrustedProxy(ip: string): boolean {
+  ip = normalizePeerIp(ip);
   const t = getTrustedProxies();
   if (!t) return false;
   if (t.bare.has(ip)) return true;
@@ -351,17 +374,85 @@ function isTrustedProxy(ip: string): boolean {
   return false;
 }
 
+const LOOPBACK_CIDRS = ["127.0.0.0/8", "::1/128"].map((c) => parseCidr(c)!);
+
+/**
+ * The address to apply a per-client cap to, or null to skip that cap. With
+ * no trusted proxies configured, every client behind a reverse proxy shares
+ * the proxy's address, and a per-IP cap on it is a cap on the whole site; so
+ * the cap is skipped for a loopback peer (a proxy on this host). Any other
+ * peer is capped by its own address — whether a request is "forwarded" can't
+ * be told from headers the client writes. A proxy on another host needs
+ * `security.trusted_proxies`. Global caps always apply.
+ */
+export function perClientLimitIp(request: Request | null, peerIp: string | null): string | null {
+  if (!peerIp) return null;
+  peerIp = normalizePeerIp(peerIp);
+  if (!getTrustedProxies()) {
+    if (LOOPBACK_CIDRS.some((c) => ipInCidr(peerIp!, c))) return null;
+    return peerIp;
+  }
+  return request ? trustedClientIp(request, peerIp) : peerIp;
+}
+
 export function trustedClientIp(request: Request, peerIp: string | null): string {
   if (!peerIp) return "unknown";
+  peerIp = normalizePeerIp(peerIp);
   if (!isTrustedProxy(peerIp)) return peerIp;
   const fwd = request.headers.get("x-forwarded-for");
   if (fwd) {
-    const first = fwd.split(",")[0]?.trim();
-    if (first) return first;
+    // Walk right to left: each trusted proxy appends the address it got the
+    // request from, so the rightmost entry that isn't one of our proxies is
+    // the client. The leftmost entry is whatever the client chose to send.
+    const hops = fwd.split(",").map((h) => h.trim()).filter(Boolean);
+    for (let i = hops.length - 1; i >= 0; i--) {
+      if (!isTrustedProxy(hops[i]!)) return hops[i]!;
+    }
+    if (hops[0]) return hops[0];
   }
-  const real = request.headers.get("x-real-ip");
+  const real = request.headers.get("x-real-ip")?.trim();
   if (real) return real;
   return peerIp;
+}
+
+/**
+ * The socket peer of each request, recorded by the server as the request
+ * comes in, so code without access to Bun's `server.requestIP()` (audit log,
+ * lockout, logs, custom routes) can still apply the trusted-proxy rule
+ * instead of reading X-Forwarded-For on its own.
+ */
+const requestPeers = new WeakMap<Request, string | null>();
+
+/** The socket peer recorded for `request` by the server, or null. */
+export function rememberedPeer(request: Request): string | null {
+  return requestPeers.get(request) ?? null;
+}
+
+export function rememberPeer(request: Request, ip: string | null): void {
+  requestPeers.set(request, ip === null ? null : normalizePeerIp(ip));
+}
+
+/**
+ * Whether the client reached us over HTTPS: the request URL itself, or a
+ * trusted proxy saying so in X-Forwarded-Proto (a TLS-terminating proxy, the
+ * deployment the guide recommends, hands us plain http).
+ */
+export function requestIsHttps(request: Request): boolean {
+  if (new URL(request.url).protocol === "https:") return true;
+  const peer = requestPeers.get(request);
+  if (!peer || !isTrustedProxy(peer)) return false;
+  return (request.headers.get("x-forwarded-proto") ?? "").split(",")[0]!.trim().toLowerCase() === "https";
+}
+
+/**
+ * The client's address for `request`, by the trusted-proxy rule above. Null
+ * when the peer is unknown (a request that didn't come through the server),
+ * rather than trusting a header nothing vouched for.
+ */
+export function clientIp(request: Request): string | null {
+  const peer = requestPeers.get(request);
+  if (peer === undefined || peer === null) return null;
+  return trustedClientIp(request, peer);
 }
 
 /** HMAC-SHA256 for recovery-code O(1) lookup. Returns hex. */

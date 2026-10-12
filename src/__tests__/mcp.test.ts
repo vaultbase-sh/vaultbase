@@ -390,6 +390,19 @@ describe("MCP — Phase 2 admin tools", () => {
     expect(got.value).toBe("bar");
   });
 
+  it("a masked secret read back and written again keeps the stored value (review 16 F-4)", async () => {
+    const call = async (id: number, name: string, args: Record<string, unknown>) => {
+      const r = await dispatch({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }, mkCtx(["mcp:admin"])) as JsonRpcSuccess;
+      return JSON.parse(((r.result as CallToolResult).content[0] as { text: string }).text) as Record<string, unknown>;
+    };
+    await call(110, "vaultbase.update_setting", { key: "smtp.pass", value: "real-secret" });
+    const got = await call(111, "vaultbase.get_setting", { key: "smtp.pass" });
+    expect(got["value"]).toBe("********");
+    await call(112, "vaultbase.update_setting", { key: "smtp.pass", value: got["value"] });
+    const { getSetting } = await import("../api/settings.ts");
+    expect(getSetting("smtp.pass", "")).toBe("real-secret");
+  });
+
   it("run_sql refuses non-SELECT without allow_write", async () => {
     const r = await dispatch(
       {

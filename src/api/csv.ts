@@ -148,7 +148,9 @@ export function makeCsvPlugin(jwtSecret: string) {
       // and CSV formatting time.
       let nextBatch: Promise<Awaited<ReturnType<typeof listRecords>>> | null = null;
 
-      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE });
+      // Admin-only export of the whole table: not bound by the offset cap
+      // that protects client-facing lists.
+      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true });
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {

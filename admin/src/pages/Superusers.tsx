@@ -77,7 +77,10 @@ export default function Superusers() {
         style={{ display: "inline-flex", gap: 4, justifyContent: "flex-end" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setShowEdit(a)} title="Edit" />
+        {/* The server only lets an admin change their own email and password. */}
+        {a.email === adminEmail && (
+          <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setShowEdit(a)} title="Edit" />
+        )}
         <VbBtn
           kind="danger"
           size="sm"
@@ -111,7 +114,7 @@ export default function Superusers() {
           columns={columns}
           rowKey={(a) => a.id}
           loading={loading}
-          onRowClick={(a) => setShowEdit(a)}
+          onRowClick={(a) => { if (a.email === adminEmail) setShowEdit(a); }}
           emptyState={
             <VbEmptyState
               icon="users"

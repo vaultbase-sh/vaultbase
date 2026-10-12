@@ -17,6 +17,41 @@ Binaries, checksums, signatures and SBOMs for every version are on
   as `null`, which is public, so a new collection was readable and writable by anyone
   until someone set its rules. Existing collections keep the rules they have. To make a
   collection public, set `null` explicitly or pick **Public** on the **API rules** tab.
+- **`~` against an empty value no longer matches.** `field ~ ""`, or `~` against a
+  request value, auth field or column that is empty or missing, used to match every
+  record; it now matches none, and `!~` matches all. A `!~` filter now also includes
+  records whose field is NULL, as single-record rule checks already did.
+- **An encryption key is generated when none is set.** Without `VAULTBASE_ENCRYPTION_KEY`
+  the server now creates `<dataDir>/.encryption-key` (0600) on first start, uses it for
+  secret settings and encrypted fields, and encrypts secret settings still stored in
+  plaintext. **Back up this file with your database backups**: encrypted values can't be
+  read without it. To switch to the env var later, set it to the file's contents. The
+  server refuses to start if the key doesn't decrypt the stored secrets, or if the key
+  file exists but can't be read, rather than replacing it.
+- **Custom routes are rate limited and return a generic `500`.** A custom route that
+  throws now answers `{"error":"Internal error"}`; read the message in the logs. They
+  count against the `/api/*` rate-limit rules like other API requests.
+- **Secret settings read back as `********`.** The admin API and MCP settings tools no
+  longer return secret values; a `PATCH` (or MCP `update_setting`) that sends `********`
+  back leaves the stored value alone. `GET /admin/notifications/providers` ignores
+  `?reveal=1`: the OneSignal key and FCM service account are write-only. Scripts that read a secret back from `GET /admin/settings` must keep their
+  own copy. A metrics token can be copied only before it is saved.
+- **New files are no longer world-readable.** The server sets a `027` umask at startup,
+  so the database, uploads, logs and backups it creates are readable by its user and
+  group only. If another user (not in the service's group) reads those files directly,
+  add it to the group.
+- **`read` API tokens are labelled as what they are.** A `read` or `mcp:read` token reads
+  all data regardless of collection rules (a read-only admin); the admin token page,
+  `vaultbase token mint` and the docs now say so. No behaviour change.
+- **Cluster mode is documented as stateless REST scaling.** Caches, realtime and rate
+  limits are per worker; worker 0 prints these limits at startup. Cron jobs, daily
+  maintenance, the update check and the orphan-file sweep now run on worker 0 only
+  (cron ran every job once per worker). Online restore answers `409` in cluster mode.
+- **An uncaught exception now stops the process.** It used to be logged and ignored,
+  leaving the server running in an unknown state. It is still logged, then the server
+  shuts down gracefully with exit code 1 — run Vaultbase under a supervisor that
+  restarts it (the installer's systemd unit does). Hook code that throws from a timer
+  callback is one way to trigger this.
 - **Rules can now see the request body.** `@request.body.<field>` was always empty, so
   `:isset` was always false and comparisons against the body always failed. Rules that
   use it now behave as written — check any that only worked because the body was empty.
@@ -34,12 +69,110 @@ Binaries, checksums, signatures and SBOMs for every version are on
   everything else, SVG included, downloads as `application/octet-stream`. Every file
   response carries `Content-Security-Policy: sandbox`, and stored file extensions now
   come from the validated MIME type rather than the uploaded file name.
-- **A fresh install now gates the first-admin endpoint.** `install.sh` generates a
-  `VAULTBASE_SETUP_KEY` into `/etc/vaultbase/vaultbase.env`, so `POST /api/v1/admin/setup`
-  requires an `X-Setup-Key` header. Bootstrap with `vaultbase setup-admin`, which ignores
-  the key. The browser setup page at `/_/` cannot send the header — to use it instead,
-  comment the key out, restart, create the account, then uncomment it. Existing installs
-  are untouched: the key is only written when the env file is created.
+- **First-admin setup always needs a setup key.** While no admin exists,
+  `POST /api/v1/admin/setup` requires the key as an `X-Setup-Key` header or a `setup_key`
+  body field. It is `VAULTBASE_SETUP_KEY` when set (`install.sh` writes one into
+  `/etc/vaultbase/vaultbase.env`); otherwise the server generates one, keeps it in
+  `<dataDir>/.setup-key` and prints it at startup with a `/_/setup#key=…` link. The browser
+  setup page has a **Setup key** field, filled in from that link. `vaultbase setup-admin`
+  doesn't need the key, and now reads `/etc/vaultbase/vaultbase.env` (or
+  `VAULTBASE_ENV_FILE`) so it works on the service's database.
+- **`VAULTBASE_HOST` is honoured.** The server used to listen on every interface
+  whatever it said; set `VAULTBASE_HOST=127.0.0.1` behind a local reverse proxy. Unset,
+  it still listens on every interface, IPv4 and IPv6.
+- **Sign-in lockout is on by default and covers users too.** After 10 failed sign-ins in
+  15 minutes, the account (and, behind a configured trusted proxy, the client IP) gets
+  `429 Too many failed attempts` until the window passes. This applies to admin sign-in,
+  which previously shipped with the lockout off, and now also to
+  `POST /auth/:collection/login`, which had none. Tune or disable it at **Settings →
+  Security → Brute-force lockout** (`auth.lockout.max_attempts`, `0` turns it off). An
+  install that had explicitly saved `0` keeps it off.
+- **Refreshing a token revokes the old one, and sessions have a maximum age.**
+  `POST /auth/refresh` now revokes the token it was called with, so keep the new token
+  and drop the old one (the SDK already does). Refreshing the same token again within
+  30 seconds — another tab, a retried request — returns the same new token rather than
+  an error. Signing out with the old token in that window ends the new one too. A sign-in can be kept alive by refreshing
+  for at most 30 days from the original sign-in; after that `/refresh` answers `401` and
+  the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
+  Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
+  sessions are exempt.
+- **`/totp/setup` and `/totp/confirm` refuse while MFA is on.** To move a user to a new authenticator,
+  call `/totp/disable` with a current code, then `/totp/setup` and `/totp/confirm` again.
+- **`request-email-change` no longer reports a taken address.** It answers
+  `{ "sent": true }` and sends nothing; the old `422 Email already in use` is gone.
+- **Admins can only edit their own email and password.** `PATCH /admin/admins/:id` on
+  another admin answers `403`, and the **Superusers** page only offers Edit on your own
+  row. Reset another admin's password from the server with
+  `vaultbase setup-admin --email … --password … --force`.
+- **The admin SQL runner runs one statement per query.** A script with several
+  statements separated by `;` now answers an error; run them one at a time.
+- **Protected files always need a download token.** Apps that showed protected files
+  by relying on the record's view rule must now mint a token
+  (`POST /files/:collection/:recordId/:field/:filename/token`) and append `?token=`.
+- **`GET /collections` and `/collections/:id` need an admin token.** Non-admin callers
+  get `401`. For a schema your app can read, enable the public OpenAPI document
+  (`api.openapi_public`), which leaves out admin-only collections.
+- **A delete is refused if its cascade would touch records you can't modify.** Deleting
+  a record whose relations cascade (`cascade` or `setNull`) now checks each affected
+  record against its own collection's delete (or update) rule and answers `403` if any
+  fails, instead of removing or changing them. Admins are unaffected.
+- **Files whose field was removed are admin-only.** A stored file whose field was dropped
+  or renamed is no longer served by the record's rules.
+- **View queries can't name auth secrets.** A view whose query mentions `password_hash`,
+  `totp_secret` or `password_reset_at` is rejected when saved; edit it to drop those
+  columns. `SELECT *` views keep working, without those columns.
+- **Uploads need an existing record.** `POST /files/:collection/:recordId/:field` answers
+  `404` for a record id that doesn't exist; create the record first, then upload.
+- **Realtime changes.** A WebSocket or SSE connection from this server's own origin is
+  accepted even with `security.allowed_origins` empty (it used to be refused). Clients
+  should handle `{ "type": "auth_expired" }` by sending a fresh token. Connections are
+  capped at 10,000 per process, 100 per client address and 100 topics (of at most 200
+  characters) each; WebSocket messages over 64 KB are refused. The per-address cap needs
+  the real client address: behind a reverse proxy, set `security.trusted_proxies` (until
+  then, connections from a loopback peer — a proxy on the same host — are not capped per
+  address; a proxy elsewhere must be listed). Subscriptions to a whole
+  collection only deliver records that pass its `list_rule`. Managing an SSE client that
+  has authenticated needs that user's token.
+- **OAuth flows need the server-issued `state`.** `/oauth2/authorize` records the
+  `state` (generating one if you send none, returned as `data.state`); `/oauth2/exchange`
+  now requires it back, for the same provider and redirect URI, once. With no
+  `oauth2.allowed_redirect_uris` configured, only redirect URIs on `app.url`'s origin are
+  accepted — set the list if your callback lives elsewhere. Accounts with TOTP get
+  `{ mfa_required, mfa_token }` from `/exchange` and password-based `/merge-confirm`.
+  `/oauth2/authorize` also returns a `state_secret`; keep it in the page that started
+  the flow and send it to `/exchange` — without it the exchange answers `400`. Facebook,
+  Microsoft, Twitch, Spotify and Notion emails no longer merge into existing accounts or
+  count as verified; an account created from an unverified (or already taken) provider
+  email gets a placeholder `…@oauth.invalid` address. Resetting a password removes the
+  account's provider links.
+- **Hook egress is stricter.** `helpers.fetch` is now filtered like `helpers.http`;
+  redirects are followed by hand (at most 5) with each hop checked; a host that doesn't
+  resolve is blocked; and cloud metadata addresses can't be allowed. A hook that reached
+  an internal service through one of these gaps needs a `hooks.http.allow` entry.
+- **Relations must point at records the writer can view.** A non-admin can no longer set
+  a relation to a record they can't read — including linking to another user when the
+  `users` collection isn't readable to them. Open the target's view rule (for example
+  to signed-in users) where such links are intended.
+- **Reverse proxies: set `X-Forwarded-For`, don't append.** Update nginx to
+  `proxy_set_header X-Forwarded-For $remote_addr;` (and fix the SSE `location` to
+  `/api/v1/realtime`), as in `deploy/nginx/vaultbase.conf`. With a chain of proxies, list
+  all of them in `VAULTBASE_TRUSTED_PROXIES`.
+- **`/metrics` needs a token.** With `metrics.enabled` on and no `metrics.token`, the
+  endpoint used to be public; it now answers `401` unless an admin token is sent. Set
+  `metrics.token` for your scraper.
+- **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
+  answers `400`; narrow deep reads with a filter (for example on `created`) instead of
+  paging.
+- **Flag evaluation sets `auth` itself.** An `auth` key in the context sent to
+  `POST /flags/evaluate` is replaced with the caller's verified session (or removed).
+  Target trusted attributes as `auth.id`, `auth.email`, `auth.collection`.
+- **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
+  still read; `allow_write: true` now answers with an error unless the token also has
+  `mcp:admin` (or `admin`).
+- **Regenerating recovery codes needs a current TOTP code.** Send
+  `{ "code": "123456" }` to `/totp/recovery/regenerate`; without it the call answers
+  `401`. `/totp/confirm` now returns the first set of recovery codes as
+  `recovery_codes`, so enrolling doesn't need a separate regenerate call.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -80,8 +213,314 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **View queries could read SQLite metadata.** `pragma_*()` functions and `sqlite_*`
   tables passed the view-query check and could expose the schema and database file path
   through a public view. They are now rejected.
+- **OTP sign-in codes could be guessed without limit.** A wrong code was never counted
+  against the attempt limit, and requesting a new code left the older ones valid. Each code
+  now allows 5 attempts, a new code voids the previous one, used and expired codes are
+  never matched, and an address allows 10 failed codes per 15 minutes in total; past that,
+  `POST /auth/:collection/otp/auth` answers `429` until the window passes. Both limits
+  are charged before the code is compared, so parallel guesses can't race past them.
+- **The MFA code limit could be reset by signing in again.** The 5-attempt limit on the
+  second step of MFA sign-in was kept per sign-in ticket, so anyone holding the password
+  could fetch a new ticket and keep guessing; parallel guesses could also slip past the
+  count. Failed TOTP and recovery codes now count per account (10 per 15 minutes, then
+  `429`), including on `POST /auth/:collection/totp/disable`, and the counter is updated
+  atomically, before the code is checked, so guesses sent in parallel can't get past
+  either limit. A TOTP code is accepted once: replaying a code that has just been used is
+  refused (and isn't counted as a failed guess). A recovery code or MFA ticket can no
+  longer be used twice by sending two requests at the same time.
+- **Passwords could be guessed without an account lockout.** User sign-in had no
+  per-account limit, only the per-IP rate limit, and the admin lockout was off by default.
+  See the upgrade note above. The lockout is also charged before the password is checked,
+  so parallel attempts can't slip past it, and it now also guards the password checks in
+  `confirm-email-change` and `oauth2/merge-confirm`. The per-IP limit is five times the
+  per-account one and is kept separately for admin and user sign-in, so people sharing an
+  address can't lock the admin out. `vaultbase setup-admin --force` clears an admin's
+  lockout when resetting the password.
+- **A victim's inbox could be flooded with reset and sign-in emails.** Password-reset,
+  OTP and verification emails were limited only per client IP. Each user now gets at most
+  one email of each kind per minute; extra requests to the public endpoints still answer
+  `200` but send nothing, and `request-verify` answers `429`. A held-back OTP request
+  doesn't void the code that was already sent. `request-email-change`, which mails an
+  address the caller chooses, has the same one-a-minute limit (`429`).
+- **A stolen token could be kept alive forever.** `/auth/refresh` left the old token
+  valid until its own expiry and re-stamped the expiry on every call, with no limit on
+  the session's total age. Admin refreshes also didn't appear in **Settings → Security →
+  Sessions**, so they couldn't be revoked from there. See the upgrade note above.
+- **Promoting a guest account could set protected columns.** `POST
+  /auth/:collection/promote` copied every extra body field into the user row, so a guest
+  could mark their new email verified, set MFA columns, or change the record's `id`. Only
+  the collection's own declared fields are accepted now (the same rule is enforced when
+  creating users). Promoting also ends the guest session: the anonymous token stops
+  working and the caller keeps the new token from the response.
+- **A stolen session could replace an account's TOTP secret.** `POST
+  /auth/:collection/totp/setup` overwrote the secret even with MFA already on, with no
+  code required, after which the attacker's authenticator passed every MFA check. Setup
+  now answers `409` while MFA is enabled; disable it with a current code first.
+- **A stolen session could mint new MFA recovery codes.** `POST
+  /auth/:collection/totp/recovery/regenerate` needed only a session; it now needs a
+  current authenticator code, under the same attempt limit as sign-in.
+- **The account lockout could be reset from a look-alike account.** Address lookups are
+  case-sensitive, but the lockout was keyed by the lower-cased address, so signing in to
+  `VICTIM@example.com` cleared the failures recorded against `victim@example.com`. The
+  lockout is now keyed by the account itself.
+- **Registration and email change could reveal which addresses have accounts.** Register
+  skipped password hashing (and validation) when the address was taken, so the response
+  came back measurably faster; both branches now do the same work and validate first.
+  `request-email-change` answered "Email already in use" for a taken address; it now
+  answers like any other request and sends nothing. Reset, OTP and email-change requests
+  no longer wait for the mail server before answering, which made addresses with an
+  account measurably slower, and `promote` checks the password before the address.
+- **One-time tokens were stored in plaintext.** Password-reset, verification, OTP and
+  invitation links, MFA tickets and OAuth merge tokens were kept verbatim in the
+  database, so anyone with a copy of it (a backup, read-only SQL access) could use a
+  pending reset link. They are now stored as SHA-256 hashes, and an OTP's 6-digit code as
+  an HMAC keyed with the server secret. Links issued before the upgrade are re-keyed on
+  first start and keep working; OTP codes issued before it stop working (they last ten
+  minutes — request a new one).
+- **Any admin could take over another admin's account.** `PATCH /admin/admins/:id`
+  changed any admin's email and password; it now only changes the caller's own (`403`
+  otherwise). A locked-out admin is recovered with `vaultbase setup-admin --force`.
+- **The admin SQL time limit never worked.** A query ran on the server's own thread, so
+  the 5-second limit couldn't interrupt it and one slow query stalled every other
+  request. Queries now run in a separate process (read-only mode) or worker (sandbox) and
+  are stopped when the limit is reached. The sandbox also refuses `ATTACH`, `DETACH` and
+  `VACUUM`, which could reach the live database or write files outside it, and the
+  SQL runner now runs one statement at a time.
+- **Protected file fields didn't require a token.** A request without one fell through
+  to the record's rules and was served whenever they allowed it, so on a viewable record
+  `protected` — and one-time or IP-bound download tokens — could be skipped. Protected
+  files now need a valid download token for everyone but admins.
+- **Collection definitions were public.** `GET /collections` and `/collections/:id`
+  answered anyone with every collection's rules, fields and view SQL. They are now
+  admin-only, as the API docs already said.
+- **Record history showed old versions to a record's new owner.** History was readable
+  by anyone who passed the view rule against the record as it is now, so after a record
+  changed hands the new owner could read every earlier version. Non-admins now see only
+  versions that pass the view rule as they stood, and only their own user id as the
+  author of a change.
+- **`If-Match` didn't stop concurrent writes.** The ETag was compared before the write,
+  so several requests carrying the same ETag could all pass and all write. The check now
+  holds until the write lands: only one succeeds, the rest get `412`.
+- **Deleting a record could delete other people's records through a relation.**
+  Cascades (`cascade` and `setNull`) ignored the related collection's rules, so a user
+  allowed to delete their own record removed or changed every record pointing at it,
+  whoever owned them. Each affected record must now pass its own collection's delete (or
+  update) rule, or the whole delete is refused with `403`. Admins are unaffected. A
+  delete blocked by a `restrict` reference — directly or inside `/batch` — no longer
+  names the referencing collections to non-admins.
+- **List rules that read the request matched too much.** A `list_rule` using
+  `@request.headers.*` or `@request.query.*` was compiled without the request, so those
+  values were empty in the SQL filter — `field ~ @request.headers.x` then matched every
+  record. And for `~`, a `%` or `_` sent by the caller acted as a wildcard. List rules
+  now see the request, and values from the request are matched as plain text with `~`
+  (patterns written into a rule or filter keep their wildcards).
+- **Rules with `@collection.*` or `_via_` could pass on a negated comparison.** Checks
+  on a single record — view, update and delete by id, file access, realtime delivery —
+  can't look into other collections, and those operands resolved to NULL there, so
+  `@collection.bans.user != @request.auth.id` let a banned user read, change or delete
+  the record by id while list requests refused them. A comparison with such an operand
+  is now false in those checks, so it can only narrow access.
+- **Secret settings were stored and backed up in plaintext by default.** Encryption at
+  rest needed `VAULTBASE_ENCRYPTION_KEY`, which few installs set, so the SMTP password,
+  OAuth client secrets and storage keys sat in `data.db` and every backup in clear. A key
+  is now generated when none is set, and existing plaintext secrets are encrypted.
+- **The settings API returned every secret in plaintext.** `GET /admin/settings` (and the
+  MCP `list_settings`/`get_setting` tools) decrypted the SMTP password, OAuth client
+  secrets, storage keys and tokens, so anything that could read one admin response had
+  them all. Secret-valued settings now read back as `********`.
+- **A fresh install could be claimed by whoever reached it first.** `POST /admin/setup`
+  was open unless `VAULTBASE_SETUP_KEY` was set, so an install from the container image,
+  a manual binary or source had its first-admin endpoint open to the network. The server
+  now generates a setup key when none is configured and requires it (compared in
+  constant time). `VAULTBASE_HOST` was documented but ignored, so the server always
+  listened on all interfaces; it is now used.
+- **Custom routes skipped rate limits, security headers and CORS.** Routes under
+  `/api/v1/custom/` answer before the rest of the pipeline, so none of the three applied,
+  and an uncaught error returned its message (SQL, file paths) to the caller. They now
+  get all three and a generic `500`. Routes can also require sign-in (`require_auth`,
+  **Require sign-in** in the editor; guest sessions don't count); existing routes stay
+  public.
+- **Restoring a backup revived revoked sessions and kept stale caches.** A restore rolled
+  back `token_revocations`, so sessions signed out and API tokens revoked since the
+  backup worked again; it kept serving collections, hooks and routes from the replaced
+  database's in-memory caches until restart; and it ran without the write gate.
+  Revocations (and each admin's and user's "signed out everywhere" / password-reset
+  time) are now carried over, caches are dropped, and the swap holds the write gate. In cluster mode, where it swapped the database under one worker only, online
+  restore answers `409`.
+- **Admin actions from the admin UI were audited without an actor.** The audit log read
+  the admin only from the `Authorization` header, so actions by an admin signed in with
+  the session cookie were recorded with no actor. It now reads the same token sources
+  as the admin routes. New `audit.retention_days` setting (default `0`, keep forever)
+  bounds how long entries are kept.
+- **Data files were world-readable outside the installer.** No umask was set, so with the
+  usual `022` the database, uploads, logs and backups were readable by every local user
+  unless the installer had locked down the data directory. The server now uses `027`.
+- **`vaultbase update` installed unsigned releases silently.** With cosign installed,
+  the signature was only checked when the release carried `.sig`/`.pem` assets, so a
+  release without them was installed on the SHA-256 alone, with no warning. It is now
+  refused unless `--no-verify` is passed.
+- **A trusted proxy reaching the server over IPv4-mapped IPv6 wasn't trusted.** On an
+  IPv6 listener an IPv4 proxy appears as `::ffff:127.0.0.1`, which never matched
+  `127.0.0.1` or `127.0.0.0/8` in `VAULTBASE_TRUSTED_PROXIES`, so the forwarded client
+  address and `X-Forwarded-Proto` were ignored and every client shared the proxy's rate
+  limit. Peer addresses are now read in their IPv4 form.
+- **Rules couldn't tell guests, unverified users or other auth collections apart.** The
+  usual "signed in" rule, `@request.auth.id != ""`, also admits anonymous guest sessions
+  and users of every auth collection, and there was no way to require a verified email.
+  Rules can now use `@request.auth.collectionName`, `@request.auth.verified` (read from
+  the account on each request) and `@request.auth.anonymous`. Review rules that rely on
+  `@request.auth.id != ""` if you enable anonymous sign-in or have more than one auth
+  collection.
+- **`@collection.*` rules looked at one arbitrary row.** `@collection.members.user =
+  @request.auth.id` compiled to "the `user` of the first `members` row equals the
+  caller", so only that member passed, and a ban list (`@collection.bans.user !=
+  @request.auth.id`) only banned its first entry. A rule now passes when some row of the
+  collection (that the caller may view) makes it true, with every reference to the same
+  collection and alias bound to that one row; `!=` and `!~` against such a reference
+  mean no row matches (and are false for non-admins unless the collection is public).
+  An expression may join at most 3 collections/aliases, and a non-admin `?filter=` may
+  use only one `@collection.*` or `_via_` operand, so a client filter can no longer
+  build a cross join that stalls the server.
+- **The same address could be registered twice in different case.** Promoting an
+  anonymous account, changing email and magic-link sign-up checked for an existing
+  address case-sensitively, so `ALICE@example.com` could be added beside
+  `alice@example.com` (register already checked in any case). All four now do.
+- **`~` with an empty right side matched every record.** When the right-hand value of
+  `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
+  `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`
+  back-relation — the SQL filter compared against `%%` and matched everything. An empty
+  or missing value now matches nothing with `~` (and everything with `!~`), in list
+  filters and in single-record rule checks alike. Single-record checks also ignore ASCII
+  case now, as list queries always did, so `title !~ "confidential"` can't hide
+  "CONFIDENTIAL plan" from lists yet serve it by id or over realtime.
+- **A list request could make the database scan the whole table.** `page` had no upper
+  bound, and SQLite walks every skipped row to reach an offset. A list may now skip at
+  most 100,000 records; deeper pages answer `400`.
+- **Anyone could evaluate feature flags as any user.** `POST /flags/evaluate` takes the
+  targeting context from the caller, so a caller could claim another user's id and read
+  their treatment. The server now sets the context's `auth` attribute from the caller's
+  session (and removes it for anonymous callers), so rules targeting `auth.*` can be
+  trusted, and `flags.public_evaluate = 0` limits evaluation to signed-in callers.
+- **Views over auth tables exposed password hashes.** A view collection such as
+  `SELECT * FROM vb_users` returned `password_hash`, `totp_secret` and
+  `password_reset_at`, and let callers filter on them. They are now stripped from view
+  rows and refused in view filters, and a view query that names them (or renames them)
+  is rejected. The view-query check also read a `'--'` inside a string as a comment and
+  skipped the rest of the line, which could hide a reference to SQLite's metadata
+  tables; it now parses strings, identifiers and comments properly.
+- **CSV exports could carry spreadsheet formulas.** A text value starting with `=`, `+`,
+  `-`, `@`, tab or carriage return ran as a formula in whoever opened the export. Such
+  values are now prefixed with `'` (shown as plain text); CSV import removes the prefix
+  again, so an export re-imports unchanged.
+- **Files could be uploaded for records that don't exist.** The upload endpoint accepted
+  any record id and judged it by the create rule, so storage could be filled with files
+  attached to nothing. Uploads now need an existing record and pass its update rule.
+- **Relation fields could point at records the caller can't see.** A relation was only
+  checked for existence, so a user could link to another user's private record, and the
+  "does not exist" error told them which ids exist in a collection they can't read. A
+  relation set by a non-admin must now point at a record that caller can view; missing
+  and hidden records get the same error. (A `unique` field still reports a duplicate:
+  that is what a unique constraint has to say.)
+- **Realtime connections outlived their credentials and had no limits.** A connection's
+  token was checked once, so a signed-out or expired session kept receiving protected
+  events; connections, topics and an unread SSE stream's buffer could grow without
+  limit; and `POST`/`DELETE /realtime` trusted the SSE `clientId` alone. Tokens are now
+  re-checked every minute and at expiry, connections and topics are capped, slow SSE
+  readers are dropped, and managing an authenticated SSE client needs its user's token.
+  Collection-wide subscriptions also ignored the collection's `list_rule`, so a record
+  hidden from lists was still pushed to every subscriber who could view it; they now
+  follow the list rule as well (a subscription to one record by id needs only the view
+  rule).
+- **OAuth sign-in skipped MFA and didn't check its own state.** Signing in through a
+  linked provider, or confirming a merge with the password, issued a session even when
+  the account had TOTP on. `/oauth2/exchange` accepted any `state` (it was only checked
+  for server-side PKCE), so a forged callback could sign a victim's browser into the
+  attacker's account; OIDC/Apple flows sent no `nonce`; with no redirect allow-list any
+  redirect URI was accepted, and a `https://app.com*` entry also matched
+  `https://app.com.evil.tld`. Five providers' unverified emails were trusted for account
+  merging. A password reset left provider links in place. All fixed — see the upgrade
+  note.
+- **The hook egress filter could be bypassed.** IPv6 addresses carrying an IPv4 one
+  (`[::ffff:169.254.169.254]`, NAT64, 6to4) weren't matched against the IPv4 ranges,
+  only the first DNS answer was checked, a name that failed to resolve was let through,
+  `helpers.http` followed redirects without checking where they went, and
+  `helpers.fetch` wasn't filtered at all. All of these are now checked, for webhook
+  deliveries too, and cloud metadata endpoints stay blocked even when the allow list
+  covers them or the filter is turned off.
+- **The client IP could be spoofed with `X-Forwarded-For`.** The first (client-written)
+  entry was taken as the client address, and the lockout, audit log, request logs and
+  custom-route logs read the header without checking who sent it. The header now counts
+  only from a trusted proxy and is read from the right, everywhere; the shipped nginx and
+  Caddy configs set it instead of appending to it. The Settings → Security trusted-proxy
+  list now applies to rate limiting too (it used to read only the env var). The nginx
+  and Caddy SSE locations also pointed at the old `/api/realtime` path; they now match
+  `/api/v1/realtime`.
+- **Admin and auth responses could be cached.** Nothing under `/api/v1/admin` or
+  `/api/v1/auth` sent a `Cache-Control` header, so responses carrying settings secrets,
+  tokens and session lists could be kept by the browser or a shared proxy (a cached
+  `401` from `/admin/auth/me` even caused a sign-in loop). They are now `no-store`.
+  Record reads keep their ETag revalidation.
+- **The admin cookie lacked `Secure` behind a TLS proxy.** The flag was taken from the
+  request URL, which is plain http behind a TLS-terminating proxy. It is now set when a
+  trusted proxy reports `X-Forwarded-Proto: https` or `app.url` is https.
+- **The rate limiter was easy to sidestep.** Any `Authorization` header selected the
+  limits meant for signed-in clients, an IPv6 client got a fresh budget for every address
+  in its /64, and the bucket table could grow without bound. Only a valid token now
+  counts as signed in, IPv6 clients are limited per /64, and the table is capped.
+- **`/metrics` was public when enabled without a token**, and the HTML sanitizer let
+  `javascript:` links through behind a leading control character. `/metrics` now needs
+  `metrics.token` or an admin token; the sanitizer drops leading control characters
+  before checking the scheme, as browsers do.
+- **Thumbnails had no decode budget.** A small upload could declare a huge canvas (or an
+  animated GIF thousands of frames) and be decoded on the request path, and concurrent
+  requests for different sizes could get past the 32-variants-per-file cap. Images over
+  50 megapixels are now served without a thumbnail; animations over 25 megapixels in total
+  (frames × width × height, frames counted from the file's structure) get a still first
+  frame; at most two animations are decoded at once; and the variant cap is taken
+  atomically.
+- **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
+  `allow_write` flag was the caller's own choice, reads ran on the server's own
+  connection (where a `PRAGMA` could change its behaviour for every later request), and
+  nothing was audited. Writes now also need the `mcp:admin` scope, reads use a separate
+  read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Trust boundaries and password policy documented.** The security docs now say which
+  settings and credentials are trusted (admin-configured integration URLs, `read`
+  tokens, hook code) and how to tighten the password policy (`password.hibp_check`,
+  `password.min_length`).
+- **Docs and help drift.** `vaultbase --help` and the install docs named
+  `VAULTBASE_CLUSTER_WORKERS`; the variable `vaultbase cluster` reads is
+  `VAULTBASE_WORKERS`. `docker-compose.web.yml` pointed at directories that don't exist
+  in this repo. `SECURITY.md` said `helpers.query` applies collection rules (it doesn't)
+  and that `helpers.fetch` skips the egress guard (it no longer does); it now spells out
+  that hook, route, job and worker code is trusted with the server's full privileges.
+- **Queue jobs interrupted by a restart or crash ran again.** A job left in `running`
+  when its process stopped stayed there for good. At startup those jobs go back on the
+  queue (the interrupted run counts as an attempt; a job with no attempts left is marked
+  dead). In cluster mode, where a sibling may still be running them, only jobs running
+  for over an hour are taken back. Shutdown waits up to 10 s for running jobs to finish.
+- **Vector search returned `400` for `nearLimit` above 25.** The top matches were
+  loaded with one `id = … || …` filter, longer than the filter parser accepts. They are
+  now loaded in chunks, so `nearLimit` works up to its documented 1000.
+- **Read-only batches no longer block writes.** A `/batch` of only `GET`s took the
+  exclusive write gate, so a batch of 100 slow lists stalled every write in the process.
+  Read-only batches now run without it; each read sees committed data, with no snapshot
+  across the batch.
+- **Shutdown waits for requests in flight.** `SIGTERM`/`SIGINT` used to exit as soon as
+  logs were flushed, dropping any request being handled. The server now stops taking
+  connections, gives in-flight requests up to 10 s, stops background work and closes the
+  database before exiting. A second signal exits at once.
+- **Migrations no longer hide failures.** Adding a column ignored every error as "the
+  column already exists", so a locked or read-only database, or a full disk, left the
+  schema half-migrated with nothing logged. Only that one error is ignored now; anything
+  else stops startup with the error. `busy_timeout` is also set before switching to WAL,
+  so processes opening the database together (cluster workers, a CLI next to the
+  server) wait for the lock instead of failing with `SQLITE_BUSY`.
+- **The hosted magic-link page now works for accounts with two-factor sign-in.** It used
+  the link and then showed "Invalid or expired link", because it didn't know what to do
+  with the MFA step. It now asks for the authenticator (or recovery) code and finishes the
+  sign-in.
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
 - **The installer works on stock Alpine.** It no longer requires `useradd` (from the `shadow` package, absent on Alpine) and falls back to busybox `adduser` / `addgroup`. It also installs `xz` when missing, so musl hosts download the ~30 MB compressed asset instead of the ~100 MB raw binary.
 - **`--version`, `--port` or `--install-dir` as the final argument** no longer aborts with `shift: can't shift that many` and exit 2. This hit dash — `/bin/sh` on Debian and Ubuntu, i.e. the documented `curl … | sudo sh` path.

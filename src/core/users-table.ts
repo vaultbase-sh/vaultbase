@@ -148,10 +148,11 @@ export async function insertUser(col: Collection, input: InsertInput): Promise<v
       values.push(v as never);
     }
   }
-  // Custom fields — only those present in the table schema.
+  // Custom fields — only those present in the table schema, and never a
+  // system column: those come from the typed inputs above, not from a body.
   if (input.custom) {
     for (const [k, v] of Object.entries(input.custom)) {
-      if (cols.includes(k)) {
+      if (cols.includes(k) && !(AUTH_USER_COLUMNS as readonly string[]).includes(k)) {
         insertCols.push(quoteIdent(k));
         placeholders.push("?");
         values.push(v as never);

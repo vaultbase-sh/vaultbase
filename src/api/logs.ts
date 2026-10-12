@@ -1,3 +1,4 @@
+import { clientIp } from "../core/sec.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
@@ -190,7 +191,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       const start = timings.get(request) ?? Date.now();
       timings.delete(request);
       const ms = Date.now() - start;
-      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+      const ip = clientIp(request);
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
@@ -202,7 +203,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       const start = timings.get(request) ?? Date.now();
       timings.delete(request);
       const ms = Date.now() - start;
-      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+      const ip = clientIp(request);
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);

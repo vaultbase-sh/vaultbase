@@ -60,12 +60,20 @@ export function makeAdminsPlugin(jwtSecret: string) {
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
 
-    // Update admin (email and/or password)
+    // Update your own admin account (email and/or password)
     .patch(
       "/admin/admins/:id",
       async ({ request, params, body, set }) => {
         const me = await verifyAdmin(request, jwtSecret);
         if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+        // Only your own account. Setting another admin's email or password is
+        // a takeover of their sign-in, with everything done afterwards
+        // attributed to them. A locked-out admin is recovered from the server
+        // with `vaultbase setup-admin --force`.
+        if (me.id !== params.id) {
+          set.status = 403;
+          return { error: "You can only change your own email and password", code: 403 };
+        }
         const db = getDb();
         const target = await db.select().from(admin).where(eq(admin.id, params.id)).limit(1);
         if (target.length === 0) { set.status = 404; return { error: "Admin not found", code: 404 }; }
