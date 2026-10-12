@@ -152,3 +152,29 @@ describe("record write locks (review 10)", () => {
     }
   });
 });
+
+describe("record write locks for internal writers (review 13)", () => {
+  it("two internal writes to one record don't interleave", async () => {
+    const { updateRecord } = await import("../core/records.ts");
+    const { getDb } = await import("../db/client.ts");
+    const { hooks } = await import("../db/schema.ts");
+    const { invalidateHookCache } = await import("../core/hooks.ts");
+    const r = await createRecord("posts", { title: "v0" }, null);
+    await getDb().insert(hooks).values({
+      id: "h-slow-int", name: "slow", collection_name: "posts", event: "beforeUpdate", enabled: 1,
+      code: "if (ctx.record.title === 'first') await new Promise((res) => setTimeout(res, 150));",
+    });
+    invalidateHookCache();
+    try {
+      const existing = (await (await import("../core/records.ts")).getRecord("posts", r.id))!;
+      const first = updateRecord("posts", r.id, { title: "first" }, null, { ifUnchanged: existing as unknown as Record<string, unknown> });
+      await Bun.sleep(30);
+      const second = updateRecord("posts", r.id, { title: "second" }, null);
+      await Promise.all([first, second]);
+      // The second write waited for the first instead of landing inside it.
+      expect((await (await import("../core/records.ts")).getRecord("posts", r.id))!["title"]).toBe("second");
+    } finally {
+      invalidateHookCache();
+    }
+  });
+});

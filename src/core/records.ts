@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
@@ -820,7 +821,24 @@ export class CascadeForbiddenError extends Error {
  * RecordBusyError instead.
  */
 const recordLocks = new Map<string, { owner: unknown; released: Promise<void> }>();
-const NO_REQUEST = Symbol("no request");
+
+/**
+ * Who a write belongs to, for lock re-entrancy: the HTTP request, or — for
+ * internal writers with no request (jobs, queues, MCP) — one owner per
+ * top-level call, inherited by the hooks and nested writes it causes.
+ * Sharing one owner among all internal writers let them overtake each
+ * other's locks.
+ */
+const writeOwner = new AsyncLocalStorage<unknown>();
+
+function withWriteOwner<T>(fn: () => Promise<T>): Promise<T> {
+  if (writeOwner.getStore() !== undefined) return fn();
+  return writeOwner.run(getActiveHookRequest() ?? Symbol("internal write"), fn);
+}
+
+function currentWriteOwner(): unknown {
+  return writeOwner.getStore() ?? getActiveHookRequest() ?? Symbol("unowned write");
+}
 let LOCK_WAIT_MS = 10_000;
 
 /** Test hook: shorten the lock wait. */
@@ -834,7 +852,7 @@ export class RecordBusyError extends Error {
 }
 
 async function waitForRecordLock(key: string): Promise<void> {
-  const self = getActiveHookRequest() ?? NO_REQUEST;
+  const self = currentWriteOwner();
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (let held = recordLocks.get(key); held && held.owner !== self; held = recordLocks.get(key)) {
     const left = deadline - Date.now();
@@ -844,7 +862,7 @@ async function waitForRecordLock(key: string): Promise<void> {
 }
 
 async function lockRecord(key: string): Promise<() => void> {
-  const self = getActiveHookRequest() ?? NO_REQUEST;
+  const self = currentWriteOwner();
   // Wait inline: the loop's final check and the set below must run with no
   // await between them (awaiting a helper costs a tick even when the lock is
   // free), or two requests can both find it free and both take it.
@@ -1201,7 +1219,7 @@ export function createRecord(
   auth: AuthContext | null = null,
   guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => createRecordImpl(collectionName, data, auth, guard));
+  return withWriteOwner(() => withSharedWrite(() => createRecordImpl(collectionName, data, auth, guard)));
 }
 
 export function updateRecord(
@@ -1211,7 +1229,7 @@ export function updateRecord(
   auth: AuthContext | null = null,
   guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth, guard));
+  return withWriteOwner(() => withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth, guard)));
 }
 
 /**
@@ -1220,11 +1238,20 @@ export function updateRecord(
  * batch), or a savepoint inside an enclosing batch. A plain delete with
  * nothing to cascade is a single statement and stays on the shared path.
  */
-export async function deleteRecord(
+export function deleteRecord(
   collectionName: string,
   id: string,
   auth: AuthContext | null = null,
   guard: WriteGuard = {},
+): Promise<void> {
+  return withWriteOwner(() => deleteRecordOwned(collectionName, id, auth, guard));
+}
+
+async function deleteRecordOwned(
+  collectionName: string,
+  id: string,
+  auth: AuthContext | null,
+  guard: WriteGuard,
 ): Promise<void> {
   const col = await getCollection(collectionName);
   const cascades = col
