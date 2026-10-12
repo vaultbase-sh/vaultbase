@@ -1,4 +1,4 @@
-import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "fs";
+import { linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 /**
@@ -49,17 +49,29 @@ function storedKey(): { key: string; fresh: boolean } {
   if (!path) return inMemoryKey();
   const existing = readKeyFile(path);
   if (existing) return { key: existing, fresh: false };
+  // Write the key to a private temp file, then link it into place: link()
+  // fails if the file exists, and the file never exists without its
+  // content, so a worker can't read it half-written and go its own way.
   const key = generate();
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
-    // `wx`: if another worker got there first, use its key instead.
-    const fd = openSync(path, "wx", 0o600);
-    try { writeSync(fd, key); } finally { closeSync(fd); }
-    return { key, fresh: true };
-  } catch {
-    const raced = readKeyFile(path);
-    // Data dir not writable: still require a key, kept for this process.
-    return raced ? { key: raced, fresh: false } : inMemoryKey();
+    writeFileSync(tmp, key, { mode: 0o600, flag: "wx" });
+    try {
+      linkSync(tmp, path);
+      return { key, fresh: true };
+    } catch {
+      // Someone else's key won; or an empty file left by a crash, which is
+      // replaced (rename is atomic) and then re-read, so all agree.
+      if (!readKeyFile(path)) renameSync(tmp, path);
+      const winner = readKeyFile(path);
+      if (winner) return { key: winner, fresh: winner === key };
+    }
+  } catch { /* data dir not writable */ }
+  finally {
+    try { unlinkSync(tmp); } catch { /* linked or renamed away */ }
   }
+  // Data dir not usable: still require a key, kept for this process.
+  return inMemoryKey();
 }
 
 /**

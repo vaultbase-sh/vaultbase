@@ -113,3 +113,32 @@ describe("setup-admin reads the service env file", () => {
     }
   });
 });
+
+describe("setup key across processes (review 15 F-7)", () => {
+  it("an empty key file left by a crash is replaced, not ignored", async () => {
+    const { writeFileSync } = await import("fs");
+    writeFileSync(join(dir, ".setup-key"), "");
+    const key = requiredSetupKey({ quiet: true });
+    expect(key.length).toBeGreaterThan(10);
+    expect(readFileSync(join(dir, ".setup-key"), "utf8")).toBe(key);
+    configureSetupKey(dir);
+    expect(requiredSetupKey({ quiet: true })).toBe(key);
+  });
+
+  it("workers starting together all end up with the same key", async () => {
+    const mod = new URL("../core/setup-key.ts", import.meta.url).pathname;
+    const script = `
+      const { configureSetupKey, requiredSetupKey } = await import(${JSON.stringify(mod)});
+      configureSetupKey(${JSON.stringify(dir)});
+      process.stdout.write(requiredSetupKey({ quiet: true }));
+    `;
+    const env = { ...process.env, BUN_BE_BUN: "1" };
+    delete env["VAULTBASE_SETUP_KEY"];
+    const procs = Array.from({ length: 8 }, () => Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", env }));
+    const keys = await Promise.all(procs.map((p) => new Response(p.stdout).text()));
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toBe(readFileSync(join(dir, ".setup-key"), "utf8"));
+    const { readdirSync } = await import("fs");
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+});
