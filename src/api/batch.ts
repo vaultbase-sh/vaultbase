@@ -3,9 +3,9 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
-import { checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { dataPrincipal, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
@@ -132,7 +132,8 @@ async function dispatchOp(
       const existing = await getRecord(op.collection, op.id!);
       if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
       checkRuleOrThrow(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>);
-      await deleteRecord(op.collection, op.id!, auth);
+      const cascadeAllowed = cascadeRuleCheck(request, auth);
+      await deleteRecord(op.collection, op.id!, auth, cascadeAllowed ? { cascadeAllowed } : {});
       return { status: 204, body: null };
     }
   }
@@ -187,6 +188,10 @@ export function makeBatchPlugin(jwtSecret: string) {
           if (e instanceof ValidationError) {
             set.status = 422;
             return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 422, details: e.details };
+          }
+          if (e instanceof CascadeForbiddenError) {
+            set.status = 403;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 403 };
           }
           if (e instanceof RestrictError) {
             set.status = 409;

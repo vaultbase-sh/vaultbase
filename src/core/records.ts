@@ -747,6 +747,20 @@ export class PreconditionFailedError extends Error {
  */
 export interface WriteGuard {
   ifUnchanged?: Record<string, unknown>;
+  /**
+   * The caller's rules for rows a delete reaches through cascades: `change`
+   * is null for a cascaded delete, or the fields a `setNull` cascade writes.
+   * Returning false aborts the whole delete (it runs in a transaction).
+   * Unset for admins and internal callers.
+   */
+  cascadeAllowed?: (col: Collection, record: Record<string, unknown>, change: Record<string, unknown> | null) => boolean;
+}
+
+/** A cascade would delete or change a row the caller's rules don't allow. */
+export class CascadeForbiddenError extends Error {
+  constructor(readonly collection: string) {
+    super(`Forbidden: deleting this record would change records in '${collection}' you can't modify`);
+  }
 }
 
 /** Synchronous read of the raw row, for comparing just before a write. */
@@ -847,7 +861,8 @@ async function applyCascades(
   targetColName: string,
   id: string,
   auth: AuthContext | null,
-  visited: Set<string>
+  visited: Set<string>,
+  guard: WriteGuard = {},
 ): Promise<void> {
   const key = `${targetColName}:${id}`;
   if (visited.has(key)) return;
@@ -860,12 +875,22 @@ async function applyCascades(
   for (const ref of refs) {
     const refTable = quoteIdent(userTableName(ref.collection.name));
     const fieldQ = quoteIdent(ref.fieldName);
+    // The full definition (rules included) is only needed to check rules.
+    const refCol = guard.cascadeAllowed ? await getCollection(ref.collection.name) : null;
 
     if (ref.cascade === "setNull") {
       const affected = client
         .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
         .all(id) as Array<{ id: string }>;
       if (affected.length === 0) continue;
+      if (guard.cascadeAllowed) {
+        for (const r of affected) {
+          const rec = await getRecord(ref.collection.name, r.id);
+          if (rec && refCol && !guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, { [ref.fieldName]: null })) {
+            throw new CascadeForbiddenError(ref.collection.name);
+          }
+        }
+      }
       const now = Math.floor(Date.now() / 1000);
       client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
@@ -888,7 +913,13 @@ async function applyCascades(
         .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
         .all(id) as Array<{ id: string }>;
       for (const r of affected) {
-        await deleteRecordInternal(ref.collection.name, r.id, auth, visited);
+        if (guard.cascadeAllowed) {
+          const rec = await getRecord(ref.collection.name, r.id);
+          if (rec && refCol && !guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, null)) {
+            throw new CascadeForbiddenError(ref.collection.name);
+          }
+        }
+        await deleteRecordInternal(ref.collection.name, r.id, auth, visited, { ...(guard.cascadeAllowed ? { cascadeAllowed: guard.cascadeAllowed } : {}) });
       }
     }
   }
@@ -937,7 +968,7 @@ async function deleteRecordInternal(
     auth, helpers,
   });
 
-  await applyCascades(col.name, id, auth, visited);
+  await applyCascades(col.name, id, auth, visited, guard);
 
   // Same as update: re-check and delete in one synchronous step.
   if (guard.ifUnchanged && rawRowJson(tableRef, id) !== rawBefore) throw new PreconditionFailedError();

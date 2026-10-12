@@ -207,6 +207,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **`If-Match` didn't stop concurrent writes.** The ETag was compared before the write,
   so several requests carrying the same ETag could all pass and all write. The check now
   holds until the write lands: only one succeeds, the rest get `412`.
+- **Deleting a record could delete other people's records through a relation.**
+  Cascades (`cascade` and `setNull`) ignored the related collection's rules, so a user
+  allowed to delete their own record removed or changed every record pointing at it,
+  whoever owned them. Each affected record must now pass its own collection's delete (or
+  update) rule, or the whole delete is refused with `403`. Admins are unaffected.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

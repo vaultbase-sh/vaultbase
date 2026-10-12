@@ -11,13 +11,14 @@ import {
   FilterError,
   AccessRuleError,
   clientPaging,
+  CascadeForbiddenError,
   PreconditionFailedError,
   RestrictError,
   updateRecord,
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
-import { checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import {
   getHistoryAt,
   listRecordHistory,
@@ -433,7 +434,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
         return { error: "Precondition Failed: record was modified", code: 412 };
       }
       try {
-        const guard = request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {};
+        const cascadeAllowed = cascadeRuleCheck(request, auth);
+        const guard = {
+          ...(request.headers.get("if-match") ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+          ...(cascadeAllowed ? { cascadeAllowed } : {}),
+        };
         await runWithHookRequest(request, () =>
           deleteRecord(params.collection, params.id, auth, guard)
         );
@@ -441,6 +446,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
         if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
+        if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: e.message, code: 403 }; }
         if (e instanceof RestrictError) {
           set.status = 409;
           return { error: e.message, code: 409, details: e.details };
