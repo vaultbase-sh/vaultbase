@@ -13,7 +13,7 @@ import { join } from "path";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
-import { runSql } from "../core/sql-runner.ts";
+import { runSql, scanSql } from "../core/sql-runner.ts";
 import { resetSandbox, _resetSandboxRegistryForTests } from "../core/sql-sandbox.ts";
 
 const RUNAWAY = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c";
@@ -106,5 +106,43 @@ describe("sandbox isolation", () => {
     const live = new Database(dbPath, { readonly: true });
     expect(live.query("SELECT name FROM sqlite_master WHERE name = 'scratch'").all()).toHaveLength(0);
     live.close();
+  });
+});
+
+describe("sandbox keyword check can't be smuggled past", () => {
+  it("a '--' inside a string doesn't hide a following ATTACH (review 07 payload)", async () => {
+    resetSandbox("a1", dbPath);
+    const payload = `CREATE TABLE p (x); INSERT INTO p VALUES ('--'); ATTACH '${dbPath}' AS live; DELETE FROM live.vaultbase_admin`;
+    const r = await runSql({ sql: payload, dbPath, adminId: "a1", mode: "sandbox" });
+    expect(r.ok).toBe(false);
+    const live = new Database(dbPath, { readonly: true });
+    expect(live.query("SELECT name FROM sqlite_master WHERE name = 'p'").all()).toHaveLength(0);
+    live.close();
+  });
+
+  it("one statement per run, in both modes", async () => {
+    resetSandbox("a1", dbPath);
+    expect((await runSql({ sql: "SELECT 1; SELECT 2", dbPath, mode: "readonly" })).errorCode).toBe("VAULTBASE_MULTI_STATEMENT");
+    expect((await runSql({ sql: "CREATE TABLE a (x); CREATE TABLE b (x)", dbPath, adminId: "a1", mode: "sandbox" })).errorCode).toBe("VAULTBASE_MULTI_STATEMENT");
+    // A trailing semicolon or comment is still one statement.
+    expect((await runSql({ sql: "SELECT 1; -- done", dbPath, mode: "readonly" })).ok).toBe(true);
+  });
+
+  it("the scanner reads strings, identifiers and comments the way SQLite does", () => {
+    expect(scanSql(`SELECT '--' AS a, 'it''s' AS b; ATTACH 'x' AS y`).words).toContain("ATTACH");
+    expect(scanSql(`SELECT "--" FROM t /* ; */ WHERE x = '/*'; VACUUM`).words).toContain("VACUUM");
+    expect(scanSql(`SELECT [--] FROM t; ATTACH 'x' AS y`).statements).toBe(2);
+    expect(scanSql(`SELECT 'ATTACH' -- ATTACH`).words).not.toContain("ATTACH");
+    expect(scanSql(`SELECT 1;;  ;`).statements).toBe(1);
+  });
+});
+
+describe("concurrent sandbox queries", () => {
+  it("two writes in flight at once both land", async () => {
+    resetSandbox("a1", dbPath);
+    await runSql({ sql: "CREATE TABLE c (x)", dbPath, adminId: "a1", mode: "sandbox" });
+    await Promise.all([1, 2, 3, 4].map((n) => runSql({ sql: `INSERT INTO c VALUES (${n})`, dbPath, adminId: "a1", mode: "sandbox" })));
+    const r = await runSql({ sql: "SELECT count(*) AS n FROM c", dbPath, adminId: "a1", mode: "sandbox" });
+    expect(r.rows).toEqual([[4]]);
   });
 });

@@ -87,16 +87,65 @@ export function detectMutation(sql: string): string | null {
   return detectKeyword(sql, FORBIDDEN_RO_KEYWORDS);
 }
 
+/**
+ * Split SQL into the words SQLite will see, in one left-to-right pass that
+ * knows which characters start a string, a quoted identifier or a comment.
+ * Stripping each kind with its own regex, one after another, got the order
+ * wrong for some input: `'--'` inside a string was taken for a comment
+ * start, which hid every keyword after it on the line while SQLite still ran
+ * them. Also counts statements (`;` outside literals and comments).
+ */
+export function scanSql(sql: string): { words: string[]; statements: number } {
+  const words: string[] = [];
+  let statements = 0;
+  let pending = false; // anything since the last `;`
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const c = sql[i]!;
+    const next = sql[i + 1];
+    if (c === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      i = end < 0 ? n : end + 1;
+    } else if (c === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end < 0 ? n : end + 2;
+    } else if (c === "'" || c === '"' || c === "`" || c === "[") {
+      const close = c === "[" ? "]" : c;
+      let j = i + 1;
+      for (;;) {
+        const k = sql.indexOf(close, j);
+        if (k < 0) { j = n; break; }
+        // A doubled quote is an escaped quote, not the end ([…] has no escape).
+        if (close !== "]" && sql[k + 1] === close) { j = k + 2; continue; }
+        j = k + 1;
+        break;
+      }
+      i = j;
+      pending = true;
+    } else if (c === ";") {
+      if (pending) statements++;
+      pending = false;
+      i++;
+    } else if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(sql[j]!)) j++;
+      words.push(sql.slice(i, j).toUpperCase());
+      pending = true;
+      i = j;
+    } else {
+      if (!/\s/.test(c)) pending = true;
+      i++;
+    }
+  }
+  if (pending) statements++;
+  return { words, statements };
+}
+
 function detectKeyword(sql: string, keywords: readonly string[]): string | null {
-  const stripped = sql
-    .replace(/--[^\n]*/g, " ")           // line comments
-    .replace(/\/\*[\s\S]*?\*\//g, " ")    // block comments
-    .replace(/'(?:[^']|'')*'/g, "''")     // single-quoted strings
-    .replace(/"(?:[^"]|"")*"/g, '""');    // double-quoted identifiers/strings
-  const upper = stripped.toUpperCase();
+  const { words } = scanSql(sql);
   for (const kw of keywords) {
-    const re = new RegExp(`\\b${kw}\\b`);
-    if (re.test(upper)) return kw;
+    if (words.includes(kw)) return kw;
   }
   return null;
 }
@@ -108,6 +157,18 @@ function detectKeyword(sql: string, keywords: readonly string[]): string | null 
  */
 const FORBIDDEN_SANDBOX_KEYWORDS = ["ATTACH", "DETACH", "VACUUM"];
 
+const sandboxTails = new Map<string, Promise<unknown>>();
+
+/** Run `fn` after every earlier sandbox query of the same admin has settled. */
+function sandboxQueue<T>(adminId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sandboxTails.get(adminId) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.catch(() => undefined);
+  sandboxTails.set(adminId, tail);
+  void tail.then(() => { if (sandboxTails.get(adminId) === tail) sandboxTails.delete(adminId); });
+  return run;
+}
+
 export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
   const start = Date.now();
   const timeout = Math.min(Math.max(opts.timeoutMs ?? SQL_QUERY_TIMEOUT_MS, 100), 30_000);
@@ -117,6 +178,12 @@ export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
     durationMs: Date.now() - start,
     error, errorCode,
   });
+
+  // One statement per run. bun:sqlite's run() executes a whole script, so
+  // a second statement would slip past any check made on the first.
+  if (scanSql(opts.sql).statements > 1) {
+    return fail("Run one statement at a time.", "VAULTBASE_MULTI_STATEMENT");
+  }
 
   // Read-only safety: reject mutating SQL before opening the connection.
   if (opts.mode === "readonly") {
@@ -134,8 +201,17 @@ export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
       if (!opts.adminId) return fail("adminId is required for sandbox mode", "VAULTBASE_NO_SANDBOX");
       const sb = getSandboxDb(opts.adminId);
       if (!sb) return fail("Sandbox not initialised — reset the sandbox first.", "VAULTBASE_NO_SANDBOX");
-      const r = await execOnImage(sb.serialize(), req, timeout);
-      if (r.image) replaceSandboxDb(opts.adminId, Database.deserialize(r.image));
+      // One sandbox query at a time per admin: two in flight would each
+      // start from the same image and the later one would drop the other's
+      // changes when it hands its image back.
+      const adminId = opts.adminId;
+      const r = await sandboxQueue(adminId, async () => {
+        const current = getSandboxDb(adminId);
+        if (!current) throw new Error("Sandbox not initialised — reset the sandbox first.");
+        const res = await execOnImage(current.serialize(), req, timeout);
+        if (res.image) replaceSandboxDb(adminId, Database.deserialize(res.image));
+        return res;
+      });
       out = r.out;
     } else {
       out = await execReadOnly(opts.dbPath, req, timeout);

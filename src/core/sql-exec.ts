@@ -44,7 +44,9 @@ function runStatement(db, req) {
       const rows = stmt.all(...params);
       return { ok: true, total: rows.length, rows: rows.slice(0, req.maxRows).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, enc(v)]))) };
     }
-    const r = db.run(req.sql, ...params);
+    // The prepared statement, never db.run(sql): run() executes every
+    // statement in the string, and only the first one was checked.
+    const r = stmt.run(...params);
     return { ok: true, total: 0, rows: [], changes: r.changes };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e), code: e && typeof e.code === "string" ? e.code : null };

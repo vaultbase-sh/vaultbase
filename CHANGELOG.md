@@ -64,6 +64,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   another admin answers `403`, and the **Superusers** page only offers Edit on your own
   row. Reset another admin's password from the server with
   `vaultbase setup-admin --email … --password … --force`.
+- **The admin SQL runner runs one statement per query.** A script with several
+  statements separated by `;` now answers an error; run them one at a time.
 - **MCP `run_sql` writes need the `mcp:admin` scope.** A token with only `mcp:sql` can
   still read; `allow_write: true` now answers with an error unless the token also has
   `mcp:admin` (or `admin`).
@@ -182,7 +184,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the 5-second limit couldn't interrupt it and one slow query stalled every other
   request. Queries now run in a separate process (read-only mode) or worker (sandbox) and
   are stopped when the limit is reached. The sandbox also refuses `ATTACH`, `DETACH` and
-  `VACUUM`, which could reach the live database or write files outside it.
+  `VACUUM`, which could reach the live database or write files outside it, and the
+  SQL runner now runs one statement at a time.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
