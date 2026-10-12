@@ -248,6 +248,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   is rejected. The view-query check also read a `'--'` inside a string as a comment and
   skipped the rest of the line, which could hide a reference to SQLite's metadata
   tables; it now parses strings, identifiers and comments properly.
+- **CSV exports could carry spreadsheet formulas.** A text value starting with `=`, `+`,
+  `-`, `@`, tab or carriage return ran as a formula in whoever opened the export. Such
+  values are now prefixed with `'` (shown as plain text); CSV import removes the prefix
+  again, so an export re-imports unchanged.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

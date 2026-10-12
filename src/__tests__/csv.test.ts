@@ -126,3 +126,21 @@ describe("parseCsvToObjects", () => {
     expect(parseCsvToObjects("")).toEqual([]);
   });
 });
+
+describe("formula injection", () => {
+  it("text that a spreadsheet would run as a formula is exported as text", async () => {
+    const { encodeField } = await import("../core/csv.ts");
+    for (const v of ["=HYPERLINK(\"http://x\",\"click\")", "+1+1", "-2+3", "@SUM(A1)", "\t=1"]) {
+      expect(encodeField(v).replace(/^"/, "").startsWith("'")).toBe(true);
+    }
+    // Numbers and ordinary text are untouched (legitimate path).
+    expect(encodeField(-5)).toBe("-5");
+    expect(encodeField("hello")).toBe("hello");
+  });
+
+  it("export → import round-trips", async () => {
+    const { encodeCsv, parseCsvToObjects } = await import("../core/csv.ts");
+    const csv = encodeCsv(["a"], [["=1+1"], ["'plain"], ["-x"]]);
+    expect(parseCsvToObjects(csv).map((r) => r["a"])).toEqual(["=1+1", "'plain", "-x"]);
+  });
+});

@@ -10,11 +10,19 @@ const LF = "\n";
 const QUOTE = '"';
 const COMMA = ",";
 
+/**
+ * Text starting with one of these is read as a formula by Excel, LibreOffice
+ * and Google Sheets — a record value like `=HYPERLINK(...)` or `@SUM(...)`
+ * would run in whoever opens the export. Such text gets a leading `'`, which
+ * spreadsheets display as plain text; import strips it again.
+ */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
 /** Encode a single value as a CSV field. Quotes only when needed. */
 export function encodeField(val: unknown): string {
   if (val === null || val === undefined) return "";
   let s: string;
-  if (typeof val === "string") s = val;
+  if (typeof val === "string") s = FORMULA_START.test(val) ? `'${val}` : val;
   else if (typeof val === "number" || typeof val === "boolean") s = String(val);
   else s = JSON.stringify(val);
   if (s.includes(COMMA) || s.includes(QUOTE) || s.includes(CR) || s.includes(LF)) {
@@ -109,7 +117,9 @@ export function parseCsvToObjects(input: string): Record<string, string>[] {
   return rows.slice(1).map((r) => {
     const out: Record<string, string> = {};
     for (let i = 0; i < headers.length; i++) {
-      out[headers[i]!] = r[i] ?? "";
+      // Undo the export's formula guard, so export → import round-trips.
+      const v = r[i] ?? "";
+      out[headers[i]!] = v.startsWith("'") && FORMULA_START.test(v.slice(1)) ? v.slice(1) : v;
     }
     return out;
   });
