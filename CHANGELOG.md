@@ -394,6 +394,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Migrations no longer hide failures.** Adding a column ignored every error as "the
+  column already exists", so a locked or read-only database, or a full disk, left the
+  schema half-migrated with nothing logged. Only that one error is ignored now; anything
+  else stops startup with the error. `busy_timeout` is also set before switching to WAL,
+  so processes opening the database together (cluster workers, a CLI next to the
+  server) wait for the lock instead of failing with `SQLITE_BUSY`.
 - **The hosted magic-link page now works for accounts with two-factor sign-in.** It used
   the link and then showed "Invalid or expired link", because it didn't know what to do
   with the MFA step. It now asks for the authenticator (or recovery) code and finishes the

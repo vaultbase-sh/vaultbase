@@ -1,6 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "./client.ts";
 
+/**
+ * `ALTER TABLE … ADD COLUMN`, tolerating only "the column is already there".
+ * Every other failure — a locked or read-only database, a full disk, a typo —
+ * used to be swallowed the same way, leaving the schema half-migrated with
+ * nothing in the log; it now stops the migration.
+ */
+export function addColumn(client: Database, sql: string): void {
+  try {
+    client.exec(sql);
+  } catch (e) {
+    if (e instanceof Error && /duplicate column name/i.test(e.message)) return;
+    throw e;
+  }
+}
+
 export async function runMigrations() {
   const db = getDb();
   const client = (db as unknown as { $client: Database }).$client;
@@ -21,9 +36,9 @@ export async function runMigrations() {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
-  try { client.exec(`ALTER TABLE vaultbase_collections ADD COLUMN type TEXT NOT NULL DEFAULT 'base'`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_collections ADD COLUMN view_query TEXT`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_collections ADD COLUMN history_enabled INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN type TEXT NOT NULL DEFAULT 'base'`);
+  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN view_query TEXT`);
+  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN history_enabled INTEGER NOT NULL DEFAULT 0`);
 
   // Drop legacy single-table records (replaced by per-collection tables)
   client.exec(`DROP TABLE IF EXISTS vaultbase_records`);
@@ -61,9 +76,9 @@ export async function runMigrations() {
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
-  try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN code TEXT`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
-  try { client.exec(`ALTER TABLE vaultbase_auth_tokens ADD COLUMN payload TEXT`); } catch { /* exists */ }
+  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN code TEXT`);
+  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
+  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN payload TEXT`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_user ON vaultbase_auth_tokens(user_id, purpose)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_code ON vaultbase_auth_tokens(code, purpose)`);
 
@@ -118,7 +133,7 @@ export async function runMigrations() {
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
-  try { client.exec(`ALTER TABLE vaultbase_admin ADD COLUMN password_reset_at INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+  addColumn(client, `ALTER TABLE vaultbase_admin ADD COLUMN password_reset_at INTEGER NOT NULL DEFAULT 0`);
   try { client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vaultbase_admin_email ON vaultbase_admin(email)`); } catch { /* exists */ }
 
   client.exec(`
@@ -164,7 +179,7 @@ export async function runMigrations() {
     )
   `);
   // Idempotent ADD COLUMN for existing DBs
-  try { client.exec(`ALTER TABLE vaultbase_hooks ADD COLUMN name TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
+  addColumn(client, `ALTER TABLE vaultbase_hooks ADD COLUMN name TEXT NOT NULL DEFAULT ''`);
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_routes (
@@ -196,7 +211,7 @@ export async function runMigrations() {
     )
   `);
   // Idempotent ALTER: pre-existing installs missing the mode column
-  try { client.exec(`ALTER TABLE vaultbase_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'inline'`); } catch { /* exists */ }
+  addColumn(client, `ALTER TABLE vaultbase_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'inline'`);
 
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_workers (
@@ -233,7 +248,7 @@ export async function runMigrations() {
   `);
   // v0.12: per-job retry overrides from enqueue() (null = worker defaults).
   for (const col of ["retry_max INTEGER", "retry_backoff TEXT", "retry_delay_ms INTEGER"]) {
-    try { client.exec(`ALTER TABLE vaultbase_jobs_log ADD COLUMN ${col}`); } catch { /* exists */ }
+    addColumn(client, `ALTER TABLE vaultbase_jobs_log ADD COLUMN ${col}`);
   }
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_status ON vaultbase_jobs_log(queue, status, scheduled_at)`);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_unique ON vaultbase_jobs_log(unique_key, status)`);
@@ -549,8 +564,7 @@ function v0_11PrepAuthTables(client: Database): void {
       ["password_reset_at", "INTEGER NOT NULL DEFAULT 0"],
     ];
     for (const [name, sql] of authColumns) {
-      try { client.exec(`ALTER TABLE ${quoted} ADD COLUMN "${name}" ${sql}`); }
-      catch { /* column exists */ }
+      addColumn(client, `ALTER TABLE ${quoted} ADD COLUMN "${name}" ${sql}`);
     }
 
     // 2. ALTER ADD custom-field columns from the collection's `fields` JSON
@@ -569,8 +583,7 @@ function v0_11PrepAuthTables(client: Database): void {
         case "date":     sqlType = "INTEGER"; break;
         default:         sqlType = "TEXT"; break;
       }
-      try { client.exec(`ALTER TABLE ${quoted} ADD COLUMN ${colName} ${sqlType}`); }
-      catch { /* column exists */ }
+      addColumn(client, `ALTER TABLE ${quoted} ADD COLUMN ${colName} ${sqlType}`);
     }
 
     // 3. Copy rows from vaultbase_users into vb_<name>. INSERT OR IGNORE so
