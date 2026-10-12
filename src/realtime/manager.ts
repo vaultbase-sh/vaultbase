@@ -16,6 +16,28 @@ export interface WSAuth {
   id: string;
   type: "user" | "admin";
   email?: string;
+  /** The token it came from, re-verified periodically (revocation, resets). */
+  token?: string;
+  /** Token expiry (unix seconds): past it the connection is anonymous again. */
+  exp?: number;
+}
+
+/** Topics one connection may hold. */
+export const MAX_TOPICS_PER_CONNECTION = 100;
+/** Open realtime connections (WS + SSE) per process. */
+export const MAX_REALTIME_CONNECTIONS = 10_000;
+
+/** Live connection ids, for the connection cap. */
+const liveConns = new Set<string>();
+
+/**
+ * Count a new connection in. Returns false when the process is already at
+ * `MAX_REALTIME_CONNECTIONS`; the caller refuses the connection.
+ */
+export function admitConnection(id: string): boolean {
+  if (liveConns.size >= MAX_REALTIME_CONNECTIONS && !liveConns.has(id)) return false;
+  liveConns.add(id);
+  return true;
 }
 
 /**
@@ -77,6 +99,46 @@ export function getWSAuth(ws: WSLike): WSAuth | undefined {
   return wsAuth.get(connId(ws));
 }
 
+/** Live auth for `id`: none once the token has expired. */
+function currentAuth(id: string): WSAuth | undefined {
+  const auth = wsAuth.get(id);
+  if (auth?.exp !== undefined && auth.exp <= Math.floor(Date.now() / 1000)) {
+    wsAuth.delete(id);
+    return undefined;
+  }
+  return auth;
+}
+
+/**
+ * Re-check every connection's token (revocation, sign-out, password reset,
+ * deleted user). Auth was only checked when it was set, so a connection kept
+ * receiving a signed-out user's events for as long as it stayed open. A
+ * connection whose token no longer verifies drops back to anonymous and is
+ * told so. Run on a timer by the server.
+ */
+export async function reverifyRealtimeAuth(verify: (token: string) => Promise<WSAuth | null>): Promise<void> {
+  for (const [id, auth] of [...wsAuth]) {
+    if (!auth.token) continue;
+    const fresh = await verify(auth.token);
+    if (wsAuth.get(id) !== auth) continue; // changed while we awaited
+    if (fresh && fresh.id === auth.id && fresh.type === auth.type) continue;
+    wsAuth.delete(id);
+    const ws = connAdapter(id);
+    try { ws?.send(JSON.stringify({ type: "auth_expired" })); } catch { /* gone */ }
+  }
+}
+
+/** Any adapter currently registered for `id`. */
+function connAdapter(id: string): WSLike | undefined {
+  const sse = sseClients.get(id);
+  if (sse) return sse;
+  for (const t of topicsByConn.get(id) ?? []) {
+    const ws = subs.get(t)?.get(id);
+    if (ws) return ws;
+  }
+  return undefined;
+}
+
 /**
  * Canonicalise a topic string. The internal store keys are:
  *
@@ -119,6 +181,9 @@ export function subscribe(ws: WSLike, topics: string[]): string[] {
   for (const raw of topics) {
     const t = normalizeTopic(raw);
     if (!t) continue;
+    // Every topic is a map entry held for the life of the connection.
+    const held = topicsByConn.get(id);
+    if ((held?.size ?? 0) >= MAX_TOPICS_PER_CONNECTION && !held?.has(t)) break;
     let inner = subs.get(t);
     if (!inner) { inner = new Map(); subs.set(t, inner); }
     inner.set(id, ws);
@@ -168,6 +233,7 @@ export function disconnectAll(ws: WSLike): void {
   const id = connId(ws);
   leaveAll(id);
   wsAuth.delete(id);
+  liveConns.delete(id);
 }
 
 /** Test hook: number of live topics. */
@@ -183,7 +249,7 @@ export function _topicCount(): number {
  */
 function shouldSendTo(id: string, opts?: BroadcastOpts): boolean {
   if (!opts || opts.viewRule === undefined) return true;
-  const auth = wsAuth.get(id);
+  const auth = currentAuth(id);
   if (auth?.type === "admin") return true;
   const rule = opts.viewRule;
   if (rule === null) return true;       // public
@@ -279,12 +345,28 @@ export function getSSEClient(clientId: string): WSLike | undefined {
   return sseClients.get(clientId);
 }
 
+/**
+ * The principal (`type:id`) that first authenticated an SSE client. Once set,
+ * changing that client's subscriptions or closing it takes a token for the
+ * same principal: the clientId alone travels in URLs and logs.
+ */
+const sseOwners = new Map<string, string>();
+
+export function sseOwnerOf(clientId: string): string | undefined {
+  return sseOwners.get(clientId);
+}
+
+export function setSSEOwner(clientId: string, owner: string): void {
+  if (!sseOwners.has(clientId)) sseOwners.set(clientId, owner);
+}
+
 /** Drop the client + remove from every topic + clear stored auth. */
 export function unregisterSSEClient(clientId: string): void {
   const adapter = sseClients.get(clientId);
   if (!adapter) return;
   disconnectAll(adapter);
   sseClients.delete(clientId);
+  sseOwners.delete(clientId);
 }
 
 /** Replace the client's topic list (PocketBase-style: PUT semantics). */
@@ -302,4 +384,7 @@ export function _reset(): void {
   subs.clear();
   topicsByConn.clear();
   sseClients.clear();
+  sseOwners.clear();
+  liveConns.clear();
+  wsAuth.clear();
 }

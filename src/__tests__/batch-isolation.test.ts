@@ -74,7 +74,7 @@ describe("batch transaction isolation", () => {
   });
 
   it("realtime events fire only for committed batches", async () => {
-    const { response, clientId } = openSSEStream();
+    const { response, clientId } = openSSEStream()!;
     setSSESubscriptions(clientId, ["slow"]);
     // One reader for the whole test; collect frames as they arrive.
     const reader = response.body!.getReader();

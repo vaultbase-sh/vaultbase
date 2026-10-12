@@ -83,6 +83,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   columns. `SELECT *` views keep working, without those columns.
 - **Uploads need an existing record.** `POST /files/:collection/:recordId/:field` answers
   `404` for a record id that doesn't exist; create the record first, then upload.
+- **Realtime changes.** A WebSocket or SSE connection from this server's own origin is
+  accepted even with `security.allowed_origins` empty (it used to be refused). Clients
+  should handle `{ "type": "auth_expired" }` by sending a fresh token. Connections are
+  capped at 10,000 per process and 100 topics each. Managing an SSE client that has
+  authenticated needs that user's token.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -263,6 +268,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   relation set by a non-admin must now point at a record that caller can view; missing
   and hidden records get the same error. (A `unique` field still reports a duplicate:
   that is what a unique constraint has to say.)
+- **Realtime connections outlived their credentials and had no limits.** A connection's
+  token was checked once, so a signed-out or expired session kept receiving protected
+  events; connections, topics and an unread SSE stream's buffer could grow without
+  limit; and `POST`/`DELETE /realtime` trusted the SSE `clientId` alone. Tokens are now
+  re-checked every minute and at expiry, connections and topics are capped, slow SSE
+  readers are dropped, and managing an authenticated SSE client needs its user's token.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
