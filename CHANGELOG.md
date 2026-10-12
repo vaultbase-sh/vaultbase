@@ -278,6 +278,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   record. And for `~`, a `%` or `_` sent by the caller acted as a wildcard. List rules
   now see the request, and values from the request are matched as plain text with `~`
   (patterns written into a rule or filter keep their wildcards).
+- **Rules with `@collection.*` or `_via_` could pass on a negated comparison.** Checks
+  on a single record — view, update and delete by id, file access, realtime delivery —
+  can't look into other collections, and those operands resolved to NULL there, so
+  `@collection.bans.user != @request.auth.id` let a banned user read, change or delete
+  the record by id while list requests refused them. A comparison with such an operand
+  is now false in those checks, so it can only narrow access.
 - **`~` with an empty right side matched every record.** When the right-hand value of
   `~` was empty or missing — `tag ~ @request.headers.x` with no header, an
   `@request.auth.*` field of an anonymous caller, an empty column, or a `_via_`

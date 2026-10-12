@@ -53,6 +53,11 @@ export function isExpressionRule(rule: string | null): boolean {
 
 // ── AST evaluation ──────────────────────────────────────────────────────────
 
+/**
+ * An operand with no usable value here: an anonymous caller's auth field, or a
+ * cross-collection lookup this engine can't run. Any comparison involving it
+ * is false — whatever the operator, so `!=` can't turn "unknown" into a pass.
+ */
 const UNAUTH_SENTINEL = Symbol("unauth");
 
 function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
@@ -204,16 +209,14 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
       const v = walkPath(head, op.path);
       return applyModifierValue(v, op.modifier);
     }
-    case "collection": {
-      // In-process eval: cross-collection joins require a DB read; we don't
-      // run them here. The SQL filter path (filter.ts) handles them. Returning
-      // null here means rules referencing @collection.* in single-record eval
-      // (view_rule on get-by-id) deny conservatively.
-      return null;
-    }
+    case "collection":
     case "viaRelation": {
-      // Same conservative-deny stance for back-relations in single-record eval.
-      return null;
+      // In-process eval: cross-collection joins require a DB read; we don't
+      // run them here. The SQL filter path (filter.ts) handles them. In
+      // single-record eval (view_rule on get-by-id, realtime) any comparison
+      // with one is false, so the rule can only deny more. Returning null
+      // here used to let `@collection.bans.user != @request.auth.id` pass.
+      return UNAUTH_SENTINEL;
     }
   }
 }
