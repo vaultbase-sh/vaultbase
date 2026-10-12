@@ -101,6 +101,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   redirects are followed by hand (at most 5) with each hop checked; a host that doesn't
   resolve is blocked; and cloud metadata addresses can't be allowed. A hook that reached
   an internal service through one of these gaps needs a `hooks.http.allow` entry.
+- **Relations must point at records the writer can view.** A non-admin can no longer set
+  a relation to a record they can't read — including linking to another user when the
+  `users` collection isn't readable to them. Open the target's view rule (for example
+  to signed-in users) where such links are intended.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.

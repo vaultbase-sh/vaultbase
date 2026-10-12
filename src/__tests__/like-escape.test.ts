@@ -50,3 +50,16 @@ describe("~ with request values", () => {
     expect(await list("a", 'tag ~ "a_p"')).toEqual(["alpha"]);
   });
 });
+
+describe("~ with a field on the right", () => {
+  it("compares against that field's value, not a match-everything pattern", async () => {
+    const { createPublicCollection } = await import("./_helpers.ts");
+    await createPublicCollection({ name: "pairs", fields: JSON.stringify([{ name: "a", type: "text" }, { name: "b", type: "text" }]) });
+    await createRecord("pairs", { a: "hello", b: "ell" }, null);
+    await createRecord("pairs", { a: "xyz", b: "zz" }, null);
+    await createRecord("pairs", { a: "abc", b: "%" }, null);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/pairs?filter=${encodeURIComponent("a ~ b")}`));
+    const body = await res.json() as { data: Array<{ a: string }> };
+    expect(body.data.map((r) => r.a)).toEqual(["hello"]);
+  });
+});

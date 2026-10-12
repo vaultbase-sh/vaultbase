@@ -549,6 +549,13 @@ function applyModifierToValue(v: unknown, m?: FieldModifier): unknown {
  * every row.
  */
 function likeParam(operand: Operand, ctx: CompileCtx): string {
+  // A column on the right (`a ~ b`): operandValue() has no value for it, so
+  // this used to bind '%%' and match every row. Build the pattern in SQL,
+  // escaping the column's own wildcards; a NULL column matches nothing.
+  if (operand.kind === "field" || operand.kind === "collection") {
+    const col = compileOperand(operand, ctx);
+    return `'%' || replace(replace(replace(${col}, '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+  }
   const v = String(operandValue(operand, ctx) ?? "");
   if (operand.kind === "literal" || operand.kind === "macro") {
     ctx.params.push(`%${v}%`);
