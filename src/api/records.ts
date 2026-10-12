@@ -593,6 +593,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         throw e;
       }
     });

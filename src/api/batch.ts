@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RestrictError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -201,6 +201,10 @@ export function makeBatchPlugin(jwtSecret: string) {
             return auth?.type === "admin"
               ? { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409, details: e.details }
               : { error: `Batch failed at request ${results.length}: the record is referenced by other records`, code: 409 };
+          }
+          if (e instanceof RecordBusyError) {
+            set.status = 409;
+            return { error: `Batch failed at request ${results.length}: ${e.message}`, code: 409 };
           }
           if (e instanceof ReadOnlyCollectionError) {
             set.status = 405;

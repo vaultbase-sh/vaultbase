@@ -122,6 +122,37 @@ describe("record write locks (review 10)", () => {
     }
   });
 
+  it("restore answers 409, not 500, when the record stays busy", async () => {
+    const { _setRecordLockWaitForTests, getCollection, updateCollection } = await import("../core/records.ts").then(async (m) => ({
+      ...m, ...(await import("../core/collections.ts")),
+    }));
+    const { getDb } = await import("../db/client.ts");
+    const { admin } = await import("../db/schema.ts");
+    const { signAuthToken } = await import("../core/sec.ts");
+    await getDb().insert(admin).values({ id: "a1", email: "a1@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    const col = await getCollection("posts");
+    await updateCollection(col!.id, { history_enabled: 1 } as Parameters<typeof updateCollection>[1]);
+    const r = await createRecord("posts", { title: "v0" }, null);
+    await hook("h-hold", "posts", "if (ctx.record.title === 'hold') await new Promise((res) => setTimeout(res, 600));");
+    _setRecordLockWaitForTests(100);
+    try {
+      const slow = app().handle(new Request(`http://localhost/posts/${r.id}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "hold" }),
+      }));
+      await Bun.sleep(30);
+      const at = Math.floor(Date.now() / 1000) + 5;
+      const res = await app().handle(new Request(`http://localhost/posts/${r.id}/restore?at=${at}`, {
+        method: "POST", headers: { authorization: `Bearer ${token}` },
+      }));
+      expect(res.status).toBe(409);
+      expect((await slow).status).toBe(200);
+    } finally {
+      _setRecordLockWaitForTests(10_000);
+      (await import("../core/hooks.ts")).invalidateHookCache();
+    }
+  });
+
   it("hooks writing each other's records fail fast instead of hanging", async () => {
     const { _setRecordLockWaitForTests } = await import("../core/records.ts");
     _setRecordLockWaitForTests(300);
