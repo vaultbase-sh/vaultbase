@@ -64,6 +64,24 @@ describe("vector search with parsed-vector cache", () => {
     expect((await search(q)).map((r) => r.id)).toEqual(expected);
   });
 
+  it("nearLimit above 25 returns that many matches, in rank order", async () => {
+    // The top-K were loaded with one `id = … || …` filter, which the parser
+    // refuses past 50 operands, so nearLimit > 25 answered 400.
+    await setup();
+    const rows: Array<{ id: string; v: number[] }> = [];
+    for (let i = 0; i < 60; i++) {
+      const v = vec(i);
+      rows.push({ id: (await createRecord("docs", { owner: "x", emb: v })).id, v });
+    }
+    const q = vec(500);
+    const expected = rows
+      .map((r) => ({ id: r.id, s: cosineSimilarity(q, r.v) }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 45)
+      .map((r) => r.id);
+    expect((await search(q, 45)).map((r) => r.id)).toEqual(expected);
+  });
+
   it("a repeat search parses no vectors", async () => {
     await setup();
     for (let i = 0; i < 20; i++) await createRecord("docs", { owner: "x", emb: vec(i) });

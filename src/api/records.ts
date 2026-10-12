@@ -240,7 +240,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           const limit = Number.isFinite(nearLimit) ? Math.max(1, Math.min(1000, nearLimit)) : 10;
           const minScore = query.nearMinScore ? parseFloat(query.nearMinScore) : undefined;
           let ranked: Array<{ id: string; score: number }>;
-          let page: Awaited<ReturnType<typeof listRecords>> | null = null;
+          const loaded: Array<Awaited<ReturnType<typeof listRecords>>["data"][number]> = [];
           try {
             ranked = await searchVectors(col, vecField.name, queryVec, {
               ...(opts.filter !== undefined ? { filter: opts.filter } : {}),
@@ -251,22 +251,28 @@ export function makeRecordsPlugin(jwtSecret: string) {
               limit,
               ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
             });
-            if (ranked.length > 0) {
-              const idFilter = ranked.map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
-              page = await listRecords(params.collection, {
+            // Load by id in chunks: the filter parser caps an expression at
+            // 50 operands, so one `id = … || …` for more than 25 matches was
+            // refused with 400. The ranking already applied the caller's
+            // filter; listRecords still applies the access rule.
+            const ID_CHUNK = 20;
+            for (let i = 0; i < ranked.length; i += ID_CHUNK) {
+              const idFilter = ranked.slice(i, i + ID_CHUNK).map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
+              const chunk = await listRecords(params.collection, {
                 ...opts,
-                filter: opts.filter ? `(${opts.filter}) && (${idFilter})` : idFilter,
+                filter: idFilter,
                 page: 1,
-                perPage: ranked.length,
+                perPage: ID_CHUNK,
                 skipTotal: true,
               });
+              loaded.push(...chunk.data);
             }
           } catch (e) {
             const r = listErrorResponse(set, e);
             if (r) return r;
             throw e;
           }
-          const byId = new Map((page?.data ?? []).map((r) => [r.id, r]));
+          const byId = new Map(loaded.map((r) => [r.id, r]));
           const data = ranked
             .map((m) => {
               const rec = byId.get(m.id);

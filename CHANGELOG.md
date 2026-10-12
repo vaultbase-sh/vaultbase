@@ -399,6 +399,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   read-only connection with the 5-second limit, and every call goes to the audit log.
 
 ### Fixed
+- **Vector search returned `400` for `nearLimit` above 25.** The top matches were
+  loaded with one `id = … || …` filter, longer than the filter parser accepts. They are
+  now loaded in chunks, so `nearLimit` works up to its documented 1000.
 - **Read-only batches no longer block writes.** A `/batch` of only `GET`s took the
   exclusive write gate, so a batch of 100 slow lists stalled every write in the process.
   Read-only batches now run without it; each read sees committed data, with no snapshot
