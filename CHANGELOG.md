@@ -114,6 +114,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `proxy_set_header X-Forwarded-For $remote_addr;` (and fix the SSE `location` to
   `/api/v1/realtime`), as in `deploy/nginx/vaultbase.conf`. With a chain of proxies, list
   all of them in `VAULTBASE_TRUSTED_PROXIES`.
+- **`/metrics` needs a token.** With `metrics.enabled` on and no `metrics.token`, the
+  endpoint used to be public; it now answers `401` unless an admin token is sent. Set
+  `metrics.token` for your scraper.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -340,6 +343,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   limits meant for signed-in clients, an IPv6 client got a fresh budget for every address
   in its /64, and the bucket table could grow without bound. Only a valid token now
   counts as signed in, IPv6 clients are limited per /64, and the table is capped.
+- **`/metrics` was public when enabled without a token**, and the HTML sanitizer let
+  `javascript:` links through behind a leading control character. `/metrics` now needs
+  `metrics.token` or an admin token; the sanitizer drops leading control characters
+  before checking the scheme, as browsers do.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

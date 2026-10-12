@@ -63,21 +63,22 @@ export function makeMetricsPlugin(jwtSecret: string) {
       globalMetrics.reset();
       return { data: { reset: true } };
     })
-    // Public Prometheus exposition. Off by default; enable via
-    // `metrics.enabled` setting. Optional bearer auth via `metrics.token`.
-    .get("/metrics", ({ request, set }) => {
+    // Prometheus exposition. Off by default; enable via `metrics.enabled`.
+    // Scrapers authenticate with `metrics.token` (Bearer).
+    .get("/metrics", async ({ request, set }) => {
       if (getSetting("metrics.enabled", "0") !== "1") {
         set.status = 404;
         return "";
       }
+      // Never anonymous: the scrape token when one is set, otherwise an
+      // admin token. Enabled with no token, this used to answer anyone.
       const required = getSetting("metrics.token", "");
-      if (required) {
-        const got = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
-        if (!sameSecret(got, required)) {
-          set.status = 401;
-          set.headers["www-authenticate"] = "Bearer";
-          return "";
-        }
+      const got = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+      const allowed = required ? sameSecret(got, required) : await isAdmin(request, jwtSecret);
+      if (!allowed) {
+        set.status = 401;
+        set.headers["www-authenticate"] = "Bearer";
+        return "";
       }
       const snap = globalMetrics.snapshot();
       const sql = sqliteSnapshot();
