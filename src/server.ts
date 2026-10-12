@@ -1,7 +1,7 @@
 import Elysia, { t } from "elysia";
 import type { Config } from "./config.ts";
 import * as jose from "jose";
-import { dataPrincipal, extractBearer, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
+import { dataPrincipal, extractBearer, rememberPeer, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
@@ -181,8 +181,11 @@ export function createServer(config: Config) {
   return new Elysia()
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
-    .onRequest(({ request }) => {
+    .onRequest(({ request, server }) => {
       attachTimer(request, new RequestTimer());
+      // Record the socket peer so every client-IP reader applies the
+      // trusted-proxy rule (sec.ts clientIp) instead of trusting headers.
+      rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
     })
     // CORS preflight short-circuit — must run before any normal route.
     .onRequest(({ request }) => {

@@ -110,6 +110,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   a relation to a record they can't read — including linking to another user when the
   `users` collection isn't readable to them. Open the target's view rule (for example
   to signed-in users) where such links are intended.
+- **Reverse proxies: set `X-Forwarded-For`, don't append.** Update nginx to
+  `proxy_set_header X-Forwarded-For $remote_addr;` (and fix the SSE `location` to
+  `/api/v1/realtime`), as in `deploy/nginx/vaultbase.conf`. With a chain of proxies, list
+  all of them in `VAULTBASE_TRUSTED_PROXIES`.
 - **List pages are capped at 100,000 skipped records.** `page × perPage` beyond that
   answers `400`; narrow deep reads with a filter (for example on `created`) instead of
   paging.
@@ -316,6 +320,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `helpers.fetch` wasn't filtered at all. All of these are now checked, for webhook
   deliveries too, and cloud metadata endpoints stay blocked even when the allow list
   covers them or the filter is turned off.
+- **The client IP could be spoofed with `X-Forwarded-For`.** The first (client-written)
+  entry was taken as the client address, and the lockout, audit log, request logs and
+  custom-route logs read the header without checking who sent it. The header now counts
+  only from a trusted proxy and is read from the right, everywhere; the shipped nginx and
+  Caddy configs set it instead of appending to it. The Settings → Security trusted-proxy
+  list now applies to rate limiting too (it used to read only the env var). The nginx
+  and Caddy SSE locations also pointed at the old `/api/realtime` path; they now match
+  `/api/v1/realtime`.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and

@@ -13,6 +13,7 @@ import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { adminSessions, admin as adminTable, loginFailures, tokenRevocations } from "../db/schema.ts";
 import { getSetting } from "../api/settings.ts";
+import { clientIp } from "./sec.ts";
 
 // ── Trusted proxies ─────────────────────────────────────────────────────────
 
@@ -283,11 +284,7 @@ export async function pruneOldLoginFailures(): Promise<void> {
 // ── IP extraction (mirrors ratelimit / audit-log defensive defaults) ────────
 
 function clientIpFromRequest(request: Request): string | null {
-  const trustedRaw = getTrustedProxiesRaw();
-  if (!trustedRaw) return null;
-  const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return null;
-  return (xff.split(",")[0] ?? "").trim() || null;
+  return clientIp(request);
 }
 
 // ── Fingerprints ────────────────────────────────────────────────────────────

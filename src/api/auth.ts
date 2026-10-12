@@ -14,6 +14,7 @@ import {
   HASH_OPTS,
   hmacRecoveryCode,
   ISSUER,
+  clientIp,
   redactEmail,
   revokeToken,
   signAuthToken,
@@ -51,17 +52,13 @@ import {
   recordAdminSession,
   reserveLoginAttempt,
   loginSucceeded,
-  getTrustedProxiesRaw,
   reserveAttempt,
   releaseAttempt,
 } from "../core/security.ts";
 
-/** Best-effort client IP for lockout keying. Honours trusted-proxies setting. */
+/** Client IP for lockout keying, by the trusted-proxy rule (see sec.ts clientIp). */
 function clientIpForLockout(request: Request): string | null {
-  if (!getTrustedProxiesRaw()) return null;
-  const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return null;
-  return (xff.split(",")[0] ?? "").trim() || null;
+  return clientIp(request);
 }
 
 /**

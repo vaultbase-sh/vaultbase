@@ -13,14 +13,16 @@ api.example.com {
     # WebSocket realtime — keep upgrade headers + extend the read timeout.
     @ws path /realtime
     reverse_proxy @ws localhost:8091 {
+        header_up X-Forwarded-For   {client_ip}
         transport http {
             keepalive 60s
         }
     }
 
     # SSE realtime fallback.
-    @sse path /api/realtime
+    @sse path /api/v1/realtime
     reverse_proxy @sse localhost:8091 {
+        header_up X-Forwarded-For   {client_ip}
         flush_interval -1
     }
 

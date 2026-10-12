@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { accessFor, dataPrincipal, verifyAuthToken } from "./sec.ts";
+import { accessFor, clientIp, dataPrincipal, verifyAuthToken } from "./sec.ts";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -176,7 +176,7 @@ export async function dispatchCustomRoute(
   };
 
   const started = Date.now();
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const ip = clientIp(request);
   const fullPath = "/api/v1/custom" + innerPath;
   try {
     const result = await match.route.fn(ctx);

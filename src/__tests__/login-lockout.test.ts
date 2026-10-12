@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 import { admin, authTokens, loginFailures } from "../db/schema.ts";
 import { getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
+import { rememberPeer } from "../core/sec.ts";
 import { hashedTokenId, seedAuthUser } from "./_helpers.ts";
 
 const SECRET = "test-secret-login-lockout";
@@ -106,12 +107,17 @@ describe("admin login lockout", () => {
 });
 
 describe("IP key", () => {
-  const fromIp = (path: string, body: unknown) =>
-    makeAuthPlugin(SECRET).handle(new Request(`http://localhost${path}`, {
+  // Through a trusted proxy at 127.0.0.1 (the server records each request's
+  // socket peer; X-Forwarded-For only counts when that peer is trusted).
+  const fromIp = (path: string, body: unknown) => {
+    const req = new Request(`http://localhost${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.7" },
       body: JSON.stringify(body),
-    }));
+    });
+    rememberPeer(req, "127.0.0.1");
+    return makeAuthPlugin(SECRET).handle(req);
+  };
 
   it("users failing behind a shared address don't lock the admin out", async () => {
     setSetting("security.trusted_proxies", "127.0.0.1");

@@ -12,24 +12,12 @@
 import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { auditLog } from "../db/schema.ts";
+import { clientIp as trustedIp } from "./sec.ts";
 import { normalizeApiPath } from "./api-paths.ts";
 
-/**
- * Extract the client IP, honouring `x-forwarded-for` when the request
- * appears to come through a configured proxy. Best-effort — never throws.
- */
+/** The client IP, by the trusted-proxy rule (see sec.ts clientIp). */
 function clientIp(request: Request): string | null {
-  // We don't have peer-IP plumbing at the audit layer (Bun.serve sets it on
-  // a different code path). Read the XFF header verbatim only when at least
-  // one trusted-proxy CIDR is configured — otherwise fall back to null,
-  // matching ratelimit's defensive default. Operators who want exact IPs
-  // here should set VAULTBASE_TRUSTED_PROXIES.
-  const trustedRaw = process.env["VAULTBASE_TRUSTED_PROXIES"] ?? "";
-  if (!trustedRaw.trim()) return null;
-  const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return null;
-  const first = xff.split(",")[0]?.trim();
-  return first || null;
+  return trustedIp(request);
 }
 
 /** Verbs we audit. GET reads are intentionally omitted (volume + low value). */

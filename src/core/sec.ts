@@ -4,6 +4,7 @@ import { getDb } from "../db/client.ts";
 import { admin, apiTokens, tokenRevocations } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
+import { getTrustedProxiesRaw } from "./security.ts";
 
 /**
  * Centralized auth-token verification.
@@ -323,7 +324,10 @@ export function isAllowedUploadMime(mime: string): boolean {
 let _trustedProxiesCache: { raw: string; cidrs: ParsedCidr[]; bare: Set<string> } | null = null;
 
 function getTrustedProxies(): { cidrs: ParsedCidr[]; bare: Set<string> } | null {
-  const raw = process.env["VAULTBASE_TRUSTED_PROXIES"] ?? "";
+  // Settings → Security → Trusted proxies wins over the env var, the same
+  // precedence getTrustedProxiesRaw() documents; this used to read the env
+  // var only, so the setting changed lockout keys but not rate limits.
+  const raw = getTrustedProxiesRaw();
   if (!raw) return null;
   if (_trustedProxiesCache && _trustedProxiesCache.raw === raw) {
     return { cidrs: _trustedProxiesCache.cidrs, bare: _trustedProxiesCache.bare };
@@ -358,12 +362,41 @@ export function trustedClientIp(request: Request, peerIp: string | null): string
   if (!isTrustedProxy(peerIp)) return peerIp;
   const fwd = request.headers.get("x-forwarded-for");
   if (fwd) {
-    const first = fwd.split(",")[0]?.trim();
-    if (first) return first;
+    // Walk right to left: each trusted proxy appends the address it got the
+    // request from, so the rightmost entry that isn't one of our proxies is
+    // the client. The leftmost entry is whatever the client chose to send.
+    const hops = fwd.split(",").map((h) => h.trim()).filter(Boolean);
+    for (let i = hops.length - 1; i >= 0; i--) {
+      if (!isTrustedProxy(hops[i]!)) return hops[i]!;
+    }
+    if (hops[0]) return hops[0];
   }
-  const real = request.headers.get("x-real-ip");
+  const real = request.headers.get("x-real-ip")?.trim();
   if (real) return real;
   return peerIp;
+}
+
+/**
+ * The socket peer of each request, recorded by the server as the request
+ * comes in, so code without access to Bun's `server.requestIP()` (audit log,
+ * lockout, logs, custom routes) can still apply the trusted-proxy rule
+ * instead of reading X-Forwarded-For on its own.
+ */
+const requestPeers = new WeakMap<Request, string | null>();
+
+export function rememberPeer(request: Request, ip: string | null): void {
+  requestPeers.set(request, ip);
+}
+
+/**
+ * The client's address for `request`, by the trusted-proxy rule above. Null
+ * when the peer is unknown (a request that didn't come through the server),
+ * rather than trusting a header nothing vouched for.
+ */
+export function clientIp(request: Request): string | null {
+  const peer = requestPeers.get(request);
+  if (peer === undefined || peer === null) return null;
+  return trustedClientIp(request, peer);
 }
 
 /** HMAC-SHA256 for recovery-code O(1) lookup. Returns hex. */
