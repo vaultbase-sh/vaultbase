@@ -1,7 +1,7 @@
 import Elysia, { t } from "elysia";
 import type { Config } from "./config.ts";
 import * as jose from "jose";
-import { dataPrincipal, extractBearer, rememberPeer, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
+import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
@@ -318,7 +318,7 @@ export function createServer(config: Config) {
         return { error: "Origin not allowed", code: 403 };
       }
       const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
-      const sse = openSSEStream(trustedClientIp(request, peer));
+      const sse = openSSEStream(perClientLimitIp(request, peer));
       if (!sse) { set.status = 503; return { error: "Too many realtime connections", code: 503 }; }
       set.headers["content-type"] = "text/event-stream; charset=utf-8";
       return sse.response;
@@ -384,7 +384,7 @@ export function createServer(config: Config) {
           wsAny.data.connId = newId;
         }
         const peer = (ws as unknown as { remoteAddress?: string }).remoteAddress ?? null;
-        if (!admitConnection(newId, req ? trustedClientIp(req, peer) : peer)) {
+        if (!admitConnection(newId, perClientLimitIp(req ?? null, peer))) {
           ws.send(JSON.stringify({ type: "error", reason: "too_many_connections" }));
           ws.close();
           return;

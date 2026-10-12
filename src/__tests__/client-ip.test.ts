@@ -10,7 +10,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setSetting } from "../api/settings.ts";
-import { clientIp, rememberPeer, trustedClientIp } from "../core/sec.ts";
+import { clientIp, perClientLimitIp, rememberPeer, trustedClientIp } from "../core/sec.ts";
 
 const req = (xff?: string) => new Request("http://localhost/", { headers: xff ? { "x-forwarded-for": xff } : {} });
 
@@ -50,5 +50,28 @@ describe("clientIp", () => {
     const r = req("6.6.6.6, 203.0.113.5");
     rememberPeer(r, "10.0.0.2");
     expect(clientIp(r)).toBe("203.0.113.5");
+  });
+});
+
+describe("perClientLimitIp (realtime per-address caps)", () => {
+  // Without trusted proxies, every client behind a local reverse proxy has
+  // the proxy's address; a per-IP cap on it capped the whole site at 100
+  // realtime connections.
+  it("skips the per-address cap for a local peer when no proxies are trusted", () => {
+    setSetting("security.trusted_proxies", "");
+    expect(perClientLimitIp(req(), "127.0.0.1")).toBeNull();
+    expect(perClientLimitIp(req(), "::1")).toBeNull();
+    expect(perClientLimitIp(req(), "::ffff:127.0.0.1")).toBeNull();
+    expect(perClientLimitIp(req(), "172.18.0.4")).toBeNull();
+  });
+
+  it("still caps a public peer by its own address", () => {
+    setSetting("security.trusted_proxies", "");
+    expect(perClientLimitIp(req("6.6.6.6"), "203.0.113.7")).toBe("203.0.113.7");
+  });
+
+  it("with trusted proxies, caps by the forwarded client address", () => {
+    expect(perClientLimitIp(req("203.0.113.5"), "10.0.0.2")).toBe("203.0.113.5");
+    expect(perClientLimitIp(req(), "198.51.100.9")).toBe("198.51.100.9");
   });
 });

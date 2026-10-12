@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { admin, apiTokens, tokenRevocations } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
-import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
+import { parseCidr, ipInCidr, embeddedIPv4, type ParsedCidr } from "./hook-egress.ts";
 import { getTrustedProxiesRaw } from "./security.ts";
 
 /**
@@ -355,6 +355,27 @@ function isTrustedProxy(ip: string): boolean {
     if (ipInCidr(ip, c)) return true;
   }
   return false;
+}
+
+const LOCAL_NETWORK_CIDRS = [
+  "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+  "::1/128", "fc00::/7", "fe80::/10",
+].map((c) => parseCidr(c)!);
+
+/**
+ * The address to apply a per-client cap to, or null to skip that cap. With
+ * no trusted proxies configured, a peer on loopback or a private network is
+ * most likely a reverse proxy that every client arrives through — a per-IP
+ * cap keyed on it would be a cap on the whole site. Global caps still apply.
+ */
+export function perClientLimitIp(request: Request | null, peerIp: string | null): string | null {
+  if (!peerIp) return null;
+  if (!getTrustedProxies()) {
+    const ip = embeddedIPv4(peerIp) ?? peerIp;
+    if (LOCAL_NETWORK_CIDRS.some((c) => ipInCidr(ip, c))) return null;
+    return peerIp;
+  }
+  return request ? trustedClientIp(request, peerIp) : peerIp;
 }
 
 export function trustedClientIp(request: Request, peerIp: string | null): string {
