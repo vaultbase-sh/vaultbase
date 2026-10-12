@@ -188,9 +188,14 @@ function chargeCrossRef(ctx: CompileCtx): void {
   }
 }
 
-/** Context for compiling an inherited view rule: its own references aren't the caller's to count. */
+/**
+ * Context for compiling an inherited view rule. Its cross-collection
+ * operands count against the caller's budget too: each one runs once per
+ * joined row, so a client filter's single `@collection.X` over an X whose
+ * view rule uses `_via_` or another `@collection` was cubic again.
+ */
 function guardCtx(ctx: CompileCtx, overrides: Partial<CompileCtx>): CompileCtx {
-  return { ...ctx, ...overrides, crossRefs: { n: 0, max: Number.POSITIVE_INFINITY } };
+  return { ...ctx, ...overrides };
 }
 
 interface HoistJoin { alias: string; table: string; on: string; onParams: unknown[] }

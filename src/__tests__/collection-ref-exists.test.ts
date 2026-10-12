@@ -204,3 +204,29 @@ describe("@collection.* review 18 follow-ups", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("@collection.* review 19 follow-up", () => {
+  it("a referenced collection's own cross-collection view rule counts against a client filter (F-1)", async () => {
+    await createCollection({ name: "projects2", fields: JSON.stringify([{ name: "name", type: "text" }]), list_rule: null, view_rule: null });
+    await createCollection({
+      name: "pmembers",
+      fields: JSON.stringify([{ name: "project", type: "relation", collection: "projects2" }, { name: "user", type: "text" }]),
+      list_rule: null, view_rule: null,
+    });
+    // projects2's view rule uses a correlated _via_ (no extra join).
+    const { updateCollection } = await import("../core/collections.ts");
+    const p2 = await getCollection("projects2");
+    await updateCollection(p2!.id, { list_rule: "pmembers_via_project.user ~ @request.auth.id", view_rule: "pmembers_via_project.user ~ @request.auth.id" } as never);
+    await createCollection({ name: "hostdocs", fields: JSON.stringify([{ name: "t", type: "text" }]), list_rule: null, view_rule: null });
+    await createRecord("hostdocs", { t: "x" }, null);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/hostdocs?filter=${encodeURIComponent('@collection.projects2.name = "a"')}`));
+    expect(res.status).toBe(400);
+  });
+
+  it("a referenced public collection is still fine (legitimate path)", async () => {
+    await createCollection({ name: "hostdocs2", fields: JSON.stringify([{ name: "t", type: "text" }]), list_rule: null, view_rule: null });
+    await createRecord("hostdocs2", { t: "x" }, null);
+    const res = await makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/hostdocs2?filter=${encodeURIComponent('@collection.members.role = "editor"')}`));
+    expect(res.status).toBe(200);
+  });
+});
