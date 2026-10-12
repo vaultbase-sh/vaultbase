@@ -230,7 +230,7 @@ export function createServer(config: Config) {
       const res = await tryDispatchCustom(request, config.jwtSecret);
       if (res) return res;
     })
-    .use(makeRateLimitPlugin())
+    .use(makeRateLimitPlugin(config.jwtSecret))
     // ── API-token usage telemetry ────────────────────────────────────
     // Fires AFTER the handler so we don't add latency to the hot path.
     // Records last_used_at + IP + UA for any request that arrived

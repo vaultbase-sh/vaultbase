@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
 import Elysia from "elysia";
 import { getDb } from "../db/client.ts";
+import * as jose from "jose";
+import { isIPv6 } from "node:net";
 import { trustedClientIp } from "../core/sec.ts";
+import { embeddedIPv4 } from "../core/hook-egress.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 
 /**
@@ -122,15 +125,67 @@ function loadConfig(): Config {
   return cachedConfig;
 }
 
+/** Test hook: number of live buckets. */
+export function _bucketCount(): number {
+  return buckets.size;
+}
+
 export function invalidateRateLimitCache(): void {
   cachedConfig = null;
   buckets.clear();
 }
 
+/**
+ * The bucket key for a client address. IPv6 is keyed by its /64: one
+ * subscriber typically holds a whole /64, so per-address buckets gave a
+ * single client 2^64 fresh budgets. IPv4-mapped addresses count as IPv4.
+ */
+export function rateLimitKeyForIp(ip: string): string {
+  if (!isIPv6(ip)) return ip;
+  const groups = expandIPv6Groups(ip);
+  if (!groups) return ip;
+  if (groups.slice(0, 5).every((g) => /^0+$/.test(g)) && groups[5] === "ffff") return embeddedIPv4(ip) ?? ip;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
+function expandIPv6Groups(ip: string): string[] | null {
+  const bare = ip.split("%")[0]!.toLowerCase();
+  // An embedded dotted IPv4 tail counts as two groups.
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
+  const norm = v4 ? bare.slice(0, -v4[1]!.length) + "0:0" : bare;
+  const [head = "", tail = ""] = norm.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  if (norm.includes("::")) {
+    const fill = 8 - h.length - t.length;
+    if (fill < 0) return null;
+    return [...h, ...Array(fill).fill("0"), ...t];
+  }
+  return h.length === 8 ? h : null;
+}
+
 function ipFromRequest(request: Request, peerIp: string | null): string {
-  // Honor x-forwarded-for / x-real-ip ONLY when the immediate peer is in the
-  // configured `VAULTBASE_TRUSTED_PROXIES` list. Otherwise use the socket peer.
-  return trustedClientIp(request, peerIp);
+  // Honor x-forwarded-for / x-real-ip ONLY when the immediate peer is a
+  // trusted proxy (see sec.ts). Otherwise use the socket peer.
+  return rateLimitKeyForIp(trustedClientIp(request, peerIp));
+}
+
+/**
+ * Whether the request carries a token this server signed. Any
+ * `Authorization` header used to select the "signed-in" rules, so a client
+ * could pick whichever audience had the looser limit by sending junk.
+ * Signature and expiry only — no database lookups on the hot path.
+ */
+async function hasValidToken(request: Request, jwtSecret: string | undefined): Promise<boolean> {
+  if (!jwtSecret) return false;
+  const raw = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!raw) return false;
+  try {
+    await jose.jwtVerify(raw.startsWith("vbat_") ? raw.slice(5) : raw, new TextEncoder().encode(jwtSecret), { issuer: "vaultbase" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function detectAction(method: string, rawPath: string): RuleAction | null {
@@ -198,6 +253,7 @@ function consumeToken(key: string, max: number, windowMs: number): boolean {
   if (!b) {
     b = { tokens: max, lastRefill: now };
     buckets.set(key, b);
+    trimBuckets();
   }
   const elapsed = now - b.lastRefill;
   if (elapsed > 0) {
@@ -216,14 +272,29 @@ setInterval(() => {
   }
 }, 60_000).unref?.();
 
-export function makeRateLimitPlugin() {
-  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, ({ request, server, set }) => {
+/**
+ * Most buckets kept at once. Between sweeps, a client cycling through
+ * addresses could otherwise grow the map without bound; past the cap the
+ * oldest buckets go first (Map iteration order is insertion order).
+ */
+const MAX_BUCKETS = 100_000;
+
+function trimBuckets(): void {
+  if (buckets.size <= MAX_BUCKETS) return;
+  for (const k of buckets.keys()) {
+    buckets.delete(k);
+    if (buckets.size <= MAX_BUCKETS) break;
+  }
+}
+
+export function makeRateLimitPlugin(jwtSecret?: string) {
+  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
     const path = normalizeApiPath(new URL(request.url).pathname);
     if (shouldSkip(path)) return;
     const cfg = loadConfig();
     if (!cfg.enabled || cfg.rules.length === 0) return;
 
-    const hasAuth = !!request.headers.get("authorization");
+    const hasAuth = await hasValidToken(request, jwtSecret);
     const match = findRule(cfg.rules, path, request.method, hasAuth);
     if (!match) return;
 

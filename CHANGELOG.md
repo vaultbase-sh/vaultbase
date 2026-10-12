@@ -336,6 +336,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **The admin cookie lacked `Secure` behind a TLS proxy.** The flag was taken from the
   request URL, which is plain http behind a TLS-terminating proxy. It is now set when a
   trusted proxy reports `X-Forwarded-Proto: https` or `app.url` is https.
+- **The rate limiter was easy to sidestep.** Any `Authorization` header selected the
+  limits meant for signed-in clients, an IPv6 client got a fresh budget for every address
+  in its /64, and the bucket table could grow without bound. Only a valid token now
+  counts as signed in, IPv6 clients are limited per /64, and the table is capped.
 - **An `mcp:sql` token could rewrite the database.** The MCP `run_sql` tool's
   `allow_write` flag was the caller's own choice, reads ran on the server's own
   connection (where a `PRAGMA` could change its behaviour for every later request), and
