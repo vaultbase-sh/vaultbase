@@ -129,8 +129,11 @@ async function verifyTotpOnce(collectionId: string, userId: string, secret: stri
   const step = matchingTotpStep(secret, code);
   if (step === null) return "invalid";
   const now = Math.floor(Date.now() / 1000);
+  // Steps are per secret: re-enrolling inside the same 30 s window must not
+  // look like a replay of the old secret's code.
+  const secretTag = new Bun.CryptoHasher("sha256").update(secret).digest("hex").slice(0, 16);
   const rows = await getDb().insert(authTokens).values({
-    id: `totp_step:${collectionId}:${userId}:${step}`,
+    id: `totp_step:${collectionId}:${userId}:${secretTag}:${step}`,
     user_id: userId,
     collection_id: collectionId,
     purpose: "totp_step",
@@ -1220,6 +1223,12 @@ export function makeAuthPlugin(jwtSecret: string) {
       const db = getDb();
       const u = findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
+      // Replacing a live secret needs no code here, so a stolen session could
+      // swap in one it controls and then pass every MFA check. Disabling first
+      // takes the current code.
+      if (u.totp_enabled === 1) {
+        set.status = 409; return { error: "MFA is already enabled. Disable it with a current code first.", code: 409 };
+      }
       const secret = generateSecret();
       // Stash the pending secret on the user; gets activated on /confirm.
       await updateUserById(col, u.id, { totp_secret: secret, updated_at: Math.floor(Date.now() / 1000) });

@@ -54,6 +54,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the user or admin signs in again. Set `auth.session.max_seconds` (**Settings → Auth →
   Session lifetimes → Maximum session age**) to change it, `0` for no cap. Anonymous
   sessions are exempt.
+- **`/totp/setup` refuses while MFA is on.** To move a user to a new authenticator,
+  call `/totp/disable` with a current code, then `/totp/setup` and `/totp/confirm` again.
 - **Re-running the installer now restarts the service.** Previously the binary was replaced
   but the running process kept serving the old one until someone restarted it by hand.
 
@@ -132,6 +134,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   the collection's own declared fields are accepted now (the same rule is enforced when
   creating users). Promoting also ends the guest session: the anonymous token stops
   working and the caller keeps the new token from the response.
+- **A stolen session could replace an account's TOTP secret.** `POST
+  /auth/:collection/totp/setup` overwrote the secret even with MFA already on, with no
+  code required, after which the attacker's authenticator passed every MFA check. Setup
+  now answers `409` while MFA is enabled; disable it with a current code first.
 
 ### Fixed
 - On Alpine, the installer now installs `libstdc++` and `libgcc`. Without them the musl binary failed to start. On Alpine arm64, where there is no musl build, it stops with a clear message instead of installing a binary that can't run.
