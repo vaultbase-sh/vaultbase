@@ -10,6 +10,7 @@ import { recordRuleEval, type RuleOutcome } from "./request-context.ts";
 import type { AuthContext } from "./rules.ts";
 import { makeExtraHelpers, type ExtraHookHelpers } from "./hook-helpers-extra.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
+import { compileCode } from "./code-loader.ts";
 
 /**
  * Per-async-context store carrying the active HTTP Request through
@@ -117,13 +118,14 @@ export interface HookHelpers extends ExtraHookHelpers {
     userId: string,
     payload: { title: string; body: string; data?: Record<string, unknown> },
     opts?: {
-      providers?: ("onesignal" | "fcm")[];
+      /** Push provider names (built-in or registered). Default: every enabled one. */
+      providers?: string[];
       inbox?: boolean;
       push?: boolean;
     }
   ): Promise<{
     inboxRowId: string | null;
-    enqueued: { provider: "onesignal" | "fcm"; jobId: string; deduped: boolean }[];
+    enqueued: { provider: string; jobId: string; deduped: boolean }[];
   }>;
 }
 
@@ -153,18 +155,50 @@ const enabledHookRows = dbScopedTtlCache(HOOK_ROWS_TTL_MS, () =>
   getDb().select().from(hooks).where(eq(hooks.enabled, 1)),
 );
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
-  ...args: string[]
-) => (ctx: HookContext) => Promise<unknown>;
-
 function compileHook(row: HookRow): CompiledHook | null {
   try {
-    const fn = new AsyncFunction("ctx", row.code);
+    const fn = compileCode<HookContext>(row);
     return { id: row.id, name: row.name ?? "", fn };
   } catch (e) {
     console.error(`[hooks] Failed to compile hook ${row.id}:`, e);
     return null;
   }
+}
+
+// ── Hooks registered from code ──────────────────────────────────────────────
+
+export interface HookRegistration {
+  /** Shown in logs. */
+  name: string;
+  /** Collection name, or "" / omitted for every collection. */
+  collection?: string;
+  event: HookEvent;
+  run(ctx: HookContext): unknown;
+}
+
+const registeredHooks: Array<{ collection: string; event: HookEvent; hook: CompiledHook }> = [];
+
+/**
+ * Add a record hook from code (an extension). It runs after the hooks
+ * defined in the admin UI for the same event, with the same context and
+ * error handling.
+ */
+export function registerHook(def: HookRegistration): () => void {
+  if (!HOOK_EVENTS.includes(def.event)) throw new Error(`unknown hook event '${String(def.event)}'`);
+  const entry = {
+    collection: def.collection ?? "",
+    event: def.event,
+    hook: { id: `ext:${def.name}`, name: def.name, fn: async (ctx: HookContext) => def.run(ctx) },
+  };
+  registeredHooks.push(entry);
+  return () => {
+    const i = registeredHooks.indexOf(entry);
+    if (i >= 0) registeredHooks.splice(i, 1);
+  };
+}
+
+export function listRegisteredHooks(): Array<{ name: string; collection: string; event: HookEvent }> {
+  return registeredHooks.map((r) => ({ name: r.hook.name, collection: r.collection, event: r.event }));
 }
 
 export function invalidateHookCache(): void {
@@ -191,6 +225,9 @@ async function lookupEnabledHooks(
       if (c) { compiledCache.set(r.id, { version: r.updated_at, hook: c }); hook = c; }
     }
     if (hook) compiled.push(hook);
+  }
+  for (const r of registeredHooks) {
+    if (r.event === event && (r.collection === "" || r.collection === collectionName)) compiled.push(r.hook);
   }
   return compiled;
 }

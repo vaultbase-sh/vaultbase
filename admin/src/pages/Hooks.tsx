@@ -27,6 +27,14 @@ interface Worker {
   retry_max: number;
   retry_backoff: "exponential" | "fixed";
   retry_delay_ms: number;
+  /** "inline" (typed here), "file" (a file in the hooks folder) or "runtime" (helpers.cron.add). */
+  origin?: string;
+  /** For origin "file": its path in the hooks folder. */
+  file_path?: string | null;
+  /** For origin "file": why its latest version didn't load. */
+  file_error?: string | null;
+  /** For origin "file": send as If-Match when saving. */
+  file_version?: string;
   created_at: number;
   updated_at: number;
 }
@@ -104,6 +112,14 @@ interface Hook {
   event: HookEvent;
   code: string;
   enabled: number;
+  /** "inline" (typed here), "file" (a file in the hooks folder) or "runtime" (helpers.cron.add). */
+  origin?: string;
+  /** For origin "file": its path in the hooks folder. */
+  file_path?: string | null;
+  /** For origin "file": why its latest version didn't load. */
+  file_error?: string | null;
+  /** For origin "file": send as If-Match when saving. */
+  file_version?: string;
   created_at: number;
   updated_at: number;
 }
@@ -117,6 +133,14 @@ interface CustomRoute {
   enabled: number;
   /** 1 = callers must be signed in (401 otherwise). */
   require_auth?: number;
+  /** "inline" (typed here), "file" (a file in the hooks folder) or "runtime" (helpers.cron.add). */
+  origin?: string;
+  /** For origin "file": its path in the hooks folder. */
+  file_path?: string | null;
+  /** For origin "file": why its latest version didn't load. */
+  file_error?: string | null;
+  /** For origin "file": send as If-Match when saving. */
+  file_version?: string;
   created_at: number;
   updated_at: number;
 }
@@ -133,6 +157,14 @@ interface CronJob {
   next_run_at: number | null;
   last_status: string | null;
   last_error: string | null;
+  /** "inline" (typed here), "file" (a file in the hooks folder) or "runtime" (helpers.cron.add). */
+  origin?: string;
+  /** For origin "file": its path in the hooks folder. */
+  file_path?: string | null;
+  /** For origin "file": why its latest version didn't load. */
+  file_error?: string | null;
+  /** For origin "file": send as If-Match when saving. */
+  file_version?: string;
   created_at: number;
   updated_at: number;
 }
@@ -300,16 +332,69 @@ function RowActions({ children }: { children: React.ReactNode }) {
   );
 }
 
-function NameCell({ name }: { name: string }) {
-  return name ? (
+function NameCell({ name, row }: { name: string; row?: FileBacked }) {
+  const label = name ? (
     <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--vb-fg)" }}>{name}</span>
   ) : (
     <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)", fontStyle: "italic" }}>(unnamed)</span>
   );
+  if (row?.origin !== "file") return label;
+  return (
+    <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+      {label}
+      <span
+        title={row.file_error ? `Didn't load: ${row.file_error}` : "Defined in a file in the hooks folder"}
+        style={{
+          fontFamily: "var(--font-mono)", fontSize: 11,
+          color: row.file_error ? "var(--vb-status-danger)" : "var(--vb-fg-3)",
+          display: "flex", alignItems: "center", gap: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}
+      >
+        <Icon name={row.file_error ? "alert" : "code"} size={10} />
+        {row.file_path}
+      </span>
+    </span>
+  );
+}
+
+/** Rows that may live in a file in the hooks folder. */
+interface FileBacked {
+  origin?: string;
+  file_path?: string | null;
+  file_error?: string | null;
+  file_version?: string;
+}
+
+/** If-Match for saving a file-backed row, so a file changed on disk since it was opened isn't overwritten. */
+function ifMatch(row: FileBacked | null): Record<string, string> | undefined {
+  return row?.origin === "file" && row.file_version ? { "If-Match": `"${row.file_version}"` } : undefined;
+}
+
+/** Where a file-backed row lives, and why its latest version didn't load. */
+function FileNotice({ row }: { row: FileBacked | null }) {
+  if (row?.origin !== "file") return null;
+  return (
+    <>
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "8px 18px",
+        color: "var(--vb-fg-2)", background: "var(--vb-bg-3)", borderBottom: "1px solid var(--vb-border)",
+      }}>
+        <Icon name="code" size={12} />
+        <span>
+          Saved to <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg)" }}>{row.file_path}</span> in
+          the hooks folder. This is the whole file; edits made in your editor show up here too.
+        </span>
+      </div>
+      {row.file_error && <EditorErrorBar message={`The file's latest version didn't load, so the previous one is still running: ${row.file_error}`} />}
+    </>
+  );
 }
 
 function CodePreview({ code }: { code: string }) {
-  const line = code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//"))?.trim() ?? "(empty)";
+  // A hook file starts with imports, the define call and its settings; show
+  // the first line of the function instead.
+  const boilerplate = /^(import\s|export default define\w+\(\{$|\w+: .*,$|(async\s+)?(run|handle)\s*\(ctx\)\s*\{$)/;
+  const line = code.split("\n").find((l) => l.trim() && !l.trim().startsWith("//") && !boilerplate.test(l.trim()))?.trim() ?? "(empty)";
   return (
     <span style={{
       fontFamily: "var(--font-mono)",
@@ -366,7 +451,7 @@ function HooksTab() {
   }
 
   const columns: VbTableColumn<Hook>[] = [
-    { key: "name", label: "Name", flex: 1.2, render: (h) => <NameCell name={h.name} /> },
+    { key: "name", label: "Name", flex: 1.2, render: (h) => <NameCell name={h.name} row={h} /> },
     { key: "collection", label: "Collection", flex: 1, render: (h) => (
       h.collection_name === ""
         ? <VbPill tone="accent">global</VbPill>
@@ -571,7 +656,7 @@ function HookEditor({
     const body = { name: name.trim(), collection_name: collName, event, code, enabled };
     const res = isNew
       ? await api.post<ApiResponse<Hook>>("/api/v1/admin/hooks", body)
-      : await api.patch<ApiResponse<Hook>>(`/api/v1/admin/hooks/${hook!.id}`, body);
+      : await api.patch<ApiResponse<Hook>>(`/api/v1/admin/hooks/${hook!.id}`, body, ifMatch(hook));
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -637,6 +722,7 @@ function HookEditor({
           </div>
         </div>
 
+        <FileNotice row={hook} />
         {error && <EditorErrorBar message={error} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
@@ -732,7 +818,7 @@ function RoutesTab() {
   }
 
   const columns: VbTableColumn<CustomRoute>[] = [
-    { key: "name", label: "Name", flex: 1.2, render: (r) => <NameCell name={r.name} /> },
+    { key: "name", label: "Name", flex: 1.2, render: (r) => <NameCell name={r.name} row={r} /> },
     { key: "method", label: "Method", width: 90, render: (r) => <VbPill tone={methodTone(r.method)}>{r.method}</VbPill> },
     { key: "path", label: "Path", flex: 1.5, render: (r) => (
       <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
@@ -845,7 +931,7 @@ function RouteEditor({
     const body = { name: name.trim(), method, path, code, enabled, require_auth: requireAuth };
     const res = isNew
       ? await api.post<ApiResponse<CustomRoute>>("/api/v1/admin/routes", body)
-      : await api.patch<ApiResponse<CustomRoute>>(`/api/v1/admin/routes/${route!.id}`, body);
+      : await api.patch<ApiResponse<CustomRoute>>(`/api/v1/admin/routes/${route!.id}`, body, ifMatch(route));
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -904,6 +990,7 @@ function RouteEditor({
           </div>
         </div>
 
+        <FileNotice row={route} />
         {error && <EditorErrorBar message={error} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>
@@ -993,7 +1080,7 @@ function JobsTab() {
   }
 
   const columns: VbTableColumn<CronJob>[] = [
-    { key: "name", label: "Name", flex: 1.2, render: (j) => <NameCell name={j.name} /> },
+    { key: "name", label: "Name", flex: 1.2, render: (j) => <NameCell name={j.name} row={j} /> },
     { key: "cron", label: "Schedule", width: 140, mono: true, render: (j) => (
       <span style={{ fontSize: 12, color: "var(--vb-fg)" }}>{j.cron}</span>
     )},
@@ -1153,7 +1240,7 @@ function JobEditor({
     const body = { name: name.trim(), cron: cron.trim(), code, enabled, mode };
     const res = isNew
       ? await api.post<ApiResponse<CronJob>>("/api/v1/admin/jobs", body)
-      : await api.patch<ApiResponse<CronJob>>(`/api/v1/admin/jobs/${job!.id}`, body);
+      : await api.patch<ApiResponse<CronJob>>(`/api/v1/admin/jobs/${job!.id}`, body, ifMatch(job));
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -1247,6 +1334,7 @@ function JobEditor({
           </div>
         </div>
 
+        <FileNotice row={job} />
         {error && <EditorErrorBar message={error} />}
 
         <div style={{
@@ -1381,7 +1469,7 @@ function WorkersTab() {
   }, [stats]);
 
   const columns: VbTableColumn<Worker>[] = [
-    { key: "name", label: "Name", flex: 1.2, render: (w) => <NameCell name={w.name} /> },
+    { key: "name", label: "Name", flex: 1.2, render: (w) => <NameCell name={w.name} row={w} /> },
     { key: "queue", label: "Queue", width: 140, mono: true, render: (w) => (
       <span style={{ fontSize: 12, color: "var(--vb-fg)" }}>{w.queue}</span>
     )},
@@ -1522,7 +1610,7 @@ function WorkerEditor({
     };
     const res = isNew
       ? await api.post<ApiResponse<Worker>>("/api/v1/admin/workers", body)
-      : await api.patch<ApiResponse<Worker>>(`/api/v1/admin/workers/${worker!.id}`, body);
+      : await api.patch<ApiResponse<Worker>>(`/api/v1/admin/workers/${worker!.id}`, body, ifMatch(worker));
     setSaving(false);
     if (res.error) { setError(res.error); return; }
     onSaved();
@@ -1621,6 +1709,7 @@ function WorkerEditor({
           </div>
         </div>
 
+        <FileNotice row={worker} />
         {error && <EditorErrorBar message={error} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: 14, gap: 8, background: "var(--vb-bg-1)" }}>

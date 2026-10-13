@@ -23,8 +23,8 @@ export function getMemoryToken(): string | null {
   catch { return null; }
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+async function req<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...extraHeaders };
   const memToken = getMemoryToken();
   if (memToken) headers.Authorization = `Bearer ${memToken}`;
   const res = await fetch(BASE + path, {
@@ -45,7 +45,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 export const api = {
   get: <T>(path: string) => req<T>("GET", path),
   post: <T>(path: string, body: unknown) => req<T>("POST", path, body),
-  patch: <T>(path: string, body: unknown) => req<T>("PATCH", path, body),
+  patch: <T>(path: string, body: unknown, headers?: Record<string, string>) => req<T>("PATCH", path, body, headers),
   delete: <T>(path: string) => req<T>("DELETE", path),
 };
 

@@ -9,6 +9,7 @@
 import type { Collection } from "../db/schema.ts";
 import { parseFields, type FieldDef } from "./collections.ts";
 import { VAULTBASE_VERSION } from "./version.ts";
+import { customFieldType } from "./field-types.ts";
 
 type Schema = Record<string, unknown>;
 
@@ -42,7 +43,7 @@ function fieldSchema(f: FieldDef): Schema {
     };
     case "vector": return { type: "array", items: { type: "number" }, ...(f.options?.dimensions ? { minItems: f.options.dimensions, maxItems: f.options.dimensions } : {}) };
     case "password": return { type: "string", writeOnly: true };
-    default: return { type: "string" };
+    default: return customFieldType(f.type)?.openapi?.(f) ?? { type: "string" };
   }
 }
 

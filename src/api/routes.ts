@@ -5,22 +5,16 @@ import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
-import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache } from "../core/routes.ts";
+import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache, validatePath } from "../core/routes.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 import { customInnerPath } from "../core/api-paths.ts";
+import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return false;
   // Centralized verifier — fixes N-1 admin-token-bypass.
   return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
-
-function validatePath(path: string): string | null {
-  if (!path) return "path required";
-  if (!path.startsWith("/")) return "path must start with /";
-  if (path.includes("..")) return "path cannot contain '..'";
-  return null;
 }
 
 /**
@@ -63,7 +57,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       const rows = await getDb().select().from(routes);
-      return { data: rows };
+      return { data: rows.map(withVersion) };
     })
 
     .post(
@@ -78,6 +72,11 @@ export function makeRoutesPlugin(jwtSecret: string) {
         }
         const pathErr = validatePath(body.path ?? "");
         if (pathErr) { set.status = 422; return { error: pathErr, code: 422 }; }
+        const inFiles = createInFiles(set, "route", {
+          name: body.name ?? "", method, path: body.path, enabled: body.enabled === false ? 0 : 1,
+          require_auth: body.require_auth === true ? 1 : 0,
+        }, body.code ?? "");
+        if (inFiles) return await inFiles;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(routes).values({
@@ -132,6 +131,11 @@ export function makeRoutesPlugin(jwtSecret: string) {
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
         if (body.require_auth !== undefined) update.require_auth = body.require_auth ? 1 : 0;
+        const current = (await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1))[0];
+        if (!current) { set.status = 404; return { error: "Route not found", code: 404 }; }
+        const { updated_at: _u, code: _c, ...settings } = update;
+        const inFiles = updateInFiles(set, "route", current, settings, body.code, request.headers.get("if-match"));
+        if (inFiles) return await inFiles;
         await getDb().update(routes).set(update).where(eq(routes.id, params.id));
         invalidateRoutesCache();
         const row = await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1);
@@ -154,6 +158,9 @@ export function makeRoutesPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      const current = (await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1))[0];
+      const inFiles = current && deleteInFiles(set, current);
+      if (inFiles) return await inFiles;
       await getDb().delete(routes).where(eq(routes.id, params.id));
       invalidateRoutesCache();
       return { data: null };

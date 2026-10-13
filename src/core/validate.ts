@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDb } from "../db/client.ts";
+import { customFieldType } from "./field-types.ts";
 import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
@@ -94,6 +95,9 @@ export async function validateRecord(
     if (field.type === "color") {
       data[field.name] = normalizeColor(value, field.options?.alpha === true);
     }
+
+    const custom = customFieldType(field.type);
+    if (custom?.normalize) data[field.name] = custom.normalize(value, field);
 
     // Unique check (DB query)
     if (field.options?.unique) {
@@ -259,7 +263,7 @@ function validateValue(field: FieldDef, value: unknown): string | null {
     }
 
     default:
-      return null;
+      return customFieldType(field.type)?.validate?.(value, field) ?? null;
   }
 }
 

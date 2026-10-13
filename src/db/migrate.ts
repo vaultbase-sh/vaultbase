@@ -232,6 +232,16 @@ export async function runMigrations() {
   `);
   client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_workers_queue ON vaultbase_workers(queue)`);
 
+  // Where each hook / route / job / worker's code lives: "inline" (typed in
+  // the admin UI), "file" (a file in the hooks folder, see code-files.ts) or
+  // "runtime" (created by helpers.cron.add). One row per file.
+  for (const table of ["vaultbase_hooks", "vaultbase_routes", "vaultbase_jobs", "vaultbase_workers"]) {
+    addColumn(client, `ALTER TABLE ${table} ADD COLUMN origin TEXT NOT NULL DEFAULT 'inline'`);
+    addColumn(client, `ALTER TABLE ${table} ADD COLUMN file_path TEXT`);
+    addColumn(client, `ALTER TABLE ${table} ADD COLUMN file_error TEXT`);
+    client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_file_path ON ${table}(file_path) WHERE file_path IS NOT NULL`);
+  }
+
   client.exec(`
     CREATE TABLE IF NOT EXISTS vaultbase_jobs_log (
       id TEXT PRIMARY KEY,

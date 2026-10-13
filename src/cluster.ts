@@ -3,9 +3,11 @@
  *
  * Single Bun process is single-threaded — saturates one core at ~7-13K rps.
  * Cluster mode spawns N worker processes that all bind the same port via
- * `Bun.serve({ reusePort: true })`. The Linux / macOS kernel load-balances
+ * `Bun.serve({ reusePort: true })`. On Linux the kernel load-balances
  * accepted connections across workers, multiplying throughput by ~Nx
  * (real-world: ~0.85x per added core; some contention is unavoidable).
+ * macOS and Windows accept the flag but don't distribute connections: one
+ * worker takes them all, so there it only buys worker auto-restart.
  *
  * Usage:
  *

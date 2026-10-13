@@ -5,11 +5,15 @@ import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
 import { parseThumbSpec } from "./image.ts";
+import { customFieldType, isKnownFieldType } from "./field-types.ts";
 
-export type FieldType =
+export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
   | "select" | "autodate" | "email" | "url" | "date" | "json"
   | "password" | "editor" | "geoPoint" | "vector" | "color";
+
+/** A built-in type, or one an extension registered (see field-types.ts). */
+export type FieldType = BuiltinFieldType | (string & {});
 
 export interface FieldOptions {
   min?: number;
@@ -244,7 +248,7 @@ export function colSqlType(type: FieldType): string {
     case "bool":     return "INTEGER";
     case "date":
     case "autodate": return "INTEGER";
-    default:         return "TEXT";
+    default:         return customFieldType(type)?.sqlType ?? "TEXT";
   }
 }
 
@@ -277,7 +281,7 @@ function colDefSql(field: FieldDef): string {
 export function createUserTable(collectionName: string, fields: FieldDef[]): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
-  assertFieldOptions(fields);
+  assertFieldOptions(fields, []);
   const tname = quoteIdent(userTableName(collectionName));
   const userColDefs = fields
     .filter((f) => !f.system && f.type !== "autodate")
@@ -293,8 +297,18 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
   syncFts(rawClient(), collectionName, fields);
 }
 
-function assertFieldOptions(fields: FieldDef[]): void {
+/**
+ * `previous` is the schema being replaced: a field that already had its type
+ * keeps it even if that type is no longer registered (its extension was
+ * removed), so the rest of the collection can still be edited.
+ */
+function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
   const errors = searchableErrors(fields);
+  const before = new Map(previous.map((f) => [f.name, f.type]));
+  for (const f of fields) {
+    if (f.system || isKnownFieldType(f.type) || before.get(f.name) === f.type) continue;
+    errors[f.name] = `'${f.name}': unknown field type '${String(f.type)}'`;
+  }
   for (const f of fields) {
     const thumbs = f.options?.thumbs;
     if (thumbs === undefined) continue;
@@ -622,7 +636,7 @@ export function alterUserTable(
 ): void {
   assertSqlIdent(collectionName, "collection");
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
-  assertFieldOptions(newFields);
+  assertFieldOptions(newFields, oldFields);
   const tname = quoteIdent(userTableName(collectionName));
   const client = rawClient();
 
@@ -890,6 +904,27 @@ async function renameCollectionStorage(
   await clearPreparedStatementsOnSchemaChange();
   const { invalidateHookCache } = await import("./hooks.ts");
   invalidateHookCache();
+  await renameInHookFiles(newName);
+}
+
+/**
+ * Hook files name their collection in the file; the rename above changed
+ * only their rows. Write the new name into each file too, or the next sync
+ * would put the old one back.
+ */
+async function renameInHookFiles(newName: string): Promise<void> {
+  const { codeFilesDir, updateCodeFile } = await import("./code-files.ts");
+  if (!codeFilesDir()) return;
+  const rows = rawClient()
+    .prepare(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`)
+    .all(newName) as Array<Record<string, unknown> & { id: string; file_path: string | null }>;
+  for (const row of rows) {
+    try {
+      await updateCodeFile("hook", row, { collection_name: newName }, undefined);
+    } catch (e) {
+      console.warn(`[hooks] renamed collection '${newName}': update ${row.file_path} by hand (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
 }
 
 export async function updateCollection(

@@ -66,7 +66,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 - **Auth** — email + password, OAuth2 with PKCE (Google, GitHub, Apple, Microsoft, Discord, GitLab and more, plus generic OIDC), OTP / magic links, MFA / TOTP, anonymous users, admin impersonation
 - **Realtime** — WebSocket + SSE; subscribe to a collection, a record, its children or `*`, checked against your API rules
 - **Files** — local disk, S3 or R2; thumbnails, MIME / size validation, protected files with one-time tokens
-- **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete
+- **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete, or kept as TypeScript files in a `vb_hooks/` folder (with imports and npm packages) that the admin UI edits too
 - **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every call audited
 - **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), backups, Prometheus metrics
 - **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks
@@ -212,7 +212,7 @@ bun run start:cluster
 ```
 
 The parent process spawns N workers, all sharing port `VAULTBASE_PORT` via
-`Bun.serve({ reusePort: true })`. The kernel load-balances incoming
+`Bun.serve({ reusePort: true })`. On Linux the kernel load-balances incoming
 connections across workers. Workers run identical code; SQLite WAL handles
 concurrent readers natively.
 
@@ -228,12 +228,11 @@ then SIGKILL.
 **Platform notes:**
 - **Linux:** full SO_REUSEPORT load balancing. ~Nx throughput on N cores
   (real ~0.85x — some contention is unavoidable).
-- **macOS:** SO_REUSEPORT works since macOS 10.10. Same scaling as Linux.
-- **Windows:** SO_REUSEPORT semantics differ — connections aren't
-  distributed by the kernel; one worker tends to win all accepts. Cluster
-  mode runs but does not multiply throughput on Windows. Use it for
-  fault-tolerance (worker auto-restart) only; deploy on Linux for
-  performance.
+- **macOS and Windows:** the port can be shared, but the kernel doesn't
+  distribute connections: one worker takes all of them and the rest sit idle
+  (measured on macOS: 4 workers, one at 100% CPU, three at 0%). Cluster mode
+  runs but does not multiply throughput there. Use it for fault-tolerance
+  (worker auto-restart) only; deploy on Linux for performance.
 
 **SQLite under cluster mode (Phase 6a — current):**
 All workers open the same DB file. WAL allows concurrent readers; writes

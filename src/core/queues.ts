@@ -3,6 +3,7 @@ import { getDb } from "../db/client.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
+import { compileCode } from "./code-loader.ts";
 
 /**
  * In-process job queue + worker engine. Phase 1 of the Redis brainstorm —
@@ -25,6 +26,14 @@ import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "dead";
 export type RetryBackoff = "exponential" | "fixed";
+
+export const VALID_BACKOFF = new Set(["exponential", "fixed"]);
+
+export function validateQueueName(q: string): string | null {
+  if (!q || !q.trim()) return "queue is required";
+  if (!/^[a-zA-Z0-9_:-]+$/.test(q)) return "queue must match [a-zA-Z0-9_:-]+";
+  return null;
+}
 
 export interface EnqueueOpts {
   /** Earliest run time, in seconds from now. */
@@ -89,8 +98,15 @@ export interface BuiltinWorkerSpec {
 
 const builtinWorkers = new Map<string, CompiledWorker>(); // queue → compiled
 
-export function registerBuiltinWorker(spec: BuiltinWorkerSpec): void {
+/**
+ * Add a worker from code (core features and extensions). Returns a function
+ * that removes it.
+ */
+export function registerBuiltinWorker(spec: BuiltinWorkerSpec): () => void {
   const id = `_builtin:${spec.queue}`;
+  if (builtinWorkers.has(spec.queue) && builtinWorkers.get(spec.queue)!.fn !== spec.fn) {
+    console.warn(`[queues] replacing the code-registered worker for queue '${spec.queue}'`);
+  }
   builtinWorkers.set(spec.queue, {
     id,
     name: spec.name ?? id,
@@ -101,16 +117,23 @@ export function registerBuiltinWorker(spec: BuiltinWorkerSpec): void {
     retry_delay_ms: Math.max(50, spec.retry_delay_ms ?? 2000),
     fn: spec.fn,
   });
+  const entry = builtinWorkers.get(spec.queue);
+  return () => {
+    if (builtinWorkers.get(spec.queue) === entry) builtinWorkers.delete(spec.queue);
+  };
+}
+
+/** The name extensions use; same as registerBuiltinWorker. */
+export const registerWorker = registerBuiltinWorker;
+
+export function listRegisteredWorkers(): Array<{ name: string; queue: string; concurrency: number }> {
+  return [...builtinWorkers.values()].map((w) => ({ name: w.name, queue: w.queue, concurrency: w.concurrency }));
 }
 
 /** Test-only: drop all built-in worker registrations. */
 export function _resetBuiltinWorkers(): void {
   builtinWorkers.clear();
 }
-
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
-  ...args: string[]
-) => (ctx: JobContext) => Promise<unknown>;
 
 export function invalidateWorkerCache(): void {
   compiledCache.clear();
@@ -131,7 +154,7 @@ interface WorkerRow {
 
 function compile(row: WorkerRow): CompiledWorker | null {
   try {
-    const fn = new AsyncFunction("ctx", row.code);
+    const fn = compileCode<JobContext>(row);
     return {
       id: row.id,
       name: row.name ?? "",

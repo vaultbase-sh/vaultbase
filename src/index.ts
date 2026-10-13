@@ -396,10 +396,26 @@ async function main() {
   const rows = await db.select().from(admin).limit(1);
   const adminExists = rows.length > 0;
 
+  // Hooks, routes, jobs and workers as files (vb_hooks/), when set up.
+  {
+    const { resolveCodeFilesDir, startCodeFiles, codeFileErrors } = await import("./core/code-files.ts");
+    const { runsSingletonDuties } = await import("./core/cluster-role.ts");
+    const hooksDir = resolveCodeFilesDir(config.dataDir);
+    try {
+      await startCodeFiles(hooksDir, { isWriter: runsSingletonDuties() });
+      if (hooksDir) {
+        process.stderr.write(`vaultbase: hooks folder ${hooksDir}\n`);
+        for (const e of codeFileErrors()) process.stderr.write(`vaultbase: ${e.path} didn't load: ${e.error}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`vaultbase: could not start the hooks folder ${hooksDir}: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  }
+
   const server = createServer(config);
   // Cluster mode: when spawned by `src/cluster.ts`, every worker calls
   // `Bun.serve({ reusePort: true })` so the kernel load-balances incoming
-  // connections (SO_REUSEPORT). Single-process mode behaves exactly as
+  // connections (SO_REUSEPORT; Linux only — see cluster.ts). Single-process mode behaves exactly as
   // before — no flag, no behavior change.
   const isWorker = !!process.env["VAULTBASE_WORKER_ID"];
   // VAULTBASE_HOST was documented but never read, so the server always

@@ -24,6 +24,7 @@ import {
   dispatchNotification,
   bootstrapNotificationCollections,
   PROVIDER_NAMES,
+  isPushProvider,
   type ProviderName,
   type NotificationPayload,
 } from "../core/notifications.ts";
@@ -243,7 +244,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           return { error: "Unauthorized", code: 401 };
         }
         const providers = body.providers
-          ?.filter(isProviderName) ?? undefined;
+          ?.filter(isPushProvider) ?? undefined;
         const payload: NotificationPayload = {
           title: body.title ?? "Vaultbase test",
           body: body.body ?? `Test sent at ${new Date().toISOString()}`,

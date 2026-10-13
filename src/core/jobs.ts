@@ -5,6 +5,7 @@ import { jobs } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
+import { compileCode } from "./code-loader.ts";
 
 /**
  * Cron-style scheduled jobs.
@@ -39,10 +40,6 @@ interface JobRow {
   next_run_at: number | null;
 }
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
-  ...args: string[]
-) => (ctx: JobContext) => Promise<unknown>;
-
 const compiledCache = new Map<string, (ctx: JobContext) => Promise<unknown>>();
 
 export function invalidateJobsCache(): void {
@@ -53,7 +50,7 @@ function compile(row: JobRow): ((ctx: JobContext) => Promise<unknown>) | null {
   const cached = compiledCache.get(row.id);
   if (cached) return cached;
   try {
-    const fn = new AsyncFunction("ctx", row.code);
+    const fn = compileCode<JobContext>(row);
     compiledCache.set(row.id, fn);
     return fn;
   } catch (e) {
@@ -72,6 +69,14 @@ export function nextRunFromCron(cronExpr: string, fromSec?: number): number {
 export function validateCron(cronExpr: string): string | null {
   try { CronExpressionParser.parse(cronExpr, { tz: "UTC" }); return null; }
   catch (e) { return e instanceof Error ? e.message : "Invalid cron expression"; }
+}
+
+/** A job's mode: "inline", or "worker:<queue>". */
+export function validateMode(mode: string): string | null {
+  if (mode === "inline") return null;
+  const m = /^worker:(.+)$/.exec(mode);
+  if (!m || !m[1]!.trim()) return `Invalid mode "${mode}" — expected "inline" or "worker:<queue>"`;
+  return null;
 }
 
 export async function runJob(jobId: string): Promise<{ ok: boolean; error?: string }> {
@@ -162,11 +167,65 @@ let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 /** Jobs started by this process that haven't finished yet. */
 const runningJobs = new Set<string>();
 
+// ── Jobs registered from code ───────────────────────────────────────────────
+
+export interface JobRegistration {
+  name: string;
+  /** Five-field cron expression, UTC. */
+  cron: string;
+  run(ctx: JobContext): unknown;
+}
+
+interface RegisteredJob extends JobRegistration { key: string; nextRunAt: number }
+
+const registeredJobs: RegisteredJob[] = [];
+
+/**
+ * Add a cron job from code (an extension). It runs inline on the same
+ * scheduler as the admin UI's jobs (cluster worker 0 only); its schedule is
+ * kept in memory, so a slot missed while the server was down isn't caught up.
+ */
+export function registerJob(def: JobRegistration): () => void {
+  const err = validateCron(def.cron);
+  if (err) throw new Error(`job '${def.name}': ${err}`);
+  const job: RegisteredJob = { ...def, key: `ext:${def.name}`, nextRunAt: nextRunFromCron(def.cron) };
+  registeredJobs.push(job);
+  return () => {
+    const i = registeredJobs.indexOf(job);
+    if (i >= 0) registeredJobs.splice(i, 1);
+  };
+}
+
+export function listRegisteredJobs(): Array<{ name: string; cron: string; nextRunAt: number }> {
+  return registeredJobs.map((j) => ({ name: j.name, cron: j.cron, nextRunAt: j.nextRunAt }));
+}
+
+async function runRegisteredJob(job: RegisteredJob, scheduledAt: number): Promise<void> {
+  try {
+    await job.run({ helpers: makeHookHelpers({ name: job.name }), scheduledAt });
+    appendHookLog({ name: job.name, message: `cron job "${job.name}" ran successfully` });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    appendHookLog({ name: job.name, message: `cron job "${job.name}" failed: ${msg}` });
+  }
+}
+
+function dueRegisteredJobs(now: number): Promise<unknown>[] {
+  const started: Promise<unknown>[] = [];
+  for (const job of registeredJobs) {
+    if (job.nextRunAt > now || runningJobs.has(job.key)) continue;
+    job.nextRunAt = nextRunFromCron(job.cron, now);
+    runningJobs.add(job.key);
+    started.push(runRegisteredJob(job, now).finally(() => runningJobs.delete(job.key)));
+  }
+  return started;
+}
+
 async function scheduleTick(): Promise<Promise<unknown>[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const rows = await db.select().from(jobs).where(eq(jobs.enabled, 1));
-  const started: Promise<unknown>[] = [];
+  const started: Promise<unknown>[] = dueRegisteredJobs(now);
   for (const r of rows) {
     if (r.next_run_at !== null && r.next_run_at <= now) {
       if (runningJobs.has(r.id)) continue; // still running from an earlier slot
