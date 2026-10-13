@@ -7,6 +7,7 @@ import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { insertLog } from "../api/logs.ts";
 import type { AuthContext } from "./rules.ts";
+import { compileCode } from "./code-loader.ts";
 
 async function extractAuth(request: Request, jwtSecret: string): Promise<AuthContext | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -57,10 +58,6 @@ interface CompiledRoute {
   fn: (ctx: RouteContext) => Promise<unknown>;
 }
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
-  ...args: string[]
-) => (ctx: RouteContext) => Promise<unknown>;
-
 const cache = new Map<string, CompiledRoute>();
 let cacheLoaded = false;
 
@@ -82,7 +79,7 @@ function compilePath(path: string): { regex: RegExp; params: string[] } {
 function compile(row: RouteRow): CompiledRoute | null {
   try {
     const { regex, params } = compilePath(row.path);
-    const fn = new AsyncFunction("ctx", row.code);
+    const fn = compileCode<RouteContext>(row);
     return {
       id: row.id,
       name: row.name ?? "",
@@ -97,6 +94,40 @@ function compile(row: RouteRow): CompiledRoute | null {
     console.error(`[routes] Failed to compile route ${row.id}:`, e);
     return null;
   }
+}
+
+// ── Routes registered from code ─────────────────────────────────────────────
+
+export interface RouteRegistration {
+  name: string;
+  method: RouteMethod;
+  /** Under /api/v1/custom, e.g. "/stats/:board". `:param` and `*` work as in the admin UI. */
+  path: string;
+  /** Refuse callers who aren't signed in (guests included). Default false. */
+  requireAuth?: boolean;
+  handle(ctx: RouteContext): unknown;
+}
+
+const registeredRoutes: CompiledRoute[] = [];
+
+/**
+ * Add a custom route from code (an extension). A route defined in the admin
+ * UI with the same method and path takes precedence.
+ */
+export function registerRoute(def: RouteRegistration): () => void {
+  const method = String(def.method).toUpperCase();
+  if (!(ROUTE_METHODS as readonly string[]).includes(method)) throw new Error(`unsupported route method '${def.method}'`);
+  const { regex, params } = compilePath(def.path);
+  const route: CompiledRoute = {
+    id: `ext:${def.name}`, name: def.name, method, path: def.path,
+    pathPattern: regex, paramNames: params, requireAuth: def.requireAuth === true,
+    fn: async (ctx) => def.handle(ctx),
+  };
+  registeredRoutes.push(route);
+  return () => {
+    const i = registeredRoutes.indexOf(route);
+    if (i >= 0) registeredRoutes.splice(i, 1);
+  };
 }
 
 export function invalidateRoutesCache(): void {
@@ -123,7 +154,7 @@ export interface RouteMatch {
 }
 
 export async function findRoute(method: string, path: string): Promise<RouteMatch | null> {
-  const all = await loadRoutes();
+  const all = [...(await loadRoutes()), ...registeredRoutes];
   const M = method.toUpperCase();
   for (const r of all) {
     if (r.method !== M) continue;
