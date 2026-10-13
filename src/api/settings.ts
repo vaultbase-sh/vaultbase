@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
-import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache } from "../core/storage.ts";
+import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
@@ -252,6 +252,9 @@ export function makeSettingsPlugin(jwtSecret: string) {
           if (k === "backups.keep") {
             const err = validateBackupKeep(v);
             if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
+          }
+          if (k === "storage.driver" && v !== "" && !listStorageDrivers().some((d) => d.name === v)) {
+            set.status = 422; return { error: `${k}: no storage driver named '${String(v)}' is registered`, code: 422 };
           }
           if (k === "backups.cron") {
             const err = validateCron(String(v).trim());

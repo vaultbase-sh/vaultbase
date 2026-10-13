@@ -18,19 +18,46 @@ function safeLocalPath(uploadDir: string, key: string): string {
 }
 
 /**
- * File storage abstraction. Backends:
+ * File storage abstraction. A driver turns settings into a backend that
+ * reads and writes objects by key. Built-in drivers:
  *   - "local": filesystem under <uploadDir>
  *   - "s3":    AWS S3 / Cloudflare R2 / any S3-compatible service via Bun's
  *             native Bun.S3Client (no SDK needed)
+ * Extensions add more with `registerStorageDriver()`.
  *
- * Driver + credentials live in `vaultbase_settings`. Cached for 30s and
- * invalidated on settings PATCH (see api/settings.ts).
+ * The active driver is the `storage.driver` setting. The backend is cached
+ * for 30s and rebuilt on settings PATCH (see api/settings.ts).
  *
  * Local mode keeps full backwards-compat: the same `<uploadDir>/<filename>`
  * paths that older Vaultbase installs created continue to work.
  */
 
-export type StorageDriver = "local" | "s3";
+/** "local", "s3", or the name of a registered driver. */
+export type StorageDriver = "local" | "s3" | (string & {});
+
+export interface StorageBackend {
+  write(key: string, data: ArrayBuffer | Uint8Array | Blob, contentType?: string): Promise<void>;
+  /** The object's bytes, or null when there is none. */
+  read(key: string): Promise<ArrayBuffer | null>;
+  exists(key: string): Promise<boolean>;
+  /** Remove the object. A missing object is not an error. */
+  delete(key: string): Promise<void>;
+  /** Stream the object. Default: a Response over `read()`. */
+  response?(key: string): Promise<Response | null>;
+  /** A URL clients can fetch the object from directly, when the backend has one. */
+  publicUrl?(key: string): string | null;
+  /** Shown on the storage status screen, e.g. { bucket, endpoint }. No secrets. */
+  status?(): Record<string, string>;
+}
+
+export interface StorageDriverDef {
+  name: string;
+  /**
+   * Build a backend from settings. Called again whenever settings change;
+   * the driver reads its own keys (by convention `storage.<name>.*`).
+   */
+  create(ctx: { settings: Record<string, string>; uploadDir: string }): StorageBackend;
+}
 
 export interface S3Config {
   endpoint: string;        // e.g. https://<acct>.r2.cloudflarestorage.com
@@ -42,14 +69,8 @@ export interface S3Config {
   publicUrl?: string;
 }
 
-export interface StorageConfig {
-  driver: StorageDriver;
-  uploadDir: string; // always set (used for local mode + thumb cache)
-  s3?: S3Config;
-}
-
-let cached: { config: StorageConfig; expires: number } | null = null;
 const TTL_MS = 30_000;
+let cached: { driver: string; backend: StorageBackend; expires: number } | null = null;
 let configuredUploadDir = "";
 
 /** Called once at server boot. Required so local mode knows where to read/write. */
@@ -59,32 +80,6 @@ export function setUploadDir(dir: string): void {
 
 export function invalidateStorageCache(): void {
   cached = null;
-}
-
-function readConfig(): StorageConfig {
-  const s = getAllSettings();
-  const driverRaw = s["storage.driver"] ?? "local";
-  const driver: StorageDriver = driverRaw === "s3" ? "s3" : "local";
-  const config: StorageConfig = { driver, uploadDir: configuredUploadDir };
-  if (driver === "s3") {
-    config.s3 = {
-      endpoint: s["s3.endpoint"] ?? "",
-      bucket: s["s3.bucket"] ?? "",
-      region: s["s3.region"] ?? "auto",
-      accessKeyId: s["s3.access_key_id"] ?? "",
-      secretAccessKey: s["s3.secret_access_key"] ?? "",
-      publicUrl: s["s3.public_url"] ?? "",
-    };
-  }
-  return config;
-}
-
-function getConfig(): StorageConfig {
-  const now = Date.now();
-  if (cached && cached.expires > now) return cached.config;
-  const config = readConfig();
-  cached = { config, expires: now + TTL_MS };
-  return config;
 }
 
 interface S3LikeClient {
@@ -104,103 +99,155 @@ interface BunWithS3 {
   }) => S3LikeClient;
 }
 
-let cachedS3Client: { client: S3LikeClient; key: string } | null = null;
-
 function s3Client(s3: S3Config): S3LikeClient {
-  const fingerprint = `${s3.endpoint}|${s3.bucket}|${s3.region}|${s3.accessKeyId}`;
-  if (cachedS3Client && cachedS3Client.key === fingerprint) return cachedS3Client.client;
   const ctor = (Bun as unknown as BunWithS3).S3Client;
-  type S3Opts = {
-    accessKeyId: string;
-    secretAccessKey: string;
-    bucket: string;
-    region?: string;
-    endpoint?: string;
-  };
-  const opts: S3Opts = {
+  const opts: ConstructorParameters<BunWithS3["S3Client"]>[0] = {
     accessKeyId: s3.accessKeyId,
     secretAccessKey: s3.secretAccessKey,
     bucket: s3.bucket,
   };
   if (s3.region) opts.region = s3.region;
   if (s3.endpoint) opts.endpoint = s3.endpoint;
-  const client = new ctor(opts);
-  cachedS3Client = { client, key: fingerprint };
-  return client;
+  return new ctor(opts);
+}
+
+// Both built-in backends hand back an opaque byte stream. Bun otherwise
+// derives Content-Type from the stored filename's extension, and that name is
+// ultimately attacker-influenced. Callers that have validated a type set it
+// themselves (see the file-serving route).
+const OPAQUE = { "content-type": "application/octet-stream" } as const;
+
+const localDriver: StorageDriverDef = {
+  name: "local",
+  create: ({ uploadDir }) => ({
+    async write(key, data) { await Bun.write(safeLocalPath(uploadDir, key), data); },
+    async read(key) {
+      let path: string;
+      try { path = safeLocalPath(uploadDir, key); } catch { return null; }
+      if (!existsSync(path)) return null;
+      return await Bun.file(path).arrayBuffer();
+    },
+    async exists(key) {
+      try { return existsSync(safeLocalPath(uploadDir, key)); } catch { return false; }
+    },
+    async delete(key) {
+      try { unlinkSync(safeLocalPath(uploadDir, key)); } catch { /* already gone or invalid */ }
+    },
+    async response(key) {
+      let path: string;
+      try { path = safeLocalPath(uploadDir, key); } catch { return null; }
+      if (!existsSync(path)) return null;
+      return new Response(Bun.file(path), { headers: OPAQUE });
+    },
+  }),
+};
+
+const s3Driver: StorageDriverDef = {
+  name: "s3",
+  create: ({ settings: s }) => {
+    const cfg: S3Config = {
+      endpoint: s["s3.endpoint"] ?? "",
+      bucket: s["s3.bucket"] ?? "",
+      region: s["s3.region"] ?? "auto",
+      accessKeyId: s["s3.access_key_id"] ?? "",
+      secretAccessKey: s["s3.secret_access_key"] ?? "",
+      publicUrl: s["s3.public_url"] ?? "",
+    };
+    const client = s3Client(cfg);
+    return {
+      async write(key, data, contentType) {
+        const opts: { type?: string } = {};
+        if (contentType) opts.type = contentType;
+        await client.write(key, data, opts);
+      },
+      async read(key) {
+        const f = client.file(key);
+        if (!(await f.exists())) return null;
+        return await f.arrayBuffer();
+      },
+      exists: (key) => client.exists(key),
+      async delete(key) {
+        try { await client.delete(key); } catch { /* swallow — already gone is fine */ }
+      },
+      publicUrl(key) {
+        if (!cfg.publicUrl) return null;
+        return `${cfg.publicUrl.replace(/\/+$/, "")}/${encodeURIComponent(key)}`;
+      },
+      status: () => ({ bucket: cfg.bucket, endpoint: cfg.endpoint }),
+    };
+  },
+};
+
+const drivers = new Map<string, StorageDriverDef>([["local", localDriver], ["s3", s3Driver]]);
+
+const DRIVER_NAME_RE = /^[a-z][a-z0-9_-]{0,39}$/;
+
+/** Add a storage driver; select it by setting `storage.driver` to its name. */
+export function registerStorageDriver(def: StorageDriverDef): () => void {
+  if (!DRIVER_NAME_RE.test(def.name)) {
+    throw new Error(`invalid storage driver name '${def.name}' (lowercase letters, digits, - and _)`);
+  }
+  if (drivers.has(def.name)) throw new Error(`storage driver '${def.name}' is already registered`);
+  drivers.set(def.name, def);
+  return () => {
+    if (drivers.get(def.name) === def) {
+      drivers.delete(def.name);
+      if (cached?.driver === def.name) cached = null;
+    }
+  };
+}
+
+export function listStorageDrivers(): Array<{ name: string; builtin: boolean }> {
+  return [...drivers.keys()].map((name) => ({ name, builtin: name === "local" || name === "s3" }));
+}
+
+function activeDriverName(): string {
+  return getAllSettings()["storage.driver"] || "local";
+}
+
+function backend(): StorageBackend {
+  const now = Date.now();
+  if (cached && cached.expires > now) return cached.backend;
+  const name = activeDriverName();
+  const def = drivers.get(name);
+  // Don't quietly fall back to local disk: files written there would be
+  // missing once the driver is back.
+  if (!def) throw new Error(`storage driver '${name}' is not registered`);
+  const b = def.create({ settings: getAllSettings(), uploadDir: configuredUploadDir });
+  cached = { driver: name, backend: b, expires: now + TTL_MS };
+  return b;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export async function writeFile(key: string, data: ArrayBuffer | Uint8Array | Blob, contentType?: string): Promise<void> {
-  const cfg = getConfig();
-  if (cfg.driver === "s3") {
-    if (!cfg.s3) throw new Error("S3 driver selected but configuration is missing");
-    const opts: { type?: string } = {};
-    if (contentType) opts.type = contentType;
-    await s3Client(cfg.s3).write(key, data, opts);
-    return;
-  }
-  await Bun.write(safeLocalPath(cfg.uploadDir, key), data);
+  await backend().write(key, data, contentType);
 }
 
 export async function readFile(key: string): Promise<ArrayBuffer | null> {
-  const cfg = getConfig();
-  if (cfg.driver === "s3") {
-    if (!cfg.s3) throw new Error("S3 driver selected but configuration is missing");
-    const f = s3Client(cfg.s3).file(key);
-    if (!(await f.exists())) return null;
-    return await f.arrayBuffer();
-  }
-  let path: string;
-  try { path = safeLocalPath(cfg.uploadDir, key); } catch { return null; }
-  if (!existsSync(path)) return null;
-  return await Bun.file(path).arrayBuffer();
+  return await backend().read(key);
 }
 
 export async function fileExists(key: string): Promise<boolean> {
-  const cfg = getConfig();
-  if (cfg.driver === "s3") {
-    if (!cfg.s3) throw new Error("S3 driver selected but configuration is missing");
-    return await s3Client(cfg.s3).exists(key);
-  }
-  try { return existsSync(safeLocalPath(cfg.uploadDir, key)); } catch { return false; }
+  return await backend().exists(key);
 }
 
 export async function deleteFile(key: string): Promise<void> {
-  const cfg = getConfig();
-  if (cfg.driver === "s3") {
-    if (!cfg.s3) throw new Error("S3 driver selected but configuration is missing");
-    try { await s3Client(cfg.s3).delete(key); } catch { /* swallow — already gone is fine */ }
-    return;
-  }
-  try { unlinkSync(safeLocalPath(cfg.uploadDir, key)); } catch { /* already gone or invalid */ }
+  await backend().delete(key);
 }
 
-/** Returns a Response that streams/serves the file. Falls back to fetching bytes for S3. */
+/** Returns a Response that streams/serves the file. */
 export async function fileResponse(key: string): Promise<Response | null> {
-  const cfg = getConfig();
-  // Both drivers hand back an opaque byte stream. Bun otherwise derives
-  // Content-Type from the stored filename's extension, and that name is
-  // ultimately attacker-influenced. Callers that have validated a type set it
-  // themselves (see the file-serving route).
-  const OPAQUE = { "content-type": "application/octet-stream" } as const;
-  if (cfg.driver === "s3") {
-    const buf = await readFile(key);
-    if (!buf) return null;
-    return new Response(buf, { headers: OPAQUE });
-  }
-  let path: string;
-  try { path = safeLocalPath(cfg.uploadDir, key); } catch { return null; }
-  if (!existsSync(path)) return null;
-  return new Response(Bun.file(path), { headers: OPAQUE });
+  const b = backend();
+  if (b.response) return await b.response(key);
+  const buf = await b.read(key);
+  if (!buf) return null;
+  return new Response(buf, { headers: OPAQUE });
 }
 
-/** Public URL for an object, if the storage driver supports it (S3 with public_url). null otherwise. */
+/** Public URL for an object, if the storage backend has one (S3 with public_url). null otherwise. */
 export function publicUrlFor(key: string): string | null {
-  const cfg = getConfig();
-  if (cfg.driver !== "s3" || !cfg.s3?.publicUrl) return null;
-  const base = cfg.s3.publicUrl.replace(/\/+$/, "");
-  return `${base}/${encodeURIComponent(key)}`;
+  return backend().publicUrl?.(key) ?? null;
 }
 
 /** Where the local thumb cache lives — always on local FS, even when primary storage is S3. */
@@ -210,7 +257,7 @@ export function thumbCacheDir(): string {
 
 /** Test the configured backend with a put + get + delete round trip. */
 export async function testStorage(): Promise<{ ok: boolean; driver: StorageDriver; error?: string }> {
-  const cfg = getConfig();
+  const driver = activeDriverName();
   const probeKey = `.vaultbase-probe-${Date.now()}`;
   const probeData = new TextEncoder().encode("ok").buffer;
   try {
@@ -220,11 +267,11 @@ export async function testStorage(): Promise<{ ok: boolean; driver: StorageDrive
     const text = new TextDecoder().decode(buf);
     if (text !== "ok") throw new Error(`probe mismatch: ${text}`);
     await deleteFile(probeKey);
-    return { ok: true, driver: cfg.driver };
+    return { ok: true, driver };
   } catch (e) {
     // Best-effort cleanup
     try { await deleteFile(probeKey); } catch { /* noop */ }
-    return { ok: false, driver: cfg.driver, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, driver, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -239,13 +286,10 @@ export function clearThumbCache(): void {
 }
 
 export function getStorageStatus(): { driver: StorageDriver; uploadDir: string; bucket?: string; endpoint?: string } {
-  const cfg = getConfig();
-  const out: ReturnType<typeof getStorageStatus> = { driver: cfg.driver, uploadDir: cfg.uploadDir };
-  if (cfg.s3) {
-    out.bucket = cfg.s3.bucket;
-    out.endpoint = cfg.s3.endpoint;
-  }
-  return out;
+  const driver = activeDriverName();
+  let extra: Record<string, string> = {};
+  try { extra = backend().status?.() ?? {}; } catch { /* unregistered driver: report the name only */ }
+  return { ...extra, driver, uploadDir: configuredUploadDir };
 }
 
 export { statSync };
