@@ -61,7 +61,7 @@ async function flushAfterHook(): Promise<void> {
 describe("auth signup hook lifecycle", () => {
   it("/register fires beforeCreate + afterCreate", async () => {
     await createCollection({
-      name: "users", type: "auth",
+      name: "users", type: "auth", create_rule: null,
       fields: JSON.stringify([{ name: "marker", type: "text" }]),
       view_rule: null,
     });
@@ -86,7 +86,7 @@ describe("auth signup hook lifecycle", () => {
 
   it("/anonymous fires afterCreate", async () => {
     await createCollection({
-      name: "users", type: "auth",
+      name: "users", type: "auth", create_rule: null,
       fields: JSON.stringify([]), view_rule: null,
     });
     // Anonymous auth is opt-in by default — enable for this test.
@@ -105,7 +105,7 @@ describe("auth signup hook lifecycle", () => {
 
   it("global hooks (collection_name='') fire on auth signup too", async () => {
     await createCollection({
-      name: "users", type: "auth",
+      name: "users", type: "auth", create_rule: null,
       fields: JSON.stringify([]), view_rule: null,
     });
     (globalThis as Record<string, unknown>)["_globalHits"] = 0;

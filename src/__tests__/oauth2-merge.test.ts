@@ -21,7 +21,7 @@ beforeEach(async () => {
 afterEach(() => closeDb());
 
 async function authCol(): Promise<{ id: string; name: string }> {
-  const col = await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+  const col = await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]) });
   return { id: col.id, name: col.name };
 }
 

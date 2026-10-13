@@ -297,12 +297,26 @@ type FileToken = { token: string; expires_at: number };
 const fileTokenCache = new Map<string, FileToken>();
 const fileTokenInflight = new Map<string, Promise<FileToken | null>>();
 
+/**
+ * A stored file name as the server issues it (`<uuid>.<ext>`; see
+ * isValidStorageFilename in core/sec.ts). Record values are user-written:
+ * one like `../../admin/...?` turned the token request below into an
+ * admin-authenticated POST to another endpoint, so anything else is never
+ * put in a URL.
+ */
+const STORAGE_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\.[A-Za-z0-9]{1,12})?$/;
+
+function isStorageFilename(name: string): boolean {
+  return STORAGE_FILENAME_RE.test(name);
+}
+
 async function mintFileToken(
   collectionName: string,
   recordId: string,
   field: string,
   filename: string,
 ): Promise<FileToken | null> {
+  if (!isStorageFilename(filename)) return null;
   const now = Math.floor(Date.now() / 1000);
   const cached = fileTokenCache.get(filename);
   if (cached && cached.expires_at - 60 > now) return cached;
@@ -310,7 +324,7 @@ async function mintFileToken(
   if (existing) return existing;
   const p = (async () => {
     const res = await api.post<ApiResponse<FileToken>>(
-      `/api/v1/files/${collectionName}/${recordId}/${field}/${filename}/token`,
+      `/api/v1/files/${[collectionName, recordId, field, filename].map(encodeURIComponent).join("/")}/token`,
       {},
     );
     if (res.data) {
@@ -383,7 +397,8 @@ function FileFieldPreview({
 
   function urlFor(fn: string): string {
     const tok = tokens[fn];
-    return tok ? `/api/v1/files/${fn}?token=${encodeURIComponent(tok)}` : `/api/v1/files/${fn}`;
+    const path = `/api/v1/files/${encodeURIComponent(fn)}`;
+    return tok ? `${path}?token=${encodeURIComponent(tok)}` : path;
   }
 
   return (

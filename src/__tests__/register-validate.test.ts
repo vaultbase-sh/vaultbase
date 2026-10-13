@@ -26,7 +26,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
   it("surfaces a 422 with details when an admin-set min on email rejects the input", async () => {
     await createCollection({
       name: "users",
-      type: "auth",
+      type: "auth", create_rule: null,
       fields: JSON.stringify([
         { name: "email", type: "email", required: true, implicit: true, options: { unique: true, min: 8 } },
         { name: "verified", type: "bool", implicit: true },
@@ -48,7 +48,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
   it("rejects a custom user-defined required field that wasn't provided", async () => {
     await createCollection({
       name: "users",
-      type: "auth",
+      type: "auth", create_rule: null,
       fields: JSON.stringify([
         { name: "username", type: "text", required: true, options: { min: 3 } },
       ]),
@@ -66,7 +66,7 @@ describe("POST /api/auth/:collection/register runs validateRecord", () => {
   it("succeeds when all schema constraints pass", async () => {
     await createCollection({
       name: "users",
-      type: "auth",
+      type: "auth", create_rule: null,
       fields: JSON.stringify([
         { name: "email", type: "email", required: true, implicit: true, options: { unique: true, min: 5 } },
         { name: "verified", type: "bool", implicit: true },

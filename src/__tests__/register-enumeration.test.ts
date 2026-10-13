@@ -27,7 +27,7 @@ beforeEach(async () => {
   initDb(":memory:");
   await runMigrations();
   smtp = startSmtpSink();
-  await createCollection({ name: "users", type: "auth", fields: JSON.stringify([{ name: "age", type: "number", options: { min: 0 } }]) });
+  await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([{ name: "age", type: "number", options: { min: 0 } }]) });
   await seedAuthUser({ collection: "users", email: "taken@test.local", passwordHash: await Bun.password.hash("pw-123456789012") });
 });
 

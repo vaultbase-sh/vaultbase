@@ -28,7 +28,7 @@ function authReq(method: string, url: string, token: string | null, body?: unkno
 }
 
 async function mintAnonymous(): Promise<{ token: string; id: string }> {
-  await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+  await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]) });
   const app = makeAuthPlugin(SECRET);
   const res = await app.handle(authReq("POST", "/auth/users/anonymous", null));
   expect(res.status).toBe(200);
@@ -63,7 +63,7 @@ describe("POST /api/auth/:collection/promote", () => {
 
   it("returns 409 when the email is already taken in the collection", async () => {
     // Pre-seed an account with the target email
-    await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+    await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]) });
     const col = await getCollection("users");
     const now = Math.floor(Date.now() / 1000);
     await insertUser(col!, {
@@ -91,7 +91,7 @@ describe("POST /api/auth/:collection/promote", () => {
   });
 
   it("rejects a non-anonymous user token", async () => {
-    await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+    await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]) });
     const { seedAuthUser } = await import("./_helpers.ts");
     await seedAuthUser({ collection: "users", id: "u1", email: "real@test.local" });
     // Sign a normal user JWT — no `anonymous: true` claim.
@@ -110,7 +110,7 @@ describe("POST /api/auth/:collection/promote", () => {
   });
 
   it("rejects unauthenticated calls", async () => {
-    await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
+    await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]) });
     const app = makeAuthPlugin(SECRET);
     const res = await app.handle(authReq("POST", "/auth/users/promote", null, {
       email: "x@test.local",

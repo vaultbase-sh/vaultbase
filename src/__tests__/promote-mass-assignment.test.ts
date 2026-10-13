@@ -21,7 +21,7 @@ beforeEach(async () => {
   await runMigrations();
   setSetting("auth.anonymous.enabled", "1");
   await createCollection({
-    name: "users", type: "auth",
+    name: "users", type: "auth", create_rule: null,
     fields: JSON.stringify([{ name: "nickname", type: "text" }]),
   });
 });

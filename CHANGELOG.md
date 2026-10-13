@@ -7,6 +7,33 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Upgrade notes
+
+- **Sign-up now follows the auth collection's create rule.** `/auth/:collection/register`,
+  `/anonymous`, `/promote` and OAuth2 sign-up used to ignore it, so anyone could open an
+  account in any auth collection and set any of its custom fields, whatever the rule
+  said. On the first boot after upgrading, existing auth collections whose create rule is
+  **Admin only** are switched to **Public**, so sign-up keeps working as before (the
+  server logs which ones). Review them: set **Admin only** to close sign-up (invite-only),
+  or a rule such as `@request.body.role:isset = false` to restrict what sign-ups may set.
+  New auth collections still default to **Admin only**.
+- **`@request.body.*` and `@request.query.*` match the key exactly.** They used to try
+  the lowercased key first, so a body with both `isApproved` and a decoy `isapproved`
+  showed the rule one value and stored the other. Headers are still matched
+  case-insensitively.
+
+### Security
+
+- **Filters can't probe collections the caller can't list.** A `?filter=` that reaches
+  another collection through `@collection.*` or `_via_` now joins it under its list rule
+  as well as its view rule, so records readable by id only (invite codes, a users list
+  restricted to self) can't be enumerated through the filter.
+- **File field values must be stored file names.** A value like
+  `../../admin/users/…/disable-mfa?` is refused with 422. The admin UI also encodes file
+  URLs, so such a value can't redirect an admin's request to another endpoint.
+
 ## [0.17.1] — 2026-10-12
 
 ### Fixed

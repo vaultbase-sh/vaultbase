@@ -1,4 +1,5 @@
 import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
+import { requestMapHas, requestMapValue } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import type { RequestContextLike } from "./filter.ts";
 
@@ -201,14 +202,8 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
     case "requestMap": {
       const map = ctx.request?.[op.mapKind];
       const key = op.key;
-      const norm = key.toLowerCase().replace(/-/g, "_");
-      const v = (map as Record<string, unknown> | undefined)?.[norm]
-        ?? (map as Record<string, unknown> | undefined)?.[key]
-        ?? null;
-      if (op.modifier === "isset") {
-        if (!map) return false;
-        return key in (map as Record<string, unknown>) || norm in (map as Record<string, unknown>);
-      }
+      const v = requestMapValue(map, op.mapKind, key);
+      if (op.modifier === "isset") return requestMapHas(map, op.mapKind, key);
       if (op.modifier === "changed" && op.mapKind === "body") {
         const body = ctx.request?.body ?? null;
         const existing = ctx.request?.existing ?? null;

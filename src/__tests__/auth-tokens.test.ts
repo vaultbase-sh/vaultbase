@@ -118,7 +118,7 @@ describe("listAuthWindowKinds() covers every default", () => {
 async function setupAuthCol(): Promise<{ id: string; name: string }> {
   const col = await createCollection({
     name: "users",
-    type: "auth",
+    type: "auth", create_rule: null,
     fields: JSON.stringify([]),
   });
   return { id: col.id, name: col.name };

@@ -4,6 +4,7 @@ import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
 import { sanitizeHtml } from "./html-sanitize.ts";
+import { isValidStorageFilename } from "./sec.ts";
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -190,9 +191,24 @@ function validateValue(field: FieldDef, value: unknown): string | null {
       // Any JSON-serializable value is fine
       return null;
 
-    case "file":
-      // File upload validation happens in files API, not here
+    case "file": {
+      // Upload validation happens in the files API; here the value is just
+      // the stored name(s). Each must be one storage filename: clients
+      // (the admin UI among them) build `/api/v1/files/.../<name>` URLs
+      // from it, and `../../admin/...?` sent an admin's request elsewhere.
+      // A multi-file field stores a JSON string as-is, so parse that too.
+      let names: unknown = value;
+      if (typeof value === "string" && field.options?.["multiple"] === true) {
+        try { names = JSON.parse(value); } catch { names = value; }
+      }
+      const list = Array.isArray(names) ? names : [names];
+      for (const n of list) {
+        if (typeof n !== "string" || !isValidStorageFilename(n)) {
+          return `${field.name} must be the name of an uploaded file`;
+        }
+      }
       return null;
+    }
 
     case "password":
       if (typeof value !== "string") return `${field.name} must be a string`;

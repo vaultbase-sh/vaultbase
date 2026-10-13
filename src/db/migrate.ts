@@ -433,6 +433,9 @@ export async function runMigrations() {
   // ── v0.17: one-time tokens are stored hashed ──
   hashLegacyAuthTokens(client);
 
+  // ── v0.18: sign-up honours the auth collection's create rule ──
+  openExistingAuthSignup(client);
+
   // ── v0.12: created_at / updated_at indexes on record tables ──
   // New tables get them in createUserTable; backfill existing ones.
   const { ensureTimestampIndexes } = await import("../core/collections.ts");
@@ -469,6 +472,35 @@ export async function runMigrations() {
  * from the corresponding per-collection table. Operator must run
  * `vaultbase doctor` and reconcile before the next boot.
  */
+/**
+ * Before v0.18, `/auth/:collection/register` (and `/anonymous`, `/promote`)
+ * ignored the collection's create rule, so sign-up was open whatever the
+ * rule said, and auth collections default to "Admin only". Now the rule is
+ * enforced, so on the first boot after upgrading, existing auth collections
+ * whose create rule is "Admin only" are set to public: sign-up keeps working
+ * as before, and the rules page now shows it. Runs once (marker in
+ * vaultbase_settings) so a collection an admin closes later stays closed.
+ */
+function openExistingAuthSignup(client: Database): void {
+  const MARKER = "_migrations.v0_18_auth_create_rule";
+  if (client.prepare(`SELECT 1 FROM vaultbase_settings WHERE key = ?`).get(MARKER)) return;
+  const opened = client.prepare(
+    `UPDATE vaultbase_collections SET create_rule = NULL, updated_at = unixepoch()
+      WHERE type = 'auth' AND create_rule = ''
+      RETURNING name`,
+  ).all() as Array<{ name: string }>;
+  if (opened.length > 0) {
+    console.warn(
+      `[migrate] sign-up now follows each auth collection's create rule. ` +
+      `Set to public to keep sign-up open as before: ${opened.map((r) => r.name).join(", ")}. ` +
+      `Set it to "Admin only" (or a rule) to close or restrict sign-up.`,
+    );
+  }
+  client.prepare(
+    `INSERT OR IGNORE INTO vaultbase_settings (key, value, updated_at) VALUES (?, '1', unixepoch())`,
+  ).run(MARKER);
+}
+
 /**
  * Rows in `vaultbase_auth_tokens` written before v0.17 are keyed by the raw
  * token. Re-key them by `h:` + SHA-256, the form the auth API looks up, so

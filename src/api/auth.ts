@@ -21,7 +21,10 @@ import {
   revokeToken,
   signAuthToken,
   verifyAuthToken,
+  accessFor,
+  dataPrincipal,
 } from "../core/sec.ts";
+import { buildRequestContext, checkRule } from "./_rules.ts";
 import { getAllSettings } from "./settings.ts";
 import {
   getAppUrl,
@@ -291,6 +294,31 @@ async function generateRecoveryCodesFor(
  * for register we still want admin-set custom options (min length, pattern)
  * to apply to the incoming email/verified payload.
  */
+/**
+ * Whether the auth collection's create rule lets this caller open an account
+ * (register, anonymous sign-in, OAuth2 sign-up, anonymous → real promotion).
+ * Same semantics as a records-API create: `null` public, `""` admin only,
+ * otherwise the rule against the sign-up fields as `@request.body`. These
+ * paths used to skip the rule, so "Admin only" sign-up was open to anyone
+ * and a rule like `@request.body.role:isset = false` never ran. The password
+ * is not exposed to the rule.
+ */
+async function signupAllowed(
+  request: Request,
+  jwtSecret: string,
+  col: { name: string; create_rule: string | null },
+  fields: Record<string, unknown>,
+): Promise<boolean> {
+  if (col.create_rule === null) return true;
+  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const auth = token ? dataPrincipal(await verifyAuthToken(token, jwtSecret), accessFor(request)) : null;
+  const { password: _pw, ...ruleBody } = fields;
+  return checkRule(
+    request, "create_rule", col.name, col.create_rule, auth,
+    ruleBody, buildRequestContext(request, ruleBody, null),
+  );
+}
+
 async function validateAuthRegister(
   col: { id: string; name: string; type: string; fields: string; created_at: number; updated_at: number; view_query: string | null; list_rule: string | null; view_rule: string | null; create_rule: string | null; update_rule: string | null; delete_rule: string | null; },
   data: Record<string, unknown>
@@ -715,10 +743,13 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     .post(
       "/auth/:collection/register",
-      async ({ params, body, set }) => {
+      async ({ params, body, request, set }) => {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+        if (!(await signupAllowed(request, jwtSecret, col, body as Record<string, unknown>))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
+        }
         {
           const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
@@ -1545,11 +1576,14 @@ export function makeAuthPlugin(jwtSecret: string) {
     // ── Anonymous ──────────────────────────────────────────────────────────
     // Mints a guest user with a synthetic email. The returned JWT is a regular
     // user token — caller can later "promote" by setting email + password via PATCH.
-    .post("/auth/:collection/anonymous", async ({ params, set }) => {
+    .post("/auth/:collection/anonymous", async ({ params, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
       if (!isAuthFeatureEnabled("anonymous")) { set.status = 422; return { error: "Anonymous auth is disabled", code: 422 }; }
+      if (!(await signupAllowed(request, jwtSecret, col, {}))) {
+        set.status = 403; return { error: "Forbidden", code: 403 };
+      }
       const id = crypto.randomUUID();
       const email = `anon_${id.replace(/-/g, "").slice(0, 16)}@anonymous.invalid`;
       const randomPw = crypto.randomUUID() + crypto.randomUUID();
@@ -1608,6 +1642,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (u.is_anonymous !== 1) {
           set.status = 422;
           return { error: "Only anonymous accounts can be promoted", code: 422 };
+        }
+        // Becoming a real account is a sign-up: the guest's custom fields
+        // come from this body, so the create rule applies to it.
+        if (!(await signupAllowed(request, jwtSecret, col, body as Record<string, unknown>))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
         }
         // Validate against the collection's schema (implicit + user fields).
         try {
@@ -1808,7 +1847,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     //  2. Otherwise, if profile.emailVerified and email matches an existing user in
     //     this collection → create link, log in
     //  3. Otherwise, create a fresh user (random unguessable password) + link
-    .post("/auth/:collection/oauth2/exchange", async ({ params, body, set }) => {
+    .post("/auth/:collection/oauth2/exchange", async ({ params, body, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1927,6 +1966,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Random, so nobody can register the placeholder ahead of the owner.
         : `${body.provider}_${newToken().slice(0, 24)}@oauth.invalid`;
       if (!userId) {
+        const signupFields: Record<string, unknown> = profile.name ? { email: accountEmail, name: profile.name } : { email: accountEmail };
+        if (!(await signupAllowed(request, jwtSecret, col, signupFields))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
+        }
         const randomPw = crypto.randomUUID() + crypto.randomUUID();
         const hash = await hashPassword(randomPw);
         userId = crypto.randomUUID();

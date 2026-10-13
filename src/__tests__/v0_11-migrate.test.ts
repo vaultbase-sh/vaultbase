@@ -42,7 +42,7 @@ afterEach(() => {
 describe("v0.11 phase 1 — auth columns added to vb_<col>", () => {
   it("createCollection(type='auth') puts auth columns on vb_<name>", async () => {
     await createCollection({
-      name: "users", type: "auth",
+      name: "users", type: "auth", create_rule: null,
       fields: JSON.stringify([{ name: "display_name", type: "text" }]),
       view_rule: null,
     });
@@ -200,6 +200,7 @@ describe("v0.11 — /register writes to vb_<col>", () => {
       name: "members", type: "auth",
       fields: JSON.stringify([{ name: "name", type: "text" }]),
       view_rule: null,
+      create_rule: null,
     });
     const SECRET = "test-secret-v011";
     const app = makeAuthPlugin(SECRET);

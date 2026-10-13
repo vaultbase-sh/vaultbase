@@ -19,6 +19,8 @@ export async function ensureAuthCollection(name: string): Promise<NonNullable<Aw
       type: "auth",
       fields: JSON.stringify([]),
       view_rule: null,
+      // Open sign-up: /register etc. enforce the create rule.
+      create_rule: null,
     });
   }
   return col;

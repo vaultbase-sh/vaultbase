@@ -45,6 +45,30 @@ const AUTH_PROPS: readonly string[] = ["id", "email", "type", "collectionName", 
 export type RequestProp = "method" | "context";
 export type RequestMapKind = "headers" | "query" | "body";
 
+/**
+ * The key a rule's `@request.<mapKind>.<key>` reads. Only headers are
+ * normalized (they are stored lower_snake_case); body and query keys are
+ * exact, because the write path copies exact-case field names — a
+ * normalized body lookup let `{"isApproved":true,"isapproved":false}` show
+ * the rule a decoy while the real key was written.
+ */
+export function requestMapKey(mapKind: RequestMapKind, key: string): string {
+  return mapKind === "headers" ? key.toLowerCase().replace(/-/g, "_") : key;
+}
+
+/** Own-property lookup of a request map value (null when absent). */
+export function requestMapValue(map: unknown, mapKind: RequestMapKind, key: string): unknown {
+  if (!map || typeof map !== "object") return null;
+  const k = requestMapKey(mapKind, key);
+  return Object.prototype.hasOwnProperty.call(map, k) ? (map as Record<string, unknown>)[k] ?? null : null;
+}
+
+/** Whether a request map has the key (own property). */
+export function requestMapHas(map: unknown, mapKind: RequestMapKind, key: string): boolean {
+  if (!map || typeof map !== "object") return false;
+  return Object.prototype.hasOwnProperty.call(map, requestMapKey(mapKind, key));
+}
+
 export type Operand =
   | { kind: "literal"; value: string | number | boolean | null }
   | { kind: "auth"; prop: AuthProp; modifier?: FieldModifier | undefined }

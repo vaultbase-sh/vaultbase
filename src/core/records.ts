@@ -105,6 +105,7 @@ function makeCollectionLookup(): CollectionLookup {
     const cols = filterableColumns(col);
     return {
       viewRule: col.view_rule,
+      listRule: col.list_rule,
       hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
       isPrivateField: (n) => priv.has(n),
       isFilterable: (n) => cols.has(n),
@@ -392,7 +393,7 @@ export async function compileListWhere(
       // A caller's own filter gets one @collection join and one
       // cross-collection operand in all; rules (written by admins) get the
       // defaults. See ParseFilterOpts.maxJoins / maxCrossRefs.
-      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1, maxCrossRefs: 1 });
+      compiled = parseFilter(opts.filter, tname, opts.auth?.type === "admin" ? filterOpts : { ...filterOpts, maxJoins: 1, maxCrossRefs: 1, clientFilter: true });
     } catch (e) {
       throw new FilterError(e instanceof Error ? e.message : String(e));
     }

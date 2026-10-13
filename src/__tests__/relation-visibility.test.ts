@@ -97,7 +97,7 @@ describe("review 10 follow-ups", () => {
   it("sign-up can't point a relation at a record the caller can't see", async () => {
     const { makeAuthPlugin } = await import("../api/auth.ts");
     await createCollection({
-      name: "people", type: "auth",
+      name: "people", type: "auth", create_rule: null,
       fields: JSON.stringify([{ name: "note", type: "relation", collection: "notes" }]),
     });
     const res = await makeAuthPlugin(SECRET).handle(new Request("http://localhost/auth/people/register", {

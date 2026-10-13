@@ -1,5 +1,6 @@
 import type { AuthContext } from "./rules.ts";
 import type { Expr, Operand, AnyCmpOp, FieldModifier, AuthProp } from "./expression.ts";
+import { requestMapHas, requestMapValue } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 
 /** Parameterized SQL fragment + bound values. */
@@ -42,6 +43,12 @@ export interface RequestContextLike {
 export interface CollectionLookup {
   (collectionName: string): {
     viewRule: string | null;
+    /**
+     * The collection's list rule. A caller's own filter joins other
+     * collections under list *and* view rule (see ParseFilterOpts.clientFilter);
+     * omit it and only the view rule applies.
+     */
+    listRule?: string | null;
     hasField: (name: string) => boolean;
     /**
      * Columns that must never be referenced from a filter — password hashes,
@@ -105,6 +112,14 @@ export interface ParseFilterOpts {
    * which keeps it at most quadratic.
    */
   maxCrossRefs?: number;
+  /**
+   * The expression is a caller's own `?filter=`, not an admin-written rule.
+   * Collections it reaches through `@collection.*` / `_via_` are then joined
+   * under their list rule as well as their view rule: a filter is a yes/no
+   * oracle over the joined rows, so view-by-id-only collections (invite
+   * codes, a users list restricted to self) could otherwise be enumerated.
+   */
+  clientFilter?: boolean;
 }
 
 /** Default cap on `@collection.*` joins per expression (see ParseFilterOpts.maxJoins). */
@@ -155,6 +170,7 @@ export function compileToSql(
     aliasSeq: { n: 0 },
     maxJoins: opts.maxJoins ?? MAX_COLLECTION_JOINS,
     crossRefs: { n: 0, max: opts.maxCrossRefs ?? Number.POSITIVE_INFINITY },
+    clientFilter: opts.clientFilter === true && opts.auth?.type !== "admin",
   };
   const sql = compileScoped(ast, ctx);
   return { sql, params: ctx.params };
@@ -184,6 +200,8 @@ interface CompileCtx {
    * one reference can't pull in more through the referenced collection.
    */
   crossRefs: { n: number; max: number };
+  /** Join referenced collections under their list rule too (ParseFilterOpts.clientFilter). */
+  clientFilter: boolean;
 }
 
 function chargeCrossRef(ctx: CompileCtx): void {
@@ -406,7 +424,7 @@ function compileOperand(op: Operand, ctx: CompileCtx): string {
     }
     case "requestMap": {
       const map = ctx.request?.[op.mapKind];
-      const raw = map?.[op.key.toLowerCase().replace(/-/g, "_")] ?? map?.[op.key] ?? null;
+      const raw = requestMapValue(map, op.mapKind, op.key);
       const v = applyModifierToValue(raw, op.modifier);
       ctx.params.push(v);
       return "?";
@@ -465,16 +483,44 @@ function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx):
   if (!ctx.lookup) return ctx.auth?.type === "admin" ? "1" : "1=0";
   const meta = ctx.lookup(collection);
   if (!meta) throw new Error(`unknown collection in @collection.*: ${collection}`);
-  if (meta.viewRule === null) return "1";
-  if (meta.viewRule === "") return ctx.auth?.type === "admin" ? "1" : "1=0";
-  const innerAst = parseExpression(meta.viewRule);
-  if (!innerAst) return "1=0";
-  const innerCtx: CompileCtx = guardCtx(ctx, {
-    tableName: alias,
-    hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
-    hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
-  });
-  return compileScoped(innerAst, innerCtx);
+  return joinedCollectionGuard(meta, collection, alias, ctx) ?? "1";
+}
+
+/**
+ * The rules a joined collection's rows must pass: its view rule, plus its
+ * list rule when compiling a caller's own filter. Returns null when
+ * unrestricted, `1=0` when admin-only (or unparseable) for a non-admin.
+ * The rules are compiled against `table` and are admin-written, so they get
+ * the normal (non-client) compile.
+ */
+function joinedCollectionGuard(
+  meta: NonNullable<ReturnType<CollectionLookup>>,
+  collection: string,
+  table: string,
+  ctx: CompileCtx,
+): string | null {
+  const rules: Array<string | null> = [meta.viewRule];
+  if (ctx.clientFilter && meta.listRule !== undefined) rules.push(meta.listRule);
+  const parts: string[] = [];
+  for (const rule of rules) {
+    if (rule === null) continue;
+    if (rule === "") {
+      if (ctx.auth?.type === "admin") continue;
+      return "1=0";
+    }
+    const innerAst = parseExpression(rule);
+    if (!innerAst) return "1=0";
+    const innerCtx: CompileCtx = guardCtx(ctx, {
+      tableName: table,
+      hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
+      hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
+      clientFilter: false,
+    });
+    parts.push(compileScoped(innerAst, innerCtx));
+    ctx.joinDepth = innerCtx.joinDepth;
+  }
+  if (parts.length === 0) return null;
+  return parts.length === 1 ? parts[0]! : parts.map((p) => `(${p})`).join(" AND ");
 }
 
 function compileCollectionRef(
@@ -552,26 +598,9 @@ function compileCollectionRef(
       if (!meta) {
         throw new Error(`unknown collection in @collection.*: ${op.collection}`);
       }
-      if (meta.viewRule === "") {
-        // admin-only; non-admin rule eval can never satisfy → emit a no-row guard
-        if (ctx.auth?.type !== "admin") {
-          where = " WHERE 1=0";
-        }
-      } else if (meta.viewRule !== null) {
-        const innerAst = parseExpression(meta.viewRule);
-        if (innerAst) {
-          // Recursively compile against the target table; share params.
-          const innerCtx: CompileCtx = guardCtx(ctx, {
-            tableName: targetTable,
-            hostPrivateField: (n) => ctx.lookup?.(op.collection)?.isPrivateField(n) ?? false,
-            hostFilterable: (n) => ctx.lookup?.(op.collection)?.isFilterable(n) ?? true,
-          });
-          const sql = compileScoped(innerAst, innerCtx);
-          // copy back joinDepth so siblings see the work
-          ctx.joinDepth = innerCtx.joinDepth;
-          where = ` WHERE ${sql}`;
-        }
-      }
+      // Compiled against the target table; shares params.
+      const guard = joinedCollectionGuard(meta, op.collection, targetTable, ctx);
+      if (guard) where = ` WHERE ${guard}`;
     } else if (ctx.auth?.type !== "admin") {
       // No lookup + non-admin caller → admin-trust shortcut, deny.
       where = " WHERE 1=0";
@@ -637,25 +666,9 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
           throw new PrivateFieldError(head);
         }
       }
-      // Inherit view_rule on the joined collection.
-      if (meta.viewRule === "") {
-        if (ctx.auth?.type !== "admin") {
-          where += " AND 1=0";
-        }
-      } else if (meta.viewRule !== null) {
-        const innerAst = parseExpression(meta.viewRule);
-        if (innerAst) {
-          const innerCtx: CompileCtx = {
-            ...ctx,
-            tableName: targetTable,
-            hostPrivateField: (n) => ctx.lookup?.(op.targetCollection)?.isPrivateField(n) ?? false,
-            hostFilterable: (n) => ctx.lookup?.(op.targetCollection)?.isFilterable(n) ?? true,
-          };
-          const ruleSql = compileScoped(innerAst, innerCtx);
-          ctx.joinDepth = innerCtx.joinDepth;
-          where += ` AND (${ruleSql})`;
-        }
-      }
+      // Inherit the joined collection's rules (view, plus list for a client filter).
+      const guard = joinedCollectionGuard(meta, op.targetCollection, targetTable, ctx);
+      if (guard) where += ` AND (${guard})`;
     } else if (ctx.auth?.type !== "admin") {
       where += " AND 1=0";
     }
@@ -782,7 +795,7 @@ function operandValue(op: Operand, ctx: CompileCtx): unknown {
     case "request": return ctx.request?.[op.prop] ?? null;
     case "requestMap": {
       const map = ctx.request?.[op.mapKind];
-      return map?.[op.key.toLowerCase().replace(/-/g, "_")] ?? map?.[op.key] ?? null;
+      return requestMapValue(map, op.mapKind, op.key);
     }
     case "macro":   return macroValue(op.name);
     default:        return null;
@@ -792,10 +805,7 @@ function operandValue(op: Operand, ctx: CompileCtx): unknown {
 /** SQL-side `:isset` resolution: 1 if request has the key, 0 otherwise. */
 function requestIsSet(op: Extract<Operand, { kind: "requestMap" }>, ctx: CompileCtx): string {
   const map = ctx.request?.[op.mapKind];
-  const present = map !== undefined && (
-    op.key in (map as Record<string, unknown>) ||
-    op.key.toLowerCase().replace(/-/g, "_") in (map as Record<string, unknown>)
-  );
+  const present = requestMapHas(map, op.mapKind, op.key);
   ctx.params.push(present ? 1 : 0);
   return "?";
 }
