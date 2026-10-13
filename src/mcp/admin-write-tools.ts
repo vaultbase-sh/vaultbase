@@ -39,6 +39,7 @@ import { ToolRegistry, asJsonText } from "./tools.ts";
 import { hasScope } from "../core/api-tokens.ts";
 import { recordAuditEvent } from "../core/audit-log.ts";
 import { detectMutation, runSql } from "../core/sql-runner.ts";
+import { codeFilesDir, createCodeFile, deleteCodeFile, updateCodeFile } from "../core/code-files.ts";
 
 export function registerAdminWriteTools(reg: ToolRegistry): void {
 
@@ -188,6 +189,12 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if (!allowed.includes(event)) {
         throw new Error(`Invalid event '${eventRaw}'. Allowed: ${allowed.join(", ")}`);
       }
+      if (codeFilesDir()) {
+        const row = await createCodeFile("hook", {
+          name: String(args.name ?? ""), collection_name: String(args.collection_name ?? ""), event, enabled: args.enabled === false ? 0 : 1,
+        }, String(args.code ?? ""));
+        return asJsonText({ created: true, id: row.id, event, file: row.file_path });
+      }
       await getDb().insert(hooks).values({
         id,
         name: String(args.name ?? ""),
@@ -231,6 +238,13 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         patch.event = args.event.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
       }
       if (typeof args.enabled === "boolean") patch.enabled = args.enabled ? 1 : 0;
+      const current = (await getDb().select().from(hooks).where(eq(hooks.id, String(args.id))).limit(1))[0];
+      if (current?.origin === "file") {
+        // `code` replaces the whole file; the other fields are written into it.
+        const { updated_at: _u, code, ...settings } = patch;
+        const row = await updateCodeFile("hook", current, settings, code as string | undefined);
+        return asJsonText({ updated: true, id: args.id, file: row.file_path });
+      }
       await getDb().update(hooks).set(patch).where(eq(hooks.id, String(args.id)));
       invalidateHookCache();
       return asJsonText({ updated: true, id: args.id });
@@ -250,6 +264,11 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       },
     },
     handler: async (args) => {
+      const current = (await getDb().select().from(hooks).where(eq(hooks.id, String(args.id))).limit(1))[0];
+      if (current?.origin === "file") {
+        await deleteCodeFile(current);
+        return asJsonText({ deleted: true, id: args.id, file: current.file_path });
+      }
       await getDb().delete(hooks).where(eq(hooks.id, String(args.id)));
       invalidateHookCache();
       return asJsonText({ deleted: true, id: args.id });
@@ -298,6 +317,12 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       const rawPath = String(args.path ?? "");
       const path = rawPath.startsWith("/") ? rawPath : "/" + rawPath;
       if (path.includes("..")) throw new Error("path cannot contain '..'");
+      if (codeFilesDir()) {
+        const row = await createCodeFile("route", {
+          name: String(args.name ?? ""), method, path, enabled: args.enabled === false ? 0 : 1,
+        }, String(args.code ?? ""));
+        return asJsonText({ created: true, id: row.id, method, path, file: row.file_path });
+      }
       await getDb().insert(routes).values({
         id,
         name:    String(args.name ?? ""),
@@ -326,6 +351,11 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       },
     },
     handler: async (args) => {
+      const current = (await getDb().select().from(routes).where(eq(routes.id, String(args.id))).limit(1))[0];
+      if (current?.origin === "file") {
+        await deleteCodeFile(current);
+        return asJsonText({ deleted: true, id: args.id, file: current.file_path });
+      }
       await getDb().delete(routes).where(eq(routes.id, String(args.id)));
       invalidateRoutesCache();
       return asJsonText({ deleted: true, id: args.id });
@@ -368,6 +398,13 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if (cronErr) throw new Error(`invalid cron: ${cronErr}`);
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
+      if (codeFilesDir()) {
+        const row = await createCodeFile("job", {
+          name: String(args.name ?? ""), cron: cronExpr, mode: args.mode === "worker" ? "worker:default" : "inline",
+          enabled: args.enabled === false ? 0 : 1,
+        }, String(args.code ?? ""));
+        return asJsonText({ created: true, id: row.id, file: row.file_path });
+      }
       await getDb().insert(jobs).values({
         id,
         name:    String(args.name ?? ""),
@@ -414,6 +451,11 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       },
     },
     handler: async (args) => {
+      const current = (await getDb().select().from(jobs).where(eq(jobs.id, String(args.id))).limit(1))[0];
+      if (current?.origin === "file") {
+        await deleteCodeFile(current);
+        return asJsonText({ deleted: true, id: args.id, file: current.file_path });
+      }
       await getDb().delete(jobs).where(eq(jobs.id, String(args.id)));
       invalidateJobsCache();
       return asJsonText({ deleted: true, id: args.id });

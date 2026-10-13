@@ -1,8 +1,9 @@
 /**
  * Turns the code behind a hook, route, cron job or queue worker into a
  * function. Each row says where its code comes from (`origin`); a loader per
- * origin compiles it. "inline" — the function body typed into the admin UI —
- * is the only built-in origin.
+ * origin compiles it. Built in: "inline" (the function body typed into the
+ * admin UI) and "runtime" (the same, from helpers.cron.add). "file" is
+ * registered by code-files.ts.
  */
 
 export interface CodeRow {
@@ -10,6 +11,8 @@ export interface CodeRow {
   code: string;
   /** Where the code comes from. Default "inline". */
   origin?: string | null;
+  /** For origin "file": its path inside the hooks folder. */
+  file_path?: string | null;
 }
 
 export type CompiledCode<C> = (ctx: C) => Promise<unknown>;
@@ -22,6 +25,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
 const loaders = new Map<string, CodeLoader>([
   // An async function body with `ctx` in scope.
   ["inline", (row) => new AsyncFunction("ctx", row.code)],
+  ["runtime", (row) => new AsyncFunction("ctx", row.code)],
 ]);
 
 export function registerCodeLoader(origin: string, loader: CodeLoader): () => void {

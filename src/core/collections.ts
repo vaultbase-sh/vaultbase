@@ -904,6 +904,27 @@ async function renameCollectionStorage(
   await clearPreparedStatementsOnSchemaChange();
   const { invalidateHookCache } = await import("./hooks.ts");
   invalidateHookCache();
+  await renameInHookFiles(newName);
+}
+
+/**
+ * Hook files name their collection in the file; the rename above changed
+ * only their rows. Write the new name into each file too, or the next sync
+ * would put the old one back.
+ */
+async function renameInHookFiles(newName: string): Promise<void> {
+  const { codeFilesDir, updateCodeFile } = await import("./code-files.ts");
+  if (!codeFilesDir()) return;
+  const rows = rawClient()
+    .prepare(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`)
+    .all(newName) as Array<Record<string, unknown> & { id: string; file_path: string | null }>;
+  for (const row of rows) {
+    try {
+      await updateCodeFile("hook", row, { collection_name: newName }, undefined);
+    } catch (e) {
+      console.warn(`[hooks] renamed collection '${newName}': update ${row.file_path} by hand (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
 }
 
 export async function updateCollection(

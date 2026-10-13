@@ -1,6 +1,6 @@
 /**
- * What's registered: field types, providers, drivers, and the hooks,
- * routes, cron jobs and workers added from code. Read-only; for the admin
+ * What's registered: field types, providers, drivers, the hooks, routes,
+ * cron jobs and workers added from code, and the hooks folder's state. Read-only; for the admin
  * UI and for checking that an extension loaded.
  */
 import Elysia from "elysia";
@@ -14,6 +14,7 @@ import { listRegisteredHooks } from "../core/hooks.ts";
 import { listRegisteredRoutes } from "../core/routes.ts";
 import { listRegisteredJobs } from "../core/jobs.ts";
 import { listRegisteredWorkers } from "../core/queues.ts";
+import { codeFileErrors, codeFilesDir } from "../core/code-files.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -39,6 +40,9 @@ export function makeExtensionsPlugin(jwtSecret: string) {
           routes: listRegisteredRoutes(),
           jobs: listRegisteredJobs(),
           workers: listRegisteredWorkers(),
+          // The hooks folder (null when hooks live in the database) and the
+          // files in it that didn't load.
+          hookFiles: { dir: codeFilesDir(), errors: codeFileErrors() },
         },
       };
     });

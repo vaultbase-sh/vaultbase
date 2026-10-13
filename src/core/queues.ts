@@ -27,6 +27,14 @@ import { compileCode } from "./code-loader.ts";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "dead";
 export type RetryBackoff = "exponential" | "fixed";
 
+export const VALID_BACKOFF = new Set(["exponential", "fixed"]);
+
+export function validateQueueName(q: string): string | null {
+  if (!q || !q.trim()) return "queue is required";
+  if (!/^[a-zA-Z0-9_:-]+$/.test(q)) return "queue must match [a-zA-Z0-9_:-]+";
+  return null;
+}
+
 export interface EnqueueOpts {
   /** Earliest run time, in seconds from now. */
   delay?: number;

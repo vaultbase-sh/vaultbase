@@ -25,6 +25,13 @@ async function extractAuth(request: Request, jwtSecret: string): Promise<AuthCon
 export const ROUTE_METHODS = ["GET", "POST", "PATCH", "PUT", "DELETE"] as const;
 export type RouteMethod = typeof ROUTE_METHODS[number];
 
+export function validatePath(path: string): string | null {
+  if (!path) return "path required";
+  if (!path.startsWith("/")) return "path must start with /";
+  if (path.includes("..")) return "path cannot contain '..'";
+  return null;
+}
+
 export interface RouteContext {
   req: Request;
   method: string;

@@ -4,6 +4,7 @@ import { getDb } from "../db/client.ts";
 import { hooks } from "../db/schema.ts";
 import { HOOK_EVENTS, invalidateHookCache } from "../core/hooks.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -19,7 +20,7 @@ export function makeHooksPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       const rows = await getDb().select().from(hooks);
-      return { data: rows };
+      return { data: rows.map(withVersion) };
     })
 
     .post(
@@ -31,6 +32,10 @@ export function makeHooksPlugin(jwtSecret: string) {
         if (!HOOK_EVENTS.includes(body.event as typeof HOOK_EVENTS[number])) {
           set.status = 422; return { error: `Invalid event: ${body.event}`, code: 422 };
         }
+        const inFiles = createInFiles(set, "hook", {
+          name: body.name ?? "", collection_name: body.collection_name ?? "", event: body.event, enabled: body.enabled === false ? 0 : 1,
+        }, body.code ?? "");
+        if (inFiles) return await inFiles;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(hooks).values({
@@ -77,6 +82,11 @@ export function makeHooksPlugin(jwtSecret: string) {
         }
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
+        const current = (await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1))[0];
+        if (!current) { set.status = 404; return { error: "Hook not found", code: 404 }; }
+        const { updated_at: _u, code: _c, ...settings } = update;
+        const inFiles = updateInFiles(set, "hook", current, settings, body.code, request.headers.get("if-match"));
+        if (inFiles) return await inFiles;
         await getDb().update(hooks).set(update).where(eq(hooks.id, params.id));
         invalidateHookCache();
         const row = await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1);
@@ -98,6 +108,9 @@ export function makeHooksPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      const current = (await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1))[0];
+      const inFiles = current && deleteInFiles(set, current);
+      if (inFiles) return await inFiles;
       await getDb().delete(hooks).where(eq(hooks.id, params.id));
       invalidateHookCache();
       return { data: null };

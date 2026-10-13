@@ -750,6 +750,9 @@ function makeCron(): CronHelpers {
       const now = Math.floor(Date.now() / 1000);
       const next = nextRunFromCron(opts.schedule, now);
       const existing = await db.select().from(jobs).where(eq(jobs.name, opts.name)).limit(1);
+      if (existing[0]?.origin === "file") {
+        throw new Error(`cron.add: '${opts.name}' is defined in ${existing[0].file_path}; change it there`);
+      }
       if (existing[0]) {
         const id = existing[0].id;
         await db.update(jobs).set({
@@ -770,6 +773,9 @@ function makeCron(): CronHelpers {
         code: opts.code,
         enabled: opts.enabled === false ? 0 : 1,
         mode: "inline",
+        // Created by running code, not typed in the admin UI: stays in the
+        // database when the hooks folder is in use.
+        origin: "runtime",
         next_run_at: next,
         created_at: now,
         updated_at: now,
@@ -785,6 +791,7 @@ function makeCron(): CronHelpers {
       const db = getDb();
       const existing = await db.select().from(jobs).where(eq(jobs.name, name)).limit(1);
       if (!existing[0]) return false;
+      if (existing[0].origin === "file") throw new Error(`cron.remove: '${name}' is defined in ${existing[0].file_path}; delete it there`);
       await db.delete(jobs).where(eq(jobs.id, existing[0].id));
       invalidateJobsCache();
       return true;

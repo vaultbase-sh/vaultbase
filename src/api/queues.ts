@@ -9,8 +9,11 @@ import {
   discardJob,
   queueStats,
   type JobStatus,
+  VALID_BACKOFF,
+  validateQueueName,
 } from "../core/queues.ts";
 import { verifyAuthToken } from "../core/sec.ts";
+import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -19,14 +22,7 @@ async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
-const VALID_BACKOFF = new Set(["exponential", "fixed"]);
 const VALID_STATUS = new Set<JobStatus>(["queued", "running", "succeeded", "failed", "dead"]);
-
-function validateQueueName(q: string): string | null {
-  if (!q || !q.trim()) return "queue is required";
-  if (!/^[a-zA-Z0-9_:-]+$/.test(q)) return "queue must match [a-zA-Z0-9_:-]+";
-  return null;
-}
 
 export function makeQueuesPlugin(jwtSecret: string) {
   return new Elysia({ name: "queues" })
@@ -36,7 +32,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       const rows = await getDb().select().from(workers);
-      return { data: rows };
+      return { data: rows.map(withVersion) };
     })
 
     .post(
@@ -52,6 +48,12 @@ export function makeQueuesPlugin(jwtSecret: string) {
           set.status = 422;
           return { error: `retry_backoff must be exponential|fixed`, code: 422 };
         }
+        const inFiles = createInFiles(set, "worker", {
+          name: body.name ?? "", queue: body.queue, enabled: body.enabled === false ? 0 : 1,
+          concurrency: Math.max(1, body.concurrency ?? 1), retry_max: Math.max(0, body.retry_max ?? 3),
+          retry_backoff: backoff, retry_delay_ms: Math.max(50, body.retry_delay_ms ?? 1000),
+        }, body.code ?? "");
+        if (inFiles) return await inFiles;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(workers).values({
@@ -110,6 +112,11 @@ export function makeQueuesPlugin(jwtSecret: string) {
           update["retry_backoff"] = body.retry_backoff;
         }
         if (body.retry_delay_ms !== undefined) update["retry_delay_ms"] = Math.max(50, body.retry_delay_ms);
+        const current = (await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1))[0];
+        if (!current) { set.status = 404; return { error: "Worker not found", code: 404 }; }
+        const { updated_at: _u, code: _c, ...settings } = update;
+        const inFiles = updateInFiles(set, "worker", current, settings, body.code as string | undefined, request.headers.get("if-match"));
+        if (inFiles) return await inFiles;
         await getDb().update(workers).set(update).where(eq(workers.id, params.id));
         invalidateWorkerCache();
         const row = await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1);
@@ -134,6 +141,9 @@ export function makeQueuesPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      const current = (await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1))[0];
+      const inFiles = current && deleteInFiles(set, current);
+      if (inFiles) return await inFiles;
       await getDb().delete(workers).where(eq(workers.id, params.id));
       invalidateWorkerCache();
       return { data: null };

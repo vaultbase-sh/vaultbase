@@ -71,6 +71,14 @@ export function validateCron(cronExpr: string): string | null {
   catch (e) { return e instanceof Error ? e.message : "Invalid cron expression"; }
 }
 
+/** A job's mode: "inline", or "worker:<queue>". */
+export function validateMode(mode: string): string | null {
+  if (mode === "inline") return null;
+  const m = /^worker:(.+)$/.exec(mode);
+  if (!m || !m[1]!.trim()) return `Invalid mode "${mode}" — expected "inline" or "worker:<queue>"`;
+  return null;
+}
+
 export async function runJob(jobId: string): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const rows = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);

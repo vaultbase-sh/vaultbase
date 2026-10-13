@@ -2,15 +2,9 @@ import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
-import { invalidateJobsCache, nextRunFromCron, runJob, validateCron } from "../core/jobs.ts";
+import { invalidateJobsCache, nextRunFromCron, runJob, validateCron, validateMode } from "../core/jobs.ts";
 import { verifyAuthToken } from "../core/sec.ts";
-
-function validateMode(mode: string): string | null {
-  if (mode === "inline") return null;
-  const m = /^worker:(.+)$/.exec(mode);
-  if (!m || !m[1]!.trim()) return `Invalid mode "${mode}" — expected "inline" or "worker:<queue>"`;
-  return null;
-}
+import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 
 async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -26,7 +20,7 @@ export function makeJobsPlugin(jwtSecret: string) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
       const rows = await getDb().select().from(jobs);
-      return { data: rows };
+      return { data: rows.map(withVersion) };
     })
 
     .post(
@@ -40,6 +34,10 @@ export function makeJobsPlugin(jwtSecret: string) {
         const mode = body.mode ?? "inline";
         const modeErr = validateMode(mode);
         if (modeErr) { set.status = 422; return { error: modeErr, code: 422 }; }
+        const inFiles = createInFiles(set, "job", {
+          name: body.name ?? "", cron: body.cron, mode, enabled: body.enabled === false ? 0 : 1,
+        }, body.code ?? "");
+        if (inFiles) return await inFiles;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const next = nextRunFromCron(body.cron, now);
@@ -95,6 +93,11 @@ export function makeJobsPlugin(jwtSecret: string) {
           if (modeErr) { set.status = 422; return { error: modeErr, code: 422 }; }
           update.mode = body.mode;
         }
+        const current = (await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1))[0];
+        if (!current) { set.status = 404; return { error: "Job not found", code: 404 }; }
+        const { updated_at: _u, code: _c, next_run_at: _n, ...settings } = update;
+        const inFiles = updateInFiles(set, "job", current, settings, body.code, request.headers.get("if-match"));
+        if (inFiles) return await inFiles;
         await getDb().update(jobs).set(update).where(eq(jobs.id, params.id));
         invalidateJobsCache();
         const row = await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1);
@@ -116,6 +119,9 @@ export function makeJobsPlugin(jwtSecret: string) {
       if (!(await isAdmin(request, jwtSecret))) {
         set.status = 401; return { error: "Unauthorized", code: 401 };
       }
+      const current = (await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1))[0];
+      const inFiles = current && deleteInFiles(set, current);
+      if (inFiles) return await inFiles;
       await getDb().delete(jobs).where(eq(jobs.id, params.id));
       invalidateJobsCache();
       return { data: null };

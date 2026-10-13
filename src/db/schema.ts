@@ -234,6 +234,12 @@ export const hooks = sqliteTable("vaultbase_hooks", {
   event: text("event").notNull(),
   code: text("code").notNull().default(""),
   enabled: integer("enabled").notNull().default(1),
+  /** "inline" | "file" | "runtime"; see code-files.ts. */
+  origin: text("origin").notNull().default("inline"),
+  /** For origin "file": path inside the hooks folder. */
+  file_path: text("file_path"),
+  /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
+  file_error: text("file_error"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
@@ -247,6 +253,12 @@ export const routes = sqliteTable("vaultbase_routes", {
   enabled: integer("enabled").notNull().default(1),
   /** 1 = answer 401 to callers without a valid user/admin token. */
   require_auth: integer("require_auth").notNull().default(0),
+  /** "inline" | "file" | "runtime"; see code-files.ts. */
+  origin: text("origin").notNull().default("inline"),
+  /** For origin "file": path inside the hooks folder. */
+  file_path: text("file_path"),
+  /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
+  file_error: text("file_error"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
@@ -267,6 +279,12 @@ export const jobs = sqliteTable("vaultbase_jobs", {
   next_run_at: integer("next_run_at"),
   last_status: text("last_status"),       // "ok" | "error"
   last_error: text("last_error"),
+  /** "inline" | "file" | "runtime"; see code-files.ts. */
+  origin: text("origin").notNull().default("inline"),
+  /** For origin "file": path inside the hooks folder. */
+  file_path: text("file_path"),
+  /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
+  file_error: text("file_error"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
@@ -290,6 +308,12 @@ export const workers = sqliteTable("vaultbase_workers", {
   retry_backoff: text("retry_backoff").notNull().default("exponential"),
   /** Used as base for exponential / fixed delay between retries, in ms. */
   retry_delay_ms: integer("retry_delay_ms").notNull().default(1000),
+  /** "inline" | "file" | "runtime"; see code-files.ts. */
+  origin: text("origin").notNull().default("inline"),
+  /** For origin "file": path inside the hooks folder. */
+  file_path: text("file_path"),
+  /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
+  file_error: text("file_error"),
   created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
   updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
