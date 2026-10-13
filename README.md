@@ -212,7 +212,7 @@ bun run start:cluster
 ```
 
 The parent process spawns N workers, all sharing port `VAULTBASE_PORT` via
-`Bun.serve({ reusePort: true })`. The kernel load-balances incoming
+`Bun.serve({ reusePort: true })`. On Linux the kernel load-balances incoming
 connections across workers. Workers run identical code; SQLite WAL handles
 concurrent readers natively.
 
@@ -228,12 +228,11 @@ then SIGKILL.
 **Platform notes:**
 - **Linux:** full SO_REUSEPORT load balancing. ~Nx throughput on N cores
   (real ~0.85x — some contention is unavoidable).
-- **macOS:** SO_REUSEPORT works since macOS 10.10. Same scaling as Linux.
-- **Windows:** SO_REUSEPORT semantics differ — connections aren't
-  distributed by the kernel; one worker tends to win all accepts. Cluster
-  mode runs but does not multiply throughput on Windows. Use it for
-  fault-tolerance (worker auto-restart) only; deploy on Linux for
-  performance.
+- **macOS and Windows:** the port can be shared, but the kernel doesn't
+  distribute connections: one worker takes all of them and the rest sit idle
+  (measured on macOS: 4 workers, one at 100% CPU, three at 0%). Cluster mode
+  runs but does not multiply throughput there. Use it for fault-tolerance
+  (worker auto-restart) only; deploy on Linux for performance.
 
 **SQLite under cluster mode (Phase 6a — current):**
 All workers open the same DB file. WAL allows concurrent readers; writes

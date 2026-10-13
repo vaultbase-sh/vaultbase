@@ -415,7 +415,7 @@ async function main() {
   const server = createServer(config);
   // Cluster mode: when spawned by `src/cluster.ts`, every worker calls
   // `Bun.serve({ reusePort: true })` so the kernel load-balances incoming
-  // connections (SO_REUSEPORT). Single-process mode behaves exactly as
+  // connections (SO_REUSEPORT; Linux only — see cluster.ts). Single-process mode behaves exactly as
   // before — no flag, no behavior change.
   const isWorker = !!process.env["VAULTBASE_WORKER_ID"];
   // VAULTBASE_HOST was documented but never read, so the server always
