@@ -7,6 +7,33 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Extension points.** Field types, OAuth2 providers, storage drivers, email
+  transports and push providers are now registries: the built-ins are registered
+  through them, and code that embeds Vaultbase can add its own (`registerFieldType`,
+  `registerOAuthProvider`, `registerStorageDriver`, `registerEmailTransport`,
+  `registerPushProvider`, all exported from `src/extend.ts`). Select a registered
+  storage driver or email transport with the `storage.driver` / `email.transport`
+  setting.
+- **Event bus.** Record writes and sign-ups emit `record.created`, `record.updated`,
+  `record.deleted` and `auth.signup`; listen with `on()`. Realtime, outbound webhooks
+  and after-hooks are now listeners on it, with unchanged behaviour.
+- **Hooks, routes, cron jobs and workers from code** (`registerHook`, `registerRoute`,
+  `registerJob`, `registerWorker`), alongside the ones defined in the admin UI. Admin UI
+  hooks run first, and an admin UI route on the same method and path wins.
+- `GET /api/v1/admin/extensions` lists everything registered.
+
+### Changed
+
+- A new collection field must use a registered type; an unknown type (a typo, say) is
+  refused instead of being stored as text. Existing fields are unaffected.
+- `storage.driver` and `email.transport` must name a registered driver or transport.
+  An unregistered storage driver is an error rather than a silent fall back to local
+  disk.
+
 ## [0.18.0] — 2026-10-13
 
 ### Upgrade notes

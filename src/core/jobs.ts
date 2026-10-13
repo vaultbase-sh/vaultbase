@@ -188,6 +188,10 @@ export function registerJob(def: JobRegistration): () => void {
   };
 }
 
+export function listRegisteredJobs(): Array<{ name: string; cron: string; nextRunAt: number }> {
+  return registeredJobs.map((j) => ({ name: j.name, cron: j.cron, nextRunAt: j.nextRunAt }));
+}
+
 async function runRegisteredJob(job: RegisteredJob, scheduledAt: number): Promise<void> {
   try {
     await job.run({ helpers: makeHookHelpers({ name: job.name }), scheduledAt });

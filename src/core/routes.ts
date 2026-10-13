@@ -130,6 +130,10 @@ export function registerRoute(def: RouteRegistration): () => void {
   };
 }
 
+export function listRegisteredRoutes(): Array<{ name: string; method: string; path: string; requireAuth: boolean }> {
+  return registeredRoutes.map((r) => ({ name: r.name, method: r.method, path: r.path, requireAuth: r.requireAuth }));
+}
+
 export function invalidateRoutesCache(): void {
   cache.clear();
   cacheLoaded = false;

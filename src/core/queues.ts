@@ -118,6 +118,10 @@ export function registerBuiltinWorker(spec: BuiltinWorkerSpec): () => void {
 /** The name extensions use; same as registerBuiltinWorker. */
 export const registerWorker = registerBuiltinWorker;
 
+export function listRegisteredWorkers(): Array<{ name: string; queue: string; concurrency: number }> {
+  return [...builtinWorkers.values()].map((w) => ({ name: w.name, queue: w.queue, concurrency: w.concurrency }));
+}
+
 /** Test-only: drop all built-in worker registrations. */
 export function _resetBuiltinWorkers(): void {
   builtinWorkers.clear();

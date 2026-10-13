@@ -197,6 +197,10 @@ export function registerHook(def: HookRegistration): () => void {
   };
 }
 
+export function listRegisteredHooks(): Array<{ name: string; collection: string; event: HookEvent }> {
+  return registeredHooks.map((r) => ({ name: r.hook.name, collection: r.collection, event: r.event }));
+}
+
 export function invalidateHookCache(): void {
   compiledCache.clear();
   enabledHookRows.invalidate();

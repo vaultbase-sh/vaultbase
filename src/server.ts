@@ -41,6 +41,7 @@ import { setBackupsDir, startBackupScheduler } from "./core/backups.ts";
 import { startOrphanFileSweeper } from "./core/file-sweep.ts";
 import { makeSecurityPlugin } from "./api/security.ts";
 import { makeThemePlugin } from "./api/theme.ts";
+import { makeExtensionsPlugin } from "./api/extensions.ts";
 import { makeFlagsPlugin } from "./api/flags.ts";
 import { makeWebhooksPlugin } from "./api/webhooks.ts";
 import { makeNotificationsPlugin } from "./api/notifications.ts";
@@ -292,6 +293,7 @@ export function createServer(config: Config) {
       .use(makeSqlPlugin(config.jwtSecret, config.dbPath))
       .use(makeSecurityPlugin(config.jwtSecret, config.encryptionKey))
       .use(makeThemePlugin())
+      .use(makeExtensionsPlugin(config.jwtSecret))
       .use(makeFlagsPlugin(config.jwtSecret))
       .use(makeWebhooksPlugin(config.jwtSecret))
       .use(makeNotificationsPlugin(config.jwtSecret))
