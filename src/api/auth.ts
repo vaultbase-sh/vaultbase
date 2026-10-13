@@ -6,7 +6,10 @@ import { getDb, getRawClient } from "../db/client.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
-import { runAfterHook, runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
+import { runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
+import { emit } from "../core/events.ts";
+import "../core/event-listeners.ts";
+import type { Collection } from "../db/schema.ts";
 import { canSeeAs, getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
 import { sessionMaxSeconds, tokenWindowSeconds } from "../core/auth-tokens.ts";
@@ -605,6 +608,17 @@ async function applyProviderLink(colId: string, col: Parameters<typeof findUserB
   if (u && !u.email_verified) await updateUserById(col, userId, { email_verified: 1, updated_at: Math.floor(Date.now() / 1000) });
 }
 
+
+/**
+ * A user was created by an auth flow: emit it as a record (afterCreate hooks
+ * run; realtime and webhooks skip auth-created users) and as a sign-up.
+ */
+function emitSignup(col: Collection, created: object, method: "password" | "invite" | "anonymous" | "oauth2"): void {
+  const record = created as Record<string, unknown>;
+  emit("record.created", { collection: col, record, auth: null, source: "auth" });
+  emit("auth.signup", { collection: col, record, method });
+}
+
 export function makeAuthPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth" })
     .get("/admin/setup/status", async () => {
@@ -824,9 +838,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Read back as a record (uniform shape with password_hash stripped)
         // and fire afterCreate.
         const created = await getRecord(col.name, id);
-        if (created) {
-          runAfterHook(col, "afterCreate", { record: created as unknown as Record<string, unknown>, existing: null, auth: null, helpers });
-        }
+        if (created) emitSignup(col, created, "password");
         if (isSmtpConfigured()) {
           issueAndSend("verify", { id, email }, col.id, col.name).catch((e) => {
             console.error("[auth] verification email failed for", redactEmail(email), "—", e instanceof Error ? e.message : e);
@@ -1295,7 +1307,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           updated_at: now,
         });
         const created = await getRecord(col.name, id);
-        if (created) runAfterHook(col, "afterCreate", { record: created as unknown as Record<string, unknown>, existing: null, auth: null, helpers });
+        if (created) emitSignup(col, created, "invite");
 
         const token = newToken();
         await getDb().insert(authTokens).values({
@@ -1602,13 +1614,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       // user, so apps that auto-provision related rows (default profile,
       // welcome notification, etc.) keep working.
       const created = await getRecord(col.name, id);
-      if (created) {
-        runAfterHook(col, "afterCreate", {
-          record: created as unknown as Record<string, unknown>,
-          existing: null, auth: null,
-          helpers: makeHookHelpers({ collection: col.name, event: "afterCreate" }),
-        });
-      }
+      if (created) emitSignup(col, created, "anonymous");
       const { token: jwt } = await signAuthToken({
         payload: { id, email, collection: col.name, anonymous: true },
         audience: "user",
@@ -1993,13 +1999,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         });
         // afterCreate hook on OAuth-provisioned new user.
         const created = await getRecord(col.name, userId);
-        if (created) {
-          runAfterHook(col, "afterCreate", {
-            record: created as unknown as Record<string, unknown>,
-            existing: null, auth: null,
-            helpers: makeHookHelpers({ collection: col.name, event: "afterCreate" }),
-          });
-        }
+        if (created) emitSignup(col, created, "oauth2");
       }
 
       // A linked account with TOTP on still needs its second factor: the

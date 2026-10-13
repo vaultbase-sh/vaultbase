@@ -147,13 +147,13 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
   for (const name of names) await getCollection(name);
 }
 import type { AuthContext } from "./rules.ts";
-import { broadcast } from "../realtime/manager.ts";
+import { emit } from "./events.ts";
+import "./event-listeners.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
-import { dispatchEvent } from "./webhooks.ts";
 import { validateRecord, type CanSeeRecord } from "./validate.ts";
-import { getActiveHookRequest, makeHookHelpers, runAfterHook, runBeforeHook } from "./hooks.ts";
+import { getActiveHookRequest, makeHookHelpers, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
 
 const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json"]);
@@ -651,13 +651,7 @@ async function createRecordImpl(
   });
   // Inside a batch these run only after COMMIT (see write-gate.ts).
   afterCommit(() => {
-    broadcast(col.name, { type: "create", collection: col.name, record: result }, {
-      viewRule: col.view_rule,
-      listRule: col.list_rule,
-      record: result as unknown as Record<string, unknown>,
-    });
-    void dispatchEvent({ event: `${col.name}.create`, data: { record: result } }).catch(() => { /* swallow */ });
-    runAfterHook(col, "afterCreate", { record: result as unknown as Record<string, unknown>, existing: null, auth, helpers });
+    emit("record.created", { collection: col, record: result as unknown as Record<string, unknown>, auth, source: "api" });
   });
   return result;
 }
@@ -750,16 +744,11 @@ async function updateRecordImpl(
     auth,
   });
   afterCommit(() => {
-    broadcast(col.name, { type: "update", collection: col.name, record: result }, {
-      viewRule: col.view_rule,
-      listRule: col.list_rule,
-      record: result as unknown as Record<string, unknown>,
-    });
-    void dispatchEvent({ event: `${col.name}.update`, data: { record: result } }).catch(() => { /* swallow */ });
-    runAfterHook(col, "afterUpdate", {
+    emit("record.updated", {
+      collection: col,
       record: result as unknown as Record<string, unknown>,
       existing: existing as unknown as Record<string, unknown>,
-      auth, helpers,
+      auth, source: "api",
     });
   });
   return result;
@@ -1016,19 +1005,16 @@ async function applyCascades(
       }
       const now = Math.floor(Date.now() / 1000);
       for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
-      const refListRule = refCol ? refCol.list_rule : ((await getCollection(ref.collection.name))?.list_rule ?? "");
+      const fullRef = refCol ?? await getCollection(ref.collection.name);
       client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
         .run(now, id);
-      // Notify realtime listeners with full record payloads. Hooks are skipped
-      // on purpose — cascade is a bulk operation and per-row hook execution
-      // would be surprisingly expensive.
+      // Realtime gets the full records; hooks and webhooks skip cascades (see
+      // event-listeners.ts).
       for (const r of affected) {
         const rec = await getRecord(ref.collection.name, r.id);
-        if (rec) afterCommit(() => broadcast(ref.collection.name, { type: "update", collection: ref.collection.name, record: rec }, {
-          viewRule: ref.collection.view_rule,
-          listRule: refListRule,
-          record: rec as unknown as Record<string, unknown>,
+        if (rec && fullRef) afterCommit(() => emit("record.updated", {
+          collection: fullRef, record: rec as unknown as Record<string, unknown>, existing: null, auth, source: "cascade",
         }));
       }
       continue;
@@ -1108,17 +1094,7 @@ async function deleteRecordInternal(
   });
   // Pass the just-deleted record snapshot so per-subscriber view_rule eval still has fields.
   afterCommit(() => {
-    broadcast(col.name, { type: "delete", collection: col.name, id }, {
-      viewRule: col.view_rule,
-      listRule: col.list_rule,
-      record: existing as unknown as Record<string, unknown>,
-    });
-    void dispatchEvent({ event: `${col.name}.delete`, data: { id, record: existing } }).catch(() => { /* swallow */ });
-    runAfterHook(col, "afterDelete", {
-      record: {},
-      existing: existing as unknown as Record<string, unknown>,
-      auth, helpers,
-    });
+    emit("record.deleted", { collection: col, id, existing: existing as unknown as Record<string, unknown>, auth, source: "api" });
   });
   } finally {
     unlock();
