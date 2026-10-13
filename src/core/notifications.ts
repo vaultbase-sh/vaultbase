@@ -25,6 +25,7 @@ import { enqueue, registerBuiltinWorker, type JobContext } from "./queues.ts";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 
+/** The built-in providers, configured in Settings → Notifications. */
 export type ProviderName = "onesignal" | "fcm";
 export const PROVIDER_NAMES: ProviderName[] = ["onesignal", "fcm"];
 export const NOTIFY_QUEUE = "_notify";
@@ -56,7 +57,7 @@ export interface ProviderConfigs {
 }
 
 export interface SendResult {
-  provider: ProviderName;
+  provider: string;
   /** True for HTTP 2xx. False is treated as "transient" — the worker will rethrow to retry. */
   ok: boolean;
   /** Provider-side delivery count (OneSignal `recipients`, or # FCM tokens that succeeded). */
@@ -98,12 +99,55 @@ export function loadProviderConfigs(): ProviderConfigs {
   };
 }
 
-export function getEnabledProviders(): ProviderName[] {
-  const cfg = loadProviderConfigs();
-  const out: ProviderName[] = [];
-  if (cfg.onesignal.enabled && cfg.onesignal.app_id && cfg.onesignal.api_key) out.push("onesignal");
-  if (cfg.fcm.enabled && cfg.fcm.service_account) out.push("fcm");
-  return out;
+// ── Provider registry ───────────────────────────────────────────────────────
+
+/** What a push provider gets for one notification to one user. */
+export interface PushSendContext {
+  userId: string;
+  payload: NotificationPayload;
+  settings: Record<string, string>;
+  /** The worker's helpers (db, http, log, ...). */
+  helpers: JobContext["helpers"];
+}
+
+export interface PushProviderDef {
+  name: string;
+  /** Enabled and configured in settings. By convention `notifications.providers.<name>.*`. */
+  isEnabled(settings: Record<string, string>): boolean;
+  /**
+   * Deliver to every device of one user. `ok: false` is treated as transient:
+   * the job is retried with backoff. `invalidTokens` are `vb_device_tokens`
+   * row ids to disable.
+   */
+  send(ctx: PushSendContext): Promise<Omit<SendResult, "provider" | "invalidTokens"> & { invalidTokens?: string[] }>;
+}
+
+const pushProviders = new Map<string, PushProviderDef>();
+const PUSH_NAME_RE = /^[a-z][a-z0-9_-]{0,39}$/;
+
+/** Add a push provider. `helpers.notify` fans out to it once it's enabled. */
+export function registerPushProvider(def: PushProviderDef): () => void {
+  if (!PUSH_NAME_RE.test(def.name)) {
+    throw new Error(`invalid push provider name '${def.name}' (lowercase letters, digits, - and _)`);
+  }
+  if (pushProviders.has(def.name)) throw new Error(`push provider '${def.name}' is already registered`);
+  pushProviders.set(def.name, def);
+  return () => {
+    if (pushProviders.get(def.name) === def) pushProviders.delete(def.name);
+  };
+}
+
+export function listPushProviders(): Array<{ name: string; builtin: boolean }> {
+  return [...pushProviders.keys()].map((name) => ({ name, builtin: (PROVIDER_NAMES as string[]).includes(name) }));
+}
+
+export function isPushProvider(name: string): boolean {
+  return pushProviders.has(name);
+}
+
+export function getEnabledProviders(): string[] {
+  const s = getAllSettings();
+  return [...pushProviders.values()].filter((p) => p.isEnabled(s)).map((p) => p.name);
 }
 
 // ── OneSignal driver ────────────────────────────────────────────────────────
@@ -352,7 +396,7 @@ export async function sendFcm(
 // ── Worker payload + dispatcher ─────────────────────────────────────────────
 
 export interface NotifyJobPayload {
-  provider: ProviderName;
+  provider: string;
   userId: string;
   payload: NotificationPayload;
 }
@@ -370,43 +414,21 @@ async function notifyWorker(ctx: JobContext): Promise<void> {
     return;
   }
 
-  const cfg = loadProviderConfigs();
-  let result: SendResult;
-
-  if (job.provider === "onesignal") {
-    if (!cfg.onesignal.enabled) {
-      ctx.helpers.log("notify: onesignal disabled mid-flight, dropping job");
-      return;
-    }
-    result = await sendOneSignal(cfg.onesignal, job.userId, job.payload);
-  } else if (job.provider === "fcm") {
-    if (!cfg.fcm.enabled) {
-      ctx.helpers.log("notify: fcm disabled mid-flight, dropping job");
-      return;
-    }
-    // Tokens come from vb_device_tokens. Lazy-import to avoid circular deps
-    // when the collection doesn't exist yet (notifications not bootstrapped).
-    let tokens: FcmDeviceToken[] = [];
-    try {
-      tokens = ctx.helpers.db.query<{ id: string; token: string }>(
-        `SELECT id, token FROM vb_device_tokens
-         WHERE user = ? AND provider = 'fcm' AND enabled = 1`,
-        job.userId,
-      );
-    } catch (e) {
-      // Table not yet bootstrapped → no devices to send to. Not an error.
-      const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes("no such table")) throw e;
-    }
-    result = await sendFcm(cfg.fcm, tokens, job.payload);
-    for (const id of result.invalidTokens) {
-      try {
-        ctx.helpers.db.exec(`UPDATE vb_device_tokens SET enabled = 0 WHERE id = ?`, id);
-      } catch { /* table may be gone — ignore */ }
-    }
-  } else {
-    ctx.helpers.log(`notify: unknown provider "${(job as { provider?: string }).provider}"`);
+  const def = pushProviders.get(job.provider);
+  if (!def) {
+    ctx.helpers.log(`notify: unknown provider "${job.provider}"`);
     return;
+  }
+  const settings = getAllSettings();
+  if (!def.isEnabled(settings)) {
+    ctx.helpers.log(`notify: ${job.provider} disabled mid-flight, dropping job`);
+    return;
+  }
+  const result = await def.send({ userId: job.userId, payload: job.payload, settings, helpers: ctx.helpers });
+  for (const id of result.invalidTokens ?? []) {
+    try {
+      ctx.helpers.db.exec(`UPDATE vb_device_tokens SET enabled = 0 WHERE id = ?`, id);
+    } catch { /* table may be gone — ignore */ }
   }
 
   ctx.helpers.log(result.message);
@@ -435,7 +457,7 @@ export function registerNotificationsWorker(): void {
 
 export interface NotifyOpts {
   /** Restrict to a subset of enabled providers. Default: all enabled. */
-  providers?: ProviderName[];
+  providers?: string[];
   /** Insert a row into `vb_notifications` for the in-app inbox. Default true. */
   inbox?: boolean;
   /** Enqueue push fan-out across enabled providers. Default true. */
@@ -444,7 +466,7 @@ export interface NotifyOpts {
 
 export interface DispatchResult {
   inboxRowId: string | null;
-  enqueued: Array<{ provider: ProviderName; jobId: string; deduped: boolean }>;
+  enqueued: Array<{ provider: string; jobId: string; deduped: boolean }>;
 }
 
 /**
@@ -465,8 +487,7 @@ export async function dispatchNotification(
 ): Promise<DispatchResult> {
   const inbox = opts.inbox !== false;
   const push = opts.push !== false;
-  const providers = (opts.providers ?? getEnabledProviders())
-    .filter((p): p is ProviderName => PROVIDER_NAMES.includes(p));
+  const providers = (opts.providers ?? getEnabledProviders()).filter(isPushProvider);
 
   const out: DispatchResult = { inboxRowId: null, enqueued: [] };
 
@@ -633,3 +654,38 @@ export async function testFcmConnection(config: FcmConfig): Promise<ConnectionTe
     return { ok: false, detail: e instanceof Error ? e.message : String(e) };
   }
 }
+
+// ── Built-in providers ──────────────────────────────────────────────────────
+
+registerPushProvider({
+  name: "onesignal",
+  isEnabled: () => {
+    const c = loadProviderConfigs().onesignal;
+    return c.enabled && c.app_id !== "" && c.api_key !== "";
+  },
+  send: ({ userId, payload }) => sendOneSignal(loadProviderConfigs().onesignal, userId, payload),
+});
+
+registerPushProvider({
+  name: "fcm",
+  isEnabled: () => {
+    const c = loadProviderConfigs().fcm;
+    return c.enabled && c.service_account !== "";
+  },
+  send: async ({ userId, payload, helpers }) => {
+    // Raw FCM registration tokens live in vb_device_tokens.
+    let tokens: FcmDeviceToken[] = [];
+    try {
+      tokens = helpers.db.query<{ id: string; token: string }>(
+        `SELECT id, token FROM vb_device_tokens
+         WHERE user = ? AND provider = 'fcm' AND enabled = 1`,
+        userId,
+      );
+    } catch (e) {
+      // Table not yet bootstrapped → no devices to send to. Not an error.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.includes("no such table")) throw e;
+    }
+    return sendFcm(loadProviderConfigs().fcm, tokens, payload);
+  },
+});

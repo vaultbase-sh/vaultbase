@@ -117,13 +117,14 @@ export interface HookHelpers extends ExtraHookHelpers {
     userId: string,
     payload: { title: string; body: string; data?: Record<string, unknown> },
     opts?: {
-      providers?: ("onesignal" | "fcm")[];
+      /** Push provider names (built-in or registered). Default: every enabled one. */
+      providers?: string[];
       inbox?: boolean;
       push?: boolean;
     }
   ): Promise<{
     inboxRowId: string | null;
-    enqueued: { provider: "onesignal" | "fcm"; jobId: string; deduped: boolean }[];
+    enqueued: { provider: string; jobId: string; deduped: boolean }[];
   }>;
 }
 
