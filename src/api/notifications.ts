@@ -28,15 +28,10 @@ import {
   type ProviderName,
   type NotificationPayload,
 } from "../core/notifications.ts";
+import { adminGuard } from "./_admin.ts";
 
 function rawClient(): Database {
   return (getDb() as unknown as { $client: Database }).$client;
-}
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 async function authedUser(
@@ -147,25 +142,18 @@ function applyPatch(provider: ProviderName, body: PatchBody): { applied: number;
 
 export function makeNotificationsPlugin(jwtSecret: string) {
   return new Elysia({ name: "notifications" })
+    .use(adminGuard(jwtSecret))
     // ── Admin: list provider config (secrets masked) ───────────────────────
-    .get("/admin/notifications/providers", async ({ request, query, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/notifications/providers", async ({ query }) => {
       // `?reveal=1` used to return the OneSignal key and FCM service account
       // in clear; secrets are write-only now, as in /admin/settings.
       void query;
       return { data: describeProviders() };
-    })
+    }, { requireAdmin: true })
     // ── Admin: patch one provider's config ─────────────────────────────────
     .patch(
       "/admin/notifications/providers/:name",
-      async ({ params, body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ params, body, set }) => {
         if (!isProviderName(params.name)) {
           set.status = 404;
           return { error: `Unknown provider: ${params.name}`, code: 404 };
@@ -209,16 +197,12 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         if (bootstrap) out["bootstrap"] = bootstrap;
         return out;
       },
-      { body: PATCH_BODY, params: t.Object({ name: t.String() }) },
+      { requireAdmin: true, body: PATCH_BODY, params: t.Object({ name: t.String() }) },
     )
     // ── Admin: test connection (no message sent) ───────────────────────────
     .post(
       "/admin/notifications/providers/:name/test-connection",
-      async ({ params, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ params, set }) => {
         if (!isProviderName(params.name)) {
           set.status = 404;
           return { error: `Unknown provider: ${params.name}`, code: 404 };
@@ -233,16 +217,12 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         }
         return { data: { ok: true, detail: result.detail } };
       },
-      { params: t.Object({ name: t.String() }) },
+      { requireAdmin: true, params: t.Object({ name: t.String() }) },
     )
     // ── Admin: send a real test notification to a user ─────────────────────
     .post(
       "/admin/notifications/test",
-      async ({ body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body }) => {
         const providers = body.providers
           ?.filter(isPushProvider) ?? undefined;
         const payload: NotificationPayload = {
@@ -255,6 +235,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         return { data: out };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           userId: t.String(),
           title: t.Optional(t.String()),

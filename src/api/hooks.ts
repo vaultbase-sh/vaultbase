@@ -3,32 +3,20 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { hooks } from "../db/schema.ts";
 import { HOOK_EVENTS, invalidateHookCache } from "../core/hooks.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeHooksPlugin(jwtSecret: string) {
   return new Elysia({ name: "hooks" })
-    .get("/admin/hooks", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/hooks", async () => {
       const rows = await getDb().select().from(hooks);
       return { data: rows.map(withVersion) };
-    })
+    }, { requireAdmin: true })
 
     .post(
       "/admin/hooks",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         if (!HOOK_EVENTS.includes(body.event as typeof HOOK_EVENTS[number])) {
           set.status = 422; return { error: `Invalid event: ${body.event}`, code: 422 };
         }
@@ -53,6 +41,7 @@ export function makeHooksPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           collection_name: t.Optional(t.String()),
@@ -66,9 +55,6 @@ export function makeHooksPlugin(jwtSecret: string) {
     .patch(
       "/admin/hooks/:id",
       async ({ request, params, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
         const update: { name?: string; collection_name?: string; event?: string; code?: string; enabled?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
@@ -94,6 +80,7 @@ export function makeHooksPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           collection_name: t.Optional(t.String()),
@@ -104,15 +91,12 @@ export function makeHooksPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/admin/hooks/:id", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/hooks/:id", async ({ params, set }) => {
       const current = (await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1))[0];
       const inFiles = current && deleteInFiles(set, current);
       if (inFiles) return await inFiles;
       await getDb().delete(hooks).where(eq(hooks.id, params.id));
       invalidateHookCache();
       return { data: null };
-    });
+    }, { requireAdmin: true });
 }

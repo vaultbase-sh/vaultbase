@@ -2,19 +2,12 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { adminGuard } from "./_admin.ts";
 
 interface IndexInfo {
   name: string;
   field: string;
   unique: boolean;
-}
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 function rawClient(): Database {
@@ -60,11 +53,9 @@ function indexName(collectionName: string, field: string, unique: boolean): stri
 
 export function makeIndexesPlugin(jwtSecret: string) {
   return new Elysia({ name: "indexes" })
+    .use(adminGuard(jwtSecret))
     // List indexes for a collection
-    .get("/admin/collections/:name/indexes", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/collections/:name/indexes", async ({ params, set }) => {
       const col = await getCollection(params.name);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       try {
@@ -74,15 +65,12 @@ export function makeIndexesPlugin(jwtSecret: string) {
         set.status = 500;
         return { error: e instanceof Error ? e.message : String(e), code: 500 };
       }
-    })
+    }, { requireAdmin: true })
 
     // Create index
     .post(
       "/admin/collections/:name/indexes",
-      async ({ request, params, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ params, body, set }) => {
         const col = await getCollection(params.name);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
 
@@ -113,14 +101,11 @@ export function makeIndexesPlugin(jwtSecret: string) {
           return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
-      { body: t.Object({ field: t.String(), unique: t.Optional(t.Boolean()) }) }
+      { requireAdmin: true, body: t.Object({ field: t.String(), unique: t.Optional(t.Boolean()) }) }
     )
 
     // Drop index
-    .delete("/admin/collections/:name/indexes/:indexName", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/collections/:name/indexes/:indexName", async ({ params, set }) => {
       const idxName = params.indexName;
 
       // Bind the drop to the named collection. The old handler checked only an
@@ -150,5 +135,5 @@ export function makeIndexesPlugin(jwtSecret: string) {
         set.status = 500;
         return { error: e instanceof Error ? e.message : String(e), code: 500 };
       }
-    });
+    }, { requireAdmin: true });
 }

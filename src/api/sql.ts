@@ -22,7 +22,6 @@
 
 import Elysia, { t } from "elysia";
 import { Database } from "bun:sqlite";
-import { extractBearer, verifyAuthToken } from "../core/sec.ts";
 import { runSql, MAX_SQL_RESULT_ROWS } from "../core/sql-runner.ts";
 import {
   describeSandbox,
@@ -38,27 +37,13 @@ import {
   recordSavedQueryRun,
   updateSavedQuery,
 } from "../core/sql-queries.ts";
-
-interface AdminCtx { id: string; email: string }
-
-async function getAdmin(request: Request, jwtSecret: string): Promise<AdminCtx | null> {
-  const token = extractBearer(request);
-  if (!token) return null;
-  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-  if (!ctx) return null;
-  // Reject when the auth came from an API token (admin-acting). Raw SQL
-  // is interactive-only; tokens get the MCP `run_sql` tool instead.
-  if (ctx.viaApiToken) return null;
-  return { id: ctx.id, email: ctx.email ?? "" };
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
   return new Elysia({ name: "sql-runner" })
+    .use(adminGuard(jwtSecret))
     // ── Run ────────────────────────────────────────────────────────────
-    .post("/admin/sql/run", async ({ request, set, body }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized — interactive admin session required", code: 401 }; }
-
+    .post("/admin/sql/run", async ({ admin: me, body }) => {
       if (body.mode === "sandbox" && !sandboxExists(me.id)) {
         // Auto-create on first sandbox run for a friendlier UX. Caller can
         // also explicitly POST /sandbox/reset to rebuild on demand.
@@ -75,6 +60,7 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
       });
       return { data: result };
     }, {
+      requireAdmin: { cookie: true, session: true },
       body: t.Object({
         sql: t.String({ maxLength: 100_000 }),
         mode: t.Union([t.Literal("readonly"), t.Literal("sandbox")]),
@@ -84,14 +70,10 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
     })
 
     // ── Sandbox lifecycle ──────────────────────────────────────────────
-    .get("/admin/sql/sandbox", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/sql/sandbox", async ({ admin: me }) => {
       return { data: describeSandbox(me.id) };
-    })
-    .post("/admin/sql/sandbox/reset", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true, session: true } })
+    .post("/admin/sql/sandbox/reset", async ({ admin: me, set }) => {
       try {
         const info = resetSandbox(me.id, dbPath);
         return { data: info };
@@ -100,23 +82,17 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
         set.status = 500;
         return { error: `Sandbox reset failed: ${msg}`, code: 500 };
       }
-    })
-    .delete("/admin/sql/sandbox", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true, session: true } })
+    .delete("/admin/sql/sandbox", async ({ admin: me }) => {
       const removed = dropSandbox(me.id);
       return { data: { removed } };
-    })
+    }, { requireAdmin: { cookie: true, session: true } })
 
     // ── Saved queries ──────────────────────────────────────────────────
-    .get("/admin/sql/queries", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/sql/queries", async ({ admin: me }) => {
       return { data: await listSavedQueries(me.id) };
-    })
-    .post("/admin/sql/queries", async ({ request, set, body }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true, session: true } })
+    .post("/admin/sql/queries", async ({ admin: me, set, body }) => {
       try {
         const q = await createSavedQuery({
           name: body.name,
@@ -132,22 +108,19 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
         return { error: msg, code: 400 };
       }
     }, {
+      requireAdmin: { cookie: true, session: true },
       body: t.Object({
         name: t.String({ minLength: 1, maxLength: 100 }),
         sql: t.String({ minLength: 1, maxLength: 100_000 }),
         description: t.Optional(t.String({ maxLength: 500 })),
       }),
     })
-    .get("/admin/sql/queries/:id", async ({ request, set, params }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/sql/queries/:id", async ({ admin: me, set, params }) => {
       const q = await getSavedQuery(params.id, me.id);
       if (!q) { set.status = 404; return { error: "Not found", code: 404 }; }
       return { data: q };
-    })
-    .patch("/admin/sql/queries/:id", async ({ request, set, params, body }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true, session: true } })
+    .patch("/admin/sql/queries/:id", async ({ admin: me, set, params, body }) => {
       try {
         const patch: { name?: string; sql?: string; description?: string | null } = {};
         if (body.name !== undefined) patch.name = body.name;
@@ -162,22 +135,19 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
         return { error: msg, code: 400 };
       }
     }, {
+      requireAdmin: { cookie: true, session: true },
       body: t.Object({
         name: t.Optional(t.String({ minLength: 1, maxLength: 100 })),
         sql: t.Optional(t.String({ minLength: 1, maxLength: 100_000 })),
         description: t.Optional(t.Union([t.String({ maxLength: 500 }), t.Null()])),
       }),
     })
-    .delete("/admin/sql/queries/:id", async ({ request, set, params }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .delete("/admin/sql/queries/:id", async ({ admin: me, set, params }) => {
       const ok = await deleteSavedQuery(params.id, me.id);
       if (!ok) { set.status = 404; return { error: "Not found", code: 404 }; }
       return { data: { deleted: true } };
-    })
-    .post("/admin/sql/queries/:id/run", async ({ request, set, params, body }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true, session: true } })
+    .post("/admin/sql/queries/:id/run", async ({ admin: me, set, params, body }) => {
       const q = await getSavedQuery(params.id, me.id);
       if (!q) { set.status = 404; return { error: "Not found", code: 404 }; }
 
@@ -197,25 +167,22 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
       });
       return { data: result };
     }, {
+      requireAdmin: { cookie: true, session: true },
       body: t.Object({
         mode: t.Union([t.Literal("readonly"), t.Literal("sandbox")]),
       }),
     })
 
     // ── Constants the UI may want to know ──────────────────────────────
-    .get("/admin/sql/meta", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/sql/meta", async () => {
       return { data: { maxRows: MAX_SQL_RESULT_ROWS } };
-    })
+    }, { requireAdmin: { cookie: true, session: true } })
 
     // ── Rich schema for IDE intellisense ───────────────────────────────
     // Pulls PRAGMA table_info + index_list + foreign_key_list for every
     // table + view in the live DB. Powers the editor's autocomplete +
     // hover providers. Read-only — no schema mutation here.
-    .get("/admin/sql/schema", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/sql/schema", async ({ set }) => {
       try {
         return { data: introspectSchema(dbPath) };
       } catch (e) {
@@ -223,7 +190,7 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
         set.status = 500;
         return { error: `Schema introspection failed: ${msg}`, code: 500 };
       }
-    });
+    }, { requireAdmin: { cookie: true, session: true } });
 }
 
 // ── Schema introspection ─────────────────────────────────────────────────

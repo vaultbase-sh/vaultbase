@@ -12,14 +12,7 @@ import {
   type CollectionSnapshot,
   type Snapshot,
 } from "../core/migrations.ts";
-import { verifyAuthToken } from "../core/sec.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 /**
  * Re-exported for tests / older imports — the canonical home is now
@@ -30,11 +23,8 @@ export { computeSnapshotDiff };
 
 export function makeMigrationsPlugin(jwtSecret: string) {
   return new Elysia({ name: "migrations" })
-    .get("/admin/migrations/snapshot", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/migrations/snapshot", async ({ set }) => {
       const cols = await listCollections();
       const snapshot: Snapshot = {
         generated_at: new Date().toISOString(),
@@ -57,15 +47,11 @@ export function makeMigrationsPlugin(jwtSecret: string) {
       set.headers["Content-Type"] = "application/json; charset=utf-8";
       set.headers["Content-Disposition"] = `attachment; filename="vaultbase-snapshot-${snapshot.generated_at.slice(0, 10)}.json"`;
       return snapshot;
-    })
+    }, { requireAdmin: true })
 
     .post(
       "/admin/migrations/diff",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         if (!body.snapshot || typeof body.snapshot !== "object") {
           set.status = 422;
           return { error: "snapshot object required", code: 422 };
@@ -83,6 +69,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
         return { data };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           snapshot: t.Any(),
         }),
@@ -91,11 +78,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
 
     .post(
       "/admin/migrations/apply",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         if (!body.snapshot || typeof body.snapshot !== "object") {
           set.status = 422;
           return { error: "snapshot object required", code: 422 };
@@ -131,6 +114,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
         };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           snapshot: t.Any(),
           mode: t.Optional(t.String()),

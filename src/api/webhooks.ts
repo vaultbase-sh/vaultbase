@@ -5,14 +5,8 @@ import Elysia, { t } from "elysia";
 import { and, desc, eq, gte } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { dispatchEvent, invalidateWebhookCache } from "../core/webhooks.ts";
-
-async function requireAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 function generateSecret(): string {
   const bytes = new Uint8Array(32);
@@ -22,27 +16,19 @@ function generateSecret(): string {
 
 export function makeWebhooksPlugin(jwtSecret: string) {
   return new Elysia({ name: "webhooks" })
-    .get("/admin/webhooks", async ({ request, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/webhooks", async () => {
       const rows = await getDb().select().from(webhooks).orderBy(desc(webhooks.created_at));
       return { data: rows };
-    })
+    }, { requireAdmin: true })
 
-    .get("/admin/webhooks/:id", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/webhooks/:id", async ({ params, set }) => {
       const rows = await getDb().select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1);
       if (rows.length === 0) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
       return { data: rows[0] };
-    })
+    }, { requireAdmin: true })
 
-    .post("/admin/webhooks", async ({ request, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/webhooks", async ({ body, set }) => {
       if (!body.url || !/^https?:\/\//i.test(body.url)) {
         set.status = 422; return { error: "url must be http(s)://", code: 422 };
       }
@@ -66,6 +52,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       const fresh = await getDb().select().from(webhooks).where(eq(webhooks.id, id)).limit(1);
       return { data: fresh[0] };
     }, {
+      requireAdmin: true,
       body: t.Object({
         name: t.Optional(t.String()),
         url: t.String(),
@@ -80,10 +67,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       }),
     })
 
-    .patch("/admin/webhooks/:id", async ({ request, params, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .patch("/admin/webhooks/:id", async ({ params, body, set }) => {
       if (body.url !== undefined && !/^https?:\/\//i.test(body.url)) {
         set.status = 422; return { error: "url must be http(s)://", code: 422 };
       }
@@ -104,6 +88,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       if (fresh.length === 0) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
       return { data: fresh[0] };
     }, {
+      requireAdmin: true,
       body: t.Object({
         name: t.Optional(t.String()),
         url: t.Optional(t.String()),
@@ -118,21 +103,15 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       }),
     })
 
-    .delete("/admin/webhooks/:id", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/webhooks/:id", async ({ params }) => {
       await getDb().delete(webhooks).where(eq(webhooks.id, params.id));
       invalidateWebhookCache();
       return { data: { deleted: params.id } };
-    })
+    }, { requireAdmin: true })
 
     // Fire a test event so the operator can confirm wiring without
     // touching real records.
-    .post("/admin/webhooks/:id/test", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/webhooks/:id/test", async ({ params, set }) => {
       const rows = await getDb().select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1);
       const w = rows[0];
       if (!w) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
@@ -152,13 +131,10 @@ export function makeWebhooksPlugin(jwtSecret: string) {
         invalidateWebhookCache();
       }
       return { data: { ok: true } };
-    })
+    }, { requireAdmin: true })
 
     // Delivery log — per-webhook recent deliveries.
-    .get("/admin/webhooks/:id/deliveries", async ({ request, params, query, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/webhooks/:id/deliveries", async ({ params, query }) => {
       const limit = Math.min(200, Math.max(1, parseInt(query.limit ?? "50", 10)));
       const sinceRaw = query.since ? parseInt(query.since, 10) : 0;
       const conds = sinceRaw > 0
@@ -172,6 +148,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
         .limit(limit);
       return { data: rows };
     }, {
+      requireAdmin: true,
       query: t.Object({ limit: t.Optional(t.String()), since: t.Optional(t.String()) }),
     });
 }

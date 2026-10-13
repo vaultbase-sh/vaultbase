@@ -2,7 +2,6 @@ import { clientIp } from "../core/sec.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { isAdminApiPath } from "../core/api-paths.ts";
 import {
   appendLogEntry,
@@ -13,6 +12,7 @@ import {
   type LogRuleEval,
 } from "../core/file-logger.ts";
 import { clearRequestContext, getRuleEvals } from "../core/request-context.ts";
+import { adminGuard } from "./_admin.ts";
 
 const SKIP_PREFIXES = ["/_/", "/admin/logs", "/realtime", "/health"];
 
@@ -182,6 +182,7 @@ export function makeLogsPlugin(jwtSecret: string) {
   const secret = new TextEncoder().encode(jwtSecret);
 
   return new Elysia({ name: "logs" })
+    .use(adminGuard(jwtSecret))
     .onRequest(({ request }) => {
       timings.set(request, Date.now());
     })
@@ -212,15 +213,7 @@ export function makeLogsPlugin(jwtSecret: string) {
     })
     .get(
       "/admin/logs",
-      async ({ request, query, set }) => {
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        // Centralized verifier — fixes N-1 admin-token-bypass.
-        const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-        if (!ctx) {
-          set.status = 401;
-          return { error: "Unauthorized", code: 401 };
-        }
+      async ({ query }) => {
         const page = Math.max(1, parseInt(query.page ?? "1") || 1);
         const perPage = Math.min(200, Math.max(1, parseInt(query.perPage ?? "50") || 50));
         const minDuration = query.minDuration ? parseInt(query.minDuration) || 0 : 0;
@@ -239,6 +232,7 @@ export function makeLogsPlugin(jwtSecret: string) {
         return listLogs(opts);
       },
       {
+        requireAdmin: true,
         query: t.Object({
           page: t.Optional(t.String()),
           perPage: t.Optional(t.String()),
@@ -251,22 +245,10 @@ export function makeLogsPlugin(jwtSecret: string) {
         }),
       }
     )
-    .get("/admin/logs/files", async ({ request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      // Centralized verifier — fixes N-1 admin-token-bypass.
-      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      return { data: listLogDates() };
-    })
+    .get("/admin/logs/files", () => ({ data: listLogDates() }), { requireAdmin: true })
     .post(
       "/admin/logs/search",
-      async ({ request, body, set }) => {
-        const token = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-        // Centralized verifier — fixes N-1 admin-token-bypass.
-        const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-        if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      async ({ body, set }) => {
         if (!body.jsonpath || typeof body.jsonpath !== "string") {
           set.status = 422; return { error: "jsonpath required", code: 422 };
         }
@@ -278,6 +260,7 @@ export function makeLogsPlugin(jwtSecret: string) {
         return { data: result };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           jsonpath: t.String(),
           from: t.Optional(t.String()),

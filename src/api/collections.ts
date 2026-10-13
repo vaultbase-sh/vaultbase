@@ -1,5 +1,4 @@
 import Elysia, { t } from "elysia";
-import { verifyAuthToken } from "../core/sec.ts";
 import {
   CollectionValidationError,
   createCollection,
@@ -14,37 +13,26 @@ import {
   validateViewQuery,
 } from "../core/collections.ts";
 import { getRawClient } from "../db/client.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Central verifier, so revoked / force-logged-out admin tokens fail here too.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeCollectionsPlugin(jwtSecret: string) {
   return new Elysia({ name: "collections" })
+    .use(adminGuard(jwtSecret))
     // Collection definitions carry every rule, field and view query — a map
     // of what is protected and how — so reading them is admin-only, like the
     // OpenAPI document.
-    .get("/collections", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/collections", async () => {
       const data = await listCollections();
       return { data };
-    })
-    .get("/collections/:id", async ({ params, request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: true })
+    .get("/collections/:id", async ({ params, set }) => {
       const col = await getCollection(params.id);
       if (!col) { set.status = 404; return { error: "Not found", code: 404 }; }
       return { data: col };
-    })
+    }, { requireAdmin: true })
     .post(
       "/collections",
-      async ({ body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
-        }
+      async ({ body, set }) => {
         const type = body.type ?? "base";
         if (type !== "base" && type !== "auth" && type !== "view") {
           set.status = 422;
@@ -90,6 +78,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         }
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.String(),
           type: t.Optional(t.String()),
@@ -106,11 +95,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     )
     .patch(
       "/collections/:id",
-      async ({ params, body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
-        }
+      async ({ params, body, set }) => {
         const update: Record<string, unknown> = {};
         if (body.name !== undefined) update["name"] = body.name;
         if (body.fields !== undefined) update["fields"] = JSON.stringify(body.fields);
@@ -149,6 +134,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         }
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           fields: t.Optional(t.Array(t.Any())),
@@ -166,11 +152,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     // surface errors and refresh the field list without actually creating a view.
     .post(
       "/admin/collections/preview-view",
-      async ({ body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
-        }
+      async ({ body, set }) => {
         try {
           validateViewQuery(body.view_query);
           const columns = inferViewColumns(body.view_query);
@@ -181,17 +163,13 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
-      { body: t.Object({ view_query: t.String() }) }
+      { requireAdmin: true, body: t.Object({ view_query: t.String() }) }
     )
     // Preview the first N rows a view query would return. Lets the admin UI
     // sanity-check a query before saving the collection — no view is created.
     .post(
       "/admin/collections/preview-view-rows",
-      async ({ body, request, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
-        }
+      async ({ body, set }) => {
         try {
           const limit = typeof body.limit === "number" ? body.limit : 5;
           const result = previewViewRows(body.view_query, limit);
@@ -201,25 +179,17 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
-      { body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
+      { requireAdmin: true, body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
     )
-    .delete("/collections/:id", async ({ params, request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
-      }
+    .delete("/collections/:id", async ({ params }) => {
       await deleteCollection(params.id);
       return { data: null };
-    })
+    }, { requireAdmin: true })
 
     // Per-collection counts + activity. Backs the Collections page so the
     // "records" + "activity" cells get real values. Admin-only — exposes
     // table-level cardinality.
-    .get("/admin/collections/stats", async ({ request, query, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
-      }
+    .get("/admin/collections/stats", async ({ query }) => {
       const cols = await listCollections();
       const client = getRawClient();
       const now = Math.floor(Date.now() / 1000);
@@ -281,5 +251,5 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         windowSec: recentWindowSec,
         cap: COUNT_CAP,
       };
-    });
+    }, { requireAdmin: true });
 }

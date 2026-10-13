@@ -2,15 +2,8 @@ import Elysia from "elysia";
 import { createHash, timingSafeEqual } from "crypto";
 import { globalMetrics, STEPS } from "../core/perf-metrics.ts";
 import { getRawClient } from "../db/client.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { getSetting } from "./settings.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminFromRequest, adminGuard } from "./_admin.ts";
 
 interface SqliteSnapshot {
   page_count: number;
@@ -45,24 +38,17 @@ function sameSecret(a: string, b: string): boolean {
 
 export function makeMetricsPlugin(jwtSecret: string) {
   return new Elysia({ name: "metrics" })
-    .get("/_/metrics", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/_/metrics", async () => {
       return {
         ...globalMetrics.snapshot(),
         sqlite: sqliteSnapshot(),
       };
-    })
-    .post("/_/metrics/reset", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .post("/_/metrics/reset", async () => {
       globalMetrics.reset();
       return { data: { reset: true } };
-    })
+    }, { requireAdmin: true })
     // Prometheus exposition. Off by default; enable via `metrics.enabled`.
     // Scrapers authenticate with `metrics.token` (Bearer).
     .get("/metrics", async ({ request, set }) => {
@@ -74,7 +60,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
       // admin token. Enabled with no token, this used to answer anyone.
       const required = getSetting("metrics.token", "");
       const got = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
-      const allowed = required ? sameSecret(got, required) : await isAdmin(request, jwtSecret);
+      const allowed = required ? sameSecret(got, required) : (await adminFromRequest(request, jwtSecret)) !== null;
       if (!allowed) {
         set.status = 401;
         set.headers["www-authenticate"] = "Bearer";

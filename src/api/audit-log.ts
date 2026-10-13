@@ -1,21 +1,11 @@
 import Elysia, { t } from "elysia";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
-import { extractBearer, verifyAuthToken } from "../core/sec.ts";
 import { isAdminApiPath } from "../core/api-paths.ts";
-
-async function getAdmin(request: Request, jwtSecret: string): Promise<{ id: string; email: string } | null> {
-  // Same token sources the admin routes accept, the session cookie included:
-  // reading only `Authorization` left actions taken in the admin UI with no
-  // actor in the log.
-  const token = extractBearer(request);
-  if (!token) return null;
-  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-  if (!ctx) return null;
-  return { id: ctx.id, email: ctx.email ?? "" };
-}
+import { adminFromRequest, adminGuard } from "./_admin.ts";
 
 export function makeAuditLogPlugin(jwtSecret: string) {
   return new Elysia({ name: "audit-log" })
+    .use(adminGuard(jwtSecret))
     // ── Globally-scoped onAfterHandle: capture every state-changing
     //    /api/v1/admin/* request. Only writes on AUDITED_METHODS — read GETs
     //    are skipped inside recordAuditEntry.
@@ -25,7 +15,9 @@ export function makeAuditLogPlugin(jwtSecret: string) {
       if (!isAdminApiPath(url.pathname)) return;
 
       const status = Number(set.status ?? 200);
-      const actor = await getAdmin(request, jwtSecret);
+      // Same token sources as the admin UI, the session cookie included, so
+      // actions taken there are attributed.
+      const actor = await adminFromRequest(request, jwtSecret, { cookie: true });
       // Body is already consumed by the handler — we don't try to capture
       // it. The action label + target id from the path is sufficient for
       // most audit needs; full request bodies belong in the file logger.
@@ -35,16 +27,14 @@ export function makeAuditLogPlugin(jwtSecret: string) {
       const url = new URL(request.url);
       if (!isAdminApiPath(url.pathname)) return;
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
-      const actor = await getAdmin(request, jwtSecret);
+      const actor = await adminFromRequest(request, jwtSecret, { cookie: true });
       void recordAuditEntry({ request, status, actor }).catch(() => { /* swallow */ });
     })
 
     // ── Read API ────────────────────────────────────────────────────────
     .get(
       "/admin/audit-log",
-      async ({ request, query, set }) => {
-        const me = await getAdmin(request, jwtSecret);
-        if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      async ({ query }) => {
         const opts: Parameters<typeof listAuditEntries>[0] = {};
         if (query.page) opts.page = parseInt(query.page);
         if (query.perPage) opts.perPage = parseInt(query.perPage);
@@ -56,6 +46,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
         return { data: result };
       },
       {
+        requireAdmin: { cookie: true },
         query: t.Object({
           page: t.Optional(t.String()),
           perPage: t.Optional(t.String()),

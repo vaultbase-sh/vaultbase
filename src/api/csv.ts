@@ -3,14 +3,7 @@ import { encodeRow, parseCsvToObjects } from "../core/csv.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
 import { createRecord, listRecords, type RecordWithMeta } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
-import { verifyAuthToken } from "../core/sec.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 /**
  * Coerce a CSV cell back to the right JS type for createRecord. Empty strings
@@ -113,6 +106,7 @@ export function formatRowsForCsv(records: RecordWithMeta[], columns: CsvColumn[]
 
 export function makeCsvPlugin(jwtSecret: string) {
   return new Elysia({ name: "csv" })
+    .use(adminGuard(jwtSecret))
     // Export all rows of a base collection as CSV — streamed.
     //
     // Why streaming: at ~100k rows the buffered version (encodeCsv on the full
@@ -122,13 +116,7 @@ export function makeCsvPlugin(jwtSecret: string) {
     //
     // Output is byte-identical to the previous buffered implementation:
     //   header CRLF row1 CRLF row2 ... CRLF rowN     (no trailing CRLF)
-    .get("/admin/export/:collection", async ({ params, request, set }) => {
-      // Atomic auth/rule check — runs synchronously before we hand back a Response
-      // so unauthorized callers get a plain JSON error, never a stream.
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
-      }
+    .get("/admin/export/:collection", async ({ params, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "base") {
@@ -210,14 +198,10 @@ export function makeCsvPlugin(jwtSecret: string) {
           "Content-Disposition": `attachment; filename="${col.name}.csv"`,
         },
       });
-    })
+    }, { requireAdmin: true })
 
     // Import CSV rows into a base collection.
     .post("/admin/import/:collection", async ({ params, request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
-      }
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "base") {
@@ -275,5 +259,5 @@ export function makeCsvPlugin(jwtSecret: string) {
           errors: errors.slice(0, 50), // cap to keep response reasonable
         },
       };
-    });
+    }, { requireAdmin: true });
 }

@@ -19,15 +19,8 @@ import { invalidateStorageCache } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 // SQLite magic header — used to verify uploads
 const SQLITE_MAGIC = "SQLite format 3\0";
@@ -154,12 +147,9 @@ function clusterRestoreRefusal(set: { status?: number | string }) {
 
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
   return new Elysia({ name: "backup" })
+    .use(adminGuard(jwtSecret))
     // Download SQLite snapshot
-    .get("/admin/backup", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/backup", async ({ set }) => {
       if (!existsSync(dbPath)) {
         set.status = 404;
         return { error: "Database file not found", code: 404 };
@@ -178,36 +168,24 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       set.headers["Content-Type"] = "application/octet-stream";
       set.headers["Content-Disposition"] = `attachment; filename="vaultbase-backup-${stamp}.db"`;
       return new Response(bytes);
-    })
+    }, { requireAdmin: true })
 
     // Stored backups + schedule status
-    .get("/admin/backups", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/backups", async () => {
       return { data: { items: listBackups(), status: getBackupStatus() } };
-    })
+    }, { requireAdmin: true })
 
     // Take a backup now (same pipeline as the schedule: local, S3, prune)
-    .post("/admin/backups", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/backups", async ({ set }) => {
       try {
         return { data: await runBackup() };
       } catch (e) {
         set.status = 500;
         return { error: `Backup failed: ${e instanceof Error ? e.message : String(e)}`, code: 500 };
       }
-    })
+    }, { requireAdmin: true })
 
-    .get("/admin/backups/:name", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/backups/:name", async ({ params, set }) => {
       const p = backupPath(params.name);
       if (!p) {
         set.status = 404;
@@ -216,25 +194,17 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       set.headers["Content-Type"] = "application/octet-stream";
       set.headers["Content-Disposition"] = `attachment; filename="${params.name}"`;
       return new Response(Bun.file(p));
-    })
+    }, { requireAdmin: true })
 
-    .delete("/admin/backups/:name", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/backups/:name", async ({ params, set }) => {
       if (!deleteBackup(params.name)) {
         set.status = 404;
         return { error: "Backup not found", code: 404 };
       }
       return { data: { deleted: params.name } };
-    })
+    }, { requireAdmin: true })
 
-    .post("/admin/backups/:name/restore", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/backups/:name/restore", async ({ params, set }) => {
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
       const p = backupPath(params.name);
@@ -250,15 +220,10 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return { error: `Restore failed: ${err}`, code: 500 };
       }
       return { data: { message: "Restore complete. Sessions revoked since the backup stay revoked." } };
-    })
+    }, { requireAdmin: true })
 
     // Restore from uploaded SQLite file
     .post("/admin/restore", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
-
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
       const formData = await request.formData();
@@ -286,5 +251,5 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       }
 
       return { data: { message: "Restore complete. Sessions revoked since the backup stay revoked." } };
-    });
+    }, { requireAdmin: true });
 }

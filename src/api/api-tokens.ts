@@ -20,16 +20,7 @@ import {
   revokeApiToken,
 } from "../core/api-tokens.ts";
 import { extractBearer, verifyAuthToken } from "../core/sec.ts";
-
-interface AdminCtx { id: string; email: string }
-
-async function getAdmin(request: Request, jwtSecret: string): Promise<AdminCtx | null> {
-  const token = extractBearer(request);
-  if (!token) return null;
-  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-  if (!ctx) return null;
-  return { id: ctx.id, email: ctx.email ?? "" };
-}
+import { adminGuard } from "./_admin.ts";
 
 /** Sanitised row for the wire — never includes a token value. */
 function rowForWire(r: Awaited<ReturnType<typeof getApiToken>>) {
@@ -55,12 +46,11 @@ function rowForWire(r: Awaited<ReturnType<typeof getApiToken>>) {
 
 export function makeApiTokensPlugin(jwtSecret: string) {
   return new Elysia({ name: "api-tokens" })
-    .get("/admin/api-tokens", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/api-tokens", async () => {
       const rows = await listApiTokens();
       return { data: rows.map((r) => rowForWire(r)) };
-    })
+    }, { requireAdmin: { cookie: true } })
     .get("/admin/api-tokens/me", async ({ request, set }) => {
       // Useful for client tooling to verify what scopes a token has.
       const tok = extractBearer(request);
@@ -77,18 +67,14 @@ export function makeApiTokensPlugin(jwtSecret: string) {
         },
       };
     })
-    .get("/admin/api-tokens/:id", async ({ request, params, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/api-tokens/:id", async ({ params, set }) => {
       const row = await getApiToken(params.id);
       if (!row) { set.status = 404; return { error: "Token not found", code: 404 }; }
       return { data: rowForWire(row) };
-    })
+    }, { requireAdmin: { cookie: true } })
     .post(
       "/admin/api-tokens",
-      async ({ request, body, set }) => {
-        const me = await getAdmin(request, jwtSecret);
-        if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      async ({ admin: me, body, set }) => {
         try {
           const ttlSeconds = body.ttl_seconds ?? body.ttlSeconds ?? DEFAULT_API_TOKEN_TTL_SEC;
           const result = await mintApiToken({
@@ -114,6 +100,7 @@ export function makeApiTokensPlugin(jwtSecret: string) {
         }
       },
       {
+        requireAdmin: { cookie: true },
         body: t.Object({
           name: t.String({ minLength: 1, maxLength: 100 }),
           scopes: t.Array(t.String({ minLength: 1, maxLength: 64 }), { minItems: 1 }),
@@ -122,16 +109,12 @@ export function makeApiTokensPlugin(jwtSecret: string) {
         }),
       },
     )
-    .delete("/admin/api-tokens/:id", async ({ request, params, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .delete("/admin/api-tokens/:id", async ({ params, set }) => {
       const r = await revokeApiToken(params.id);
       if (!r.revoked) { set.status = 404; return { error: "Token not found", code: 404 }; }
       return { data: { revoked: true } };
-    })
-    .get("/admin/api-tokens-meta/scopes", async ({ request, set }) => {
-      const me = await getAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    }, { requireAdmin: { cookie: true } })
+    .get("/admin/api-tokens-meta/scopes", async () => {
       return { data: { scopes: KNOWN_SCOPES } };
-    });
+    }, { requireAdmin: { cookie: true } });
 }

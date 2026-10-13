@@ -56,7 +56,7 @@ describe("GET /admin/collections/stats", () => {
   it("requires admin auth", async () => {
     const app = mkApp();
     const res = await app.handle(new Request("http://localhost/api/v1/admin/collections/stats"));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
   });
 
   it("returns recordCount + lastUpdated + recentWrites for base collections", async () => {

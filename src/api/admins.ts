@@ -2,45 +2,26 @@ import { count, eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
-import { HASH_OPTS, verifyAuthToken } from "../core/sec.ts";
+import { HASH_OPTS } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
-
-interface AdminClaims {
-  id: string;
-  email: string;
-}
-
-async function verifyAdmin(
-  request: Request,
-  jwtSecret: string
-): Promise<AdminClaims | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return null;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-  if (!ctx) return null;
-  return { id: ctx.id, email: ctx.email ?? "" };
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeAdminsPlugin(jwtSecret: string) {
   return new Elysia({ name: "admins" })
+    .use(adminGuard(jwtSecret))
     // List all admins
-    .get("/admin/admins", async ({ request, set }) => {
-      const me = await verifyAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .get("/admin/admins", async () => {
       const db = getDb();
       const rows = await db
         .select({ id: admin.id, email: admin.email, created_at: admin.created_at })
         .from(admin);
       return { data: rows };
-    })
+    }, { requireAdmin: true })
 
     // Create new admin
     .post(
       "/admin/admins",
-      async ({ request, body, set }) => {
-        const me = await verifyAdmin(request, jwtSecret);
-        if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      async ({ body, set }) => {
         {
           const pwErr = await validatePassword(body.password);
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
@@ -57,15 +38,13 @@ export function makeAdminsPlugin(jwtSecret: string) {
         await db.insert(admin).values({ id, email: body.email, password_hash: hash, created_at: now });
         return { data: { id, email: body.email, created_at: now } };
       },
-      { body: t.Object({ email: t.String(), password: t.String() }) }
+      { requireAdmin: true, body: t.Object({ email: t.String(), password: t.String() }) }
     )
 
     // Update your own admin account (email and/or password)
     .patch(
       "/admin/admins/:id",
-      async ({ request, params, body, set }) => {
-        const me = await verifyAdmin(request, jwtSecret);
-        if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      async ({ admin: me, params, body, set }) => {
         // Only your own account. Setting another admin's email or password is
         // a takeover of their sign-in, with everything done afterwards
         // attributed to them. A locked-out admin is recovered from the server
@@ -102,6 +81,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
         return { data: { id: params.id, email: update.email ?? target[0]!.email } };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           email: t.Optional(t.String()),
           password: t.Optional(t.String()),
@@ -110,9 +90,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
     )
 
     // Delete admin (cannot delete self, cannot delete last admin)
-    .delete("/admin/admins/:id", async ({ request, params, set }) => {
-      const me = await verifyAdmin(request, jwtSecret);
-      if (!me) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .delete("/admin/admins/:id", async ({ admin: me, params, set }) => {
       if (me.id === params.id) {
         set.status = 400;
         return { error: "Cannot delete your own account", code: 400 };
@@ -128,5 +106,5 @@ export function makeAdminsPlugin(jwtSecret: string) {
       if (target.length === 0) { set.status = 404; return { error: "Admin not found", code: 404 }; }
       await db.delete(admin).where(eq(admin.id, params.id));
       return { data: null };
-    });
+    }, { requireAdmin: true });
 }

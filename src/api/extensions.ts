@@ -4,7 +4,6 @@
  * UI and for checking that an extension loaded.
  */
 import Elysia from "elysia";
-import { verifyAuthToken } from "../core/sec.ts";
 import { listFieldTypes } from "../core/field-types.ts";
 import { listOAuthProviders } from "../core/oauth2.ts";
 import { listStorageDrivers } from "../core/storage.ts";
@@ -15,20 +14,12 @@ import { listRegisteredRoutes } from "../core/routes.ts";
 import { listRegisteredJobs } from "../core/jobs.ts";
 import { listRegisteredWorkers } from "../core/queues.ts";
 import { codeFileErrors, codeFilesDir } from "../core/code-files.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeExtensionsPlugin(jwtSecret: string) {
   return new Elysia({ name: "extensions" })
-    .get("/admin/extensions", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401;
-        return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/extensions", async () => {
       return {
         data: {
           fieldTypes: listFieldTypes(),
@@ -45,5 +36,5 @@ export function makeExtensionsPlugin(jwtSecret: string) {
           hookFiles: { dir: codeFilesDir(), errors: codeFileErrors() },
         },
       };
-    });
+    }, { requireAdmin: true });
 }

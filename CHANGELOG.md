@@ -7,6 +7,19 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- Admin routes share one auth check (the `requireAdmin` route option in
+  `src/api/_admin.ts`) instead of a copy per file. A test now calls every admin
+  route without a token, so a new route that forgets the check fails CI.
+- CSV import and export, creating, updating and deleting collections, the view
+  query previews and collection stats answer **401** instead of 403 without a valid
+  admin token, like every other admin route.
+- An API token sent with its `vbat_` prefix is accepted on every admin route; some
+  only accepted it without the prefix.
+
 ## [0.19.0] — 2026-10-13
 
 ### Added

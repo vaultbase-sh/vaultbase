@@ -138,7 +138,7 @@ describe("collections admin check", () => {
     const del = () => makeCollectionsPlugin(SECRET).handle(req("DELETE", "/collections/missing", token));
     expect((await del()).status).toBe(200);
     await revokeToken(jti, exp);
-    expect((await del()).status).toBe(403);
+    expect((await del()).status).toBe(401);
   });
 });
 

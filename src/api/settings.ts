@@ -8,7 +8,6 @@ import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { validateBackupKeep } from "../core/backups.ts";
 import { validateCron } from "../core/jobs.ts";
 import {
@@ -17,6 +16,7 @@ import {
   isEncryptionAvailable,
   isEncrypted,
 } from "../core/encryption.ts";
+import { adminGuard } from "./_admin.ts";
 
 function rawClient(): Database {
   return (getDb() as unknown as { $client: Database }).$client;
@@ -189,13 +189,6 @@ export function getAllSettingsMasked(): Record<string, string> {
   return out;
 }
 
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
-
 /** Bounds for `files.max_upload_size` (bytes). 128 MB is Bun's default request body limit. */
 export const MIN_UPLOAD_BYTES = 1024;
 export const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
@@ -218,20 +211,15 @@ export function validateRetentionDays(value: unknown): string | null {
 
 export function makeSettingsPlugin(jwtSecret: string) {
   return new Elysia({ name: "settings" })
+    .use(adminGuard(jwtSecret))
     // Read all settings
-    .get("/admin/settings", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/settings", async () => {
       return { data: getAllSettingsMasked() };
-    })
+    }, { requireAdmin: true })
     // Update settings (partial — keys not in body are left alone)
     .patch(
       "/admin/settings",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         // Pre-validate auth window keys before any write — reject the whole
         // PATCH on the first invalid value rather than half-applying.
         for (const [k, v] of Object.entries(body)) {
@@ -287,15 +275,12 @@ export function makeSettingsPlugin(jwtSecret: string) {
         }
         return { data: getAllSettingsMasked() };
       },
-      { body: t.Record(t.String(), t.Any()) }
+      { requireAdmin: true, body: t.Record(t.String(), t.Any()) }
     )
     // Send test email — verifies + delivers a one-line message
     .post(
       "/admin/settings/smtp/test",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         if (!body.to || typeof body.to !== "string") {
           set.status = 422; return { error: "`to` required", code: 422 };
         }
@@ -313,36 +298,24 @@ export function makeSettingsPlugin(jwtSecret: string) {
           return { error: e instanceof Error ? e.message : String(e), code: 500 };
         }
       },
-      { body: t.Object({ to: t.String() }) }
+      { requireAdmin: true, body: t.Object({ to: t.String() }) }
     )
     // Storage round-trip test: write probe object → read back → delete
-    .post("/admin/settings/storage/test", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/settings/storage/test", async ({ set }) => {
       const result = await testStorage();
       if (!result.ok) { set.status = 500; return { error: result.error ?? "Storage test failed", code: 500 }; }
       return { data: result };
-    })
+    }, { requireAdmin: true })
     // Storage status — what driver is in use, plus relevant identifiers
-    .get("/admin/settings/storage/status", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/settings/storage/status", async () => {
       return { data: getStorageStatus() };
-    })
+    }, { requireAdmin: true })
     // Update checker — current vs latest GitHub release.
-    .get("/admin/update-status", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/update-status", async () => {
       return { data: getUpdateStatus() };
-    })
-    .post("/admin/update-status/check", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .post("/admin/update-status/check", async () => {
       await runUpdateCheck();
       return { data: getUpdateStatus() };
-    });
+    }, { requireAdmin: true });
 }

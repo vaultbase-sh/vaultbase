@@ -1,7 +1,7 @@
 import Elysia from "elysia";
 import { listCollections } from "../core/collections.ts";
 import { buildOpenApi } from "../core/openapi.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { adminFromRequest } from "./_admin.ts";
 import { getSetting } from "./settings.ts";
 
 /**
@@ -13,8 +13,7 @@ import { getSetting } from "./settings.ts";
 export function makeOpenApiPlugin(jwtSecret: string) {
   return new Elysia({ name: "openapi" })
     .get("/openapi.json", async ({ request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      const isAdmin = !!token && (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
+      const isAdmin = (await adminFromRequest(request, jwtSecret)) !== null;
       if (!isAdmin && getSetting("api.openapi_public", "0") !== "1") {
         set.status = 401;
         return { error: "Unauthorized", code: 401 };

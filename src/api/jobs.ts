@@ -3,32 +3,20 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { invalidateJobsCache, nextRunFromCron, runJob, validateCron, validateMode } from "../core/jobs.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 export function makeJobsPlugin(jwtSecret: string) {
   return new Elysia({ name: "jobs" })
-    .get("/admin/jobs", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/jobs", async () => {
       const rows = await getDb().select().from(jobs);
       return { data: rows.map(withVersion) };
-    })
+    }, { requireAdmin: true })
 
     .post(
       "/admin/jobs",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         const cronErr = validateCron(body.cron);
         if (cronErr) { set.status = 422; return { error: `Invalid cron: ${cronErr}`, code: 422 }; }
         const mode = body.mode ?? "inline";
@@ -60,6 +48,7 @@ export function makeJobsPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           cron: t.String(),
@@ -73,9 +62,6 @@ export function makeJobsPlugin(jwtSecret: string) {
     .patch(
       "/admin/jobs/:id",
       async ({ request, params, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
         const update: { name?: string; cron?: string; code?: string; enabled?: number; mode?: string; next_run_at?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
@@ -105,6 +91,7 @@ export function makeJobsPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           cron: t.Optional(t.String()),
@@ -115,24 +102,18 @@ export function makeJobsPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/admin/jobs/:id", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/jobs/:id", async ({ params, set }) => {
       const current = (await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1))[0];
       const inFiles = current && deleteInFiles(set, current);
       if (inFiles) return await inFiles;
       await getDb().delete(jobs).where(eq(jobs.id, params.id));
       invalidateJobsCache();
       return { data: null };
-    })
+    }, { requireAdmin: true })
 
-    .post("/admin/jobs/:id/run", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/jobs/:id/run", async ({ params, set }) => {
       const result = await runJob(params.id);
       if (!result.ok) { set.status = 500; return { error: result.error ?? "Run failed", code: 500 }; }
       return { data: { ok: true } };
-    });
+    }, { requireAdmin: true });
 }

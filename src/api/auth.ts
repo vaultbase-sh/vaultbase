@@ -63,6 +63,7 @@ import {
   reserveAttempt,
   releaseAttempt,
 } from "../core/security.ts";
+import { adminGuard } from "./_admin.ts";
 
 /**
  * Whether auth cookies get `Secure`: the request came over HTTPS (directly
@@ -621,6 +622,7 @@ function emitSignup(col: Collection, created: object, method: "password" | "invi
 
 export function makeAuthPlugin(jwtSecret: string) {
   return new Elysia({ name: "auth" })
+    .use(adminGuard(jwtSecret))
     .get("/admin/setup/status", async () => {
       const db = getDb();
       const existing = await db.select().from(admin).limit(1);
@@ -727,21 +729,13 @@ export function makeAuthPlugin(jwtSecret: string) {
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
-    .get("/admin/auth/me", async ({ request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      return { data: { id: ctx.id, email: ctx.email ?? "", aud: "admin", exp: ctx.exp } };
-    })
+    .get("/admin/auth/me", ({ admin }) => ({
+      data: { id: admin.id, email: admin.email, aud: "admin", exp: admin.exp },
+    }), { requireAdmin: true })
     // Admin recovery: clear a user's TOTP secret + recovery codes. Records
     // flow `PATCH` strips auth-system columns, so this dedicated endpoint
     // exists for the "user lost their authenticator" admin operation.
-    .post("/admin/users/:collection/:id/disable-mfa", async ({ params, request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      const ctx = await verifyAuthToken(token, jwtSecret, { audience: "admin" });
-      if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+    .post("/admin/users/:collection/:id/disable-mfa", async ({ params, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -754,7 +748,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         .delete(mfaRecoveryCodes)
         .where(and(eq(mfaRecoveryCodes.user_id, params.id), eq(mfaRecoveryCodes.collection_id, col.id)));
       return { data: { disabled: true } };
-    })
+    }, { requireAdmin: true })
     .post(
       "/auth/:collection/register",
       async ({ params, body, request, set }) => {
@@ -1268,10 +1262,6 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post(
       "/admin/users/:collection/invite",
       async ({ params, body, request, set }) => {
-        const adminTok = request.headers.get("authorization")?.replace("Bearer ", "");
-        if (!adminTok || !(await verifyAuthToken(adminTok, jwtSecret, { audience: "admin" }))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
@@ -1321,7 +1311,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         return { data: { id, email } };
       },
-      { body: t.Object({ email: t.String(), data: t.Optional(t.Record(t.String(), t.Any())) }) }
+      { requireAdmin: true, body: t.Object({ email: t.String(), data: t.Optional(t.Record(t.String(), t.Any())) }) }
     )
     .post(
       "/auth/:collection/accept-invite",
@@ -1722,14 +1712,10 @@ export function makeAuthPlugin(jwtSecret: string) {
     // ── Admin impersonation ────────────────────────────────────────────────
     // Admin mints a short-lived user JWT for support purposes. JWT carries
     // `impersonated_by` so audit logs can attribute actions to the admin.
-    .post("/admin/impersonate/:collection/:userId", async ({ params, request, set }) => {
-      const adminToken = request.headers.get("authorization")?.replace("Bearer ", "");
-      if (!adminToken) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      // Central verifier: a revoked or force-logged-out admin token must not
-      // be able to mint user sessions.
-      const adminCtx = await verifyAuthToken(adminToken, jwtSecret, { audience: "admin" });
-      if (!adminCtx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
-      const adminId = adminCtx.id;
+    // The guard uses the central verifier, so a revoked or force-logged-out
+    // admin token can't mint user sessions.
+    .post("/admin/impersonate/:collection/:userId", async ({ params, admin, set }) => {
+      const adminId = admin.id;
       if (!isAuthFeatureEnabled("impersonation")) { set.status = 422; return { error: "Impersonation is disabled", code: 422 }; }
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -1743,7 +1729,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         jwtSecret,
       });
       return { data: { token: jwt, record: { id: u.id, email: u.email }, impersonated_by: adminId } };
-    })
+    }, { requireAdmin: true })
     // ── OAuth2 ──────────────────────────────────────────────────────────────
     // List enabled providers for this collection (gated by collection.type='auth').
     .get("/auth/:collection/oauth2/providers", async ({ params, set }) => {

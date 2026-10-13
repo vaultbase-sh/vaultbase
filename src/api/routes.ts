@@ -6,16 +6,9 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache, validatePath } from "../core/routes.ts";
-import { verifyAuthToken } from "../core/sec.ts";
 import { customInnerPath } from "../core/api-paths.ts";
 import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
-
-async function isAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  // Centralized verifier — fixes N-1 admin-token-bypass.
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
-}
+import { adminGuard } from "./_admin.ts";
 
 /**
  * Returns a Response if the path matches a user route, otherwise undefined.
@@ -52,20 +45,15 @@ export async function tryDispatchCustom(request: Request, jwtSecret: string): Pr
 
 export function makeRoutesPlugin(jwtSecret: string) {
   return new Elysia({ name: "routes" })
-    .get("/admin/routes", async ({ request, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .use(adminGuard(jwtSecret))
+    .get("/admin/routes", async () => {
       const rows = await getDb().select().from(routes);
       return { data: rows.map(withVersion) };
-    })
+    }, { requireAdmin: true })
 
     .post(
       "/admin/routes",
-      async ({ request, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
+      async ({ body, set }) => {
         const method = (body.method ?? "GET").toUpperCase();
         if (!ROUTE_METHODS.includes(method as typeof ROUTE_METHODS[number])) {
           set.status = 422; return { error: `Invalid method: ${method}`, code: 422 };
@@ -95,6 +83,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           method: t.Optional(t.String()),
@@ -109,9 +98,6 @@ export function makeRoutesPlugin(jwtSecret: string) {
     .patch(
       "/admin/routes/:id",
       async ({ request, params, body, set }) => {
-        if (!(await isAdmin(request, jwtSecret))) {
-          set.status = 401; return { error: "Unauthorized", code: 401 };
-        }
         const update: { name?: string; method?: string; path?: string; code?: string; enabled?: number; require_auth?: number; updated_at: number } = {
           updated_at: Math.floor(Date.now() / 1000),
         };
@@ -143,6 +129,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
         return { data: row[0] };
       },
       {
+        requireAdmin: true,
         body: t.Object({
           name: t.Optional(t.String()),
           method: t.Optional(t.String()),
@@ -154,15 +141,12 @@ export function makeRoutesPlugin(jwtSecret: string) {
       }
     )
 
-    .delete("/admin/routes/:id", async ({ request, params, set }) => {
-      if (!(await isAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/routes/:id", async ({ params, set }) => {
       const current = (await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1))[0];
       const inFiles = current && deleteInFiles(set, current);
       if (inFiles) return await inFiles;
       await getDb().delete(routes).where(eq(routes.id, params.id));
       invalidateRoutesCache();
       return { data: null };
-    });
+    }, { requireAdmin: true });
 }

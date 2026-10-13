@@ -26,17 +26,12 @@ import {
   type FlagValue, type Variation, type Rule, type Condition,
 } from "../core/flags.ts";
 import { broadcastSystem } from "../realtime/manager.ts";
+import { adminGuard } from "./_admin.ts";
 
 const FLAGS_TOPIC = "__flags";
 
 function pushFlagDelta(payload: { type: "flag_changed" | "flag_deleted"; key: string }): void {
   try { broadcastSystem(FLAGS_TOPIC, payload); } catch { /* swallow */ }
-}
-
-async function requireAdmin(request: Request, jwtSecret: string): Promise<boolean> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
-  if (!token) return false;
-  return (await verifyAuthToken(token, jwtSecret, { audience: "admin" })) !== null;
 }
 
 /** The verified user or admin behind the request, as flag rules see it. */
@@ -56,25 +51,17 @@ async function callerSession(request: Request, jwtSecret: string): Promise<Recor
 
 export function makeFlagsPlugin(jwtSecret: string) {
   return new Elysia({ name: "flags" })
+    .use(adminGuard(jwtSecret))
     // ── Admin CRUD ────────────────────────────────────────────────────────
-    .get("/admin/flags", async ({ request, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/flags", async () => {
       return { data: await listFlags() };
-    })
-    .get("/admin/flags/:key", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .get("/admin/flags/:key", async ({ params, set }) => {
       const flag = await getFlag(params.key);
       if (!flag) { set.status = 404; return { error: "Flag not found", code: 404 }; }
       return { data: flag };
-    })
-    .post("/admin/flags", async ({ request, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .post("/admin/flags", async ({ body, set }) => {
       try {
         const input: Parameters<typeof upsertFlag>[0] = { key: body.key };
         if (body.description !== undefined)   input.description = body.description;
@@ -90,6 +77,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         set.status = 422; return { error: e instanceof Error ? e.message : String(e), code: 422 };
       }
     }, {
+      requireAdmin: true,
       body: t.Object({
         key: t.String(),
         description: t.Optional(t.String()),
@@ -100,10 +88,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         rules: t.Optional(t.Array(t.Any())),
       }),
     })
-    .patch("/admin/flags/:key", async ({ request, params, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .patch("/admin/flags/:key", async ({ params, body, set }) => {
       try {
         const input: Parameters<typeof upsertFlag>[0] = { key: params.key };
         if (body.description !== undefined)   input.description = body.description;
@@ -119,6 +104,7 @@ export function makeFlagsPlugin(jwtSecret: string) {
         set.status = 422; return { error: e instanceof Error ? e.message : String(e), code: 422 };
       }
     }, {
+      requireAdmin: true,
       body: t.Object({
         description: t.Optional(t.String()),
         type: t.Optional(t.Union([t.Literal("bool"), t.Literal("string"), t.Literal("number"), t.Literal("json")])),
@@ -128,46 +114,32 @@ export function makeFlagsPlugin(jwtSecret: string) {
         rules: t.Optional(t.Array(t.Any())),
       }),
     })
-    .delete("/admin/flags/:key", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/flags/:key", async ({ params }) => {
       await deleteFlag(params.key);
       pushFlagDelta({ type: "flag_deleted", key: params.key });
       return { data: { deleted: params.key } };
-    })
+    }, { requireAdmin: true })
     // Test-evaluate: takes an arbitrary context, returns the resolved value
     // plus the trace (matched rule id, reason). Drives the "test context"
     // panel in the admin Flag editor.
-    .post("/admin/flags/:key/evaluate", async ({ request, params, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .post("/admin/flags/:key/evaluate", async ({ params, body }) => {
       const result = await evaluate(params.key, (body.context ?? {}) as Record<string, unknown>);
       return { data: result };
     }, {
+      requireAdmin: true,
       body: t.Object({ context: t.Optional(t.Record(t.String(), t.Any())) }),
     })
 
     // ── Segments ─────────────────────────────────────────────────────────
-    .get("/admin/flag-segments", async ({ request, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .get("/admin/flag-segments", async () => {
       return { data: await listSegments() };
-    })
-    .get("/admin/flag-segments/:name", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .get("/admin/flag-segments/:name", async ({ params, set }) => {
       const seg = await getSegment(params.name);
       if (!seg) { set.status = 404; return { error: "Segment not found", code: 404 }; }
       return { data: seg };
-    })
-    .post("/admin/flag-segments", async ({ request, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    }, { requireAdmin: true })
+    .post("/admin/flag-segments", async ({ body, set }) => {
       try {
         const input: Parameters<typeof upsertSegment>[0] = { name: body.name };
         if (body.description !== undefined) input.description = body.description;
@@ -179,16 +151,14 @@ export function makeFlagsPlugin(jwtSecret: string) {
         set.status = 422; return { error: e instanceof Error ? e.message : String(e), code: 422 };
       }
     }, {
+      requireAdmin: true,
       body: t.Object({
         name: t.String(),
         description: t.Optional(t.String()),
         conditions: t.Optional(t.Any()),
       }),
     })
-    .patch("/admin/flag-segments/:name", async ({ request, params, body, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .patch("/admin/flag-segments/:name", async ({ params, body, set }) => {
       try {
         const input: Parameters<typeof upsertSegment>[0] = { name: params.name };
         if (body.description !== undefined) input.description = body.description;
@@ -200,19 +170,17 @@ export function makeFlagsPlugin(jwtSecret: string) {
         set.status = 422; return { error: e instanceof Error ? e.message : String(e), code: 422 };
       }
     }, {
+      requireAdmin: true,
       body: t.Object({
         description: t.Optional(t.String()),
         conditions: t.Optional(t.Any()),
       }),
     })
-    .delete("/admin/flag-segments/:name", async ({ request, params, set }) => {
-      if (!(await requireAdmin(request, jwtSecret))) {
-        set.status = 401; return { error: "Unauthorized", code: 401 };
-      }
+    .delete("/admin/flag-segments/:name", async ({ params }) => {
       await deleteSegment(params.name);
       pushFlagDelta({ type: "flag_deleted", key: `__segment:${params.name}` });
       return { data: { deleted: params.name } };
-    })
+    }, { requireAdmin: true })
 
     // ── Public bulk eval ──────────────────────────────────────────────────
     .post("/flags/evaluate", async ({ body, request, set }) => {
