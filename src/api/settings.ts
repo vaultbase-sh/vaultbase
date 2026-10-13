@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
-import { invalidateEmailCache, sendEmail, verifySmtp } from "../core/email.ts";
+import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
@@ -255,6 +255,9 @@ export function makeSettingsPlugin(jwtSecret: string) {
           }
           if (k === "storage.driver" && v !== "" && !listStorageDrivers().some((d) => d.name === v)) {
             set.status = 422; return { error: `${k}: no storage driver named '${String(v)}' is registered`, code: 422 };
+          }
+          if (k === "email.transport" && v !== "" && !listEmailTransports().some((t) => t.name === v)) {
+            set.status = 422; return { error: `${k}: no email transport named '${String(v)}' is registered`, code: 422 };
           }
           if (k === "backups.cron") {
             const err = validateCron(String(v).trim());
