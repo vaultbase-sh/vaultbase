@@ -1,0 +1,3 @@
+# Bun isn't on PATH in non-interactive shells on macOS.
+export PATH="$HOME/.bun/bin:$PATH"
+bun scripts/pre-push.ts

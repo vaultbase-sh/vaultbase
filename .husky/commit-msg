@@ -1,0 +1,2 @@
+export PATH="$HOME/.bun/bin:$PATH"
+bun scripts/commit-msg.ts "$1"
