@@ -260,7 +260,7 @@ export function startScheduler(): void {
   if (schedulerInterval) return;
   // Run once at startup, then every 30s
   void scheduleTick();
-  schedulerInterval = setInterval(() => { void scheduleTick(); }, 30_000);
+  schedulerInterval = setInterval(() => { void scheduleTick().catch(() => { /* next tick */ }); }, 30_000);
 }
 
 export function stopScheduler(): void {

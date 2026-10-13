@@ -250,7 +250,7 @@ export function startQueueScheduler(): void {
     }, 60_000);
     recoveryInterval.unref?.();
   }
-  schedulerInterval = setInterval(() => { void tick(); }, POLL_INTERVAL_MS);
+  schedulerInterval = setInterval(() => { void tick().catch(() => { /* next tick */ }); }, POLL_INTERVAL_MS);
   void tick();
 }
 

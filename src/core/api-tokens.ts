@@ -228,7 +228,7 @@ export function recordApiTokenUsage(jti: string, ip: string | null, ua: string |
     return;
   }
   if (!usageTimer) {
-    usageTimer = setTimeout(() => { void flushApiTokenUsage(); }, USAGE_FLUSH_MS);
+    usageTimer = setTimeout(() => { void flushApiTokenUsage().catch(() => { /* next flush */ }); }, USAGE_FLUSH_MS);
   }
 }
 
@@ -254,7 +254,7 @@ export async function flushApiTokenUsage(): Promise<void> {
 /** Called from server.ts boot. Flushes pending usage once a minute as a
  *  safety net beyond the natural per-request triggers. */
 export function startApiTokenUsageFlusher(): void {
-  setInterval(() => { void flushApiTokenUsage(); }, 60_000).unref?.();
+  setInterval(() => { void flushApiTokenUsage().catch(() => { /* next flush */ }); }, 60_000).unref?.();
 }
 
 // ── Token format helpers ─────────────────────────────────────────────────────

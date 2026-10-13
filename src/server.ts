@@ -149,8 +149,11 @@ function isOriginAllowed(origin: string | null, request?: Request): boolean {
  */
 function startFileTokenUsesPrune(): void {
   const HOUR_MS = 60 * 60 * 1000;
-  setTimeout(() => { void pruneFileTokenUses(); }, 60 * 1000).unref?.();
-  setInterval(() => { void pruneFileTokenUses(); }, HOUR_MS).unref?.();
+  // A failed prune (e.g. the DB is closed, as between tests) must not surface
+  // as an unhandled rejection; the next run catches up.
+  const prune = () => { void pruneFileTokenUses().catch(() => { /* next run */ }); };
+  setTimeout(prune, 60 * 1000).unref?.();
+  setInterval(prune, HOUR_MS).unref?.();
 }
 
 export function createServer(config: Config) {
@@ -179,8 +182,8 @@ export function createServer(config: Config) {
   startApiTokenUsageFlusher();
   if (singleton) {
     // Prune expired/long-revoked API token rows once a day.
-    setTimeout(() => { void pruneExpiredApiTokens(); }, 5 * 60 * 1000).unref?.();
-    setInterval(() => { void pruneExpiredApiTokens(); }, 24 * 60 * 60 * 1000).unref?.();
+    setTimeout(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 5 * 60 * 1000).unref?.();
+    setInterval(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 24 * 60 * 60 * 1000).unref?.();
     // Finished jobs / webhook deliveries past retention, expired revocations
     // and one-time auth tokens (see core/maintenance.ts).
     setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();

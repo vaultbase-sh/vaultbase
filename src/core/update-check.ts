@@ -81,8 +81,8 @@ export async function runUpdateCheck(): Promise<void> {
 export function startUpdateCheckScheduler(): void {
   stopUpdateCheckScheduler();
   if (getSetting("update_check.enabled", "1") !== "1") return;
-  firstTimer = setTimeout(() => { void runUpdateCheck(); }, FIRST_DELAY_MS);
-  timer = setInterval(() => { void runUpdateCheck(); }, POLL_INTERVAL_MS);
+  firstTimer = setTimeout(() => { void runUpdateCheck().catch(() => { /* next check */ }); }, FIRST_DELAY_MS);
+  timer = setInterval(() => { void runUpdateCheck().catch(() => { /* next check */ }); }, POLL_INTERVAL_MS);
 }
 
 export function stopUpdateCheckScheduler(): void {
