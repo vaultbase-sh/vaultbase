@@ -86,10 +86,12 @@ export function findUserByEmail(col: Collection, email: string): AuthUserRow | n
 /**
  * Pull the canonical column list for an auth-collection table.
  * Recomputed each call — PRAGMA table_info is cheap and caching across
- * test-suite DB resets caused stale-table errors.
+ * test-suite DB resets caused stale-table errors. Only the compiled
+ * statement is reused (`query`), never the result: it runs on every list
+ * request (filterableColumns), and re-compiling it showed in profiles.
  */
 export function tableColumns(collectionName: string): string[] {
-  const rows = rawClient().prepare(
+  const rows = rawClient().query(
     `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`,
   ).all() as Array<{ name: string }>;
   return rows.map((r) => r.name);

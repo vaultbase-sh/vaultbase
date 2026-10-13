@@ -143,8 +143,10 @@ export function encryptPlaintextSecretSettings(): number {
 
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
+  // `query` reuses the compiled statement; this runs on every request
+  // (trusted-proxy lookup), and compiling it each time showed in profiles.
   const row = rawClient()
-    .prepare(`SELECT value FROM vaultbase_settings WHERE key = ?`)
+    .query(`SELECT value FROM vaultbase_settings WHERE key = ?`)
     .get(key) as { value: string } | undefined | null;
   // bun:sqlite returns null (not undefined) on no-match — must catch both.
   if (row == null) return defaultVal;
