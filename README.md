@@ -66,7 +66,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 - **Auth** — email + password, OAuth2 with PKCE (Google, GitHub, Apple, Microsoft, Discord, GitLab and more, plus generic OIDC), OTP / magic links, MFA / TOTP, anonymous users, admin impersonation
 - **Realtime** — WebSocket + SSE; subscribe to a collection, a record, its children or `*`, checked against your API rules
 - **Files** — local disk, S3 or R2; thumbnails, MIME / size validation, protected files with one-time tokens
-- **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete
+- **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete, or kept as TypeScript files in a `vb_hooks/` folder (with imports and npm packages) that the admin UI edits too
 - **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every call audited
 - **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), backups, Prometheus metrics
 - **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks

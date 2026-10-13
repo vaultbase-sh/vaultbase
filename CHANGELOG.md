@@ -25,11 +25,38 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `registerJob`, `registerWorker`), alongside the ones defined in the admin UI. Admin UI
   hooks run first, and an admin UI route on the same method and path wins.
 - `GET /api/v1/admin/extensions` lists everything registered.
+- **Hooks as files.** Create a `vb_hooks/` folder next to the data directory (or set
+  `VAULTBASE_HOOKS_DIR`) and each file in it defines one hook, route, cron job or queue
+  worker:
+
+  ```ts
+  import { defineHook } from "vaultbase";
+  import { slugify } from "./lib/text.ts";
+
+  export default defineHook({
+    collection: "posts",
+    event: "beforeCreate",
+    async run(ctx) { ctx.record.slug = slugify(ctx.record.title); },
+  });
+  ```
+
+  Files can import each other and npm packages installed in the folder. They reload
+  within a second of a change; a file that fails to load keeps its previous version
+  running and shows the error in the admin UI. The admin UI and the MCP tools edit the
+  same files: creating a hook writes a new file, settings changed in the form are
+  written into the file, and a save is refused (409) if the file changed on disk since
+  it was opened. `vaultbase.d.ts` in the folder types the `ctx` argument.
 
 ### Changed
 
 - A new collection field must use a registered type; an unknown type (a typo, say) is
   refused instead of being stored as text. Existing fields are unaffected.
+- **On the first start with a hooks folder, hooks, routes, jobs and workers written in
+  the admin UI are moved into it as files** (under `hooks/`, `routes/`, `jobs/`,
+  `workers/`), keeping their ids. One whose code doesn't load as a file stays in the
+  database and the server logs why. Jobs created by `helpers.cron.add` stay in the
+  database, and `cron.add` refuses to change a job defined in a file. To keep
+  everything in the database, don't create the folder, or set `VAULTBASE_HOOKS_DIR=off`.
 - `storage.driver` and `email.transport` must name a registered driver or transport.
   An unregistered storage driver is an error rather than a silent fall back to local
   disk.

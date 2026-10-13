@@ -525,9 +525,14 @@ export function updateCodeFile(
       throw new CodeFileConflictError(`${rel} changed on disk since you opened it`);
     }
     let source = code ?? current;
+    // Only settings that change: the admin UI sends the whole form, and a
+    // setting written as an expression in the file is fine left alone.
     const props: Record<string, string | number | boolean> = {};
     for (const p of SPECS[kind].props) {
-      if (columns[p.column] !== undefined) props[p.prop] = p.fromColumn(columns[p.column]);
+      const v = columns[p.column];
+      if (v === undefined) continue;
+      const normalized = p.toColumn(p.fromColumn(v));
+      if (normalized !== row[p.column]) props[p.prop] = p.fromColumn(v);
     }
     if (Object.keys(props).length > 0) source = setCodeFileProps(source, kind, props);
     if (source !== current) {
