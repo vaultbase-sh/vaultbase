@@ -148,6 +148,7 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
 }
 import type { AuthContext } from "./rules.ts";
 import { emit } from "./events.ts";
+import { customFieldType } from "./field-types.ts";
 import "./event-listeners.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
@@ -311,12 +312,15 @@ function isJsonField(field: FieldDef): boolean {
     || field.type === "geoPoint"
     || field.type === "vector"
     || (field.type === "select" && field.options?.multiple === true)
-    || (field.type === "file"   && field.options?.multiple === true);
+    || (field.type === "file"   && field.options?.multiple === true)
+    || customFieldType(field.type)?.json === true;
 }
 
 /** Coerce a JS value to its DB-safe representation based on field type. */
 function encodeValue(val: unknown, field: FieldDef): unknown {
   if (val === undefined || val === null) return null;
+  const custom = customFieldType(field.type);
+  if (custom?.encode) return custom.encode(val, field);
   if (field.type === "bool") {
     if (typeof val === "boolean") return val ? 1 : 0;
     if (val === 1 || val === 0) return val;
@@ -344,6 +348,8 @@ function encodeValue(val: unknown, field: FieldDef): unknown {
 /** Decode a DB value back to the JS shape the API returns. */
 function decodeValue(val: unknown, field: FieldDef): unknown {
   if (val === null || val === undefined) return null;
+  const custom = customFieldType(field.type);
+  if (custom?.decode) return custom.decode(val, field);
   if (field.type === "bool") return val === 1 || val === true || val === "1" || val === "true";
   if (isJsonField(field)) {
     if (typeof val === "string") {
