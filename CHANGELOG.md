@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.19.0] — 2026-10-13
 
 ### Added
 
@@ -60,6 +60,16 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - `storage.driver` and `email.transport` must name a registered driver or transport.
   An unregistered storage driver is an error rather than a silent fall back to local
   disk.
+- List requests are a little faster (about 4–9% in a local load test): the
+  trusted-proxy setting and a collection's column list, read on every request, now
+  reuse their compiled SQL statement instead of preparing it each time.
+
+### Fixed
+
+- **The README said cluster mode scales on macOS.** Only Linux spreads connections
+  across workers; on macOS and Windows one worker takes them all, so cluster mode there
+  only restarts crashed workers. The README, the deployment guide and code comments now
+  say so.
 
 ## [0.18.0] — 2026-10-13
 
