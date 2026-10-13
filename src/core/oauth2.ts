@@ -31,6 +31,11 @@ export interface ProviderDef {
    * resolve them on-demand at call sites that need the live values.
    */
   resolveDynamic?: () => { authorizeUrl: string; tokenUrl: string; userinfoUrl?: string };
+  /**
+   * Whether the provider has what it needs in settings (beyond being
+   * enabled). Default: `oauth2.<name>.client_id` and `.client_secret` are set.
+   */
+  isConfigured?: (settings: Record<string, string>) => boolean;
 }
 
 export interface NormalizedProfile {
@@ -471,7 +476,7 @@ async function patreonProfile(token: string): Promise<NormalizedProfile> {
   return profile;
 }
 
-export const PROVIDERS: Record<string, ProviderDef> = {
+const BUILTIN_PROVIDERS: Record<string, ProviderDef> = {
   google: {
     name: "google", displayName: "Google",
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -572,6 +577,11 @@ export const PROVIDERS: Record<string, ProviderDef> = {
     fetchProfile: async () => { throw new Error("Apple profile is read from id_token, not userinfo"); },
     fetchProfileFromTokenResponse: appleProfileFromTokenResponse,
     buildClientSecret: buildAppleClientSecret,
+    // Services ID, team, key id and private key; no client_secret setting.
+    isConfigured: () => {
+      const a = getAppleConfig();
+      return a.client_id !== "" && a.team_id !== "" && a.key_id !== "" && a.private_key !== "";
+    },
   },
   twitter: {
     name: "twitter", displayName: "Twitter / X",
@@ -599,8 +609,46 @@ export const PROVIDERS: Record<string, ProviderDef> = {
       if (cfg.userinfo_url) out.userinfoUrl = cfg.userinfo_url;
       return out;
     },
+    // Authorize + token URLs and the client pair (userinfo is checked at fetch time).
+    isConfigured: () => {
+      const o = getOidcConfig();
+      const c = getProviderConfig("oidc");
+      return c.client_id !== "" && c.client_secret !== "" && o.authorization_url !== "" && o.token_url !== "";
+    },
   },
 };
+
+/** Every OAuth2 provider by name: the built-ins plus any an extension registered. */
+// No prototype: a provider name from a request ("constructor", "__proto__")
+// must not find anything here.
+export const PROVIDERS: Record<string, ProviderDef> = Object.assign(Object.create(null), BUILTIN_PROVIDERS);
+
+const PROVIDER_NAME_RE = /^[a-z][a-z0-9_-]{0,39}$/;
+
+/**
+ * Add an OAuth2 provider. Its settings live under `oauth2.<name>.*`
+ * (`enabled`, `client_id`, `client_secret`, plus anything its own hooks
+ * read). Throws if the name is malformed or taken.
+ */
+export function registerOAuthProvider(def: ProviderDef): () => void {
+  if (!PROVIDER_NAME_RE.test(def.name)) {
+    throw new Error(`invalid OAuth2 provider name '${def.name}' (lowercase letters, digits, - and _)`);
+  }
+  if (PROVIDERS[def.name]) {
+    throw new Error(`OAuth2 provider '${def.name}' is already registered`);
+  }
+  PROVIDERS[def.name] = def;
+  return () => {
+    if (PROVIDERS[def.name] === def) delete PROVIDERS[def.name];
+  };
+}
+
+/** All providers, for the admin settings screen. */
+export function listOAuthProviders(): Array<{ name: string; displayName: string; builtin: boolean }> {
+  return Object.values(PROVIDERS).map((p) => ({
+    name: p.name, displayName: p.displayName, builtin: Object.prototype.hasOwnProperty.call(BUILTIN_PROVIDERS, p.name),
+  }));
+}
 
 // ── Settings helpers ─────────────────────────────────────────────────────────
 
@@ -620,22 +668,12 @@ export function getProviderConfig(name: string): ProviderConfig {
 }
 
 export function isProviderEnabled(name: string): boolean {
-  if (!PROVIDERS[name]) return false;
+  const def = PROVIDERS[name];
+  if (!def) return false;
   const s = getAllSettings();
   const enabled = s[`oauth2.${name}.enabled`] === "1" || s[`oauth2.${name}.enabled`] === "true";
   if (!enabled) return false;
-  // Apple: client_id (Services ID), team_id, key_id, private_key all required.
-  if (name === "apple") {
-    const a = getAppleConfig();
-    return a.client_id !== "" && a.team_id !== "" && a.key_id !== "" && a.private_key !== "";
-  }
-  // OIDC: authorize/token URLs + client_id/secret required (userinfo_url checked at fetch time).
-  if (name === "oidc") {
-    const o = getOidcConfig();
-    const c = getProviderConfig("oidc");
-    return c.client_id !== "" && c.client_secret !== "" && o.authorization_url !== "" && o.token_url !== "";
-  }
-  // Everyone else: client_id + client_secret pair from the standard settings keys.
+  if (def.isConfigured) return def.isConfigured(s);
   const c = getProviderConfig(name);
   return c.client_id !== "" && c.client_secret !== "";
 }
