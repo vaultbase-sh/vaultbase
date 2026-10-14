@@ -7,6 +7,23 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **List totals are cached.** `totalItems` / `totalPages` come from a cache keyed on the
+  count query and its parameters, emptied whenever the database changes: a write on the
+  server's own connection, a commit from any other connection (cluster workers, the CLI) or
+  a schema change. Lists inside an open transaction, lists of view collections and filters
+  using `strftime` are always counted fresh. `skipTotal` still skips the count.
+- **Deep pages read only the rows they return.** Past an offset of 3,000, a list first
+  finds the page's rowids from the index and then reads just those rows, instead of reading
+  every skipped row in full.
+- **Rows with equal sort values keep a fixed order.** Every list of a base or auth
+  collection now ends its sort with the rowid, in the direction of the last sort field, so
+  rows that tie (records created in the same second, equal numbers) no longer repeat or go
+  missing across pages. Sorts served by an index already returned this order.
+
 ## [0.20.0] — 2026-10-14
 
 ### Added

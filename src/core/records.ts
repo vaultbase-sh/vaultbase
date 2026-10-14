@@ -66,6 +66,88 @@ function preparedRun(client: Database, sql: string, params: unknown[]): void {
 /** Drop the cache when collection schema changes. */
 export function invalidatePreparedStatements(): void {
   STMT_CACHE.clear();
+  COUNT_CACHE.clear();
+}
+
+/**
+ * List totals cache. `COUNT(*)` under a filter walks every matching index
+ * entry (a third of a 100k-row table costs ~0.5 ms, eight times the page
+ * itself), and read-heavy apps ask the same totals over and over.
+ *
+ * An entry is only valid while the database is unchanged: `total_changes()`
+ * moves on this connection's writes, `data_version` on commits from any other
+ * connection (cluster workers, the CLI), `schema_version` on DDL. Any move
+ * empties the whole cache.
+ *
+ * Never read or filled inside a transaction: shared commits hold one open,
+ * and a rolled-back write leaves `total_changes()` advanced with its rows
+ * gone, so a total taken mid-transaction could outlive them.
+ */
+const COUNT_CACHE = new Map<string, number>();
+const COUNT_CACHE_MAX = 512;
+let countCacheVersion = "";
+let versionProbe: { client: Database; stmt: ReturnType<Database["prepare"]> } | null = null;
+
+function dbVersion(client: Database): string {
+  if (versionProbe?.client !== client) {
+    // A reopened database (restore) starts its counters over, so its
+    // versions can repeat the old connection's.
+    COUNT_CACHE.clear();
+    countCacheVersion = "";
+    versionProbe = {
+      client,
+      stmt: client.prepare(
+        `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
+      ),
+    };
+  }
+  const v = versionProbe.stmt.get() as { t: number; d: number; s: number };
+  return `${v.t}:${v.d}:${v.s}`;
+}
+
+function countKey(sql: string, params: unknown[]): string {
+  let key = sql;
+  for (const p of params) {
+    const s = String(p);
+    key += `\u0000${typeof p}${s.length}:${s}`;
+  }
+  return key;
+}
+
+function cachedCount(client: Database, sql: string, params: unknown[]): number {
+  const count = () => (preparedGet(client, sql, params) as { c: number } | undefined)?.c ?? 0;
+  if (client.inTransaction) return count();
+  const version = dbVersion(client);
+  if (version !== countCacheVersion) {
+    COUNT_CACHE.clear();
+    countCacheVersion = version;
+  }
+  const key = countKey(sql, params);
+  const hit = COUNT_CACHE.get(key);
+  if (hit !== undefined) return hit;
+  const c = count();
+  if (COUNT_CACHE.size >= COUNT_CACHE_MAX) {
+    const oldest = COUNT_CACHE.keys().next().value;
+    if (oldest !== undefined) COUNT_CACHE.delete(oldest);
+  }
+  COUNT_CACHE.set(key, c);
+  return c;
+}
+
+/**
+ * Offset past which a list fetches the page's rowids first (index only) and
+ * then just those rows, instead of reading every skipped row in full. Below
+ * it the extra lookup costs more than it saves.
+ */
+const ROWID_FIRST_OFFSET = 3000;
+
+/**
+ * Name that reaches the table's rowid. A user field may take `rowid` (or
+ * the other aliases); null when all three are taken.
+ */
+function rowidAlias(fields: FieldDef[]): string | null {
+  const taken = new Set(fields.map((f) => f.name.toLowerCase()));
+  return ["rowid", "_rowid_", "oid"].find((a) => !taken.has(a)) ?? null;
 }
 
 /**
@@ -520,6 +602,13 @@ export async function listRecords(
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(colName)) continue;
     orderClauses.push(`${tableRef}.${quoteIdent(colName)} ${desc ? "DESC" : "ASC"}`);
   }
+  // Break ties on the rowid so rows sharing a sort value (created_at has
+  // one-second resolution) keep one order across pages. Indexes carry the
+  // rowid, so an index that serves the sort still serves it.
+  const rowid = col.type === "view" ? null : rowidAlias(fields);
+  if (rowid && orderClauses.length > 0) {
+    orderClauses.push(`${tableRef}.${rowid} ${orderClauses[orderClauses.length - 1]!.endsWith("DESC") ? "DESC" : "ASC"}`);
+  }
   const orderSql = orderClauses.length > 0 ? `ORDER BY ${orderClauses.join(", ")}` : "";
 
   const fts = match ? quoteIdent(match.table) : "";
@@ -528,7 +617,9 @@ export async function listRecords(
          JOIN (SELECT rowid AS vb_fts_rowid, rank AS vb_fts_rank FROM ${fts} WHERE ${fts} MATCH ?) AS vb_fts
            ON vb_fts.vb_fts_rowid = ${tableRef}.rowid
          ${rankedWhere.whereSql} ORDER BY vb_fts.vb_fts_rank LIMIT ? OFFSET ?`
-    : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
+    : rowid && orderSql && offset >= ROWID_FIRST_OFFSET
+      ? `SELECT * FROM ${tableRef} WHERE ${rowid} IN (SELECT ${rowid} FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?) ${orderSql}`
+      : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
   const selectParams = match && rankedWhere
     ? [match.query, ...rankedWhere.whereParams, perPage, offset]
     : [...whereParams, perPage, offset];
@@ -541,8 +632,11 @@ export async function listRecords(
     rows = preparedAll(client, selectSql, selectParams) as Record<string, unknown>[];
     if (!opts.skipTotal) {
       const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
-      const cnt = preparedGet(client, countSql, whereParams) as { c: number } | undefined;
-      totalItems = cnt?.c ?? 0;
+      // A view's SELECT, or strftime('now', …) in a filter, can change its
+      // answer without any write, so those are always counted fresh.
+      totalItems = col.type === "view" || /strftime\(/i.test(whereSql)
+        ? (preparedGet(client, countSql, whereParams) as { c: number } | undefined)?.c ?? 0
+        : cachedCount(client, countSql, whereParams);
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {
