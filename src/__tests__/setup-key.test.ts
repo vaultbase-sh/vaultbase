@@ -9,6 +9,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { fileURLToPath } from "url";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
@@ -126,7 +127,9 @@ describe("setup key across processes (review 15 F-7)", () => {
   });
 
   it("workers starting together all end up with the same key", async () => {
-    const mod = new URL("../core/setup-key.ts", import.meta.url).pathname;
+    // fileURLToPath, not .pathname: on Windows that gives "/D:/…", which no
+    // child process can import.
+    const mod = fileURLToPath(new URL("../core/setup-key.ts", import.meta.url));
     const script = `
       const { configureSetupKey, requiredSetupKey } = await import(${JSON.stringify(mod)});
       configureSetupKey(${JSON.stringify(dir)});
