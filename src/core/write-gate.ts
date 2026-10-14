@@ -16,8 +16,13 @@
  *
  * Side effects of writes inside a batch (realtime, webhooks, after-hooks) are
  * queued with `afterCommit` and only run once the batch commits.
+ *
+ * Ordinary writes also share commits with each other (group-commit.ts): a
+ * shared write joins the turn's group transaction and returns only once it
+ * commits. A batch commits any open group before its own BEGIN.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { awaitCommit, deferUntilGroupCommit, flushGroupCommit, joinGroupCommit } from "./group-commit.ts";
 
 interface GateContext {
   exclusive: boolean;
@@ -52,7 +57,19 @@ export async function withSharedWrite<T>(fn: () => Promise<T>): Promise<T> {
   while (exclusiveHeld || exclusiveWaiting > 0) await nextWake();
   sharedHolders++;
   try {
-    return await als.run({ exclusive: false, deferred: [] }, fn);
+    joinGroupCommit();
+    let result: T;
+    try {
+      result = await als.run({ exclusive: false, deferred: [] }, fn);
+    } catch (e) {
+      // A failed write may still have changed rows before throwing (as it
+      // would have in autocommit); let those commit before the caller moves on.
+      await awaitCommit().catch(() => { /* the write's own error wins */ });
+      throw e;
+    }
+    // Don't report the write before the COMMIT that holds it.
+    await awaitCommit();
+    return result;
   } finally {
     sharedHolders--;
     wakeAll();
@@ -74,6 +91,8 @@ export async function withExclusiveWrite<T>(
     exclusiveWaiting--;
   }
   exclusiveHeld = true;
+  // The batch runs its own BEGIN on the shared connection.
+  flushGroupCommit();
   const ctx: GateContext = { exclusive: true, deferred: [] };
   const tx = {
     commit: () => {
@@ -102,9 +121,9 @@ export function gateMode(): "exclusive" | "shared" | null {
   return ctx.exclusive ? "exclusive" : "shared";
 }
 
-/** Run now, or after COMMIT when called inside a batch. */
+/** Run now, or after COMMIT when called inside a batch or an open write group. */
 export function afterCommit(effect: () => void): void {
   const ctx = als.getStore();
   if (ctx?.exclusive) ctx.deferred.push(effect);
-  else effect();
+  else if (!deferUntilGroupCommit(effect)) effect();
 }

@@ -1,0 +1,74 @@
+/* Monitoring page — additions on top of the scoped `.vb-dash` tokens in
+ * dashboard-next.css. Charts are plain SVG; colors come from the same tokens
+ * so the page reads as part of the dashboard family. */
+
+.vb-mon {
+  --vb-mon-write: #d9a35b;
+}
+
+/* Six tiles instead of the dashboard's four. */
+.vb-mon__stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1300px) {
+  .vb-mon__stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .vb-mon__stats .vb-dash__stat:nth-child(4) { border-left: 0; }
+  .vb-mon__stats .vb-dash__stat:nth-child(n + 4) { border-top: 1px solid var(--vb-line); }
+}
+
+.vb-mon__wide { grid-column: 1 / -1; }
+
+/* Status dot: pulses while polling, dims while paused. */
+.vb-mon__dot--live { animation: vb-mon-pulse 1.6s ease-in-out infinite; }
+.vb-mon__dot--paused { background: var(--vb-fg-5); }
+@keyframes vb-mon-pulse { 50% { opacity: 0.35; } }
+
+.vb-mon__btn {
+  all: unset;
+  cursor: pointer;
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--vb-line-strong);
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-3);
+  transition: border-color 150ms, color 150ms;
+}
+.vb-mon__btn:hover { border-color: var(--vb-accent); color: var(--vb-fg); }
+
+/* ── Chart ────────────────────────────────────────────────────────────────── */
+.vb-mon__chart { padding: 8px 0 4px; min-width: 0; }
+.vb-mon__chart svg { display: block; }
+.vb-mon__grid { stroke: var(--vb-line); stroke-width: 1; }
+.vb-mon__cross { stroke: var(--vb-line-strong); stroke-width: 1; }
+.vb-mon__area { opacity: 0.08; }
+.vb-mon__axis {
+  font-family: var(--vb-font-mono);
+  font-size: 10px;
+  fill: var(--vb-fg-5);
+  font-variant-numeric: tabular-nums;
+}
+.vb-mon__axis--hi { fill: var(--vb-fg-3); }
+
+.vb-mon__legend {
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--vb-font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-4);
+  white-space: nowrap;
+}
+.vb-mon__legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.vb-mon__legend i { width: 8px; height: 2px; display: inline-block; }
+.vb-mon__legend b {
+  font-weight: 400;
+  color: var(--vb-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+.vb-mon__t--steps { grid-template-columns: minmax(0, 1.4fr) repeat(7, minmax(0, 1fr)); }
+.vb-mon__t--kv    { grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1.4fr); }
+.vb-mon__t--kv2   { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.vb-mon__row--strong { background: var(--vb-surface-highlight); }
+.vb-mon__share { grid-template-columns: minmax(0, 1fr) 56px; }

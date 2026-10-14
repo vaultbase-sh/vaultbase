@@ -21,6 +21,7 @@ export type Step =
   | "collection_load"
   | "rule_compile"
   | "db_exec"
+  | "record_write"
   | "row_decode"
   | "serialize"
   | "compress"
@@ -32,6 +33,7 @@ export const STEPS: readonly Step[] = [
   "collection_load",
   "rule_compile",
   "db_exec",
+  "record_write",
   "row_decode",
   "serialize",
   "compress",
@@ -163,6 +165,85 @@ class RpsTracker {
   }
 }
 
+// ── Per-second live series ──────────────────────────────────────────────────
+
+/** One second of traffic, as the admin Metrics page charts it. */
+export interface SecondSample {
+  /** Unix seconds. */
+  t: number;
+  reqs: number;
+  writes: number;
+  errors: number;
+  /** Mean end-to-end latency over the second, µs. 0 when idle. */
+  mean_us: number;
+  max_us: number;
+}
+
+const SERIES_SECONDS = 120;
+
+/**
+ * Ring of the last {@link SERIES_SECONDS} seconds. Typed arrays indexed by
+ * `sec % N`; a slot is cleared lazily the first time a new second lands in
+ * it, so recording stays O(1) with no timers.
+ */
+class SecondSeries {
+  private readonly sec = new Float64Array(SERIES_SECONDS);
+  private readonly reqs = new Uint32Array(SERIES_SECONDS);
+  private readonly writes = new Uint32Array(SERIES_SECONDS);
+  private readonly errors = new Uint32Array(SERIES_SECONDS);
+  private readonly sumUs = new Float64Array(SERIES_SECONDS);
+  private readonly maxUs = new Float64Array(SERIES_SECONDS);
+
+  private slot(now: number): number {
+    const i = now % SERIES_SECONDS;
+    if (this.sec[i] !== now) {
+      this.sec[i] = now;
+      this.reqs[i] = 0;
+      this.writes[i] = 0;
+      this.errors[i] = 0;
+      this.sumUs[i] = 0;
+      this.maxUs[i] = 0;
+    }
+    return i;
+  }
+
+  record(totalUs: number, write: boolean, error: boolean): void {
+    const i = this.slot(Math.floor(Date.now() / 1000));
+    this.reqs[i]!++;
+    if (write) this.writes[i]!++;
+    if (error) this.errors[i]!++;
+    this.sumUs[i]! += totalUs;
+    if (totalUs > this.maxUs[i]!) this.maxUs[i] = totalUs;
+  }
+
+  /** Oldest → newest, one entry per second, idle seconds included as zeros. */
+  snapshot(): SecondSample[] {
+    const now = Math.floor(Date.now() / 1000);
+    const out: SecondSample[] = [];
+    for (let t = now - SERIES_SECONDS + 1; t <= now; t++) {
+      const i = t % SERIES_SECONDS;
+      if (this.sec[i] !== t) {
+        out.push({ t, reqs: 0, writes: 0, errors: 0, mean_us: 0, max_us: 0 });
+        continue;
+      }
+      const n = this.reqs[i]!;
+      out.push({
+        t,
+        reqs: n,
+        writes: this.writes[i]!,
+        errors: this.errors[i]!,
+        mean_us: n ? Math.round(this.sumUs[i]! / n) : 0,
+        max_us: Math.round(this.maxUs[i]!),
+      });
+    }
+    return out;
+  }
+
+  reset(): void {
+    this.sec.fill(0);
+  }
+}
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 export interface MetricsSnapshot {
@@ -170,11 +251,27 @@ export interface MetricsSnapshot {
   requests_total: number;
   rps_1min: number;
   steps: Record<Step, ReturnType<Histogram["snapshot"]>>;
+  /** End-to-end handler latency, all requests. */
+  total: ReturnType<Histogram["snapshot"]>;
+  /** End-to-end latency split by read (GET/HEAD) vs write (everything else). */
+  reads: ReturnType<Histogram["snapshot"]>;
+  writes: ReturnType<Histogram["snapshot"]>;
+  status: { "2xx": number; "3xx": number; "4xx": number; "5xx": number };
+  methods: Record<string, number>;
+  series: SecondSample[];
 }
+
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export class MetricsRegistry {
   private readonly histograms: Record<Step, Histogram> = Object.create(null);
   private readonly rps = new RpsTracker();
+  private readonly total = new Histogram();
+  private readonly reads = new Histogram();
+  private readonly writes = new Histogram();
+  private readonly series = new SecondSeries();
+  private status = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+  private methods: Record<string, number> = Object.create(null);
   private requestsTotal = 0;
   private startedAt = Date.now();
 
@@ -187,13 +284,31 @@ export class MetricsRegistry {
     if (h) h.record(us);
   }
 
-  finalizeRequest(): void {
+  finalizeRequest(totalUs?: number, method?: string, status?: number): void {
     this.requestsTotal++;
     this.rps.bump();
+    if (totalUs === undefined) return;
+    const m = (method ?? "GET").toUpperCase();
+    const write = !READ_METHODS.has(m);
+    const code = status ?? 200;
+    this.total.record(totalUs);
+    (write ? this.writes : this.reads).record(totalUs);
+    this.methods[m] = (this.methods[m] ?? 0) + 1;
+    if (code >= 500) this.status["5xx"]++;
+    else if (code >= 400) this.status["4xx"]++;
+    else if (code >= 300) this.status["3xx"]++;
+    else this.status["2xx"]++;
+    this.series.record(totalUs, write, code >= 500);
   }
 
   reset(): void {
     for (const s of STEPS) this.histograms[s]!.reset();
+    this.total.reset();
+    this.reads.reset();
+    this.writes.reset();
+    this.series.reset();
+    this.status = { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0 };
+    this.methods = Object.create(null);
     this.requestsTotal = 0;
     this.startedAt = Date.now();
   }
@@ -206,6 +321,12 @@ export class MetricsRegistry {
       requests_total: this.requestsTotal,
       rps_1min: this.rps.rps1min(),
       steps: stepsOut,
+      total: this.total.snapshot(),
+      reads: this.reads.snapshot(),
+      writes: this.writes.snapshot(),
+      status: { ...this.status },
+      methods: { ...this.methods },
+      series: this.series.snapshot(),
     };
   }
 }
@@ -217,6 +338,7 @@ export const globalMetrics = new MetricsRegistry();
 export class RequestTimer {
   /** Per-step accumulated microseconds (a step can be recorded multiple times in one request). */
   private readonly stepUs: Partial<Record<Step, number>> = Object.create(null);
+  private readonly startedAt = performance.now();
 
   /** Add `us` to a step's tally for this request. */
   add(step: Step, us: number): void {
@@ -224,12 +346,12 @@ export class RequestTimer {
   }
 
   /** Roll into the global histograms. Call exactly once at request end. */
-  finish(): void {
+  finish(method?: string, status?: number): void {
     for (const s of STEPS) {
       const v = this.stepUs[s];
       if (v !== undefined) globalMetrics.recordStep(s, v);
     }
-    globalMetrics.finalizeRequest();
+    globalMetrics.finalizeRequest((performance.now() - this.startedAt) * 1000, method, status);
   }
 }
 

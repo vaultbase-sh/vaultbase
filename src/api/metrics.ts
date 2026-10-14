@@ -1,15 +1,22 @@
 import Elysia from "elysia";
 import { createHash, timingSafeEqual } from "crypto";
+import { statSync } from "fs";
 import { globalMetrics, STEPS } from "../core/perf-metrics.ts";
 import { getRawClient } from "../db/client.ts";
 import { getSetting } from "./settings.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
+import { connectionCount } from "../realtime/manager.ts";
+import { checkpointStats, type CheckpointStats } from "../db/checkpointer.ts";
 
 interface SqliteSnapshot {
   page_count: number;
   page_size: number;
   cache_used_pages: number;
   wal_pages: number;
+  /** On-disk bytes of the main DB file and its WAL; 0 for in-memory. */
+  db_bytes: number;
+  wal_bytes: number;
+  checkpoint: CheckpointStats | null;
 }
 
 function sqliteSnapshot(): SqliteSnapshot | null {
@@ -17,17 +24,77 @@ function sqliteSnapshot(): SqliteSnapshot | null {
     const c = getRawClient();
     const pc = c.query("PRAGMA page_count").get() as { page_count: number } | undefined;
     const ps = c.query("PRAGMA page_size").get() as { page_size: number } | undefined;
-    // wal_checkpoint(PASSIVE) returns (busy, log_pages, checkpointed_pages); we just want log_pages.
-    const wal = c.query("PRAGMA wal_checkpoint(PASSIVE)").get() as Record<string, unknown> | undefined;
+    // WAL size comes from the background checkpointer's last pass. Running a
+    // checkpoint here on every poll cost ~10% write throughput under load.
+    const ckpt = checkpointStats();
+    const file = (c as { filename?: string }).filename ?? "";
     return {
+      db_bytes: fileBytes(file),
+      wal_bytes: fileBytes(file ? `${file}-wal` : ""),
       page_count: pc?.page_count ?? 0,
       page_size: ps?.page_size ?? 0,
       cache_used_pages: 0, // bun:sqlite doesn't expose `PRAGMA cache_used` reliably
-      wal_pages: typeof wal?.["log"] === "number" ? wal["log"] as number : 0,
+      wal_pages: ckpt?.wal_frames ?? 0,
+      checkpoint: ckpt,
     };
   } catch {
     return null;
   }
+}
+
+function fileBytes(path: string): number {
+  if (!path || path === ":memory:") return 0;
+  try { return statSync(path).size; } catch { return 0; }
+}
+
+// ── Process gauges ──────────────────────────────────────────────────────────
+
+/**
+ * Event-loop lag: a 250 ms timer that measures how late it fires. Holds the
+ * worst lag seen since the last read, so a poll every second or two still
+ * catches a short stall. Started on first plugin build; unref'd so it never
+ * keeps the process alive.
+ */
+const LAG_TICK_MS = 250;
+let lagMaxMs = 0;
+let lagTimer: ReturnType<typeof setInterval> | null = null;
+
+function startLagSampler(): void {
+  if (lagTimer) return;
+  let expected = performance.now() + LAG_TICK_MS;
+  lagTimer = setInterval(() => {
+    const now = performance.now();
+    const lag = Math.max(0, now - expected);
+    if (lag > lagMaxMs) lagMaxMs = lag;
+    expected = now + LAG_TICK_MS;
+  }, LAG_TICK_MS);
+  (lagTimer as { unref?: () => void }).unref?.();
+}
+
+let lastCpu = process.cpuUsage();
+let lastCpuAt = performance.now();
+
+function processSnapshot() {
+  const mem = process.memoryUsage();
+  // CPU% since the previous read (100 = one full core).
+  const cpu = process.cpuUsage();
+  const now = performance.now();
+  const wallUs = (now - lastCpuAt) * 1000;
+  const usedUs = (cpu.user - lastCpu.user) + (cpu.system - lastCpu.system);
+  lastCpu = cpu;
+  lastCpuAt = now;
+  const lag = lagMaxMs;
+  lagMaxMs = 0;
+  return {
+    pid: process.pid,
+    worker_id: process.env["VAULTBASE_WORKER_ID"] ?? null,
+    rss_bytes: mem.rss,
+    heap_used_bytes: mem.heapUsed,
+    heap_total_bytes: mem.heapTotal,
+    cpu_percent: wallUs > 0 ? Math.round((usedUs / wallUs) * 1000) / 10 : 0,
+    event_loop_lag_ms: Math.round(lag * 10) / 10,
+    realtime_connections: connectionCount(),
+  };
 }
 
 /** Constant-time string compare; hashing first evens out the lengths. */
@@ -37,11 +104,13 @@ function sameSecret(a: string, b: string): boolean {
 }
 
 export function makeMetricsPlugin(jwtSecret: string) {
+  startLagSampler();
   return new Elysia({ name: "metrics" })
     .use(adminGuard(jwtSecret))
     .get("/_/metrics", async () => {
       return {
         ...globalMetrics.snapshot(),
+        process: processSnapshot(),
         sqlite: sqliteSnapshot(),
       };
     }, { requireAdmin: true })

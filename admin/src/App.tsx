@@ -30,6 +30,7 @@ const WebhooksPage = lazy(() => import("./pages/Webhooks.tsx"));
 const ApiTokensPage = lazy(() => import("./pages/ApiTokens.tsx"));
 const McpPage = lazy(() => import("./pages/Mcp.tsx"));
 const SqlPage = lazy(() => import("./pages/Sql.tsx"));
+const MonitoringPage = lazy(() => import("./pages/Monitoring.tsx"));
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthed = useAuth((s) => s.isAuthed);
@@ -142,6 +143,7 @@ export default function App() {
             <Route path="api-tokens" element={<ApiTokensPage />} />
             <Route path="mcp" element={<McpPage />} />
             <Route path="sql" element={<SqlPage />} />
+            <Route path="monitoring" element={<MonitoringPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
           <Route path="*" element={<Navigate to="/_/" replace />} />

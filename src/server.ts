@@ -51,6 +51,7 @@ import { startUpdateCheckScheduler, getUpdateStatus, runUpdateCheck } from "./co
 import { startWebhookDispatcher } from "./core/webhooks.ts";
 import { registerNotificationsWorker } from "./core/notifications.ts";
 import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
+
 import {
   admitConnection,
   reverifyRealtimeAuth,
@@ -67,6 +68,23 @@ import {
   type WSAuth,
 } from "./realtime/manager.ts";
 import { openSSEStream } from "./realtime/sse.ts";
+
+/** Status a handler answered with: a returned Response wins over `set.status`. */
+function responseStatus(value: unknown, setStatus: unknown): number {
+  if (value instanceof Response) return value.status;
+  if (typeof setStatus === "number") return setStatus;
+  return 200;
+}
+
+/** Status an error path ends in, for the metrics status-class counters. */
+function errorStatus(code: unknown, error: unknown, setStatus: unknown): number {
+  const own = (error as { status?: unknown } | null)?.status;
+  if (typeof own === "number") return own;
+  if (code === "NOT_FOUND") return 404;
+  if (code === "VALIDATION" || code === "PARSE") return 400;
+  if (typeof setStatus === "number" && setStatus >= 400) return setStatus;
+  return 500;
+}
 
 interface ClientMessage {
   type: "subscribe" | "unsubscribe" | "auth" | "list-subs";
@@ -211,7 +229,7 @@ export function createServer(config: Config) {
       if (res) return res;
     })
     // Attach security headers globally. CSP applies to non-API surface.
-    .onAfterHandle(({ request, set }) => {
+    .onAfterHandle(({ request, set, responseValue }) => {
       const path = new URL(request.url).pathname;
       const isApi = path.startsWith("/api/");
       const headers = securityHeaders({ isApi });
@@ -235,12 +253,12 @@ export function createServer(config: Config) {
 
       // Roll the request's per-step timings into the global histograms.
       const t = detachTimer(request);
-      if (t) t.finish();
+      if (t) t.finish(request.method, responseStatus(responseValue, set.status));
     })
-    .onError(({ request }) => {
+    .onError(({ request, set, code, error }) => {
       // Make sure we don't leak timers on error paths.
       const t = detachTimer(request);
-      if (t) t.finish();
+      if (t) t.finish(request.method, errorStatus(code, error, set.status));
     })
     // Custom user routes fire before built-in route resolution so they can't
     // collide with /api/:collection or any other built-in pattern.

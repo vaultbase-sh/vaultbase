@@ -27,6 +27,9 @@ export function getRawClient(): Database {
  *   "file:./path/data.db"  — file URL (legacy libSQL syntax, parsed)
  *   "./path/data.db"       — direct path
  */
+/** WAL file cap on disk (bytes); shared with the background checkpointer. */
+export const JOURNAL_SIZE_LIMIT = 67_108_864;
+
 export function initDb(url: string): DB {
   let path = url;
   if (url.startsWith("file:")) path = url.slice(5);
@@ -46,18 +49,16 @@ export function initDb(url: string): DB {
     // 256 MB OS file mapping — faster than read() syscalls. mmap is meaningless
     // on `:memory:` (and triggers SQLITE_NOMEM there).
     _client.exec("PRAGMA mmap_size = 268435456;");
-    // Push WAL checkpoint cost off the request path during write bursts.
-    // Default 1000 pages (~4 MB at 4 KB pages) causes periodic mid-burst
-    // stalls; 10 000 pages (~40 MB) lets the WAL grow during sustained writes
-    // and checkpoints during quieter periods. Doesn't disable autocheckpoint
-    // entirely — unbounded WAL is worse than periodic stalls.
+    // Inline autocheckpoint until the background checkpointer takes over
+    // (src/db/checkpointer.ts switches this to 0 once its worker is up, and
+    // back if the worker dies). CLI paths that never start it keep this.
     _client.exec("PRAGMA wal_autocheckpoint = 10000;");
     // Cap the WAL file at 64 MB on disk. Without this, a sustained-write
     // workload can balloon the WAL to gigabytes before the next checkpoint
     // truncates it, eating disk on small VPS boxes. The limit is advisory
     // (SQLite shrinks the file on the next checkpoint) — it never blocks
     // a write or causes corruption.
-    _client.exec("PRAGMA journal_size_limit = 67108864;");
+    _client.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT};`);
   }
   // 32 MB page cache (negative = KiB, so -32000 ≈ 32 MB).
   _client.exec("PRAGMA cache_size = -32000;");
@@ -74,7 +75,14 @@ export function initDb(url: string): DB {
   return _db;
 }
 
+/** Run before the connection closes (e.g. commit an open write group). */
+const beforeClose: Array<() => void> = [];
+export function onBeforeCloseDb(fn: () => void): void {
+  beforeClose.push(fn);
+}
+
 export function closeDb(): void {
+  if (_client) for (const fn of beforeClose) { try { fn(); } catch { /* closing anyway */ } }
   _client?.close();
   _client = null;
   _db = null;

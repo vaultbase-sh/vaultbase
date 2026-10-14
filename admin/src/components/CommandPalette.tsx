@@ -19,6 +19,7 @@ const NAV_ITEMS: CmdItem[] = [
   { id: "n-dash",    label: "Dashboard",   group: "Navigate", to: "/_/" },
   { id: "n-coll",    label: "Collections", group: "Navigate", to: "/_/collections" },
   { id: "n-logs",    label: "Logs",        group: "Navigate", to: "/_/logs" },
+  { id: "n-mon",     label: "Monitoring",  group: "Navigate", to: "/_/monitoring", hay: "monitoring metrics performance rps latency" },
   { id: "n-api",     label: "API preview", group: "Navigate", to: "/_/api-preview" },
   { id: "n-hooks",   label: "Hooks",       group: "Navigate", to: "/_/hooks" },
   { id: "n-set",     label: "Settings",    group: "Navigate", to: "/_/settings" },

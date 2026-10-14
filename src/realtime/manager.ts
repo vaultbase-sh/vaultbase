@@ -282,6 +282,11 @@ export function disconnectAll(ws: WSLike): void {
 }
 
 /** Test hook: number of live topics. */
+/** Live realtime connections (WebSocket + SSE) on this process. */
+export function connectionCount(): number {
+  return liveConns.size;
+}
+
 export function _topicCount(): number {
   return subs.size;
 }

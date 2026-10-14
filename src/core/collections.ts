@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { eq, or } from "drizzle-orm";
+import { flushGroupCommit } from "./group-commit.ts";
 import { getDb } from "../db/client.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
@@ -871,6 +872,8 @@ async function renameCollectionStorage(
   const client = rawClient();
   const oldTable = userTableName(oldName);
   const newTable = userTableName(newName);
+  // Commit open record writes first; this schema change runs on its own.
+  flushGroupCommit();
   client.transaction(() => {
     if (type === "view") {
       if (!viewQuery) throw new Error("View collections require a view_query");

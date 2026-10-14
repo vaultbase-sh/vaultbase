@@ -12,6 +12,7 @@
  * index is created or its column set changes.
  */
 import type { Database } from "bun:sqlite";
+import { flushGroupCommit } from "./group-commit.ts";
 
 /** Field types whose stored value is plain text worth indexing. */
 export const SEARCHABLE_TYPES: ReadonlySet<string> = new Set(["text", "editor", "email", "url"]);
@@ -100,6 +101,8 @@ export function syncFts(client: Database, collection: string, fields: readonly F
   const colList = cols.map(q).join(", ");
   const vals = (p: "new" | "old") => cols.map((c) => `${p}.${q(c)}`).join(", ");
 
+  // Commit open record writes first; this schema change runs on its own.
+  flushGroupCommit();
   client.transaction(() => {
     dropFts(client, collection);
     client.exec(

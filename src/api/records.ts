@@ -378,24 +378,24 @@ export function makeRecordsPlugin(jwtSecret: string) {
     .post(
       "/:collection",
       async ({ params, body, request, set }) => {
-        const col = await getCollection(params.collection);
+        const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const auth = await getAuthContext(request, jwtSecret);
         // For create, rule evaluates against the incoming body
         // The body is what the rule is about on a create — without it
         // `@request.body.role:isset = false` passes unconditionally.
-        if (!checkRule(
+        if (!timeFor(request, "rule_compile", () => checkRule(
           request, "create_rule", col.name, col.create_rule, auth,
           (body ?? {}) as Record<string, unknown>,
           buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
-        )) {
+        ))) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
         try {
-          const record = await runWithHookRequest(request, () =>
+          const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
             createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))
-          );
+          ));
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
@@ -408,16 +408,16 @@ export function makeRecordsPlugin(jwtSecret: string) {
     .patch(
       "/:collection/:id",
       async ({ params, body, request, set }) => {
-        const col = await getCollection(params.collection);
+        const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const auth = await getAuthContext(request, jwtSecret);
-        const existing = await getRecord(params.collection, params.id);
+        const existing = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-        if (!checkUpdateRule(
+        if (!timeFor(request, "rule_compile", () => checkUpdateRule(
           request, col.name, col.update_rule, auth,
           existing as unknown as Record<string, unknown>,
           (body ?? {}) as Record<string, unknown>,
-        )) {
+        ))) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };
         }
@@ -434,9 +434,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
             ...relationsAs(auth, request),
             ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
           };
-          const record = await runWithHookRequest(request, () =>
+          const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
             updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
-          );
+          ));
           const etag = recordEtag(record as unknown as Record<string, unknown>);
           if (etag) set.headers["ETag"] = etag;
           return { data: record };
@@ -451,12 +451,14 @@ export function makeRecordsPlugin(jwtSecret: string) {
       { body: t.Any() }
     )
     .delete("/:collection/:id", async ({ params, request, set }) => {
-      const col = await getCollection(params.collection);
+      const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       const auth = await getAuthContext(request, jwtSecret);
-      const existing = await getRecord(params.collection, params.id);
+      const existing = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
       if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-      if (!checkRule(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>)) {
+      if (!timeFor(request, "rule_compile", () =>
+        checkRule(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>),
+      )) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
       }
@@ -472,9 +474,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
           ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
           ...(cascadeAllowed ? { cascadeAllowed } : {}),
         };
-        await runWithHookRequest(request, () =>
+        await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
           deleteRecord(params.collection, params.id, auth, guard)
-        );
+        ));
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);

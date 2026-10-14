@@ -1,6 +1,8 @@
 import { loadConfig, loadServiceEnvFile } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
-import { initDb, getDb, closeDb } from "./db/client.ts";
+import { initDb, getDb, closeDb, getRawClient, JOURNAL_SIZE_LIMIT } from "./db/client.ts";
+import { startCheckpointer, stopCheckpointer } from "./db/checkpointer.ts";
+import { flushGroupCommit } from "./core/group-commit.ts";
 import { shutdownGracefully } from "./core/shutdown.ts";
 import { CLUSTER_LIMITS_WARNING, isClusterWorker, runsSingletonDuties } from "./core/cluster-role.ts";
 import { stopScheduler } from "./core/jobs.ts";
@@ -412,6 +414,10 @@ async function main() {
     }
   }
 
+  // Move WAL checkpoints off the request thread (see src/db/checkpointer.ts).
+  // Only the long-running server needs it; CLI paths above exit first.
+  await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
+
   const server = createServer(config);
   // Cluster mode: when spawned by `src/cluster.ts`, every worker calls
   // `Bun.serve({ reusePort: true })` so the kernel load-balances incoming
@@ -440,6 +446,8 @@ async function main() {
         // Jobs already running finish (bounded) rather than being re-run after restart.
         () => waitForRunningJobs(10_000),
         () => drainLogBuffer(),
+        () => flushGroupCommit(),
+        () => stopCheckpointer(),
         () => closeDb(),
       ],
       timeoutMs: 10_000,

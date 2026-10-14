@@ -7,6 +7,53 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Monitoring page** in the admin UI (`/_/monitoring`, under Data). Polls the metrics
+  endpoint every 1, 2 or 5 seconds and shows requests and writes per second, end-to-end
+  latency, CPU, event-loop lag, memory, the per-step latency breakdown, status classes,
+  methods, SQLite file and WAL sizes, the checkpointer and realtime connections. Numbers are
+  per process; under cluster mode each poll shows whichever worker answered.
+- `GET /api/v1/_/metrics` also returns `total`, `reads` and `writes` latency histograms,
+  `status` (2xx/3xx/4xx/5xx) and `methods` counters, a `series` of the last 120 seconds,
+  `process` (memory, CPU %, event-loop lag, realtime connections) and, under `sqlite`, the
+  database and WAL file sizes and `checkpoint` stats.
+- A `record_write` pipeline step, timed on record create, update and delete. Write requests
+  also record `collection_load`, `rule_compile` and `db_exec` now. The Prometheus output
+  gains the new step label; nothing existing is renamed.
+
+### Changed
+
+- **Record writes share commits.** Creates, updates and deletes that arrive in the same
+  event-loop turn run in one SQLite transaction and commit together. A write still returns
+  only after the COMMIT that holds it; if that COMMIT fails, every write in it fails. A
+  statement that fails only undoes itself. Realtime events, webhooks and after-hooks run
+  after the commit. Batches, cascading deletes and schema changes commit any open group
+  first.
+- **WAL checkpoints run on a background thread.** A worker with its own connection copies the
+  WAL back into the database, so a request no longer pays for a checkpoint. SQLite's own
+  autocheckpoint is switched off while the worker runs and back on if it stops.
+- Record create, update and delete reuse cached SQL statements instead of compiling them on
+  every request.
+- The metrics endpoint no longer runs a WAL checkpoint each time it is polled.
+
+### Fixed
+
+- The enabled-hooks cache stored a lazy query instead of its result, so the hooks table was
+  queried twice on every record write.
+
+### Upgrade notes
+
+- **A write in a shared commit can be read by another request up to one event-loop turn
+  before it commits.** It only disappears if that COMMIT itself fails (disk full, I/O error),
+  and then the write's own request fails too. Set `VAULTBASE_GROUP_COMMIT=0` to commit every
+  write on its own, as before.
+- **Shared commits are off under `vaultbase cluster`.** An open group holds SQLite's write
+  lock for its turn, and other workers would wait on it; each worker commits writes on their
+  own instead. For write-heavy workloads, run a single process.
+
 ## [0.19.1] — 2026-10-13
 
 ### Changed

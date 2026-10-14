@@ -49,6 +49,7 @@ const SECTIONS: NavSection[] = [
       { to: "/_/",             label: "Dashboard",    icon: "grid", end: true },
       { to: "/_/collections",  label: "Collections",  icon: "stack" },
       { to: "/_/logs",         label: "Logs",         icon: "scroll" },
+      { to: "/_/monitoring",   label: "Monitoring",   icon: "activity" },
     ],
   },
   {

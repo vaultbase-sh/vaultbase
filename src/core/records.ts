@@ -57,6 +57,12 @@ function preparedGet(client: Database, sql: string, params: unknown[]): unknown 
   }).get(...params);
 }
 
+function preparedRun(client: Database, sql: string, params: unknown[]): void {
+  (getCachedStmt(client, sql) as unknown as {
+    run: (...args: unknown[]) => unknown;
+  }).run(...params);
+}
+
 /** Drop the cache when collection schema changes. */
 export function invalidatePreparedStatements(): void {
   STMT_CACHE.clear();
@@ -583,7 +589,7 @@ export async function getRecord(
   const fields = parseFields(col.fields);
   const tableRef = quoteIdent(userTableName(col.name));
   const client = rawClient();
-  const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown> | undefined;
+  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown> | undefined;
   return row ? await rowToMetaAsync(row, col, fields) : null;
 }
 
@@ -646,9 +652,12 @@ async function createRecordImpl(
   const placeholders = insertCols.map(() => "?").join(", ");
 
   const client = rawClient();
-  client.prepare(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`).run(...insertVals);
+  // Cached statements: compiling these two on every write was ~a fifth of
+  // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
+  // AFTER triggers an admin may have added through the SQL page.)
+  preparedRun(client, `INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals);
 
-  const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
+  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "create",
@@ -736,13 +745,13 @@ async function updateRecordImpl(
   const client = rawClient();
 
   if (setCols.length > 1) {
-    client.prepare(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`).run(...setVals, id);
+    preparedRun(client, `UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id]);
   }
   // updated_at has 1 s resolution; drop the cached vector so a same-second
   // re-search sees the new value.
   invalidateRecordVectors(col.id, id);
 
-  const row = client.prepare(`SELECT * FROM ${tableRef} WHERE "id" = ?`).get(id) as Record<string, unknown>;
+  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "update",
@@ -1091,7 +1100,7 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited, guard);
 
-  rawClient().prepare(`DELETE FROM ${tableRef} WHERE "id" = ?`).run(id);
+  preparedRun(rawClient(), `DELETE FROM ${tableRef} WHERE "id" = ?`, [id]);
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
     op: "delete",
