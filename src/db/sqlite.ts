@@ -13,6 +13,7 @@
  */
 import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TransactionOptions } from "./driver.ts";
+import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
 
 /** WAL file cap on disk (bytes); shared with the background checkpointer. */
@@ -28,6 +29,16 @@ const STMT_CACHE_MAX = 256;
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+function columnDef(c: ColumnSpec): string {
+  let out = `${c.name} ${c.type.toUpperCase()}`;
+  if (c.primaryKey) out += " PRIMARY KEY";
+  else if (c.notNull) out += " NOT NULL";
+  if (c.unique) out += " UNIQUE";
+  if (c.default?.kind === "epochNow") out += " DEFAULT (unixepoch())";
+  else if (c.default?.kind === "literal") out += ` DEFAULT ${typeof c.default.value === "number" ? String(c.default.value) : `'${c.default.value.replace(/'/g, "''")}'`}`;
+  return out;
 }
 
 export const SQLITE_DIALECT: Dialect = {
@@ -51,6 +62,13 @@ export const SQLITE_DIALECT: Dialect = {
   jsonArrayLength: (expr) => `json_array_length(${expr})`,
   jsonEach: (expr) => `json_each(${expr})`,
   jsonGroupArray: (expr) => `json_group_array(${expr})`,
+  createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
+  addColumn: (table, column) => {
+    if (column.unique) throw new Error(`${table}.${column.name}: SQLite cannot add a UNIQUE column; add an index`);
+    return `ALTER TABLE ${table} ADD COLUMN ${columnDef(column)}`;
+  },
+  createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,
+  listColumnsSql: (table) => `SELECT name FROM pragma_table_info('${table.replace(/'/g, "''")}')`,
 };
 
 export const SQLITE_CAPABILITIES: Capabilities = {

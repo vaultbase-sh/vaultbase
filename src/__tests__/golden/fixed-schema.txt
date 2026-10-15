@@ -168,6 +168,10 @@
   hmac TEXT PK
   recovery_id TEXT NOT NULL
 
+-- table vaultbase_migrations
+  key TEXT PK
+  applied_at INTEGER NOT NULL DEFAULT unixepoch()
+
 -- table vaultbase_oauth_links
   id TEXT PK
   user_id TEXT NOT NULL

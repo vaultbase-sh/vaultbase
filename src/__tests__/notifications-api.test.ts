@@ -6,7 +6,7 @@ import * as jose from "jose";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
-import { admin as adminTable, users as usersTable } from "../db/schema.ts";
+import { admin as adminTable } from "../db/schema.ts";
 import { createCollection } from "../core/collections.ts";
 import { setSetting } from "../api/settings.ts";
 import { makeNotificationsPlugin } from "../api/notifications.ts";

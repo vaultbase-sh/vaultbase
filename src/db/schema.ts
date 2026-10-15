@@ -1,6 +1,19 @@
 import { sql } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+/**
+ * The epoch-seconds default every timestamp column carries. One object on
+ * purpose: ddl.ts recognises it by identity when it generates DDL, and the
+ * dialect writes it in its own words.
+ */
+export const EPOCH_NOW = sql`(unixepoch())`;
+
+/** One-off data migrations that have run (see migrate.ts). */
+export const migrations = sqliteTable("vaultbase_migrations", {
+  key: text("key").primaryKey(),
+  applied_at: integer("applied_at").notNull().default(EPOCH_NOW),
+});
+
 export const collections = sqliteTable("vaultbase_collections", {
   id: text("id").primaryKey(),
   name: text("name").notNull().unique(),
@@ -12,10 +25,10 @@ export const collections = sqliteTable("vaultbase_collections", {
   create_rule: text("create_rule"),
   update_rule: text("update_rule"),
   delete_rule: text("delete_rule"),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
   /** When 1, every record write produces a `vaultbase_record_history` row. */
   history_enabled: integer("history_enabled").notNull().default(0),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
 /**
@@ -36,23 +49,7 @@ export const recordHistory = sqliteTable("vaultbase_record_history", {
   /** "user" | "admin" | null. */
   actor_type: text("actor_type"),
   /** Unix-seconds timestamp of the write. */
-  at: integer("at").notNull().default(sql`(unixepoch())`),
-});
-
-export const users = sqliteTable("vaultbase_users", {
-  id: text("id").primaryKey(),
-  collection_id: text("collection_id")
-    .notNull()
-    .references(() => collections.id, { onDelete: "cascade" }),
-  email: text("email").notNull(),
-  password_hash: text("password_hash").notNull(),
-  email_verified: integer("email_verified").notNull().default(0),
-  totp_secret: text("totp_secret"),
-  totp_enabled: integer("totp_enabled").notNull().default(0),
-  is_anonymous: integer("is_anonymous").notNull().default(0),
-  data: text("data").notNull().default("{}"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  at: integer("at").notNull().default(EPOCH_NOW),
 });
 
 export const authTokens = sqliteTable("vaultbase_auth_tokens", {
@@ -62,13 +59,13 @@ export const authTokens = sqliteTable("vaultbase_auth_tokens", {
   purpose: text("purpose").notNull(),
   /** Short numeric code for OTP flow; nullable for token-only purposes. */
   code: text("code"),
+  expires_at: integer("expires_at").notNull(),
+  used_at: integer("used_at"),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
   /** Failed attempts for OTP/MFA brute-force protection. */
   attempts: integer("attempts").notNull().default(0),
   /** Purpose-specific data, e.g. the new address for `email_change`. */
   payload: text("payload"),
-  expires_at: integer("expires_at").notNull(),
-  used_at: integer("used_at"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
 });
 
 /**
@@ -147,7 +144,7 @@ export const sqlQueries = sqliteTable("vaultbase_sql_queries", {
 export const tokenRevocations = sqliteTable("vaultbase_token_revocations", {
   jti: text("jti").primaryKey(),
   expires_at: integer("expires_at").notNull(),
-  revoked_at: integer("revoked_at").notNull().default(sql`(unixepoch())`),
+  revoked_at: integer("revoked_at").notNull().default(EPOCH_NOW),
 });
 
 /**
@@ -190,7 +187,7 @@ export const mfaRecoveryCodes = sqliteTable("vaultbase_mfa_recovery_codes", {
   collection_id: text("collection_id").notNull(),
   code_hash: text("code_hash").notNull(),
   used_at: integer("used_at"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
 });
 
 export const oauthLinks = sqliteTable("vaultbase_oauth_links", {
@@ -200,19 +197,19 @@ export const oauthLinks = sqliteTable("vaultbase_oauth_links", {
   provider: text("provider").notNull(),
   provider_user_id: text("provider_user_id").notNull(),
   provider_email: text("provider_email"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
 });
 
 export const admin = sqliteTable("vaultbase_admin", {
   id: text("id").primaryKey(),
-  email: text("email").notNull(),
+  email: text("email").notNull().unique(),
   password_hash: text("password_hash").notNull(),
   /**
    * Tokens issued before this timestamp are rejected. Bumped on password reset
    * or admin-driven force-logout.
    */
   password_reset_at: integer("password_reset_at").notNull().default(0),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
 });
 
 export const files = sqliteTable("vaultbase_files", {
@@ -224,7 +221,7 @@ export const files = sqliteTable("vaultbase_files", {
   original_name: text("original_name").notNull(),
   mime_type: text("mime_type").notNull(),
   size: integer("size").notNull(),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
 });
 
 export const hooks = sqliteTable("vaultbase_hooks", {
@@ -234,14 +231,14 @@ export const hooks = sqliteTable("vaultbase_hooks", {
   event: text("event").notNull(),
   code: text("code").notNull().default(""),
   enabled: integer("enabled").notNull().default(1),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
   /** "inline" | "file" | "runtime"; see code-files.ts. */
   origin: text("origin").notNull().default("inline"),
   /** For origin "file": path inside the hooks folder. */
   file_path: text("file_path"),
   /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
   file_error: text("file_error"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
 export const routes = sqliteTable("vaultbase_routes", {
@@ -252,6 +249,8 @@ export const routes = sqliteTable("vaultbase_routes", {
   code: text("code").notNull().default(""),
   enabled: integer("enabled").notNull().default(1),
   /** 1 = answer 401 to callers without a valid user/admin token. */
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
   require_auth: integer("require_auth").notNull().default(0),
   /** "inline" | "file" | "runtime"; see code-files.ts. */
   origin: text("origin").notNull().default("inline"),
@@ -259,8 +258,6 @@ export const routes = sqliteTable("vaultbase_routes", {
   file_path: text("file_path"),
   /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
   file_error: text("file_error"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
 export const jobs = sqliteTable("vaultbase_jobs", {
@@ -279,14 +276,14 @@ export const jobs = sqliteTable("vaultbase_jobs", {
   next_run_at: integer("next_run_at"),
   last_status: text("last_status"),       // "ok" | "error"
   last_error: text("last_error"),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
   /** "inline" | "file" | "runtime"; see code-files.ts. */
   origin: text("origin").notNull().default("inline"),
   /** For origin "file": path inside the hooks folder. */
   file_path: text("file_path"),
   /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
   file_error: text("file_error"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
 /**
@@ -308,14 +305,14 @@ export const workers = sqliteTable("vaultbase_workers", {
   retry_backoff: text("retry_backoff").notNull().default("exponential"),
   /** Used as base for exponential / fixed delay between retries, in ms. */
   retry_delay_ms: integer("retry_delay_ms").notNull().default(1000),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
   /** "inline" | "file" | "runtime"; see code-files.ts. */
   origin: text("origin").notNull().default("inline"),
   /** For origin "file": path inside the hooks folder. */
   file_path: text("file_path"),
   /** For origin "file": why the file's latest version didn't load (the previous one keeps running). */
   file_error: text("file_error"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
 });
 
 /**
@@ -336,8 +333,8 @@ export const jobsLog = sqliteTable("vaultbase_jobs_log", {
   status: text("status").notNull().default("queued"),  // queued | running | succeeded | failed | dead
   error: text("error"),
   /** Earliest time the job is allowed to run. Used for delayed jobs + retry backoff. */
-  scheduled_at: integer("scheduled_at").notNull().default(sql`(unixepoch())`),
-  enqueued_at: integer("enqueued_at").notNull().default(sql`(unixepoch())`),
+  scheduled_at: integer("scheduled_at").notNull().default(EPOCH_NOW),
+  enqueued_at: integer("enqueued_at").notNull().default(EPOCH_NOW),
   started_at: integer("started_at"),
   finished_at: integer("finished_at"),
   /** Per-job retry overrides from enqueue(); null = use the worker defaults. */
@@ -349,7 +346,7 @@ export const jobsLog = sqliteTable("vaultbase_jobs_log", {
 export const settings = sqliteTable("vaultbase_settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
 });
 
 /**
@@ -381,7 +378,7 @@ export const auditLog = sqliteTable("vaultbase_audit_log", {
   ip: text("ip"),
   /** Optional human-readable summary or short JSON of changed fields. */
   summary: text("summary"),
-  at: integer("at").notNull().default(sql`(unixepoch())`),
+  at: integer("at").notNull().default(EPOCH_NOW),
 });
 
 /**
@@ -402,8 +399,8 @@ export const featureFlags = sqliteTable("vaultbase_feature_flags", {
   variations: text("variations").notNull().default("[]"),
   /** JSON: ordered array of evaluation rules. */
   rules: text("rules").notNull().default("[]"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
 });
 
 /**
@@ -432,8 +429,8 @@ export const webhooks = sqliteTable("vaultbase_webhooks", {
   timeout_ms: integer("timeout_ms").notNull().default(30000),
   /** JSON map of extra request headers (Authorization, X-API-Key, etc.). */
   custom_headers: text("custom_headers").notNull().default("{}"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
 });
 
 /**
@@ -456,7 +453,7 @@ export const webhookDeliveries = sqliteTable("vaultbase_webhook_deliveries", {
   /** Earliest time the delivery is allowed to fire (used for retry backoff). */
   scheduled_at: integer("scheduled_at").notNull(),
   delivered_at: integer("delivered_at"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
 });
 
 export const flagSegments = sqliteTable("vaultbase_flag_segments", {
@@ -464,13 +461,11 @@ export const flagSegments = sqliteTable("vaultbase_flag_segments", {
   description: text("description").notNull().default(""),
   /** JSON: same Condition tree as rule.when. */
   conditions: text("conditions").notNull().default("{}"),
-  created_at: integer("created_at").notNull().default(sql`(unixepoch())`),
-  updated_at: integer("updated_at").notNull().default(sql`(unixepoch())`),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+  updated_at: integer("updated_at").notNull().default(EPOCH_NOW),
 });
 
 export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
-export type User = typeof users.$inferSelect;
-export type NewUser = typeof users.$inferInsert;
 export type Admin = typeof admin.$inferSelect;
 export type File = typeof files.$inferSelect;

@@ -16,6 +16,8 @@
  * every caller is debt to pay down before another driver can be selected.
  */
 
+import type { ColumnSpec, IndexSpec } from "./ddl.ts";
+
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface RunResult {
@@ -70,6 +72,13 @@ export interface Dialect {
   /** A table expression yielding one row per element of the JSON array `expr`, with a `value` column. */
   jsonEach(expr: string): string;
   jsonGroupArray(expr: string): string;
+
+  /** DDL for the fixed tables (db/ddl.ts). */
+  createTable(name: string, columns: ColumnSpec[]): string;
+  addColumn(table: string, column: ColumnSpec): string;
+  createIndex(index: IndexSpec): string;
+  /** A query whose rows carry the table's column names in a `name` column. */
+  listColumnsSql(table: string): string;
 }
 
 export interface Capabilities {

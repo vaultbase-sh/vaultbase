@@ -4,7 +4,7 @@ import { closeDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setSetting } from "../api/settings.ts";
 import { createCollection } from "../core/collections.ts";
-import { authTokens, users } from "../db/schema.ts";
+import { authTokens } from "../db/schema.ts";
 import { getDb } from "../db/client.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import {

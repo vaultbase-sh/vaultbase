@@ -1,11 +1,29 @@
+/**
+ * Bringing a database up to date at boot.
+ *
+ *   1. The fixed schema: every table, column and index in schema.ts and
+ *      fixed-schema.ts, created or added where missing (ddl.ts). Runs on
+ *      every start; idempotent and dialect-driven.
+ *   2. Data migrations. The ones that upgrade old SQLite installs stay
+ *      SQLite-only (they rewrite SQLite-era data with SQLite SQL), are
+ *      idempotent and run on every start, as they always have; a database
+ *      on another driver starts after them and never needs them. A
+ *      migration that must run exactly once goes through {@link runOnce},
+ *      which records it in `vaultbase_migrations`.
+ *   3. Per-collection passes that are safe to repeat: timestamp indexes,
+ *      full-text indexes where the driver has them, autodate columns.
+ */
 import type { Database } from "bun:sqlite";
-import { getDb } from "./client.ts";
+import { getRawClient } from "./client.ts";
+import { db } from "./index.ts";
+import { ensureFixedSchema } from "./ddl.ts";
 
 /**
  * `ALTER TABLE … ADD COLUMN`, tolerating only "the column is already there".
  * Every other failure — a locked or read-only database, a full disk, a typo —
  * used to be swallowed the same way, leaving the schema half-migrated with
- * nothing in the log; it now stops the migration.
+ * nothing in the log; it now stops the migration. Used by the SQLite-only
+ * upgrade of v0.10 auth tables.
  */
 export function addColumn(client: Database, sql: string): void {
   try {
@@ -16,464 +34,63 @@ export function addColumn(client: Database, sql: string): void {
   }
 }
 
+/** Run `fn` once per database, under `key`, and remember that it ran. */
+export async function runOnce(key: string, fn: () => Promise<void> | void): Promise<void> {
+  const done = await db.get(`SELECT 1 FROM vaultbase_migrations WHERE key = ?`, [key]);
+  if (done) return;
+  await fn();
+  await db.run(`INSERT INTO vaultbase_migrations (key, applied_at) VALUES (?, ?)`, [key, Math.floor(Date.now() / 1000)]);
+}
+
 export async function runMigrations() {
-  const db = getDb();
-  const client = (db as unknown as { $client: Database }).$client;
+  await ensureFixedSchema();
 
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_collections (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      type TEXT NOT NULL DEFAULT 'base',
-      fields TEXT NOT NULL DEFAULT '[]',
-      view_query TEXT,
-      list_rule TEXT,
-      view_rule TEXT,
-      create_rule TEXT,
-      update_rule TEXT,
-      delete_rule TEXT,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN type TEXT NOT NULL DEFAULT 'base'`);
-  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN view_query TEXT`);
-  addColumn(client, `ALTER TABLE vaultbase_collections ADD COLUMN history_enabled INTEGER NOT NULL DEFAULT 0`);
+  // Tables of earlier designs: single-table records, DB-backed logs.
+  await db.exec(`DROP TABLE IF EXISTS vaultbase_records`);
+  await db.exec(`DROP TABLE IF EXISTS vaultbase_logs`);
 
-  // Drop legacy single-table records (replaced by per-collection tables)
-  client.exec(`DROP TABLE IF EXISTS vaultbase_records`);
-
-  // v0.11: `vaultbase_users` is no longer the source of truth for auth
-  // users — each auth collection has its own `vb_<name>` table with auth
-  // columns inline. The CREATE block stays here only so v0.10 → v0.11
-  // upgrades have a table to read from in `v0_11PrepAuthTables`. Once
-  // every row is mirrored, `v0_11FinalizeAuthMigration` drops it.
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_users (
-      id TEXT PRIMARY KEY,
-      collection_id TEXT NOT NULL,
-      email TEXT NOT NULL,
-      password_hash TEXT NOT NULL,
-      email_verified INTEGER NOT NULL DEFAULT 0,
-      totp_secret TEXT,
-      totp_enabled INTEGER NOT NULL DEFAULT 0,
-      is_anonymous INTEGER NOT NULL DEFAULT 0,
-      data TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_auth_tokens (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      collection_id TEXT NOT NULL,
-      purpose TEXT NOT NULL,
-      code TEXT,
-      expires_at INTEGER NOT NULL,
-      used_at INTEGER,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN code TEXT`);
-  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`);
-  addColumn(client, `ALTER TABLE vaultbase_auth_tokens ADD COLUMN payload TEXT`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_user ON vaultbase_auth_tokens(user_id, purpose)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_auth_tokens_code ON vaultbase_auth_tokens(code, purpose)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_token_revocations (
-      jti TEXT PRIMARY KEY,
-      expires_at INTEGER NOT NULL,
-      revoked_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_token_revocations_exp ON vaultbase_token_revocations(expires_at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_mfa_recovery_lookup (
-      hmac TEXT PRIMARY KEY,
-      recovery_id TEXT NOT NULL
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_mfa_recovery_codes (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      collection_id TEXT NOT NULL,
-      code_hash TEXT NOT NULL,
-      used_at INTEGER,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_mfa_recovery_codes_user ON vaultbase_mfa_recovery_codes(user_id, collection_id)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_oauth_links (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      collection_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      provider_user_id TEXT NOT NULL,
-      provider_email TEXT,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vaultbase_oauth_links_provider ON vaultbase_oauth_links(provider, provider_user_id)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_oauth_links_user ON vaultbase_oauth_links(user_id)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_admin (
-      id TEXT PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      password_reset_at INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  addColumn(client, `ALTER TABLE vaultbase_admin ADD COLUMN password_reset_at INTEGER NOT NULL DEFAULT 0`);
-  try { client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vaultbase_admin_email ON vaultbase_admin(email)`); } catch { /* exists */ }
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_files (
-      id TEXT PRIMARY KEY,
-      collection_id TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      field_name TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      original_name TEXT NOT NULL,
-      mime_type TEXT NOT NULL,
-      size INTEGER NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  // Every file / thumbnail GET looks up by filename; tokens and deletes by
-  // record + field.
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_files_filename ON vaultbase_files(filename)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_files_record ON vaultbase_files(collection_id, record_id, field_name)`);
-
-  // Logs are now stored as JSONL files (see core/file-logger.ts).
-  // Drop legacy DB-backed logs table if upgrading from an older install.
-  client.exec(`DROP TABLE IF EXISTS vaultbase_logs`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_hooks (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL DEFAULT '',
-      collection_name TEXT NOT NULL DEFAULT '',
-      event TEXT NOT NULL,
-      code TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  // Idempotent ADD COLUMN for existing DBs
-  addColumn(client, `ALTER TABLE vaultbase_hooks ADD COLUMN name TEXT NOT NULL DEFAULT ''`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_routes (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL DEFAULT '',
-      method TEXT NOT NULL,
-      path TEXT NOT NULL,
-      code TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  // Per-route sign-in requirement; existing routes stay public.
-  addColumn(client, `ALTER TABLE vaultbase_routes ADD COLUMN require_auth INTEGER NOT NULL DEFAULT 0`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_jobs (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL DEFAULT '',
-      cron TEXT NOT NULL,
-      code TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      mode TEXT NOT NULL DEFAULT 'inline',
-      last_run_at INTEGER,
-      next_run_at INTEGER,
-      last_status TEXT,
-      last_error TEXT,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  // Idempotent ALTER: pre-existing installs missing the mode column
-  addColumn(client, `ALTER TABLE vaultbase_jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'inline'`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_workers (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL DEFAULT '',
-      queue TEXT NOT NULL,
-      code TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      concurrency INTEGER NOT NULL DEFAULT 1,
-      retry_max INTEGER NOT NULL DEFAULT 3,
-      retry_backoff TEXT NOT NULL DEFAULT 'exponential',
-      retry_delay_ms INTEGER NOT NULL DEFAULT 1000,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_workers_queue ON vaultbase_workers(queue)`);
-
-  // Where each hook / route / job / worker's code lives: "inline" (typed in
-  // the admin UI), "file" (a file in the hooks folder, see code-files.ts) or
-  // "runtime" (created by helpers.cron.add). One row per file.
-  for (const table of ["vaultbase_hooks", "vaultbase_routes", "vaultbase_jobs", "vaultbase_workers"]) {
-    addColumn(client, `ALTER TABLE ${table} ADD COLUMN origin TEXT NOT NULL DEFAULT 'inline'`);
-    addColumn(client, `ALTER TABLE ${table} ADD COLUMN file_path TEXT`);
-    addColumn(client, `ALTER TABLE ${table} ADD COLUMN file_error TEXT`);
-    client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_file_path ON ${table}(file_path) WHERE file_path IS NOT NULL`);
+  if (db.name === "sqlite") {
+    const client = getRawClient();
+    // ── v0.11: auth users moved to per-collection `vb_<auth-col>` tables ──
+    // Old model: every auth user lived in shared `vaultbase_users` keyed by
+    // `collection_id`. New model: each auth collection has a real `vb_<name>`
+    // table with auth columns inline. ALTER+COPY first (idempotent), then
+    // DROP `vaultbase_users` once every row has a home. The finalize step
+    // may legitimately wait for an operator, so this runs every start.
+    v0_11PrepAuthTables(client);
+    v0_11FinalizeAuthMigration(client);
+    // ── v0.17: one-time tokens are stored hashed ──
+    hashLegacyAuthTokens(client);
+    // ── v0.18: sign-up honours the auth collection's create rule ──
+    openExistingAuthSignup(client);
   }
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_jobs_log (
-      id TEXT PRIMARY KEY,
-      queue TEXT NOT NULL,
-      worker_id TEXT,
-      payload TEXT NOT NULL DEFAULT '{}',
-      unique_key TEXT,
-      attempt INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'queued',
-      error TEXT,
-      scheduled_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      enqueued_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      started_at INTEGER,
-      finished_at INTEGER
-    )
-  `);
-  // v0.12: per-job retry overrides from enqueue() (null = worker defaults).
-  for (const col of ["retry_max INTEGER", "retry_backoff TEXT", "retry_delay_ms INTEGER"]) {
-    addColumn(client, `ALTER TABLE vaultbase_jobs_log ADD COLUMN ${col}`);
-  }
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_status ON vaultbase_jobs_log(queue, status, scheduled_at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_jobs_log_unique ON vaultbase_jobs_log(unique_key, status)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_record_history (
-      id TEXT PRIMARY KEY,
-      collection TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      op TEXT NOT NULL,
-      snapshot TEXT NOT NULL,
-      actor_id TEXT,
-      actor_type TEXT,
-      at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_record_history_lookup ON vaultbase_record_history(collection, record_id, at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_record_history_at ON vaultbase_record_history(at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_audit_log (
-      id TEXT PRIMARY KEY,
-      actor_id TEXT,
-      actor_email TEXT,
-      method TEXT NOT NULL,
-      path TEXT NOT NULL,
-      action TEXT NOT NULL,
-      target TEXT,
-      status INTEGER NOT NULL,
-      ip TEXT,
-      summary TEXT,
-      at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_actor ON vaultbase_audit_log(actor_id, at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_at ON vaultbase_audit_log(at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_audit_log_action ON vaultbase_audit_log(action, at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_admin_sessions (
-      jti TEXT PRIMARY KEY,
-      admin_id TEXT NOT NULL,
-      admin_email TEXT NOT NULL,
-      issued_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL,
-      ip TEXT,
-      user_agent TEXT
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_admin_sessions_admin ON vaultbase_admin_sessions(admin_id)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_admin_sessions_exp ON vaultbase_admin_sessions(expires_at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_login_failures (
-      id TEXT PRIMARY KEY,
-      key TEXT NOT NULL,
-      at INTEGER NOT NULL
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_key ON vaultbase_login_failures(key, at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_login_failures_at ON vaultbase_login_failures(at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_webhooks (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL,
-      events TEXT NOT NULL DEFAULT '[]',
-      secret TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      retry_max INTEGER NOT NULL DEFAULT 3,
-      retry_backoff TEXT NOT NULL DEFAULT 'exponential',
-      retry_delay_ms INTEGER NOT NULL DEFAULT 1000,
-      timeout_ms INTEGER NOT NULL DEFAULT 30000,
-      custom_headers TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_webhook_deliveries (
-      id TEXT PRIMARY KEY,
-      webhook_id TEXT NOT NULL,
-      event TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      attempt INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'pending',
-      response_status INTEGER,
-      response_body TEXT,
-      error TEXT,
-      scheduled_at INTEGER NOT NULL,
-      delivered_at INTEGER,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_webhook_deliveries_status ON vaultbase_webhook_deliveries(status, scheduled_at)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_webhook_deliveries_webhook ON vaultbase_webhook_deliveries(webhook_id, created_at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_flag_segments (
-      name TEXT PRIMARY KEY,
-      description TEXT NOT NULL DEFAULT '',
-      conditions TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_feature_flags (
-      key TEXT PRIMARY KEY,
-      description TEXT NOT NULL DEFAULT '',
-      type TEXT NOT NULL DEFAULT 'bool',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      default_value TEXT NOT NULL DEFAULT 'false',
-      variations TEXT NOT NULL DEFAULT '[]',
-      rules TEXT NOT NULL DEFAULT '[]',
-      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-    )
-  `);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_file_token_uses (
-      jti TEXT PRIMARY KEY,
-      used_at INTEGER NOT NULL,
-      ip TEXT
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_file_token_uses_used_at ON vaultbase_file_token_uses(used_at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_api_tokens (
-      id               TEXT PRIMARY KEY,
-      name             TEXT NOT NULL,
-      scopes           TEXT NOT NULL DEFAULT '[]',
-      created_by       TEXT NOT NULL,
-      created_by_email TEXT NOT NULL,
-      created_at       INTEGER NOT NULL,
-      expires_at       INTEGER NOT NULL,
-      revoked_at       INTEGER,
-      last_used_at     INTEGER,
-      last_used_ip     TEXT,
-      last_used_ua     TEXT,
-      use_count        INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_api_tokens_created_by ON vaultbase_api_tokens(created_by)`);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_api_tokens_expires ON vaultbase_api_tokens(expires_at)`);
-
-  client.exec(`
-    CREATE TABLE IF NOT EXISTS vaultbase_sql_queries (
-      id                 TEXT PRIMARY KEY,
-      name               TEXT NOT NULL,
-      sql                TEXT NOT NULL,
-      description        TEXT,
-      owner_admin_id     TEXT NOT NULL,
-      owner_admin_email  TEXT NOT NULL,
-      created_at         INTEGER NOT NULL,
-      updated_at         INTEGER NOT NULL,
-      last_run_at        INTEGER,
-      last_run_ms        INTEGER,
-      last_row_count     INTEGER,
-      last_error         TEXT
-    )
-  `);
-  client.exec(`CREATE INDEX IF NOT EXISTS idx_vaultbase_sql_queries_owner ON vaultbase_sql_queries(owner_admin_id, updated_at DESC)`);
-
-  // ── v0.11: auth users moved to per-collection `vb_<auth-col>` tables ──
-  //
-  // Old model: every auth user lived in shared `vaultbase_users` keyed by
-  // `collection_id`. New model: each auth collection gets a real
-  // `vb_<name>` table with auth columns inline. Migration: ALTER+COPY
-  // first run (idempotent), then DROP `vaultbase_users` once every row
-  // has a home in its per-collection table.
-  v0_11PrepAuthTables(client);
-  v0_11FinalizeAuthMigration(client);
-
-  // ── v0.17: one-time tokens are stored hashed ──
-  hashLegacyAuthTokens(client);
-
-  // ── v0.18: sign-up honours the auth collection's create rule ──
-  openExistingAuthSignup(client);
 
   // ── v0.12: created_at / updated_at indexes on record tables ──
   // New tables get them in createUserTable; backfill existing ones.
   const { ensureTimestampIndexes } = await import("../core/collections.ts");
-  const tables = client
-    .prepare(`SELECT name FROM vaultbase_collections WHERE type != 'view'`)
-    .all() as Array<{ name: string }>;
+  const tables = await db.all<{ name: string }>(`SELECT name FROM vaultbase_collections WHERE type != 'view'`);
   for (const { name } of tables) {
     try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
 
   // ── v0.15: full-text index for `searchable` fields ──
   // No-op when the index already matches; (re)builds it otherwise.
-  const { syncFts } = await import("../core/fts.ts");
-  const ftsRows = client
-    .prepare(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`)
-    .all() as Array<{ name: string; fields: string }>;
-  for (const { name, fields } of ftsRows) {
-    try {
-      const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
-        .filter((f) => !f.implicit);
-      syncFts(name, parsed);
-    } catch (e) {
-      console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
+  if (db.capabilities.fts === "fts5") {
+    const { syncFts } = await import("../core/fts.ts");
+    const ftsRows = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
+    for (const { name, fields } of ftsRows) {
+      try {
+        const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
+          .filter((f) => !f.implicit);
+        syncFts(name, parsed);
+      } catch (e) {
+        console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
+      }
     }
   }
 
   // ── v0.22.1: autodate fields get their column ──
-  ensureAutodateColumns(client);
+  await ensureAutodateColumns();
 }
 
 /**
@@ -481,37 +98,30 @@ export async function runMigrations() {
  * value and then skipped it on insert and update. Add the column on every
  * collection that declares one, so records written from now on keep it.
  */
-function ensureAutodateColumns(client: Database): void {
-  const cols = client.prepare(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`)
-    .all() as Array<{ name: string; fields: string }>;
+async function ensureAutodateColumns(): Promise<void> {
+  const cols = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
   for (const col of cols) {
     let fields: Array<{ name?: unknown; type?: unknown; system?: unknown; implicit?: unknown }> = [];
     try { fields = JSON.parse(col.fields || "[]") as typeof fields; } catch { continue; }
+    let present: Set<string> | null = null;
     for (const f of fields) {
       if (f.type !== "autodate" || typeof f.name !== "string" || f.system || f.implicit) continue;
       if (!/^[a-z][a-z0-9_]*$/.test(f.name) || !/^[a-z0-9_]+$/.test(col.name)) continue;
-      addColumn(client, `ALTER TABLE "vb_${col.name}" ADD COLUMN "${f.name}" INTEGER`);
+      present ??= new Set((await db.all<{ name: string }>(db.dialect.listColumnsSql(`vb_${col.name}`))).map((r) => r.name));
+      if (present.has(f.name)) continue;
+      await db.exec(db.dialect.addColumn(`"vb_${col.name}"`, { name: `"${f.name}"`, type: "integer", primaryKey: false, notNull: false, unique: false }));
     }
   }
 }
 
-/**
- * Drop `vaultbase_users` once every row has been mirrored to a
- * `vb_<auth-col>` table. Runs after `v0_11PrepAuthTables`. Idempotent —
- * if the table is already gone the function returns immediately.
- *
- * Safety: refuses to drop if any row in `vaultbase_users` is missing
- * from the corresponding per-collection table. Operator must run
- * `vaultbase doctor` and reconcile before the next boot.
- */
 /**
  * Before v0.18, `/auth/:collection/register` (and `/anonymous`, `/promote`)
  * ignored the collection's create rule, so sign-up was open whatever the
  * rule said, and auth collections default to "Admin only". Now the rule is
  * enforced, so on the first boot after upgrading, existing auth collections
  * whose create rule is "Admin only" are set to public: sign-up keeps working
- * as before, and the rules page now shows it. Runs once (marker in
- * vaultbase_settings) so a collection an admin closes later stays closed.
+ * as before, and the rules page now shows it. Installs upgraded before the
+ * migrations table existed carry a marker in vaultbase_settings instead.
  */
 function openExistingAuthSignup(client: Database): void {
   const MARKER = "_migrations.v0_18_auth_create_rule";
@@ -562,6 +172,15 @@ function hashLegacyAuthTokens(client: Database): void {
   }
 }
 
+/**
+ * Drop `vaultbase_users` once every row has been mirrored to a
+ * `vb_<auth-col>` table. Runs after `v0_11PrepAuthTables`. Idempotent —
+ * if the table is already gone the function returns immediately.
+ *
+ * Safety: refuses to drop if any row in `vaultbase_users` is missing
+ * from the corresponding per-collection table. Operator must run
+ * `vaultbase doctor` and reconcile before the next boot.
+ */
 function v0_11FinalizeAuthMigration(client: Database): void {
   const exists = client.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vaultbase_users'`,
@@ -603,9 +222,9 @@ function v0_11FinalizeAuthMigration(client: Database): void {
   }
 }
 
-/** Per-auth-collection table prep. Exported for the doctor CLI to dry-run. */
+/** Per-auth-collection table prep for v0.10 installs. Skips when `vaultbase_users` is gone. */
 function v0_11PrepAuthTables(client: Database): void {
-  // Skip entirely if vaultbase_users doesn't exist yet (fresh install).
+  // Skip entirely if vaultbase_users doesn't exist (fresh install, or already migrated).
   const usersTableExists = client.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vaultbase_users'`,
   ).get() as { name: string } | undefined;

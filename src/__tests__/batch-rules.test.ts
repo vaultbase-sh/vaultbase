@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { makeBatchPlugin } from "../api/batch.ts";
-import { admin as adminTable, users as usersTable } from "../db/schema.ts";
+import { admin as adminTable } from "../db/schema.ts";
 
 const SECRET = "test-secret-batch-rules";
 // verifyAuthToken now requires `iss = "vaultbase"` and a matching DB
