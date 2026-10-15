@@ -428,7 +428,7 @@ async function notifyWorker(ctx: JobContext): Promise<void> {
   const result = await def.send({ userId: job.userId, payload: job.payload, settings, helpers: ctx.helpers });
   for (const id of result.invalidTokens ?? []) {
     try {
-      ctx.helpers.db.exec(`UPDATE vb_device_tokens SET enabled = 0 WHERE id = ?`, id);
+      await ctx.helpers.sql.exec(`UPDATE vb_device_tokens SET enabled = 0 WHERE id = ?`, [id]);
     } catch { /* table may be gone — ignore */ }
   }
 
@@ -674,10 +674,10 @@ registerPushProvider({
     // Raw FCM registration tokens live in vb_device_tokens.
     let tokens: FcmDeviceToken[] = [];
     try {
-      tokens = helpers.db.query<{ id: string; token: string }>(
+      tokens = await helpers.sql.query<{ id: string; token: string }>(
         `SELECT id, token FROM vb_device_tokens
          WHERE "user" = ? AND provider = 'fcm' AND enabled = 1`,
-        userId,
+        [userId],
       );
     } catch (e) {
       // Table not yet bootstrapped → no devices to send to. Not an error.
