@@ -57,17 +57,28 @@ describe("background checkpointer", () => {
     const ins = db.prepare("INSERT INTO t (v) VALUES (?)");
     // Back-to-back commits of ~one page each until the worker has rewound
     // the WAL a few times (10 s cap), yielding briefly so its reports land.
+    // On a loaded machine the writes outrun the worker, so the WAL size at
+    // any one instant proves nothing. What the worker owes is: rewinds
+    // happen, the WAL never reaches the runaway threshold that hands
+    // checkpointing back to SQLite, and it shrinks once the writes stop.
     const row = "x".repeat(3_000);
     const until = Date.now() + 10_000;
+    let peak = 0;
     while (Date.now() < until && (checkpointStats()?.restarts ?? 0) < 3) {
       for (let i = 0; i < 500; i++) ins.run(row);
       await Bun.sleep(1);
+      peak = Math.max(peak, checkpointStats()?.wal_frames ?? 0);
     }
     ins.finalize();
-    const s = checkpointStats()!;
+    let s = checkpointStats()!;
     expect(s.mode).toBe("worker");
     expect(s.restarts).toBeGreaterThan(0);
-    // Without rewinds this climbs past 100k frames and trips the fallback.
+    expect(peak).toBeLessThan(100_000);
+    // Writes stopped: a few passes later the worker has rewound what was left.
+    for (let i = 0; i < 60 && s.wal_frames >= 40_000; i++) {
+      await Bun.sleep(50);
+      s = checkpointStats()!;
+    }
     expect(s.wal_frames).toBeLessThan(40_000);
   }, 15_000);
 
