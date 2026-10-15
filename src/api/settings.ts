@@ -226,8 +226,8 @@ export async function setSetting(key: string, value: string): Promise<void> {
   const stored = maybeEncrypt(key, value);
   values().set(key, stored);
   await db.run(
-    `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, unixepoch())
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
+    `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, ${db.dialect.epochNow})
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = ${db.dialect.epochNow}`,
     [key, stored],
   );
   broadcast({ type: "bus", kind: "settings", key });
