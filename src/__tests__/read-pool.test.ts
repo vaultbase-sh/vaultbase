@@ -21,6 +21,7 @@ import { _reset as resetRealtime } from "../realtime/manager.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-read-pool";
+const WORKER_URL = new URL("../read-worker.ts", import.meta.url);
 let dir: string;
 let app: ReturnType<typeof createServer>;
 let config: Parameters<typeof createServer>[0];
@@ -70,14 +71,14 @@ describe("forwarding", () => {
     const res = await get("/api/v1/posts");
     expect(res.status).toBe(200);
     expect(fromWorker(res)).toBeNull();
-    expect(readPoolStats()).toEqual({ workers: 0, forwarded: 0, inflight: 0 });
+    expect(readPoolStats()).toEqual({ workers: 0, forwarded: 0, inflight: 0, dropped: 0 });
     mainDenied = (await get("/api/v1/secrets")).status;
     expect(mainDenied).toBeGreaterThanOrEqual(400);
   });
 
   it("a worker answers a list and a get-one exactly like the main thread", async () => {
     const mainList = await (await get("/api/v1/posts?perPage=5&sort=title")).json();
-    await startReadPool(2, {}, config);
+    await startReadPool(2, {}, config, WORKER_URL);
     expect(readPoolStats().workers).toBe(2);
     const res = await get("/api/v1/posts?perPage=5&sort=title");
     expect(res.status).toBe(200);
@@ -123,5 +124,13 @@ describe("forwarding", () => {
     await stopReadPool();
     expect(readPoolStats().workers).toBe(0);
     expect(fromWorker(await get("/api/v1/posts"))).toBeNull();
+  });
+
+  it("a pool whose worker can't open the database starts nothing and leaves reads on the main thread", async () => {
+    await expect(startReadPool(1, {}, { ...config, dbPath: join(dir, "missing", "nope.db") }, WORKER_URL)).rejects.toThrow();
+    expect(readPoolStats().workers).toBe(0);
+    const res = await get("/api/v1/posts?perPage=1");
+    expect(res.status).toBe(200);
+    expect(fromWorker(res)).toBeNull();
   });
 });

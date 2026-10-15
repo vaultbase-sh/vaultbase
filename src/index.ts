@@ -427,7 +427,9 @@ async function main() {
     if (n > 0 && !process.env["VAULTBASE_WORKER_ID"]) {
       const { startReadPool } = await import("./core/read-pool.ts");
       try {
-        await startReadPool(n, { ...process.env as Record<string, string> }, config);
+        // The URL is made here, next to the entry file, so it resolves both in
+        // development and inside the compiled binary (see core/read-pool.ts).
+        await startReadPool(n, { ...process.env as Record<string, string> }, config, new URL("./read-worker.ts", import.meta.url));
         process.stderr.write(`vaultbase: ${n} read worker thread(s)\n`);
       } catch (e) {
         process.stderr.write(`vaultbase: read workers not started: ${e instanceof Error ? e.message : String(e)}\n`);
