@@ -92,6 +92,13 @@ function presetById(id: RulePreset["id"]): RulePreset {
 
 type Tab = "fields" | "rules" | "indexes";
 
+/** Fields as the API takes them: no system fields, and `renamedFrom` only where the name changed. */
+function forSave(fields: FieldDef[]): FieldDef[] {
+  return fields
+    .filter((f) => !f.system)
+    .map(({ renamedFrom, ...f }) => (renamedFrom && renamedFrom !== f.name ? { ...f, renamedFrom } : f));
+}
+
 export default function CollectionEdit() {
   const params = useParams();
   const navigate = useNavigate();
@@ -176,7 +183,9 @@ export default function CollectionEdit() {
     api.get<ApiResponse<Collection>>(`/api/v1/collections/${collId}`).then((res) => {
       if (!res.data) return;
       setCollection(res.data);
-      setFields(parseFields(res.data.fields));
+      // Remember each field's stored name so a rename reaches the server as
+      // a rename (the column keeps its data) and not as a drop plus an add.
+      setFields(parseFields(res.data.fields).map((f) => ({ ...f, renamedFrom: f.name })));
       setViewQuery(res.data.view_query ?? "");
       // `?? ""` here used to make `null` (public) and `""` (admin-only)
       // indistinguishable in the editor.
@@ -230,7 +239,7 @@ export default function CollectionEdit() {
         // `|| null` here used to turn every admin-only rule public on save.
         ...fromRuleSet(rules),
       };
-      if (!queryChanged) payload["fields"] = fields.filter((f) => !f.system);
+      if (!queryChanged) payload["fields"] = forSave(fields);
       const res = await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, payload);
       setSaving(false);
       if (res.error) { toast(res.error, "info"); return; }
@@ -239,7 +248,7 @@ export default function CollectionEdit() {
       return;
     }
 
-    const userFields = fields.filter((f) => !f.system);
+    const userFields = forSave(fields);
     const unnamed = userFields.filter((f) => !f.name);
     if (unnamed.length > 0) { toast("All fields must have a name."); return; }
     const badSelect = userFields.find(

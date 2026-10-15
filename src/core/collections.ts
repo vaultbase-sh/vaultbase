@@ -138,6 +138,12 @@ export interface FieldDef {
   options?: FieldOptions;
   onCreate?: boolean;
   onUpdate?: boolean;
+  /**
+   * The field's previous name, when an update renames it. The column is
+   * renamed in place and keeps its data; without it a new name is a drop
+   * plus an add. Never stored: stripped before the fields JSON is saved.
+   */
+  renamedFrom?: string;
 }
 
 const cache = new Map<string, Collection>();
@@ -710,10 +716,33 @@ export function alterUserTable(
     }
   };
 
+  // Renames: a new name with `renamedFrom` naming an old field that is not
+  // in the new list. The column is renamed in place and keeps its data;
+  // from here on the old entry counts as the new name.
+  const renamed = new Map<string, string>(); // old → new
+  for (const [newName, f] of newByName) {
+    const from = f.renamedFrom;
+    if (!from || from === newName || !oldByName.has(from) || newByName.has(from)) continue;
+    if (oldByName.get(from)!.type !== f.type) {
+      throw new Error(`Cannot rename '${from}' to '${newName}' and change its type at the same time`);
+    }
+    renamed.set(from, newName);
+  }
+
   // The search index triggers reference their columns, which blocks DROP
-  // COLUMN; drop the index first and let syncFts below recreate it.
+  // COLUMN and keep a renamed column's old name; drop the index first and
+  // let syncFts below recreate it.
   const indexed = ftsColumns(client, collectionName) ?? [];
   if (indexed.some((c) => !newByName.has(c))) dropFts(client, collectionName);
+
+  for (const [from, to] of renamed) {
+    const hadUnique = hasUniqueIndex(from);
+    if (hadUnique) client.exec(`DROP INDEX ${uniqueIndex(from)}`);
+    client.exec(`ALTER TABLE ${tname} RENAME COLUMN ${quoteIdent(from)} TO ${quoteIdent(to)}`);
+    if (hadUnique) addUniqueIndex(to);
+    oldByName.set(to, { ...oldByName.get(from)!, name: to });
+    oldByName.delete(from);
+  }
 
   // Drop fields removed in new
   for (const oldName of oldByName.keys()) {
@@ -1031,7 +1060,8 @@ export async function updateCollection(
       oldFields.filter((f) => !f.implicit),
       newFields.filter((f) => !f.implicit)
     );
-    data = { ...data, fields: JSON.stringify(newFields) };
+    // `renamedFrom` is an instruction for the DDL above, not part of the schema.
+    data = { ...data, fields: JSON.stringify(newFields.map(({ renamedFrom: _r, ...f }) => f)) };
   }
 
   await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));

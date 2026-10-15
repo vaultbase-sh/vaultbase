@@ -78,6 +78,8 @@ export interface FieldDef {
   options?: Record<string, unknown>;
   onCreate?: boolean;
   onUpdate?: boolean;
+  /** Set by the editor on fields loaded from the server: the name they had when loaded. */
+  renamedFrom?: string;
 }
 
 export interface Collection {
