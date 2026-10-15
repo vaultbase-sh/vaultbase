@@ -10,6 +10,15 @@ import { initDb } from "./db/client.ts";
 import { rememberPeer } from "./core/sec.ts";
 import type { Config } from "./config.ts";
 import type { ForwardRequest, ForwardReply } from "./core/read-pool.ts";
+import type { BusMessage } from "./core/thread-bus.ts";
+import { applyTableReport } from "./core/table-writes.ts";
+import { _resetCollectionCache } from "./core/collections.ts";
+import { invalidateSetting } from "./api/settings.ts";
+import { invalidateRateLimitCache } from "./api/ratelimit.ts";
+import { invalidateCorsCache } from "./core/cors.ts";
+import { invalidateEgressCache } from "./core/hook-egress.ts";
+import { invalidateEmailCache } from "./core/email.ts";
+import { invalidateStorageCache } from "./core/storage.ts";
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent) => void) | null;
@@ -18,7 +27,28 @@ interface WorkerScope {
 }
 const scope = globalThis as unknown as WorkerScope;
 
-type Incoming = { type: "start"; config: Config } | { type: "stop" } | ForwardRequest;
+type Incoming = { type: "start"; config: Config } | { type: "stop" } | ForwardRequest | BusMessage;
+
+/** What the main thread tells us changed (core/thread-bus.ts). */
+function dispatchBus(m: BusMessage): void {
+  switch (m.kind) {
+    case "tables":
+      for (const [table, changes] of m.tables) applyTableReport(table, changes);
+      break;
+    case "collections":
+      _resetCollectionCache();
+      break;
+    case "settings":
+      invalidateSetting(m.key);
+      // The same caches the settings PATCH drops on the main thread.
+      invalidateRateLimitCache();
+      invalidateEmailCache();
+      invalidateStorageCache();
+      invalidateEgressCache();
+      invalidateCorsCache();
+      break;
+  }
+}
 
 const WORKER_ID = process.env["VAULTBASE_READ_WORKER"] ?? "";
 let app: { handle: (req: Request) => Promise<Response> } | null = null;
@@ -60,6 +90,10 @@ scope.onmessage = (e: MessageEvent) => {
   }
   if (m.type === "stop") {
     scope.close();
+    return;
+  }
+  if (m.type === "bus") {
+    dispatchBus(m);
     return;
   }
   if (m.type === "request") {

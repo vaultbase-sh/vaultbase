@@ -28,6 +28,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { getRawClient, onBeforeCloseDb } from "../db/client.ts";
+import { discardTableReports, flushTableReports } from "./table-writes.ts";
 
 interface Group {
   client: Database;
@@ -95,9 +96,11 @@ export function flushGroupCommit(): void {
     try { if (g.client.inTransaction) g.client.exec("ROLLBACK"); } catch { /* closed */ }
   }
   if (failure) {
+    discardTableReports();
     for (const w of g.waiters) w.reject(failure);
     return;
   }
+  flushTableReports();
   for (const w of g.waiters) w.resolve();
   for (const f of g.effects) {
     try { f(); } catch { /* side effects never fail committed writes */ }

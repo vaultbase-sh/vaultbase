@@ -19,7 +19,8 @@ import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
-import { noteTableWrite, tableVersion, takeReportedChanges, trackWrite } from "./table-writes.ts";
+import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges, trackWrite } from "./table-writes.ts";
+import { isReadWorker } from "./thread-bus.ts";
 
 /**
  * Build a lookup the rule SQL compiler uses for joined-collection view_rule
@@ -126,7 +127,12 @@ function syncCountCache(client: Database): void {
   const v = versionProbe.stmt.get() as { t: number; d: number; s: number };
   const reported = takeReportedChanges();
   const seen = countCacheSeen;
-  if (!seen || seen.d !== v.d || seen.s !== v.s || (v.t !== seen.t && v.t - seen.t !== reported)) {
+  // Another connection committed. On the main thread that is always
+  // unknown work (a cluster worker, the CLI). On a read worker it is
+  // usually the main thread, which reports the tables it wrote over the
+  // bus; a move with nothing reported is someone else, so empty everything.
+  const foreignCommit = !!seen && seen.d !== v.d && (!isReadWorker() || reported === 0);
+  if (!seen || foreignCommit || seen.s !== v.s || (v.t !== seen.t && v.t - seen.t !== reported)) {
     COUNT_CACHE.clear();
   }
   countCacheSeen = v;
@@ -1441,9 +1447,11 @@ async function deleteRecordOwned(
       client.exec("BEGIN");
       await run();
       client.exec("COMMIT");
+      flushTableReports();
       tx.commit();
     } catch (e) {
       if (client.inTransaction) client.exec("ROLLBACK");
+      discardTableReports();
       tx.rollback();
       throw e;
     }

@@ -1,3 +1,4 @@
+import { discardTableReports, flushTableReports } from "../core/table-writes.ts";
 import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
@@ -237,10 +238,12 @@ export function makeBatchPlugin(jwtSecret: string) {
             results.push(result);
           }
           client.exec("COMMIT");
+          flushTableReports();
           tx.commit(); // realtime / webhooks / after-hooks for the committed writes
           return { data: results };
         } catch (e) {
           if (client.inTransaction) client.exec("ROLLBACK");
+          discardTableReports();
           tx.rollback();
           return batchError(e, results.length, auth, set);
         }

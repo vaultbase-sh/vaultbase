@@ -9,7 +9,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { _resetCollectionCache, createCollection } from "../core/collections.ts";
+import { _resetCollectionCache, createCollection, getCollection, updateCollection } from "../core/collections.ts";
+import { setSetting } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { createServer } from "../server.ts";
 import { readTarget, startReadPool, stopReadPool, readPoolStats } from "../core/read-pool.ts";
@@ -114,6 +115,41 @@ describe("forwarding", () => {
     expect(res.status).toBe(200);
     expect(fromWorker(res)).not.toBeNull();
     expect(((await res.json()) as { data: { title: string } }).data.title).toBe("fresh");
+  });
+
+  it("a collection change on the main thread reaches the workers without a restart", async () => {
+    const col = (await getCollection("posts"))!;
+    await updateCollection(col.id, { list_rule: "" });
+    const denied = await get("/api/v1/posts?perPage=1");
+    expect(fromWorker(denied)).not.toBeNull();
+    expect(denied.status).toBe(mainDenied);
+    await updateCollection(col.id, { list_rule: null });
+    const open = await get("/api/v1/posts?perPage=1");
+    expect(fromWorker(open)).not.toBeNull();
+    expect(open.status).toBe(200);
+  });
+
+  it("a settings change on the main thread reaches the workers", async () => {
+    // The collection change above emptied the main thread's collection cache;
+    // the first read refills it on main, later ones are forwarded.
+    await get("/api/v1/posts?perPage=1");
+    const before = await get("/api/v1/posts?perPage=1", { origin: "https://bus.test" });
+    expect(fromWorker(before)).not.toBeNull();
+    expect(before.headers.get("access-control-allow-origin")).toBeNull();
+    setSetting("cors.origins", "https://bus.test");
+    const after = await get("/api/v1/posts?perPage=1", { origin: "https://bus.test" });
+    expect(fromWorker(after)).not.toBeNull();
+    expect(after.headers.get("access-control-allow-origin")).toBe("https://bus.test");
+    setSetting("cors.origins", "");
+  });
+
+  it("totals on a worker follow writes on the main thread, to this and other collections", async () => {
+    const total = async () => ((await (await get("/api/v1/posts?perPage=1")).json()) as { totalItems: number }).totalItems;
+    const n = await total();
+    await createRecord("secrets", { note: "elsewhere" });
+    expect(await total()).toBe(n);
+    await createRecord("posts", { title: "counted", tags: [] });
+    expect(await total()).toBe(n + 1);
   });
 
   it("leaves other routes on the main thread and stops cleanly", async () => {

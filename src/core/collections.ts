@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { broadcast } from "./thread-bus.ts";
 import { eq, or } from "drizzle-orm";
 import { flushGroupCommit } from "./group-commit.ts";
 import { getDb } from "../db/client.ts";
@@ -176,6 +177,7 @@ export function getSchemaVersion(): number {
 export function _resetCollectionCache(): void {
   schemaVersion++;
   cache.clear();
+  broadcast({ type: "bus", kind: "collections" });
   sensitiveCache = null;
   // Schema mutated — drop cached prepared statements (their SQL embeds table
   // / column names that may have changed).
@@ -947,6 +949,7 @@ async function renameCollectionStorage(
   if (type !== "view") syncFts(client, newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
+  broadcast({ type: "bus", kind: "collections" });
   await clearPreparedStatementsOnSchemaChange();
   const { invalidateHookCache } = await import("./hooks.ts");
   invalidateHookCache();
@@ -1033,6 +1036,7 @@ export async function updateCollection(
   await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));
   cache.delete(id);
   cache.delete(before.name);
+  broadcast({ type: "bus", kind: "collections" });
 
   const updated = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
   const result = updated[0];
@@ -1052,6 +1056,7 @@ export async function deleteCollection(id: string): Promise<void> {
     else dropUserTable(col.name);
     cache.delete(col.id);
     cache.delete(col.name);
+    broadcast({ type: "bus", kind: "collections" });
   }
   await db.delete(collections).where(eq(collections.id, id));
 }

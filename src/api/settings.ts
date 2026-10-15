@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
+import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers } from "../core/storage.ts";
@@ -178,6 +179,7 @@ export function _resetSettingsCache(): void {
 
 export function setSetting(key: string, value: string): void {
   settingCache.delete(key);
+  broadcast({ type: "bus", kind: "settings", key });
   const stored = maybeEncrypt(key, value);
   rawClient()
     .prepare(

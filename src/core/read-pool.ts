@@ -20,6 +20,7 @@
  */
 import { getCollectionCached } from "./collections.ts";
 import type { Config } from "../config.ts";
+import { setBusSender } from "./thread-bus.ts";
 
 export interface ForwardRequest {
   type: "request";
@@ -184,9 +185,11 @@ export async function startReadPool(n: number, env: Record<string, string>, conf
   slots.push(...started);
   // Workers must never keep the process alive on their own.
   for (const s of slots) (s.worker as { unref?: () => void }).unref?.();
+  setBusSender((m) => { for (const s of slots) { try { s.worker.postMessage(m); } catch { /* dropped */ } } });
 }
 
 export async function stopReadPool(): Promise<void> {
+  setBusSender(null);
   const all = slots.splice(0);
   for (const s of all) {
     failSlot(s, "pool stopped");

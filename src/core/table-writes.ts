@@ -11,14 +11,41 @@
  * falls back to clearing everything, as before.
  */
 import type { Database } from "bun:sqlite";
+import { broadcast } from "./thread-bus.ts";
 
 const versions = new Map<string, number>();
 let reported = 0;
+/** Reports of writes not yet committed, sent to the read workers at COMMIT. */
+const pending = new Map<string, number>();
 
-/** A write this process made: `changes` rows in `table` (the SQLite table name). */
-export function noteTableWrite(table: string, changes: number): void {
+/** Apply a report: `changes` rows in `table`. On a worker this is what the bus delivers. */
+export function applyTableReport(table: string, changes: number): void {
   reported += changes;
   versions.set(table, (versions.get(table) ?? 0) + 1);
+}
+
+/** A write this thread made: `changes` rows in `table` (the SQLite table name). */
+export function noteTableWrite(table: string, changes: number): void {
+  applyTableReport(table, changes);
+  pending.set(table, (pending.get(table) ?? 0) + changes);
+}
+
+/**
+ * Send the pending reports to the read workers. Called once the rows are
+ * committed, so a worker that hears about a table sees the new rows when
+ * it recounts; a worker that sees the commit first (its `data_version`
+ * moved with nothing reported) empties its cache instead, which is safe.
+ */
+export function flushTableReports(): void {
+  if (pending.size === 0) return;
+  const tables = [...pending.entries()];
+  pending.clear();
+  broadcast({ type: "bus", kind: "tables", tables });
+}
+
+/** Drop pending reports after a rollback: nothing became visible. */
+export function discardTableReports(): void {
+  pending.clear();
 }
 
 function totalChanges(client: Database): number {
@@ -35,6 +62,9 @@ export function trackWrite<T>(client: Database, table: string, fn: () => T): T {
   const before = totalChanges(client);
   const out = fn();
   noteTableWrite(table, totalChanges(client) - before);
+  // Autocommit: the rows are visible now. Inside a transaction the commit
+  // site flushes (group commit, batch, cascading delete).
+  if (!client.inTransaction) flushTableReports();
   return out;
 }
 
@@ -52,5 +82,6 @@ export function takeReportedChanges(): number {
 
 export function _resetTableWrites(): void {
   versions.clear();
+  pending.clear();
   reported = 0;
 }
