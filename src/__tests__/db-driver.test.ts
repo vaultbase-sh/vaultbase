@@ -176,6 +176,14 @@ describe("SQLite driver", () => {
     expect(seen).toEqual(["SELECT 1", "SELECT 2", "UPDATE t SET n = 3", "UPDATE t SET n = 4", "SELECT 5 AS five"]);
   });
 
+  it("the schema token moves on DDL from any connection and not on data", () => {
+    const t0 = db.schemaToken();
+    db.run(`INSERT INTO t (name) VALUES (?)`, ["a"]);
+    expect(db.schemaToken()).toBe(t0);
+    getRawClient().exec(`ALTER TABLE t ADD COLUMN extra TEXT`);
+    expect(db.schemaToken()).not.toBe(t0);
+  });
+
   it("shares the connection with the raw client", () => {
     getRawClient().exec(`INSERT INTO t (name) VALUES ('raw')`);
     expect(db.sync.get<{ name: string }>(`SELECT name FROM t`)).toEqual({ name: "raw" });

@@ -2,7 +2,7 @@ import { broadcast } from "./thread-bus.ts";
 import { eq, or } from "drizzle-orm";
 import { flushGroupCommit } from "./group-commit.ts";
 import { getDb, onCloseDb } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver, type DbDriver } from "../db/index.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
@@ -149,6 +149,51 @@ export interface FieldDef {
 const cache = new Map<string, Collection>();
 
 /**
+ * The column list of a collection's table. It is read on every list
+ * request (filterableColumns in records.ts), so the answer is kept per
+ * driver and schema token: any DDL moves the token and refreshes it, and a
+ * reopened database (tests, restore) never sees the previous connection's
+ * columns. `getCollection` fills it when a collection enters the cache
+ * ({@link loadTableColumns}); on SQLite a cold read fills it synchronously.
+ * Callers only read the array.
+ */
+const columnsCache = new Map<string, { driver: DbDriver; token: number; cols: string[] }>();
+
+function columnsSql(collectionName: string): string {
+  return `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`;
+}
+
+function rememberColumns(collectionName: string, driver: DbDriver, token: number, rows: Array<{ name: string }>): string[] {
+  const cols = rows.map((r) => r.name);
+  columnsCache.set(collectionName, { driver, token, cols });
+  return cols;
+}
+
+export function tableColumns(collectionName: string): string[] {
+  const driver = getDriver();
+  const token = db.schemaToken();
+  const hit = columnsCache.get(collectionName);
+  if (hit && hit.driver === driver && hit.token === token) return hit.cols;
+  return rememberColumns(collectionName, driver, token, db.sync.all<{ name: string }>(columnsSql(collectionName)));
+}
+
+/** Fill the column cache for a collection without blocking: the warm path for every driver. */
+export async function loadTableColumns(collectionName: string): Promise<string[]> {
+  const driver = getDriver();
+  const token = db.schemaToken();
+  const hit = columnsCache.get(collectionName);
+  if (hit && hit.driver === driver && hit.token === token) return hit.cols;
+  return rememberColumns(collectionName, driver, token, await db.all<{ name: string }>(columnsSql(collectionName)));
+}
+
+/** Forget cached columns; closeDb calls it, tests may too. */
+export function invalidateUserTableColumnCache(collectionName?: string): void {
+  if (collectionName === undefined) columnsCache.clear();
+  else columnsCache.delete(collectionName);
+}
+onCloseDb(() => invalidateUserTableColumnCache());
+
+/**
  * Synchronous accessor used by hot-path consumers (rule SQL compiler) that
  * cannot await. Returns `null` if the collection isn't already cached;
  * callers fall through to whatever conservative behavior they prefer in the
@@ -261,7 +306,7 @@ const PRIVATE_CACHE_MAX = 256;
 const privateCache = new Map<string, ReadonlySet<string>>();
 
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
-  // Views depend on sensitiveSchema(), which has its own short cache.
+  // Views depend on sensitiveSchema(), which is cached per schema token.
   const cacheKey = col.type === "view" ? null : `${col.type}\u0000${col.fields}`;
   if (cacheKey !== null) {
     const hit = privateCache.get(cacheKey);
@@ -489,16 +534,50 @@ export function validateViewQuery(query: string): void {
  * straight from the collections table so the check stays synchronous;
  * cached for a moment because row output consults it.
  */
-let sensitiveCache: { at: number; value: { passwordFields: Set<string>; tables: Set<string> } } | null = null;
+type SensitiveSchema = { passwordFields: Set<string>; tables: Set<string> };
+type CollectionShapeRow = { name: string; type: string; fields: string; view_query: string | null };
+const SENSITIVE_SQL = "SELECT name, type, fields, view_query FROM vaultbase_collections";
+let sensitiveCache: { driver: DbDriver; token: number; value: SensitiveSchema } | null = null;
 
-export function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<string> } {
-  if (sensitiveCache && Date.now() - sensitiveCache.at < 2_000) return sensitiveCache.value;
+function sensitiveFresh(): SensitiveSchema | null {
+  if (!sensitiveCache) return null;
+  if (sensitiveCache.driver !== getDriver() || sensitiveCache.token !== db.schemaToken()) return null;
+  return sensitiveCache.value;
+}
+
+/**
+ * The map the request path reads synchronously (view rows, private fields
+ * of views). Schema changes in this process and on the bus drop it; a
+ * schema change by another connection moves the token. `getCollection`
+ * fills it ({@link loadSensitiveSchema}); on SQLite a cold read fills it
+ * synchronously.
+ */
+export function sensitiveSchema(): SensitiveSchema {
+  const fresh = sensitiveFresh();
+  if (fresh) return fresh;
+  let rows: CollectionShapeRow[] = [];
+  try {
+    rows = db.sync.all<CollectionShapeRow>(SENSITIVE_SQL);
+  } catch { /* no collections table yet */ }
+  return rememberSensitive(rows);
+}
+
+/** Fill the sensitive-schema map without blocking: the warm path for every driver. */
+export async function loadSensitiveSchema(): Promise<SensitiveSchema> {
+  const fresh = sensitiveFresh();
+  if (fresh) return fresh;
+  let rows: CollectionShapeRow[] = [];
+  try {
+    rows = await db.all<CollectionShapeRow>(SENSITIVE_SQL);
+  } catch { /* no collections table yet */ }
+  return rememberSensitive(rows);
+}
+
+function rememberSensitive(rows: CollectionShapeRow[]): SensitiveSchema {
+  const driver = getDriver();
+  const token = db.schemaToken();
   const passwordFields = new Set<string>();
   const tables = new Set<string>();
-  let rows: Array<{ name: string; type: string; fields: string; view_query: string | null }> = [];
-  try {
-    rows = db.sync.all("SELECT name, type, fields, view_query FROM vaultbase_collections") as typeof rows;
-  } catch { /* no collections table yet */ }
   for (const r of rows) {
     let hasPassword = false;
     try {
@@ -518,7 +597,7 @@ export function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<st
     }
   }
   const value = { passwordFields, tables };
-  sensitiveCache = { at: Date.now(), value };
+  sensitiveCache = { driver, token, value };
   return value;
 }
 
@@ -794,6 +873,10 @@ export async function getCollection(nameOrId: string): Promise<Collection | null
   if (found) {
     cache.set(found.id, found);
     cache.set(found.name, found);
+    // The derived caches the request path reads synchronously, filled here
+    // so no driver has to answer them on the spot.
+    try { await loadTableColumns(found.name); } catch { /* table missing mid-migration; tableColumns falls back */ }
+    await loadSensitiveSchema();
   }
   return found;
 }

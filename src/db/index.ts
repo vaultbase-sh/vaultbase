@@ -52,6 +52,7 @@ export const db: DbDriver = {
   run: (sql, params, opts) => getDriver().run(sql, params, opts),
   exec: (sql) => getDriver().exec(sql),
   describe: (sql) => getDriver().describe(sql),
+  schemaToken: () => getDriver().schemaToken(),
   transaction: (fn, opts) => getDriver().transaction(fn, opts),
   savepoint: (fn) => getDriver().savepoint(fn),
   trace: (fn) => getDriver().trace(fn),

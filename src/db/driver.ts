@@ -121,6 +121,15 @@ export interface DbDriver {
   readonly inTransaction: boolean;
 
   /**
+   * A number that changes whenever the schema does: SQLite's
+   * `schema_version`, which any connection's DDL moves; a driver without
+   * such a counter keeps one in memory and bumps it on its own DDL. Caches
+   * derived from the schema (table columns, the sensitive-column map) key
+   * on it. Synchronous on every driver, so the request path can check it.
+   */
+  schemaToken(): number;
+
+  /**
    * Run `fn` in a transaction and commit when it resolves, roll back when
    * it throws. Nested inside an open transaction it becomes a savepoint,
    * so a failure inside `fn` undoes `fn`'s work and nothing outside it.

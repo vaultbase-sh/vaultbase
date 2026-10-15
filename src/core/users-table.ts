@@ -17,9 +17,8 @@
  * right per-collection table.
  */
 
-import { onCloseDb } from "../db/client.ts";
 import { userTableName } from "./collections.ts";
-import { db, getDriver, type DbDriver } from "../db/index.ts";
+import { db } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 
 /** Auth-system columns guaranteed to exist on every `vb_<auth-col>`. */
@@ -77,34 +76,10 @@ export function findUserByEmail(col: Collection, email: string): AuthUserRow | n
   }
 }
 
-/**
- * The column list of a collection's table. It runs on every list request
- * (filterableColumns), so the answer is kept per connection and
- * `schema_version`: any DDL, from this process or another, moves the
- * version and refreshes it, and a reopened database (tests, restore) never
- * sees the previous connection's columns. Callers only read the array.
- */
-const columnsCache = new Map<string, { driver: DbDriver; schema: number; cols: string[] }>();
-
-export function tableColumns(collectionName: string): string[] {
-  const driver = getDriver();
-  const schema = db.sync.get<{ schema_version: number }>("PRAGMA schema_version")!.schema_version;
-  const hit = columnsCache.get(collectionName);
-  if (hit && hit.driver === driver && hit.schema === schema) return hit.cols;
-  const rows = db.sync.all<{ name: string }>(
-    `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`,
-  );
-  const cols = rows.map((r) => r.name);
-  columnsCache.set(collectionName, { driver, schema, cols });
-  return cols;
-}
-
-/** Forget cached columns; closeDb calls it, tests may too. */
-export function invalidateUserTableColumnCache(collectionName?: string): void {
-  if (collectionName === undefined) columnsCache.clear();
-  else columnsCache.delete(collectionName);
-}
-onCloseDb(() => invalidateUserTableColumnCache());
+// The column cache lives next to the collection cache; the names stay
+// importable from here.
+import { tableColumns, invalidateUserTableColumnCache } from "./collections.ts";
+export { tableColumns, invalidateUserTableColumnCache };
 
 interface InsertInput {
   id: string;

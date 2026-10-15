@@ -76,6 +76,7 @@ export class SqliteDriver implements DbDriver {
 
   private readonly statements = new Map<string, AnyStatement>();
   private readonly changesProbe: AnyStatement;
+  private readonly schemaProbe: AnyStatement;
   private traceFn: ((sql: string) => void) | null = null;
   private savepointSeq = 0;
 
@@ -120,6 +121,7 @@ export class SqliteDriver implements DbDriver {
     try { raw.exec("PRAGMA optimize;"); } catch { /* noop */ }
 
     this.changesProbe = raw.prepare("SELECT total_changes() AS t");
+    this.schemaProbe = raw.prepare("PRAGMA schema_version");
     const self = this;
     this.sync = {
       all: (sql, params) => self.all(sql, params),
@@ -186,6 +188,11 @@ export class SqliteDriver implements DbDriver {
   describe(sql: string): string[] {
     this.traceFn?.(sql);
     return [...this.prepare(sql).columnNames];
+  }
+
+  schemaToken(): number {
+    this.traceFn?.("PRAGMA schema_version");
+    return (this.schemaProbe.get() as { schema_version: number }).schema_version;
   }
 
   private totalChanges(): number {
