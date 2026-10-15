@@ -102,3 +102,23 @@ describe.if(onPg)("Postgres driver", () => {
     expect(d.jsonExtract(`"t"."meta"`, "$.a")).toBe(`("t"."meta"::jsonb #>> '{a}')`);
   });
 });
+
+describe.if(onPg)("metrics on Postgres", () => {
+  beforeEach(async () => { await initDb(":memory:"); await runMigrations(); });
+  afterEach(async () => { await closeDb(); });
+
+  it("reports the database size and connections, and no SQLite block", async () => {
+    const { makeMetricsPlugin } = await import("../api/metrics.ts");
+    const { signAuthToken } = await import("../core/sec.ts");
+    const { getDb } = await import("../db/client.ts");
+    const { admin } = await import("../db/schema.ts");
+    await getDb().insert(admin).values({ id: "a1", email: "m@test.local", password_hash: "x" });
+    const { token } = await signAuthToken({ payload: { id: "a1", email: "m@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: "s" });
+    const res = await makeMetricsPlugin("s").handle(new Request("http://localhost/_/metrics", { headers: { authorization: `Bearer ${token}` } }));
+    const body = await res.json() as { sqlite: unknown; database: { driver: string; size_bytes: number; connections: { total: number } } };
+    expect(body.sqlite).toBeNull();
+    expect(body.database.driver).toBe("postgres");
+    expect(body.database.size_bytes).toBeGreaterThan(0);
+    expect(body.database.connections.total).toBeGreaterThan(0);
+  });
+});

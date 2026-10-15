@@ -65,6 +65,7 @@ interface Snapshot {
     realtime_connections: number;
   };
   read_workers?: { workers: number; forwarded: number; inflight: number; dropped: number };
+  database?: { driver: string; size_bytes: number; connections: { total: number; active: number } | null } | null;
   sqlite: {
     page_count: number;
     page_size: number;
@@ -262,6 +263,8 @@ export default function Monitoring() {
   const readsTotal = snap?.reads.count ?? 0;
   const p = snap?.process;
   const sql = snap?.sqlite ?? null;
+  const dbs = snap?.database ?? null;
+  const onPostgres = dbs?.driver === "postgres";
   const peakRps = series.reduce((m, s) => Math.max(m, s.reqs), 0);
   const windowReqs = series.slice(0, -1).reduce((a, s) => a + s.reqs, 0);
   const windowWrites = series.slice(0, -1).reduce((a, s) => a + s.writes, 0);
@@ -452,22 +455,31 @@ export default function Monitoring() {
 
         {/* ── Storage & connections ────────────────────────────────────── */}
         <section className="vb-dash__panel">
-          <PanelHead title="Storage & connections" meta="SQLite · WAL" />
+          <PanelHead title="Storage & connections" meta={onPostgres ? "Postgres" : "SQLite · WAL"} />
           <div className="vb-dash__th vb-mon__t--kv2">
             <span>METRIC</span><span className="vb-dash__num">VALUE</span>
           </div>
-          <Kv2 k="database file" v={sql ? bytes(sql.db_bytes) : "—"} />
-          <Kv2 k="WAL file" v={sql ? bytes(sql.wal_bytes) : "—"} />
-          <Kv2 k="WAL pages pending" v={sql ? nf.format(sql.wal_pages) : "—"} />
-          <Kv2 k="pages × size" v={sql ? `${nf.format(sql.page_count)} × ${nf.format(sql.page_size)} B` : "—"} />
-          <Kv2
-            k="checkpointer"
-            v={sql?.checkpoint ? `${sql.checkpoint.mode} · ${nf.format(sql.checkpoint.passes)} passes` : "—"}
-          />
-          <Kv2
-            k="WAL rewinds · slowest"
-            v={sql?.checkpoint ? `${nf.format(sql.checkpoint.restarts)} · ${sql.checkpoint.max_restart_ms} ms` : "—"}
-          />
+          {onPostgres ? (
+            <>
+              <Kv2 k="database size" v={bytes(dbs!.size_bytes)} />
+              <Kv2 k="connections · active" v={dbs!.connections ? `${nf.format(dbs!.connections.total)} · ${nf.format(dbs!.connections.active)}` : "—"} />
+            </>
+          ) : (
+            <>
+              <Kv2 k="database file" v={sql ? bytes(sql.db_bytes) : "—"} />
+              <Kv2 k="WAL file" v={sql ? bytes(sql.wal_bytes) : "—"} />
+              <Kv2 k="WAL pages pending" v={sql ? nf.format(sql.wal_pages) : "—"} />
+              <Kv2 k="pages × size" v={sql ? `${nf.format(sql.page_count)} × ${nf.format(sql.page_size)} B` : "—"} />
+              <Kv2
+                k="checkpointer"
+                v={sql?.checkpoint ? `${sql.checkpoint.mode} · ${nf.format(sql.checkpoint.passes)} passes` : "—"}
+              />
+              <Kv2
+                k="WAL rewinds · slowest"
+                v={sql?.checkpoint ? `${nf.format(sql.checkpoint.restarts)} · ${sql.checkpoint.max_restart_ms} ms` : "—"}
+              />
+            </>
+          )}
           <Kv2 k="realtime connections" v={p ? nf.format(p.realtime_connections) : "—"} />
           <Kv2
             k="read workers · forwarded"

@@ -47,6 +47,29 @@ async function sqliteSnapshot(): Promise<SqliteSnapshot | null> {
   }
 }
 
+/** The database block every driver fills: which one, how big, and its connections. */
+interface DatabaseSnapshot {
+  driver: string;
+  size_bytes: number;
+  /** Server connections to this database (Postgres): all, and running a query now. */
+  connections: { total: number; active: number } | null;
+}
+
+async function databaseSnapshot(sql: SqliteSnapshot | null): Promise<DatabaseSnapshot | null> {
+  try {
+    const driver = getDriver().name;
+    if (driver === "sqlite") return { driver, size_bytes: sql ? sql.db_bytes + sql.wal_bytes : 0, connections: null };
+    const size = await db.get<{ b: number }>(`SELECT pg_database_size(current_database()) AS b`);
+    const conns = await db.get<{ total: number; active: number }>(
+      `SELECT count(*)::integer AS total, count(*) FILTER (WHERE state = 'active')::integer AS active
+         FROM pg_stat_activity WHERE datname = current_database()`,
+    );
+    return { driver, size_bytes: size?.b ?? 0, connections: conns ?? null };
+  } catch {
+    return null;
+  }
+}
+
 function fileBytes(path: string): number {
   if (!path || path === ":memory:") return 0;
   try { return statSync(path).size; } catch { return 0; }
@@ -113,10 +136,12 @@ export function makeMetricsPlugin(jwtSecret: string) {
   return new Elysia({ name: "metrics" })
     .use(adminGuard(jwtSecret))
     .get("/_/metrics", async () => {
+      const sqlite = await sqliteSnapshot();
       return {
         ...globalMetrics.snapshot(),
         process: processSnapshot(),
-        sqlite: await sqliteSnapshot(),
+        sqlite,
+        database: await databaseSnapshot(sqlite),
         read_workers: readPoolStats(),
       };
     }, { requireAdmin: true })
@@ -184,6 +209,13 @@ export function makeMetricsPlugin(jwtSecret: string) {
       for (const [labels, val] of stepCount) lines.push(`vaultbase_step_duration_microseconds_count${labels} ${val}`);
       lines.push(`# TYPE vaultbase_step_duration_microseconds_sum counter`);
       for (const [labels, val] of stepSum) lines.push(`vaultbase_step_duration_microseconds_sum${labels} ${val}`);
+      const dbs = await databaseSnapshot(sql);
+      if (dbs) {
+        push("vaultbase_database_bytes", "Database size on disk (B).", "gauge", [[`{driver="${dbs.driver}"}`, dbs.size_bytes]]);
+        if (dbs.connections) push("vaultbase_database_connections", "Server connections to the database.", "gauge", [
+          ['{state="all"}', dbs.connections.total], ['{state="active"}', dbs.connections.active],
+        ]);
+      }
       if (sql) {
         push("vaultbase_sqlite_page_count", "SQLite database page count.",     "gauge", [["", sql.page_count]]);
         push("vaultbase_sqlite_page_size",  "SQLite database page size (B).",  "gauge", [["", sql.page_size]]);
