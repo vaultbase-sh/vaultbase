@@ -105,8 +105,8 @@ function maybeDecrypt(key: string, value: string): string {
  * the generated `.encryption-key`): starting anyway would read every secret
  * as "" and could overwrite them.
  */
-export function encryptionKeyMatchesData(): boolean {
-  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
+export async function encryptionKeyMatchesData(): Promise<boolean> {
+  const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   // Only secret settings, and the key is wrong only if none of them decrypt:
   // one value copied in from another install (or typed with a "vbenc:"
   // prefix) mustn't stop every later start.
@@ -122,13 +122,13 @@ export function encryptionKeyMatchesData(): boolean {
  * Encrypt secret settings still stored in plaintext (written before a key
  * existed). Run at startup; returns how many were converted.
  */
-export function encryptPlaintextSecretSettings(): number {
+export async function encryptPlaintextSecretSettings(): Promise<number> {
   if (!isEncryptionAvailable()) return 0;
-  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
+  const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   let n = 0;
   for (const r of rows) {
     if (!shouldEncryptSettingKey(r.key) || r.value === "" || isEncrypted(r.value)) continue;
-    setSetting(r.key, r.value);
+    await setSetting(r.key, r.value);
     n++;
   }
   return n;
@@ -203,10 +203,10 @@ export function getSetting(key: string, defaultVal: string): string {
  * directly (the backup scheduler's claim), and for the read workers when the
  * bus says the key changed on the main thread.
  */
-export function invalidateSetting(key: string): void {
+export async function invalidateSetting(key: string): Promise<void> {
   if (!driverOpen()) return;
   const v = values();
-  const row = db.sync.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
+  const row = await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
   if (row == null) v.delete(key);
   else v.set(key, row.value);
 }
@@ -217,14 +217,19 @@ export function _resetSettingsCache(): void {
 }
 onCloseDb(_resetSettingsCache);
 
-export function setSetting(key: string, value: string): void {
+/**
+ * Write a setting. The store is updated before anything is awaited, so a
+ * reader on the same thread sees the new value at once even if the caller
+ * does not wait for the row to be written.
+ */
+export async function setSetting(key: string, value: string): Promise<void> {
   const stored = maybeEncrypt(key, value);
-  db.sync.run(
+  values().set(key, stored);
+  await db.run(
     `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, unixepoch())
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
     [key, stored],
   );
-  values().set(key, stored);
   broadcast({ type: "bus", kind: "settings", key });
 }
 
@@ -319,7 +324,7 @@ export function makeSettingsPlugin(jwtSecret: string) {
         for (const [k, v] of Object.entries(body)) {
           // The masked value the UI read and sent back: keep what's stored.
           if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
-          setSetting(k, String(v));
+          await setSetting(k, String(v));
         }
         // Bust caches that depend on settings
         invalidateRateLimitCache();

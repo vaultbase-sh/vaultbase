@@ -59,7 +59,7 @@ describe("promote", () => {
       email: "real@test.local", password: "a-good-password-1", nickname: "neo", ...SYSTEM_KEYS,
     }, token);
     expect(res.status).toBe(200);
-    const u = findUserById((await getCollection("users"))!, id)!;
+    const u = (await findUserById((await getCollection("users"))!, id))!;
     expect(u.email).toBe("real@test.local");
     expect(u.email_verified).toBe(0);
     expect(u.totp_enabled).toBe(0);
@@ -75,8 +75,8 @@ describe("promote", () => {
     const { token, id } = await anonymous();
     await post("/auth/users/promote", { email: "real@test.local", password: "a-good-password-1", id: "attacker-chosen" }, token);
     const col = (await getCollection("users"))!;
-    expect(findUserById(col, "attacker-chosen")).toBeNull();
-    expect(findUserById(col, id)?.email).toBe("real@test.local");
+    expect(await findUserById(col, "attacker-chosen")).toBeNull();
+    expect((await findUserById(col, id))?.email).toBe("real@test.local");
   });
 
   it("revokes the anonymous token", async () => {
@@ -95,7 +95,7 @@ describe("register", () => {
       email: "new@test.local", password: "a-good-password-1", nickname: "trin", ...SYSTEM_KEYS,
     });
     expect(res.status).toBe(200);
-    const u = findUserByEmail((await getCollection("users"))!, "new@test.local")!;
+    const u = (await findUserByEmail((await getCollection("users"))!, "new@test.local"))!;
     expect(u.email_verified).toBe(0);
     expect(u.totp_enabled).toBe(0);
     expect(u.totp_secret).toBeNull();
@@ -112,6 +112,6 @@ describe("promote email uniqueness (review 15 F-5)", () => {
     const second = await anonymous();
     const res = await post("/auth/users/promote", { email: "ALICE@test.local", password: "a-good-password-1" }, second.token);
     expect(res.status).toBe(409);
-    expect(findUserByEmail((await getCollection("users"))!, "ALICE@test.local")).toBeNull();
+    expect(await findUserByEmail((await getCollection("users"))!, "ALICE@test.local")).toBeNull();
   });
 });

@@ -203,7 +203,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       // Hard cap on count(*) — large tables stay responsive ("50k+" in UI).
       const COUNT_CAP = 50_000;
 
-      const stats = cols.map((c) => {
+      const stats = await Promise.all(cols.map(async (c) => {
         const out = {
           name: c.name,
           type: c.type,
@@ -218,7 +218,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         const tname = `"${userTableName(c.name).replace(/"/g, '""')}"`;
         try {
           // Capped count: SELECT count over a LIMIT'd subquery.
-          const r = db.sync.get<{ n: number }>(
+          const r = await db.get<{ n: number }>(
             `SELECT count(*) AS n FROM (SELECT 1 FROM ${tname} LIMIT ?)`,
             [COUNT_CAP + 1],
           );
@@ -232,20 +232,20 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           }
         } catch { /* table missing — leave null */ }
         try {
-          const r = db.sync.get<{ m: number | null }>(
+          const r = await db.get<{ m: number | null }>(
             `SELECT max(updated_at) AS m FROM ${tname}`,
           );
           if (r?.m != null) out.lastUpdated = r.m;
         } catch { /* skip */ }
         try {
-          const r = db.sync.get<{ n: number }>(
+          const r = await db.get<{ n: number }>(
             `SELECT count(*) AS n FROM ${tname} WHERE updated_at > ?`,
             [cutoff],
           );
           if (r) out.recentWrites = r.n;
         } catch { /* skip */ }
         return out;
-      });
+      }));
 
       return {
         data: stats,

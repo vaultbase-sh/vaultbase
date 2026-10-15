@@ -77,7 +77,7 @@ export function _countCacheStats(): { hits: number; misses: number } {
  * connection committed, the schema changed, or this connection wrote rows
  * nobody reported; otherwise the per-table versions decide.
  */
-function syncCountCache(): void {
+async function syncCountCache(): Promise<void> {
   const driver = getDriver();
   if (versionProbe !== driver) {
     // A reopened database (restore) starts its counters over, so its
@@ -87,9 +87,9 @@ function syncCountCache(): void {
     takeReportedChanges();
     versionProbe = driver;
   }
-  const v = db.sync.get<{ t: number; d: number; s: number }>(
+  const v = (await db.get<{ t: number; d: number; s: number }>(
     `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
-  )!;
+  ))!;
   const reported = takeReportedChanges();
   const seen = countCacheSeen;
   // Another connection committed. On the main thread that is always
@@ -112,16 +112,16 @@ function countKey(sql: string, params: unknown[]): string {
   return key;
 }
 
-function cachedCount(sql: string, params: unknown[], table: string): number {
-  const count = () => db.sync.get<{ c: number }>(sql, params)?.c ?? 0;
-  const inTransaction = db.sync.inTransaction;
-  syncCountCache();
+async function cachedCount(sql: string, params: unknown[], table: string): Promise<number> {
+  const count = async () => (await db.get<{ c: number }>(sql, params))?.c ?? 0;
+  const inTransaction = db.inTransaction;
+  await syncCountCache();
   const tv = tableVersion(table);
   const key = countKey(sql, params);
   const hit = COUNT_CACHE.get(key);
   if (hit !== undefined && hit.tv === tv) { countCacheStats.hits++; return hit.c; }
   countCacheStats.misses++;
-  const c = count();
+  const c = await count();
   if (inTransaction) return c;
   if (hit === undefined && COUNT_CACHE.size >= COUNT_CACHE_MAX) {
     const oldest = COUNT_CACHE.keys().next().value;
@@ -656,14 +656,14 @@ export async function listRecords(
   const queryStart = performance.now();
   try {
     // Execute SELECT — prepared statement cached by SQL string shape.
-    rows = db.sync.all<Record<string, unknown>>(selectSql, selectParams);
+    rows = await db.all<Record<string, unknown>>(selectSql, selectParams);
     if (!opts.skipTotal) {
       const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
       // A view's SELECT, or strftime('now', …) in a filter, can change its
       // answer without any write, so those are always counted fresh.
       totalItems = col.type === "view" || /strftime\(/i.test(whereSql)
-        ? db.sync.get<{ c: number }>(countSql, whereParams)?.c ?? 0
-        : cachedCount(countSql, whereParams, tname);
+        ? (await db.get<{ c: number }>(countSql, whereParams))?.c ?? 0
+        : await cachedCount(countSql, whereParams, tname);
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {
@@ -721,7 +721,7 @@ export async function getRecord(
   if (!col) return null;
   const fields = cachedFields(col.fields);
   const tableRef = quoteIdent(userTableName(col.name));
-  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]);
+  const row = await db.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]);
   return row ? await rowToMetaAsync(row, col, fields) : null;
 }
 
@@ -788,9 +788,9 @@ async function createRecordImpl(
   // Cached statements: compiling these two on every write was ~a fifth of
   // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
   // AFTER triggers an admin may have added through the SQL page.)
-  db.sync.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
+  await db.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
 
-  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id])!;
+  const row = (await db.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]))!;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "create",
@@ -879,13 +879,13 @@ async function updateRecordImpl(
 
 
   if (setCols.length > 1) {
-    db.sync.run(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id], { table: userTableName(col.name) });
+    await db.run(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id], { table: userTableName(col.name) });
   }
   // updated_at has 1 s resolution; drop the cached vector so a same-second
   // re-search sees the new value.
   invalidateRecordVectors(col.id, id);
 
-  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id])!;
+  const row = (await db.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]))!;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "update",
@@ -944,7 +944,7 @@ export function canSeeAs(auth: AuthContext | null, request: RequestContextLike |
     if (target.view_rule === "") return false;
     const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request });
     const tableRef = quoteIdent(userTableName(target.name));
-    const row = db.sync.get(
+    const row = await db.get(
       `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
       [id, ...whereParams],
     );
@@ -1103,7 +1103,7 @@ async function checkRestrict(targetColName: string, id: string): Promise<void> {
   for (const ref of refs) {
     if (ref.cascade !== "restrict") continue;
     const refTable = quoteIdent(userTableName(ref.collection.name));
-    const row = db.sync.get(`SELECT "id" FROM ${refTable} WHERE ${quoteIdent(ref.fieldName)} = ? LIMIT 1`, [id]);
+    const row = await db.get(`SELECT "id" FROM ${refTable} WHERE ${quoteIdent(ref.fieldName)} = ? LIMIT 1`, [id]);
     if (row) {
       throw new RestrictError({
         [ref.collection.name]: `${ref.collection.name}.${ref.fieldName} still references this record`,
@@ -1137,7 +1137,7 @@ async function applyCascades(
     const refCol = guard.cascadeAllowed ? await getCollection(ref.collection.name) : null;
 
     if (ref.cascade === "setNull") {
-      const affected = db.sync.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
+      const affected = await db.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
       if (affected.length === 0) continue;
       if (guard.cascadeAllowed) {
         for (const r of affected) {
@@ -1150,7 +1150,7 @@ async function applyCascades(
       const now = Math.floor(Date.now() / 1000);
       for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
       const fullRef = refCol ?? await getCollection(ref.collection.name);
-      db.sync.run(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`, [now, id], { table: userTableName(ref.collection.name) });
+      await db.run(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`, [now, id], { table: userTableName(ref.collection.name) });
       // Realtime gets the full records; hooks and webhooks skip cascades (see
       // event-listeners.ts).
       for (const r of affected) {
@@ -1163,7 +1163,7 @@ async function applyCascades(
     }
 
     if (ref.cascade === "cascade") {
-      const affected = db.sync.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
+      const affected = await db.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
       for (const r of affected) {
         if (guard.cascadeAllowed) {
           const rec = await getRecord(ref.collection.name, r.id);
@@ -1225,7 +1225,7 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited, guard);
 
-  db.sync.run(`DELETE FROM ${tableRef} WHERE "id" = ?`, [id], { table: userTableName(col.name) });
+  await db.run(`DELETE FROM ${tableRef} WHERE "id" = ?`, [id], { table: userTableName(col.name) });
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
     op: "delete",
@@ -1312,7 +1312,7 @@ async function expandRelations(
     if (ids.length === 0) continue;
 
     const placeholders = ids.map(() => "?").join(", ");
-    const rows = db.sync.all<Record<string, unknown>>(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})${ruleSql}`, [...ids, ...ruleParams]);
+    const rows = await db.all<Record<string, unknown>>(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})${ruleSql}`, [...ids, ...ruleParams]);
 
     const expanded = await rowsToMeta(rows, targetCol, targetFields);
     const byId = new Map(expanded.map((rec) => [rec.id, rec]));

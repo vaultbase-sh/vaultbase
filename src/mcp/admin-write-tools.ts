@@ -629,7 +629,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if (shouldEncryptSettingKey(key) && String(args.value) === SECRET_SETTING_MASK) {
         return asJsonText({ updated: false, key: args.key, reason: "masked value; stored secret kept" });
       }
-      setSetting(key, String(args.value));
+      await setSetting(key, String(args.value));
       return asJsonText({ updated: true, key: args.key });
     },
   });
@@ -676,7 +676,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
           await audit(403, "refused: allow_write needs mcp:admin");
           throw new Error("allow_write requires the mcp:admin (or admin) scope; mcp:sql alone is read-only");
         }
-        const r = db.sync.run(q, params);
+        const r = await db.run(q, params);
         await audit(200, `changes=${r.changes}`);
         return asJsonText({ changes: r.changes, lastInsertRowid: String(r.lastInsertRowid) });
       }
@@ -696,9 +696,9 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         if (bad) throw new Error(`'${bad}' is blocked without allow_write: true`);
         // query_only makes SQLite itself refuse writes, whatever the keyword
         // scan missed.
-        db.sync.exec("PRAGMA query_only = ON");
+        await db.exec("PRAGMA query_only = ON");
         let all: unknown[];
-        try { all = db.sync.all<unknown>(q, params); } finally { db.sync.exec("PRAGMA query_only = OFF"); }
+        try { all = await db.all<unknown>(q, params); } finally { await db.exec("PRAGMA query_only = OFF"); }
         await audit(200, `rows=${all.length}`);
         return asJsonText({ rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
       }

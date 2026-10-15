@@ -65,13 +65,13 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
   const result: SweepResult = { checked: 0, deleted: 0, errors: 0 };
   if (getSetting("files.orphan_cleanup", "1") !== "1") return result;
   const cols = new Map(
-    db.sync.all<ColRow>(`SELECT id, name, type, fields, history_enabled FROM vaultbase_collections`)
+    (await db.all<ColRow>(`SELECT id, name, type, fields, history_enabled FROM vaultbase_collections`))
       .map((c) => [c.id, c]),
   );
   const cutoff = nowSec - GRACE_SECONDS;
   let after = "";
   for (;;) {
-    const rows = db.sync.all<FileRow>(
+    const rows = await db.all<FileRow>(
       `SELECT id, collection_id, record_id, field_name, filename FROM vaultbase_files
                  WHERE created_at < ? AND id > ? ORDER BY id LIMIT ?`,
       [cutoff, after, BATCH],
@@ -93,7 +93,7 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
         } else {
           let row: Record<string, unknown> | null;
           try {
-            row = db.sync.get<Record<string, unknown>>(`SELECT ${q(f.field_name)} AS v FROM ${q(`vb_${col.name}`)} WHERE id = ?`, [f.record_id]);
+            row = await db.get<Record<string, unknown>>(`SELECT ${q(f.field_name)} AS v FROM ${q(`vb_${col.name}`)} WHERE id = ?`, [f.record_id]);
           } catch {
             continue; // table or column in flux; try again next sweep
           }
@@ -104,7 +104,7 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
       try {
         await deleteFile(f.filename);
         deleteThumbs(f.filename);
-        db.sync.run(`DELETE FROM vaultbase_files WHERE id = ?`, [f.id]);
+        await db.run(`DELETE FROM vaultbase_files WHERE id = ?`, [f.id]);
         result.deleted++;
       } catch (e) {
         result.errors++;

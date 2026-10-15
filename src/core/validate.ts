@@ -277,7 +277,7 @@ async function checkUnique(
     ? `WHERE "${fieldName}" = ? AND "id" != ?`
     : `WHERE "${fieldName}" = ?`;
   const params: unknown[] = existingId ? [value, existingId] : [value];
-  const row = db.sync.get(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`, params);
+  const row = await db.get(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`, params);
   return row === null;
 }
 
@@ -286,7 +286,7 @@ async function checkRelationTarget(field: FieldDef, id: string, canSee?: CanSeeR
   const target = await getCollection(field.collection);
   if (!target) return `${field.name}: target collection '${field.collection}' not found`;
   const tableRef = `"${userTableName(target.name)}"`;
-  const row = db.sync.get(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`, [id]);
+  const row = await db.get(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`, [id]);
   // A record the caller can't view gets the same answer as one that doesn't
   // exist: otherwise the error tells them which ids exist in a collection
   // they can't read, and lets them link to someone else's private record.

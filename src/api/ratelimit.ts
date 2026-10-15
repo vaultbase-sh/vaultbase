@@ -1,5 +1,5 @@
 import Elysia from "elysia";
-import { db } from "../db/index.ts";
+import { getAllSettings } from "./settings.ts";
 import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { isIPv6 } from "node:net";
 import { trustedClientIp } from "../core/sec.ts";
@@ -99,9 +99,11 @@ function loadConfig(): Config {
   let enabled = DEFAULT_ENABLED;
   let rules: RateLimitRule[] = DEFAULT_RULES;
   try {
-    const rows = db.sync.all<{ key: string; value: string }>(
-      `SELECT key, value FROM vaultbase_settings WHERE key LIKE 'rate_limit.%'`,
-    );
+    // From the settings store (api/settings.ts): this runs on the request
+    // path and must not wait on the database.
+    const rows = Object.entries(getAllSettings())
+      .filter(([key]) => key.startsWith("rate_limit."))
+      .map(([key, value]) => ({ key, value }));
     let rulesFromDb: RateLimitRule[] | null = null;
     let legacyMax: number | null = null;
     let legacyWindow: number | null = null;

@@ -43,10 +43,10 @@ describe("settings cache", () => {
     await _reloadSettings();
     expect(getSetting("app.name", "dflt")).toBe("two");
     getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'three' WHERE key = 'app.name'`).run();
-    invalidateSetting("app.name");
+    await invalidateSetting("app.name");
     expect(getSetting("app.name", "dflt")).toBe("three");
     getRawClient().prepare(`DELETE FROM vaultbase_settings WHERE key = 'app.name'`).run();
-    invalidateSetting("app.name");
+    await invalidateSetting("app.name");
     expect(getSetting("app.name", "dflt")).toBe("dflt");
     setSetting("app.name", "four");
     _resetSettingsCache();

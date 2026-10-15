@@ -377,7 +377,7 @@ async function main() {
   // Refuse to run with a key that can't read the stored secrets.
   {
     const { encryptionKeyMatchesData } = await import("./api/settings.ts");
-    if (!encryptionKeyMatchesData()) {
+    if (!(await encryptionKeyMatchesData())) {
       process.stderr.write(
         "vaultbase: the encryption key does not decrypt the stored secrets. If you set VAULTBASE_ENCRYPTION_KEY, " +
         `set it to the contents of ${config.dataDir}/.encryption-key (or unset it); a lost key can't be recovered.\n`,
@@ -389,7 +389,7 @@ async function main() {
   // plaintext in data.db (and its backups); encrypt them now.
   try {
     const { encryptPlaintextSecretSettings } = await import("./api/settings.ts");
-    const n = encryptPlaintextSecretSettings();
+    const n = await encryptPlaintextSecretSettings();
     if (n > 0) process.stderr.write(`vaultbase: encrypted ${n} secret setting(s) stored in plaintext\n`);
   } catch (e) {
     process.stderr.write(`vaultbase: could not encrypt plaintext secret settings: ${e instanceof Error ? e.message : String(e)}\n`);

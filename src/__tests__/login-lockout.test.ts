@@ -84,7 +84,7 @@ describe("user login lockout", () => {
     // (429) before any check runs; what must hold is that at most 10 ran.
     expect(results.filter((r) => r.status === 401).length).toBeLessThanOrEqual(10);
     const col = (await getCollection("users"))!;
-    const rows = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `user:${col.id}:id:${(await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id}`));
+    const rows = await getDb().select().from(loginFailures).where(eq(loginFailures.key, `user:${col.id}:id:${(await (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local"))!.id}`));
     expect(rows.length).toBeLessThanOrEqual(10);
   });
 
@@ -137,7 +137,7 @@ describe("IP key", () => {
 describe("other password checks share the lockout", () => {
   it("confirm-email-change: guessing the password with a stolen link is capped", async () => {
     const col = (await getCollection("users"))!;
-    const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    const userId = (await (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local"))!.id;
     await getDb().insert(authTokens).values({
       id: hashedTokenId("change-token"), user_id: userId, collection_id: col.id, purpose: "email_change",
       payload: "attacker@test.local", expires_at: Math.floor(Date.now() / 1000) + 3600,
@@ -150,7 +150,7 @@ describe("other password checks share the lockout", () => {
 
   it("oauth2/merge-confirm: password guesses are capped", async () => {
     const col = (await getCollection("users"))!;
-    const userId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    const userId = (await (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local"))!.id;
     await getDb().insert(authTokens).values({
       id: hashedTokenId("merge-token"), user_id: userId, collection_id: col.id, purpose: "oauth2_merge",
       code: JSON.stringify({ provider: "github", provider_user_id: "gh-1", email: "alice@test.local", name: null }),
@@ -177,7 +177,7 @@ describe("lockout keys", () => {
 
   it("an address shaped like an internal key can't lock an account it doesn't own", async () => {
     const col = (await getCollection("users"))!;
-    const aliceId = (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local")!.id;
+    const aliceId = (await (await import("../core/users-table.ts")).findUserByEmail(col, "alice@test.local"))!.id;
     for (let i = 0; i < 12; i++) await userLogin(`id:${aliceId}`, "x");
     expect((await userLogin("alice@test.local", PASSWORD)).status).toBe(200);
   });

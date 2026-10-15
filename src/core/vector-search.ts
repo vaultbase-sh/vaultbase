@@ -45,7 +45,7 @@ export async function searchVectors(
   const fieldQ = quoteIdent(field);
   const { whereSql, whereParams } = await compileListWhere(col, opts);
 
-  const candidates = db.sync.all<{ id: string; updated_at: number }>(
+  const candidates = await db.all<{ id: string; updated_at: number }>(
     `SELECT "id", "updated_at" FROM ${table} ${whereSql} ORDER BY "created_at" DESC LIMIT ${MAX_CANDIDATES}`,
     whereParams,
   );
@@ -54,7 +54,7 @@ export async function searchVectors(
   const misses = candidates.filter((c) => bucket.entries.get(c.id)?.updated !== c.updated_at);
   for (let i = 0; i < misses.length; i += ID_CHUNK) {
     const chunk = misses.slice(i, i + ID_CHUNK);
-    const rows = db.sync.all<{ id: string; updated_at: number; v: unknown }>(
+    const rows = await db.all<{ id: string; updated_at: number; v: unknown }>(
       `SELECT "id", "updated_at", ${fieldQ} AS v FROM ${table} WHERE "id" IN (${chunk.map(() => "?").join(",")})`,
       chunk.map((c) => c.id),
     );

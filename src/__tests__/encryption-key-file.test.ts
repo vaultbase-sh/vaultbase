@@ -50,7 +50,7 @@ describe("encryption key file", () => {
       getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("smtp.pass", "plain-pw");
       getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("smtp.host", "mail.example.com");
       loadEncryptionKey(dir);
-      expect(encryptPlaintextSecretSettings()).toBe(1);
+      expect(await encryptPlaintextSecretSettings()).toBe(1);
       const raw = getRawClient().prepare(`SELECT value FROM vaultbase_settings WHERE key = 'smtp.pass'`).get() as { value: string };
       expect(raw.value).not.toContain("plain-pw");
       expect(getSetting("smtp.pass", "")).toBe("plain-pw");
@@ -76,9 +76,9 @@ describe("key mismatches (review 17 F-5)", () => {
       loadEncryptionKey(dir);
       const { setSetting } = await import("../api/settings.ts");
       setSetting("smtp.pass", "secret");
-      expect(encryptionKeyMatchesData()).toBe(true);
+      expect(await encryptionKeyMatchesData()).toBe(true);
       process.env["VAULTBASE_ENCRYPTION_KEY"] = Buffer.alloc(32, 9).toString("base64");
-      expect(encryptionKeyMatchesData()).toBe(false);
+      expect(await encryptionKeyMatchesData()).toBe(false);
     } finally {
       closeDb();
     }
@@ -97,7 +97,7 @@ describe("key check tolerates foreign values (review 18 F-3)", () => {
       getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("app.name", "vbenc:1:not-really");
       getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("oauth2.x.client_secret", "vbenc:1:AAAA:BBBB");
       setSetting("smtp.pass", "secret");
-      expect(encryptionKeyMatchesData()).toBe(true);
+      expect(await encryptionKeyMatchesData()).toBe(true);
     } finally {
       closeDb();
     }

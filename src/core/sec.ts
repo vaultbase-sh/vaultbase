@@ -70,8 +70,8 @@ function getSecret(jwtSecret: string): Uint8Array {
 // compiled statement; a drizzle select re-prepared its SQL on every call.
 
 /** True if `jti` was revoked. */
-function isRevoked(jti: string): boolean {
-  return db.sync.get(`SELECT 1 FROM vaultbase_token_revocations WHERE jti = ? LIMIT 1`, [jti]) != null;
+async function isRevoked(jti: string): Promise<boolean> {
+  return (await db.get(`SELECT 1 FROM vaultbase_token_revocations WHERE jti = ? LIMIT 1`, [jti])) != null;
 }
 
 interface ApiTokenRow {
@@ -82,12 +82,12 @@ interface ApiTokenRow {
   revoked_at: number | null;
 }
 
-function apiTokenById(jti: string): ApiTokenRow | null {
-  return db.sync.get<ApiTokenRow>(`SELECT name, scopes, created_by, created_by_email, revoked_at FROM vaultbase_api_tokens WHERE id = ? LIMIT 1`, [jti]);
+async function apiTokenById(jti: string): Promise<ApiTokenRow | null> {
+  return await db.get<ApiTokenRow>(`SELECT name, scopes, created_by, created_by_email, revoked_at FROM vaultbase_api_tokens WHERE id = ? LIMIT 1`, [jti]);
 }
 
-function adminResetAt(id: string): number | null {
-  const row = db.sync.get<{ password_reset_at: number }>(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`, [id]);
+async function adminResetAt(id: string): Promise<number | null> {
+  const row = await db.get<{ password_reset_at: number }>(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`, [id]);
   return row ? row.password_reset_at : null;
 }
 
@@ -114,14 +114,14 @@ export async function verifyAuthToken(
     // for them explicitly gets one back.
     if (!opts.audience && aud === "file") return null;
 
-    if (typeof payload["jti"] === "string" && isRevoked(payload["jti"])) return null;
+    if (typeof payload["jti"] === "string" && (await isRevoked(payload["jti"]))) return null;
 
     if (aud === "api") {
       // API tokens map to the admin who minted them. Scopes are pulled
       // from the DB row so a token's effective permissions can be tightened
       // post-mint without re-issuing — the JWT's claims are advisory.
       if (typeof payload["jti"] !== "string") return null;
-      const tok = apiTokenById(payload["jti"]);
+      const tok = await apiTokenById(payload["jti"]);
       if (!tok || tok.revoked_at != null) return null;
       let scopes: string[] = [];
       try {
@@ -146,7 +146,7 @@ export async function verifyAuthToken(
       // logged-out before mint — a leaked token still goes invalid when the
       // minting admin's password is reset.
       if (recheck) {
-        const resetAt = adminResetAt(tok.created_by);
+        const resetAt = await adminResetAt(tok.created_by);
         if (resetAt === null) return null;
         if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
       }
@@ -178,7 +178,7 @@ export async function verifyAuthToken(
 
     if (recheck) {
       if (aud === "admin") {
-        const resetAt = adminResetAt(id);
+        const resetAt = await adminResetAt(id);
         if (resetAt === null) return null;
         if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
       } else {
@@ -192,7 +192,7 @@ export async function verifyAuthToken(
         const col = await getCollection(collectionName);
         if (!col) return null;
         const { findUserById } = await import("./users-table.ts");
-        const u = findUserById(col, id);
+        const u = await findUserById(col, id);
         if (!u) return null;
         // password_reset_at on per-collection table — bumping it (via
         // force-logout-all) invalidates this token.

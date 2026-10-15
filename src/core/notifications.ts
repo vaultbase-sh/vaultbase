@@ -496,7 +496,7 @@ export async function dispatchNotification(
     try {
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      db.sync.run(
+      await db.run(
         `INSERT INTO vb_notifications (id, user, type, title, body, data, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [

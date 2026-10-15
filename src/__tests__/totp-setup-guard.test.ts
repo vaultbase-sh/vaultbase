@@ -41,7 +41,7 @@ describe("/totp/setup with MFA already on", () => {
   it("refuses and leaves the secret alone", async () => {
     const res = await post("/auth/users/totp/setup", {}, jwt);
     expect(res.status).toBe(409);
-    const u = findUserById((await ensureAuthCollection("users")), userId)!;
+    const u = (await findUserById((await ensureAuthCollection("users")), userId))!;
     expect(u.totp_secret).toBe(original);
     expect(u.totp_enabled).toBe(1);
   });

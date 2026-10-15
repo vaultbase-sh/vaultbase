@@ -114,7 +114,7 @@ const SETTING_KEYS: Record<ProviderName, Record<keyof PatchBody, string | null>>
   },
 };
 
-function applyPatch(provider: ProviderName, body: PatchBody): { applied: number; rejected: string[] } {
+async function applyPatch(provider: ProviderName, body: PatchBody): Promise<{ applied: number; rejected: string[] }> {
   const map = SETTING_KEYS[provider];
   let applied = 0;
   const rejected: string[] = [];
@@ -126,9 +126,9 @@ function applyPatch(provider: ProviderName, body: PatchBody): { applied: number;
     }
     const v = body[key];
     if (typeof v === "boolean") {
-      setSetting(settingKey, v ? "1" : "0");
+      await setSetting(settingKey, v ? "1" : "0");
     } else if (typeof v === "string") {
-      setSetting(settingKey, v);
+      await setSetting(settingKey, v);
     }
     applied++;
   }
@@ -168,7 +168,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
             return { error: `service_account is not valid JSON: ${e instanceof Error ? e.message : String(e)}`, code: 422 };
           }
         }
-        const result = applyPatch(params.name, body);
+        const result = await applyPatch(params.name, body);
         if (result.rejected.length > 0) {
           set.status = 422;
           return { error: `Invalid fields for ${params.name}: ${result.rejected.join(", ")}`, code: 422 };
@@ -261,7 +261,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         try {
           // Upsert by token. The notifications collection bootstrap creates
           // `token` UNIQUE so this conflict resolution works.
-          db.sync.run(
+          await db.run(
             `INSERT INTO vb_device_tokens (id, user, provider, token, platform, app_version, enabled, last_seen, created_at)
              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
              ON CONFLICT(token) DO UPDATE SET
@@ -313,7 +313,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
         try {
           // Soft delete (enabled=0) — preserves the row so we can analytics-on-it.
           // Restrict to the calling user's own tokens (defense against ID forgery).
-          db.sync.run(
+          await db.run(
             `UPDATE vb_device_tokens SET enabled = 0 WHERE token = ? AND user = ?`,
             [params.token, user.id],
           );

@@ -277,19 +277,19 @@ export async function recoverInterruptedJobs(startedBefore: number): Promise<num
   const now = Math.floor(Date.now() / 1000);
   const maxAttempts = `coalesce(j.retry_max,
       (SELECT max(w.retry_max) FROM vaultbase_workers w WHERE w.queue = j.queue AND w.enabled = 1), 3)`;
-  db.sync.run(
+  await db.run(
     `UPDATE vaultbase_jobs_log AS j
         SET status = 'dead', finished_at = ?, error = 'interrupted: the process running this job stopped, and no attempts are left'
       WHERE j.status = 'running' AND j.started_at <= ? AND j.attempt >= ${maxAttempts}`,
     [now, startedBefore],
   );
-  return db.sync.run(
+  return (await db.run(
     `UPDATE vaultbase_jobs_log AS j
         SET status = 'queued', attempt = j.attempt + 1, worker_id = NULL, started_at = NULL,
             scheduled_at = ?, error = 'interrupted: the process running this job stopped'
       WHERE j.status = 'running' AND j.started_at <= ?`,
     [now, startedBefore],
-  ).changes;
+  )).changes;
 }
 
 /**

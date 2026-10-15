@@ -96,7 +96,7 @@ describe("query stats", () => {
 
   it("has nothing to suggest for the default list, a range sorted by itself, or a search", async () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
-    createCollectionIndex((await getCollection("posts"))!, ["views"]);
+    await createCollectionIndex((await getCollection("posts"))!, ["views"]);
     await listRecords("posts", {});
     await listRecords("posts", { filter: "views > 5000", sort: "-views" });
     await listRecords("posts", { search: "post" });
@@ -119,7 +119,7 @@ describe("query stats", () => {
     await listRecords("posts", { filter: 'status = "published"', sort: "-views" });
     const before = shape((r) => r.sort === "-views");
     expect(before.suggestion).not.toBeNull();
-    createCollectionIndex((await getCollection("posts"))!, before.suggestion!.fields);
+    await createCollectionIndex((await getCollection("posts"))!, before.suggestion!.fields);
     const after = shape((r) => r.sort === "-views");
     expect(after.scan).toBe(false);
     expect(after.temp_sort).toBe(false);
@@ -195,7 +195,7 @@ describe("composite indexes", () => {
   it("creates an index over several fields in order and lists it", async () => {
     await seedPosts(10);
     const col = (await getCollection("posts"))!;
-    const made = createCollectionIndex(col, ["status", "created_at"]);
+    const made = await createCollectionIndex(col, ["status", "created_at"]);
     expect(made).toEqual({ name: "idx_posts_status_created_at", field: "status,created_at", fields: ["status", "created_at"], unique: false });
     const plan = getRawClient().prepare(`EXPLAIN QUERY PLAN SELECT * FROM "vb_posts" WHERE "status" = ? ORDER BY "created_at" DESC LIMIT 30`).all() as Array<{ detail: string }>;
     expect(plan.map((p) => p.detail).join(" | ")).toContain("idx_posts_status_created_at");
@@ -205,11 +205,11 @@ describe("composite indexes", () => {
   it("rejects unknown, repeated and too many fields", async () => {
     await seedPosts(10);
     const col = (await getCollection("posts"))!;
-    expect(() => createCollectionIndex(col, [])).toThrow(IndexError);
-    expect(() => createCollectionIndex(col, ["status", "nope"])).toThrow("not found");
-    expect(() => createCollectionIndex(col, ["status", "status"])).toThrow("only once");
-    expect(() => createCollectionIndex(col, ["id", "title", "status", "views", "created_at"])).toThrow("at most 4");
-    expect(() => createCollectionIndex(col, ["Status"])).toThrow("[a-z0-9_]+");
+    await expect(createCollectionIndex(col, [])).rejects.toThrow(IndexError);
+    await expect(createCollectionIndex(col, ["status", "nope"])).rejects.toThrow("not found");
+    await expect(createCollectionIndex(col, ["status", "status"])).rejects.toThrow("only once");
+    await expect(createCollectionIndex(col, ["id", "title", "status", "views", "created_at"])).rejects.toThrow("at most 4");
+    await expect(createCollectionIndex(col, ["Status"])).rejects.toThrow("[a-z0-9_]+");
   });
 
   it("the API takes `fields` and still takes the older `field`", async () => {

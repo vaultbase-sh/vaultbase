@@ -166,7 +166,7 @@ export async function aggregateRecords(col: Collection, opts: AggregateOptions):
 
   let rows: Array<Record<string, unknown>>;
   try {
-    rows = db.sync.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
+    rows = await db.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
   } catch (e) {
     if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
     throw e;

@@ -398,14 +398,14 @@ const EMAIL_COOLDOWN_SECONDS = 60;
  * OTP sign-in and password reset. The cooldown bounds a flood to one email a
  * minute while the owner is never kept waiting longer than that.
  */
-function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): boolean {
+async function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): Promise<boolean> {
   const since = Math.floor(Date.now() / 1000) - EMAIL_COOLDOWN_SECONDS;
-  const row = db.sync.get(
+  const row = (await db.get(
     `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
       WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ?
         AND rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`,
     [userId, collectionId, purpose, since, id],
-  ) as { n: number };
+  )) as { n: number };
   return row.n === 0;
 }
 
@@ -427,7 +427,7 @@ async function issueAndSend(
     purpose,
     expires_at: expiresAt,
   });
-  if (!emailAllowed(stored, user.id, collectionId, purpose)) {
+  if (!await emailAllowed(stored, user.id, collectionId, purpose)) {
     await getDb().delete(authTokens).where(eq(authTokens.id, stored));
     return false;
   }
@@ -486,7 +486,7 @@ async function issueOtpAndSend(
   });
   // Held back by the cooldown: drop the row before it voids the live code,
   // so a flood of requests can't keep killing the code the user was sent.
-  if (!emailAllowed(stored, user.id, collectionId, "otp")) {
+  if (!await emailAllowed(stored, user.id, collectionId, "otp")) {
     await getDb().delete(authTokens).where(eq(authTokens.id, stored));
     return false;
   }
@@ -568,14 +568,14 @@ async function endRefreshedReplacement(token: string, jwtSecret: string): Promis
  * exact, so `ALICE@x` from a provider missed the `alice@x` account and made a
  * second account for the same mailbox.
  */
-function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], email: string) {
-  const exact = findUserByEmail(col, email);
+async function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], email: string) {
+  const exact = await findUserByEmail(col, email);
   if (exact) return exact;
-  const row = db.sync.get<{ id: string }>(
+  const row = await db.get<{ id: string }>(
     `SELECT id FROM "${userTableName(col.name)}" WHERE email = ? COLLATE NOCASE LIMIT 1`,
     [email],
   );
-  return row ? findUserById(col, row.id) : null;
+  return row ? await findUserById(col, row.id) : null;
 }
 
 /** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
@@ -608,7 +608,7 @@ async function applyProviderLink(colId: string, col: Parameters<typeof findUserB
       provider: link.provider, provider_user_id: link.provider_user_id, provider_email: link.email,
     });
   }
-  const u = findUserById(col, userId);
+  const u = await findUserById(col, userId);
   if (u && !u.email_verified) await updateUserById(col, userId, { email_verified: 1, updated_at: Math.floor(Date.now() / 1000) });
 }
 
@@ -742,7 +742,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-      const u = findUserById(col, params.id);
+      const u = await findUserById(col, params.id);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
       const now = Math.floor(Date.now() / 1000);
       await updateUserById(col, params.id, { totp_enabled: 0, totp_secret: null, updated_at: now });
@@ -785,7 +785,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // every auth collection — pre-existing rows still work via the
         // helper's fallback to vaultbase_users.
         // Any case: `ALICE@x` must not become a second account beside `alice@x`.
-        const existing = findUserByEmailAnyCase(col, body.email);
+        const existing = await findUserByEmailAnyCase(col, body.email);
         // No-enumeration: always return a generic success. If the email is
         // taken, queue a "complete account / reset password" email instead so
         // the legitimate owner can recover, and refuse silently.
@@ -859,7 +859,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Per-account lockout, charged before the password is checked. The
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
         // Per-collection email lookup (vb_<col> first, legacy fallback).
-        const u = findUserByEmail(col, body.email);
+        const u = await findUserByEmail(col, body.email);
         const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: clientIpForLockout(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
@@ -918,7 +918,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "Invalid or expired MFA ticket", code: 400 };
         }
-        const u = findUserById(col, tok.user_id);
+        const u = await findUserById(col, tok.user_id);
         if (!u || !u.totp_secret) {
           set.status = 400;
           return { error: "MFA not configured for this account", code: 400 };
@@ -1023,7 +1023,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         const userId = session.id;
         const db = getDb();
-        const u = findUserById(col, userId);
+        const u = await findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (u.totp_enabled !== 1 || !u.totp_secret) { set.status = 422; return { error: "MFA is not enabled", code: 422 }; }
         // A fresh set of recovery codes is a second factor in its own right:
@@ -1080,7 +1080,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const userId = session.id;
       const db = getDb();
-      const u = findUserById(col, userId);
+      const u = await findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
       if (u.email_verified) return { data: { sent: false, alreadyVerified: true } };
       if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
@@ -1122,7 +1122,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
-        const u = findUserByEmail(col, body.email);
+        const u = await findUserByEmail(col, body.email);
         // Not awaited: waiting for the mail server only when the address has
         // an account would let the response time tell the two apart.
         if (u) {
@@ -1180,7 +1180,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const newEmail = body.newEmail.trim();
         if (!EMAIL_RE.test(newEmail)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
-        const u = findUserById(col, session.id);
+        const u = await findUserById(col, session.id);
         if (!u) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         if (newEmail.toLowerCase() === u.email.toLowerCase()) { set.status = 422; return { error: "That is already your email", code: 422 }; }
 
@@ -1199,7 +1199,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // The link goes to an address the caller chooses, so the same
         // cooldown applies: a signed-in user can't use this to flood a
         // stranger's inbox. Held back, the earlier link stays valid.
-        if (!emailAllowed(stored, u.id, col.id, "email_change")) {
+        if (!await emailAllowed(stored, u.id, col.id, "email_change")) {
           await db.delete(authTokens).where(eq(authTokens.id, stored));
           set.status = 429; return { error: "An email change was requested recently. Try again in a minute.", code: 429 };
         }
@@ -1208,7 +1208,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Checked after the cooldown so the two can't be told apart by a 429.
         // (Confirming re-checks, in case the address is taken in between.)
         // The row stays (spent) so it still counts towards the cooldown.
-        if (findUserByEmailAnyCase(col, newEmail)) {
+        if (await findUserByEmailAnyCase(col, newEmail)) {
           await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, stored));
           return { data: { sent: true } };
         }
@@ -1237,7 +1237,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!tok || tok.purpose !== "email_change" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now || !tok.payload) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
-        const u = findUserById(col, tok.user_id);
+        const u = await findUserById(col, tok.user_id);
         if (!u) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         // The password is the only thing a stolen session lacks here, so it
         // gets the same lockout as sign-in.
@@ -1249,7 +1249,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const valid = await Bun.password.verify(body.password, u.password_hash).catch(() => false);
         if (!valid) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         await loginSucceeded(attempt);
-        const taken = findUserByEmailAnyCase(col, tok.payload);
+        const taken = await findUserByEmailAnyCase(col, tok.payload);
         if (taken && taken.id !== u.id) { set.status = 422; return { error: "Email already in use", code: 422 }; }
         // The link proves the new address; ending old sessions makes every
         // device sign in again with it.
@@ -1271,7 +1271,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const email = body.email.trim();
         if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
-        if (findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
+        if (await findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
 
         const data: Record<string, unknown> = { ...(body.data ?? {}) };
         delete data["email"];
@@ -1330,7 +1330,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!tok || tok.purpose !== "invite" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired invitation", code: 400 };
         }
-        if (!findUserById(col, tok.user_id)) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
+        if (!await findUserById(col, tok.user_id)) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
         await updateUserById(col, tok.user_id, {
           password_hash: await hashPassword(body.password), email_verified: 1, password_reset_at: now, updated_at: now,
         });
@@ -1350,7 +1350,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isAuthFeatureEnabled("otp")) { set.status = 422; return { error: "OTP login is disabled", code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
-        const u = findUserByEmail(col, body.email);
+        const u = await findUserByEmail(col, body.email);
         // Not awaited, for the same reason as password reset: no timing
         // difference between addresses with and without an account.
         if (u && u.is_anonymous !== 1) {
@@ -1410,7 +1410,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (!attempt) {
             set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
           }
-          const userByEmail = findUserByEmail(col, body.email);
+          const userByEmail = await findUserByEmail(col, body.email);
           // Look up the user's live code, then compare. Looking up *by* code
           // meant a wrong guess matched nothing and was never counted.
           const tokenRows = userByEmail ? await db
@@ -1438,7 +1438,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
-        const u = findUserById(col, tok.user_id);
+        const u = await findUserById(col, tok.user_id);
         if (!u) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
@@ -1488,7 +1488,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const userId = session.id;
       const db = getDb();
-      const u = findUserById(col, userId);
+      const u = await findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
       // Replacing a live secret needs no code here, so a stolen session could
       // swap in one it controls and then pass every MFA check. Disabling first
@@ -1518,7 +1518,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         const userId = session.id;
         const db = getDb();
-        const u = findUserById(col, userId);
+        const u = await findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "Run /totp/setup first", code: 400 }; }
         // Confirming hands out recovery codes, so it must not double as a way
@@ -1553,7 +1553,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         const userId = session.id;
         const db = getDb();
-        const u = findUserById(col, userId);
+        const u = await findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (!u.totp_secret) { set.status = 400; return { error: "MFA not configured", code: 400 }; }
         // Same per-account budget as sign-in: a stolen session must not be
@@ -1636,7 +1636,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           return { error: "Only anonymous accounts can be promoted", code: 422 };
         }
         const db = getDb();
-        const u = findUserById(col, userId);
+        const u = await findUserById(col, userId);
         if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
         if (u.is_anonymous !== 1) {
           set.status = 422;
@@ -1668,7 +1668,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Email uniqueness within the collection (excluding self).
         // Case-insensitive, as register checks: `ALICE@x` beside `alice@x`
         // is the same mailbox under two accounts.
-        const dup = findUserByEmailAnyCase(col, body.email);
+        const dup = await findUserByEmailAnyCase(col, body.email);
         if (dup && dup.id !== u.id) {
           set.status = 409; return { error: "Email already in use", code: 409 };
         }
@@ -1723,7 +1723,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-      const u = findUserById(col, params.userId);
+      const u = await findUserById(col, params.userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
       const { token: jwt } = await signAuthToken({
         payload: { id: u.id, email: u.email, collection: col.name, impersonated_by: adminId },
@@ -1919,7 +1919,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       //    `/oauth2/merge-confirm` with the user's existing password (or a
       //    valid user token for that user) to consent before we link.
       if (!userId && profile.emailVerified) {
-        const existing = findUserByEmailAnyCase(col, profile.email);
+        const existing = await findUserByEmailAnyCase(col, profile.email);
         if (existing) {
           const matchedUserId = existing.id;
           const mergeToken = crypto.randomUUID();
@@ -1956,7 +1956,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       //    account: it gets a placeholder (the provider's address stays on the
       //    link). Otherwise the provider could reserve an address for someone
       //    else's future account, or collide with an existing one.
-      const accountEmail = profile.emailVerified && !findUserByEmailAnyCase(col, profile.email)
+      const accountEmail = profile.emailVerified && !await findUserByEmailAnyCase(col, profile.email)
         ? profile.email
         // Random, so nobody can register the placeholder ahead of the owner.
         : `${body.provider}_${newToken().slice(0, 24)}@oauth.invalid`;
@@ -1994,7 +1994,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       // A linked account with TOTP on still needs its second factor: the
       // provider vouches for who the user is at the provider, not for this
       // account's MFA.
-      const signedIn = findUserById(col, userId);
+      const signedIn = await findUserById(col, userId);
       if (signedIn?.totp_enabled === 1) return { data: await mfaTicketFor(col.id, userId) };
       const email = signedIn?.email ?? accountEmail;
       const { token } = await signAuthToken({
@@ -2041,7 +2041,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         return { error: "Corrupted merge token", code: 500 };
       }
 
-      const user = findUserById(col, tok.user_id);
+      const user = await findUserById(col, tok.user_id);
       if (!user) {
         set.status = 401;
         return { error: "Account no longer exists", code: 401 };
@@ -2121,7 +2121,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       if (!session) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const userId = session.id;
       const db = getDb();
-      const u = findUserById(col, userId);
+      const u = await findUserById(col, userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
 
       const linkRows = await db
@@ -2200,7 +2200,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       let anonymous = prev["anonymous"] === true;
       if (anonymous) {
         const col = ctx.collection ? await getCollection(ctx.collection) : null;
-        const u = col ? findUserById(col, ctx.id) : null;
+        const u = col ? await findUserById(col, ctx.id) : null;
         if (!u || u.is_anonymous !== 1) anonymous = false;
       }
       if (anonymous) claims["anonymous"] = true;

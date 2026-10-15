@@ -57,20 +57,20 @@ function quoteIdent(s: string): string {
  * Find a user by id, scoped to a collection. Reads `vb_<name>` only —
  * `vaultbase_users` was dropped in v0.11 phase 4.
  */
-export function findUserById(col: Collection, id: string): AuthUserRow | null {
+export async function findUserById(col: Collection, id: string): Promise<AuthUserRow | null> {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    return db.sync.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE id = ?`, [id]);
+    return await db.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE id = ?`, [id]);
   } catch {
     return null;
   }
 }
 
 /** Find a user by email within a collection. */
-export function findUserByEmail(col: Collection, email: string): AuthUserRow | null {
+export async function findUserByEmail(col: Collection, email: string): Promise<AuthUserRow | null> {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    return db.sync.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE email = ?`, [email]);
+    return await db.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE email = ?`, [email]);
   } catch {
     return null;
   }

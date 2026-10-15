@@ -23,10 +23,10 @@ interface SqliteSnapshot {
   checkpoint: CheckpointStats | null;
 }
 
-function sqliteSnapshot(): SqliteSnapshot | null {
+async function sqliteSnapshot(): Promise<SqliteSnapshot | null> {
   try {
-    const pc = db.sync.get<{ page_count: number }>("PRAGMA page_count");
-    const ps = db.sync.get<{ page_size: number }>("PRAGMA page_size");
+    const pc = await db.get<{ page_count: number }>("PRAGMA page_count");
+    const ps = await db.get<{ page_size: number }>("PRAGMA page_size");
     // WAL size comes from the background checkpointer's last pass. Running a
     // checkpoint here on every poll cost ~10% write throughput under load.
     const ckpt = checkpointStats();
@@ -115,7 +115,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
       return {
         ...globalMetrics.snapshot(),
         process: processSnapshot(),
-        sqlite: sqliteSnapshot(),
+        sqlite: await sqliteSnapshot(),
         read_workers: readPoolStats(),
       };
     }, { requireAdmin: true })
@@ -152,7 +152,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
         return "";
       }
       const snap = globalMetrics.snapshot();
-      const sql = sqliteSnapshot();
+      const sql = await sqliteSnapshot();
       const lines: string[] = [];
       const push = (name: string, help: string, type: string, samples: Array<[string, number]>) => {
         lines.push(`# HELP ${name} ${help}`);

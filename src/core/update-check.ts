@@ -61,20 +61,20 @@ export async function runUpdateCheck(): Promise<void> {
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
-      setSetting("update_check.error", `GitHub ${res.status}`);
+      await setSetting("update_check.error", `GitHub ${res.status}`);
       return;
     }
     const body = await res.json() as { tag_name?: string };
     const tag = (body.tag_name ?? "").trim();
     if (!tag) {
-      setSetting("update_check.error", "no tag_name in response");
+      await setSetting("update_check.error", "no tag_name in response");
       return;
     }
-    setSetting("update_check.latest_version", tag);
-    setSetting("update_check.checked_at", String(Math.floor(Date.now() / 1000)));
-    setSetting("update_check.error", "");
+    await setSetting("update_check.latest_version", tag);
+    await setSetting("update_check.checked_at", String(Math.floor(Date.now() / 1000)));
+    await setSetting("update_check.error", "");
   } catch (e) {
-    setSetting("update_check.error", e instanceof Error ? e.message : String(e));
+    await setSetting("update_check.error", e instanceof Error ? e.message : String(e));
   }
 }
 

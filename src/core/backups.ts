@@ -197,18 +197,18 @@ async function doBackup(): Promise<BackupInfo> {
 export function runBackup(): Promise<BackupInfo> {
   if (running) return running;
   running = doBackup()
-    .then((info) => {
-      setSetting("backups.last_error", "");
+    .then(async (info) => {
+      await setSetting("backups.last_error", "");
       return info;
     })
-    .catch((e: unknown) => {
+    .catch(async (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      setSetting("backups.last_error", msg);
+      await setSetting("backups.last_error", msg);
       console.error(`[backups] ${msg}`);
       throw e;
     })
-    .finally(() => {
-      setSetting("backups.last_run_at", String(Math.floor(Date.now() / 1000)));
+    .finally(async () => {
+      await setSetting("backups.last_run_at", String(Math.floor(Date.now() / 1000)));
       running = null;
     });
   return running;
@@ -233,7 +233,7 @@ export async function backupTick(nowSec = Math.floor(Date.now() / 1000)): Promis
   const raw = getSetting("backups.next_run", "");
   const next = parseNext(raw);
   if (!next || next.cron !== cron) {
-    setSetting("backups.next_run", `${cron}|${nextRunFromCron(cron, nowSec)}`);
+    await setSetting("backups.next_run", `${cron}|${nextRunFromCron(cron, nowSec)}`);
     return null;
   }
   if (next.at > nowSec) return null;
@@ -242,7 +242,7 @@ export async function backupTick(nowSec = Math.floor(Date.now() / 1000)): Promis
     .prepare(`UPDATE vaultbase_settings SET value = ?, updated_at = unixepoch() WHERE key = 'backups.next_run' AND value = ?`)
     .run(`${cron}|${nextRunFromCron(cron, nowSec)}`, raw).changes;
   // The claim bypassed setSetting, so drop the cached value either way.
-  invalidateSetting("backups.next_run");
+  await invalidateSetting("backups.next_run");
   if (claimed !== 1) return null;
   return runBackup();
 }

@@ -53,7 +53,7 @@ function dispatchBus(m: BusMessage): void {
       postStats();
       break;
     case "settings":
-      invalidateSetting(m.key);
+      void invalidateSetting(m.key);
       // The same caches the settings PATCH drops on the main thread.
       invalidateRateLimitCache();
       invalidateEmailCache();

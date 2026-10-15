@@ -43,26 +43,26 @@ export async function pruneHistory(): Promise<PruneResult> {
   const days = retentionDays();
   const retentionCutoff = now - days * 24 * 60 * 60;
   const expiredCutoff = now - EXPIRY_GRACE_SECONDS;
-  const run = (sql: string, ...params: number[]) => db.sync.run(sql, params).changes;
+  const run = async (sql: string, ...params: number[]) => (await db.run(sql, params)).changes;
   return {
     // days = 0: keep job / delivery history forever.
-    jobs: days === 0 ? 0 : run(
+    jobs: days === 0 ? 0 : await run(
       `DELETE FROM vaultbase_jobs_log
         WHERE status IN ('succeeded', 'failed', 'dead') AND finished_at IS NOT NULL AND finished_at < ?`,
       retentionCutoff,
     ),
-    webhookDeliveries: days === 0 ? 0 : run(
+    webhookDeliveries: days === 0 ? 0 : await run(
       `DELETE FROM vaultbase_webhook_deliveries
         WHERE status IN ('succeeded', 'dead') AND created_at < ?`,
       retentionCutoff,
     ),
     // A revocation only matters while the token could still verify.
-    tokenRevocations: run(`DELETE FROM vaultbase_token_revocations WHERE expires_at < ?`, expiredCutoff),
+    tokenRevocations: await run(`DELETE FROM vaultbase_token_revocations WHERE expires_at < ?`, expiredCutoff),
     // Verify / reset / OTP tokens are useless once expired, used or not.
-    authTokens: run(`DELETE FROM vaultbase_auth_tokens WHERE expires_at < ?`, expiredCutoff),
+    authTokens: await run(`DELETE FROM vaultbase_auth_tokens WHERE expires_at < ?`, expiredCutoff),
     // Daily request-log files follow the same retention.
     logFiles: days === 0 ? 0 : pruneLogFiles(days),
-    auditEntries: auditRetentionDays() === 0 ? 0 : run(
+    auditEntries: auditRetentionDays() === 0 ? 0 : await run(
       `DELETE FROM vaultbase_audit_log WHERE at < ?`,
       now - auditRetentionDays() * 24 * 60 * 60,
     ),
