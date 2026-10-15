@@ -39,6 +39,40 @@ jobs:
       - name: Test
         run: bun test
 
+  server-postgres:
+    name: Server (tests on Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vaultbase
+          POSTGRES_PASSWORD: vaultbase
+          POSTGRES_DB: vaultbase
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vaultbase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test on Postgres
+        # Every initDb(":memory:") opens a fresh schema on the service
+        # (src/db/client.ts); SQLite-only suites skip themselves.
+        env:
+          VAULTBASE_TEST_DB: postgres://vaultbase:vaultbase@127.0.0.1:5432/vaultbase
+        run: bun test --timeout 20000
+
   admin:
     name: Admin UI (typecheck + build)
     runs-on: ubuntu-latest
