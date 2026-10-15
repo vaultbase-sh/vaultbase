@@ -19,6 +19,7 @@ import {
   parseCidr,
 } from "../core/hook-egress.ts";
 import { makeExtraHelpers } from "../core/hook-helpers-extra.ts";
+import { invalidateSetting } from "../api/settings.ts";
 
 beforeEach(async () => {
   await initDb(":memory:");
@@ -130,6 +131,7 @@ describe("operator overrides via settings", () => {
     // via raw SQL so this test doesn't depend on importing the plugin.
     await getDb().run(sql`CREATE TABLE IF NOT EXISTS vaultbase_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
     await getDb().run(sql.raw(`INSERT INTO vaultbase_settings (key, value) VALUES ('${key}', '${value.replace(/'/g, "''")}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`));
+    await invalidateSetting(key);
     invalidateEgressCache();
   }
 

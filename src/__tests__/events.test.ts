@@ -10,6 +10,7 @@ import { createCollection } from "../core/collections.ts";
 import { createRecord, deleteRecord, updateRecord } from "../core/records.ts";
 import { emit, listenerCount, on, type VaultbaseEvents } from "../core/events.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
+import { invalidateSetting } from "../api/settings.ts";
 
 const offs: Array<() => void> = [];
 function listen<E extends keyof VaultbaseEvents>(event: E): Array<VaultbaseEvents[E]> {
@@ -98,6 +99,7 @@ describe("record events", () => {
     await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([]), view_rule: null });
     const { settings } = await import("../db/schema.ts");
     await getDb().insert(settings).values({ key: "auth.anonymous.enabled", value: "1", updated_at: Math.floor(Date.now() / 1000) });
+    await invalidateSetting("auth.anonymous.enabled");
     const signups = listen("auth.signup");
     const created = listen("record.created");
 

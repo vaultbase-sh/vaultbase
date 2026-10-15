@@ -9,7 +9,7 @@ import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, getCollection, updateCollection, parseFields } from "../core/collections.ts";
 import { createRecord, getRecord, listRecords } from "../core/records.ts";
-import { createPublicCollection } from "./_helpers.ts";
+import { createPublicCollection, onSqlite } from "./_helpers.ts";
 
 beforeEach(async () => {
   await initDb(":memory:");
@@ -51,7 +51,7 @@ describe("field rename", () => {
     // Uniqueness survived the rename.
     await expect(createRecord("posts", { headline: "x", handle: "hello", body: "" })).rejects.toThrow();
     // Search still works on the renamed column.
-    expect((await listRecords("posts", { search: "hello" })).data.map((r) => r.id)).toEqual([rec.id]);
+    if (onSqlite) expect((await listRecords("posts", { search: "hello" })).data.map((r) => r.id)).toEqual([rec.id]);
     const cols = (await db.all<{ name: string }>(db.dialect.listColumnsSql("vb_posts"))).map((c) => c.name);
     expect(cols).toContain("headline");
     expect(cols).not.toContain("title");

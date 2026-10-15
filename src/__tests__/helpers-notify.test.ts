@@ -29,8 +29,8 @@ describe("helpers.notify", () => {
   it("enqueues to all enabled providers and inserts inbox when table exists", async () => {
     await db.exec(`
       CREATE TABLE vb_notifications (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
-        data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
+        data TEXT, created_at INTEGER NOT NULL DEFAULT (${db.dialect.epochNow})
       )`);
 
     const helpers = makeHookHelpers({ collection: "messages", event: "afterCreate" });
@@ -54,8 +54,8 @@ describe("helpers.notify", () => {
   it("opts.inbox=false skips inbox row even when table exists", async () => {
     await db.exec(`
       CREATE TABLE vb_notifications (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
-        data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
+        data TEXT, created_at INTEGER NOT NULL DEFAULT (${db.dialect.epochNow})
       )`);
     const helpers = makeHookHelpers();
     const result = await helpers.notify("u1", { title: "T", body: "B" }, { inbox: false });

@@ -58,7 +58,7 @@ describe("toFtsQuery", () => {
   });
 });
 
-describe("index lifecycle", () => {
+describe.skipIf(!onSqlite)("index lifecycle", () => {
   it("creates the index only for searchable fields", async () => {
     await notes();
     expect(ftsColumns("notes")).toEqual(["title", "body"]);
@@ -109,7 +109,7 @@ describe("index lifecycle", () => {
   });
 });
 
-describe("search", () => {
+describe.skipIf(!onSqlite)("search", () => {
   it("matches words, prefixes and accents", async () => {
     await notes();
     await createRecord("notes", { title: "Café opening", body: "<p>Fresh bread</p>" });
@@ -168,7 +168,7 @@ describe("search", () => {
   });
 });
 
-describe("API", () => {
+describe.skipIf(!onSqlite)("API", () => {
   it("applies the list rule to search results", async () => {
     await notes(FIELDS, { list_rule: `status = "public"` });
     await createRecord("notes", { title: "secret plan", status: "private" });

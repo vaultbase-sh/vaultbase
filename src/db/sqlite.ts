@@ -76,6 +76,7 @@ export const SQLITE_DIALECT: Dialect = {
   // SQLite keeps an index's name through a table rename; recreate it under the new one.
   renameIndex: (name, newName, sql) => [`DROP INDEX ${quoteIdent(name)}`, sql.replace(name, newName)],
   timeBucket: (format, expr) => `strftime('${SQLITE_BUCKET[format]}', ${expr}, 'unixepoch')`,
+  isMissingTable: (e) => e instanceof Error && /no such table/i.test(e.message),
   isUniqueViolation: (e, column) =>
     e instanceof Error && /UNIQUE constraint failed/i.test(e.message) && (!column || e.message.includes(`.${column}`)),
 };

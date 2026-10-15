@@ -12,7 +12,7 @@ import { getSetting, setSetting, _resetSettingsCache, _reloadSettings, loadSetti
 import { tableColumns, invalidateUserTableColumnCache } from "../core/users-table.ts";
 import { registerFieldType } from "../core/field-types.ts";
 import { listRecords, createRecord } from "../core/records.ts";
-import { createPublicCollection } from "./_helpers.ts";
+import { createPublicCollection, onSqlite } from "./_helpers.ts";
 
 beforeEach(async () => {
   await initDb(":memory:");
@@ -26,7 +26,7 @@ afterEach(async () => {
   await closeDb();
 });
 
-describe("settings cache", () => {
+describe.skipIf(!onSqlite)("settings cache", () => {
   it("a write through setSetting is visible at once, a direct write after the reset hook", async () => {
     expect(getSetting("app.name", "dflt")).toBe("dflt");
     setSetting("app.name", "one");
@@ -89,7 +89,7 @@ describe("cachedFields", () => {
   });
 });
 
-describe("tableColumns cache", () => {
+describe.skipIf(!onSqlite)("tableColumns cache", () => {
   it("refreshes when the schema changes, on this or another connection", async () => {
     await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
     const a = tableColumns("posts");

@@ -341,8 +341,8 @@ describe("dispatchNotification", () => {
   it("inserts inbox row when vb_notifications exists", async () => {
     await db.exec(`
       CREATE TABLE vb_notifications (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
-        data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
+        data TEXT, created_at INTEGER NOT NULL DEFAULT (${db.dialect.epochNow})
       )`);
 
     const res = await dispatchNotification("user-1", { title: "T", body: "B", data: { type: "msg" } });
@@ -356,8 +356,8 @@ describe("dispatchNotification", () => {
   it("opts.inbox=false skips inbox even when table exists", async () => {
     await db.exec(`
       CREATE TABLE vb_notifications (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
-        data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
+        data TEXT, created_at INTEGER NOT NULL DEFAULT (${db.dialect.epochNow})
       )`);
 
     const res = await dispatchNotification("u1", { title: "T", body: "B" }, { inbox: false });

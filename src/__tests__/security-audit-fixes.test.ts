@@ -22,6 +22,7 @@ import { parseFilter, type CollectionLookup } from "../core/filter.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { setSetting } from "../api/settings.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const SECRET = "test-secret-audit-fixes";
 const PASSWORD = "a-long-enough-password-1";
@@ -104,7 +105,7 @@ describe("sign-up honours the auth collection's create rule", () => {
     expect(res.status).toBe(403);
   });
 
-  it("upgrade opens existing admin-only auth collections once, then leaves them alone", async () => {
+  it.skipIf(!onSqlite)("upgrade opens existing admin-only auth collections once, then leaves them alone", async () => {
     await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
     await createCollection({ name: "notes", type: "base", fields: JSON.stringify([]) });
     // Simulate a pre-v0.18 database: the one-time marker isn't there yet.

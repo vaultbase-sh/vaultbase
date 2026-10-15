@@ -172,12 +172,12 @@ export async function loadSettings(): Promise<void> {
 
 /** The background refresh: a no-op when the database is closed or was reopened since the store was filled. */
 export async function _reloadSettings(): Promise<void> {
-  if (!driverOpen() || !store || store.driver !== getDriver()) return;
-  const driver = getDriver();
   try {
+    if (!driverOpen() || !store || store.driver !== getDriver()) return;
+    const driver = getDriver();
     const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
     if (store?.driver === driver) store.values = decodeRows(rows);
-  } catch { /* closing, or the table is gone: the next load sorts it out */ }
+  } catch { /* closing, closed, or the table is gone: the next load sorts it out */ }
 }
 
 /**

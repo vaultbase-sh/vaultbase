@@ -308,7 +308,7 @@ describe("POST notifications/devices", () => {
   beforeEach(async () => {
     await db.exec(`
       CREATE TABLE vb_device_tokens (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, provider TEXT NOT NULL,
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, provider TEXT NOT NULL,
         token TEXT NOT NULL UNIQUE, platform TEXT NOT NULL, app_version TEXT,
         enabled INTEGER NOT NULL DEFAULT 1, last_seen INTEGER NOT NULL, created_at INTEGER NOT NULL
       )`);
@@ -370,7 +370,7 @@ describe("DELETE notifications/devices/:token", () => {
   beforeEach(async () => {
     await db.exec(`
       CREATE TABLE vb_device_tokens (
-        id TEXT PRIMARY KEY, user TEXT NOT NULL, provider TEXT NOT NULL,
+        id TEXT PRIMARY KEY, "user" TEXT NOT NULL, provider TEXT NOT NULL,
         token TEXT NOT NULL UNIQUE, platform TEXT NOT NULL, app_version TEXT,
         enabled INTEGER NOT NULL DEFAULT 1, last_seen INTEGER NOT NULL, created_at INTEGER NOT NULL
       )`);

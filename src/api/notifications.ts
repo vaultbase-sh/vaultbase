@@ -284,7 +284,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           );
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes("no such table")) {
+          if (db.dialect.isMissingTable(e)) {
             set.status = 503;
             return { error: "Notifications not enabled (vb_device_tokens missing — admin must enable a token-based provider)", code: 503 };
           }
@@ -319,7 +319,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           );
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes("no such table")) {
+          if (db.dialect.isMissingTable(e)) {
             // Idempotent: nothing to disable, but not an error from the
             // client's POV (they were calling logout-cleanup).
             return { data: { ok: true } };

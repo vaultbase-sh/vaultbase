@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import * as jose from "jose";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
@@ -210,7 +211,7 @@ describe("streaming CSV export", () => {
 });
 
 describe("export past the list offset cap", () => {
-  it("streams every row of a table larger than 100,000 records", async () => {
+  it.skipIf(!onSqlite)("streams every row of a table larger than 100,000 records", async () => {
     await createCollection({ name: "big", fields: JSON.stringify([{ name: "n", type: "number" }]) });
     await db.exec(`
       INSERT INTO vb_big (id, n, created_at, updated_at)

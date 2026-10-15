@@ -12,7 +12,7 @@ import { loadEncryptionKey } from "../config.ts";
 import { initDb, closeDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { encryptPlaintextSecretSettings, getSetting } from "../api/settings.ts";
+import { encryptPlaintextSecretSettings, getSetting, loadSettings } from "../api/settings.ts";
 
 let dir: string;
 const saved = process.env["VAULTBASE_ENCRYPTION_KEY"];
@@ -50,6 +50,7 @@ describe("encryption key file", () => {
     try {
       await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["smtp.pass", "plain-pw"]);
       await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["smtp.host", "mail.example.com"]);
+      await loadSettings(); // rows written past the store
       loadEncryptionKey(dir);
       expect(await encryptPlaintextSecretSettings()).toBe(1);
       const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = 'smtp.pass'`))!;

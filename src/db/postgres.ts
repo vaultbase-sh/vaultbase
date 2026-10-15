@@ -73,7 +73,7 @@ export const POSTGRES_DIALECT: Dialect = {
   like: (left, pattern) => `COALESCE(${left} ILIKE ${pattern}, FALSE)`,
   jsonExtract: (expr, path) => `(${expr}::jsonb #>> ${jsonPathArray(path)})`,
   // NULL for anything that is not a JSON array, as SQLite answers, instead of a cast error.
-  jsonArrayLength: (expr) => `(CASE WHEN ${expr} LIKE '[%' THEN jsonb_array_length(${expr}::jsonb) END)`,
+  jsonArrayLength: (expr) => `(CASE WHEN (${expr})::text LIKE '[%' THEN jsonb_array_length((${expr})::text::jsonb) END)`,
   jsonEach: (expr) => `jsonb_array_elements_text(${expr}::jsonb)`,
   jsonGroupArray: (expr) => `json_agg(${expr})`,
   createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
@@ -86,6 +86,7 @@ export const POSTGRES_DIALECT: Dialect = {
   listIndexesSql: () => `SELECT indexname AS name, indexdef AS sql FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ?`,
   renameIndex: (name, newName) => [`ALTER INDEX ${quoteIdent(name)} RENAME TO ${quoteIdent(newName)}`],
   timeBucket: (format, expr) => `to_char(to_timestamp(${expr}), '${PG_BUCKET[format]}')`,
+  isMissingTable: (e) => typeof e === "object" && e !== null && (e as { errno?: unknown }).errno === "42P01",
   isUniqueViolation: (e, column) =>
     typeof e === "object" && e !== null && (e as { errno?: unknown }).errno === "23505" &&
     (!column || String((e as { message?: string }).message).includes(`_${column}_`)),

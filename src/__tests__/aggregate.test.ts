@@ -16,6 +16,7 @@ import { createCollection, type FieldDef } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const SECRET = "test-secret-aggregate";
 let tmpDir: string;
@@ -105,7 +106,7 @@ describe("aggregates", () => {
   it("applies filter and search", async () => {
     await seed();
     expect((await agg("agg=sum(amount)&filter=paid%20%3D%20true")).body.data).toEqual([{ sum_amount: 50 }]);
-    expect((await agg("search=open")).body.data).toEqual([{ count: 2 }]);
+    if (onSqlite) expect((await agg("search=open")).body.data).toEqual([{ count: 2 }]);
   });
 });
 

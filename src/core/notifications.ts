@@ -516,7 +516,7 @@ export async function dispatchNotification(
       // vb_notifications doesn't exist yet — caller hasn't enabled notifications
       // bootstrap. Push still works without the inbox; just skip silently.
       const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes("no such table")) throw e;
+      if (!db.dialect.isMissingTable(e)) throw e;
     }
   }
 
@@ -682,7 +682,7 @@ registerPushProvider({
     } catch (e) {
       // Table not yet bootstrapped → no devices to send to. Not an error.
       const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes("no such table")) throw e;
+      if (!db.dialect.isMissingTable(e)) throw e;
     }
     return sendFcm(loadProviderConfigs().fcm, tokens, payload);
   },

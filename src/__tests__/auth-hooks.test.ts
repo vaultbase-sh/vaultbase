@@ -21,6 +21,7 @@ import { hooks as hooksTable } from "../db/schema.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
 import { createCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
+import { invalidateSetting } from "../api/settings.ts";
 
 const SECRET = "test-secret-auth-hooks";
 let tmpDir: string;
@@ -92,6 +93,7 @@ describe("auth signup hook lifecycle", () => {
     // Anonymous auth is opt-in by default — enable for this test.
     const { settings } = await import("../db/schema.ts");
     await getDb().insert(settings).values({ key: "auth.anonymous.enabled", value: "1", updated_at: Math.floor(Date.now() / 1000) });
+    await invalidateSetting("auth.anonymous.enabled");
 
     (globalThis as Record<string, unknown>)["_anonHits"] = 0;
     await installHook("users", "afterCreate", `globalThis._anonHits = (globalThis._anonHits || 0) + 1;`);

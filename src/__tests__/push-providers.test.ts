@@ -73,7 +73,7 @@ describe("registered push providers", () => {
 
   it("disables the device tokens a provider reports as dead", async () => {
     setSetting("notifications.providers.pager.enabled", "1");
-    await db.exec(`CREATE TABLE vb_device_tokens (id TEXT PRIMARY KEY, user TEXT, provider TEXT, token TEXT, enabled INTEGER)`);
+    await db.exec(`CREATE TABLE vb_device_tokens (id TEXT PRIMARY KEY, "user" TEXT, provider TEXT, token TEXT, enabled INTEGER)`);
     await db.exec(`INSERT INTO vb_device_tokens VALUES ('t1', 'user-1', 'pager', 'abc', 1)`);
     respond = () => ({ ok: true, delivered: 0, message: "gone", invalidTokens: ["t1"] });
 

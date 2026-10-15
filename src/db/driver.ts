@@ -97,6 +97,8 @@ export interface Dialect {
   timeBucket(format: TimeBucket, expr: string): string;
   /** Whether `e` is a unique-constraint failure; `column` narrows it to one column. */
   isUniqueViolation(e: unknown, column?: string): boolean;
+  /** Whether `e` says the table a statement named does not exist. */
+  isMissingTable(e: unknown): boolean;
 }
 
 export type TimeBucket = "hour" | "day" | "week" | "month" | "year";
