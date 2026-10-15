@@ -17,10 +17,9 @@
  * right per-collection table.
  */
 
-import type { Database } from "bun:sqlite";
-import { getRawClient, onCloseDb } from "../db/client.ts";
+import { onCloseDb } from "../db/client.ts";
 import { userTableName } from "./collections.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver, type DbDriver } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 
 /** Auth-system columns guaranteed to exist on every `vb_<auth-col>`. */
@@ -51,10 +50,6 @@ export interface AuthUserRow {
   [k: string]: unknown;
 }
 
-function rawClient(): Database {
-  return getRawClient();
-}
-
 function quoteIdent(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }
@@ -66,8 +61,7 @@ function quoteIdent(s: string): string {
 export function findUserById(col: Collection, id: string): AuthUserRow | null {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    const row = rawClient().prepare(`SELECT * FROM ${tname} WHERE id = ?`).get(id) as AuthUserRow | undefined;
-    return row ?? null;
+    return db.sync.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE id = ?`, [id]);
   } catch {
     return null;
   }
@@ -77,8 +71,7 @@ export function findUserById(col: Collection, id: string): AuthUserRow | null {
 export function findUserByEmail(col: Collection, email: string): AuthUserRow | null {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    const row = rawClient().prepare(`SELECT * FROM ${tname} WHERE email = ?`).get(email) as AuthUserRow | undefined;
-    return row ?? null;
+    return db.sync.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE email = ?`, [email]);
   } catch {
     return null;
   }
@@ -91,18 +84,18 @@ export function findUserByEmail(col: Collection, email: string): AuthUserRow | n
  * version and refreshes it, and a reopened database (tests, restore) never
  * sees the previous connection's columns. Callers only read the array.
  */
-const columnsCache = new Map<string, { client: Database; schema: number; cols: string[] }>();
+const columnsCache = new Map<string, { driver: DbDriver; schema: number; cols: string[] }>();
 
 export function tableColumns(collectionName: string): string[] {
-  const client = rawClient();
-  const schema = (client.query("PRAGMA schema_version").get() as { schema_version: number }).schema_version;
+  const driver = getDriver();
+  const schema = db.sync.get<{ schema_version: number }>("PRAGMA schema_version")!.schema_version;
   const hit = columnsCache.get(collectionName);
-  if (hit && hit.client === client && hit.schema === schema) return hit.cols;
-  const rows = client.query(
+  if (hit && hit.driver === driver && hit.schema === schema) return hit.cols;
+  const rows = db.sync.all<{ name: string }>(
     `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`,
-  ).all() as Array<{ name: string }>;
+  );
   const cols = rows.map((r) => r.name);
-  columnsCache.set(collectionName, { client, schema, cols });
+  columnsCache.set(collectionName, { driver, schema, cols });
   return cols;
 }
 

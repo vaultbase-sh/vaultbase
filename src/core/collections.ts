@@ -1,8 +1,8 @@
-import type { Database } from "bun:sqlite";
 import { broadcast } from "./thread-bus.ts";
 import { eq, or } from "drizzle-orm";
 import { flushGroupCommit } from "./group-commit.ts";
 import { getDb, onCloseDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
@@ -305,10 +305,6 @@ export function colSqlType(type: FieldType): string {
   }
 }
 
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
-
 /** SQLite identifier quoting that escapes embedded `"` (DDL-safe). */
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -345,8 +341,8 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
     `"created_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
     `"updated_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
   ];
-  rawClient().exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
-  ensureTimestampIndexes(rawClient(), collectionName);
+  db.sync.exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
+  ensureTimestampIndexes(collectionName);
   syncFts(collectionName, fields);
 }
 
@@ -380,10 +376,10 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
  * is -created_at; without them every page is a full scan + temp B-tree.
  * Idempotent; also run at boot for tables created before this existed.
  */
-export function ensureTimestampIndexes(client: Database, collectionName: string): void {
+export function ensureTimestampIndexes(collectionName: string): void {
   const table = userTableName(collectionName);
   for (const col of ["created_at", "updated_at"]) {
-    client.exec(
+    db.sync.exec(
       `CREATE INDEX IF NOT EXISTS ${quoteIdent(`idx_${table}_${col}`)} ON ${quoteIdent(table)}(${quoteIdent(col)})`,
     );
   }
@@ -394,7 +390,7 @@ export function dropUserTable(collectionName: string): void {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
   dropFts(collectionName);
-  rawClient().exec(`DROP TABLE IF EXISTS ${tname}`);
+  db.sync.exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
 /**
@@ -426,16 +422,15 @@ export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<{ name: string; sql: string }> =
 export function ensureAuthColumns(collectionName: string): void {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
-  const client = rawClient();
   for (const c of AUTH_SYSTEM_COLUMNS) {
     try {
-      client.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
+      db.sync.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
     } catch { /* column exists — idempotent */ }
   }
   // Unique email index — anonymous users get a synthetic uniqe email so the
   // unconditional UNIQUE works without a partial-index workaround.
   try {
-    client.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
+    db.sync.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
   } catch { /* may already exist or fail on duplicates pre-migration */ }
 }
 
@@ -502,7 +497,7 @@ export function sensitiveSchema(): { passwordFields: Set<string>; tables: Set<st
   const tables = new Set<string>();
   let rows: Array<{ name: string; type: string; fields: string; view_query: string | null }> = [];
   try {
-    rows = rawClient().prepare("SELECT name, type, fields, view_query FROM vaultbase_collections").all() as typeof rows;
+    rows = db.sync.all("SELECT name, type, fields, view_query FROM vaultbase_collections") as typeof rows;
   } catch { /* no collections table yet */ }
   for (const r of rows) {
     let hasPassword = false;
@@ -544,17 +539,7 @@ export function baseColumnName(name: string): string {
 export function inferViewColumns(query: string): string[] {
   const body = query.trim().replace(/;\s*$/, "");
   const wrapped = `SELECT * FROM (${body}) LIMIT 0`;
-  const stmt = rawClient().prepare(wrapped);
-  // bun:sqlite exposes columnNames on a prepared statement
-  const names = (stmt as unknown as { columnNames?: string[] }).columnNames ?? [];
-  if (names.length === 0) {
-    // Fallback: execute once and read keys off the first (empty) result, which
-    // requires an actual run; we use values() to avoid materializing rows.
-    stmt.values();
-    const fallback = (stmt as unknown as { columnNames?: string[] }).columnNames ?? [];
-    return fallback;
-  }
-  return names;
+  return db.sync.describe(wrapped);
 }
 
 /**
@@ -568,9 +553,8 @@ export function previewViewRows(query: string, limit = 5): { columns: string[]; 
   const body = query.trim().replace(/;\s*$/, "");
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
   const wrapped = `SELECT * FROM (${body}) LIMIT ${safeLimit}`;
-  const stmt = rawClient().prepare(wrapped);
-  const rows = stmt.all() as Array<Record<string, unknown>>;
-  const columns = (stmt as unknown as { columnNames?: string[] }).columnNames ?? Object.keys(rows[0] ?? {});
+  const columns = db.sync.describe(wrapped);
+  const rows = db.sync.all<Record<string, unknown>>(wrapped);
   return { columns, rows };
 }
 
@@ -671,14 +655,14 @@ export function createUserView(collectionName: string, query: string): void {
   validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
   const body = query.trim().replace(/;\s*$/, "");
-  rawClient().exec(`CREATE VIEW IF NOT EXISTS ${tname} AS ${body}`);
+  db.sync.exec(`CREATE VIEW IF NOT EXISTS ${tname} AS ${body}`);
 }
 
 /** Drop the SQLite VIEW backing a view collection. */
 export function dropUserView(collectionName: string): void {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
-  rawClient().exec(`DROP VIEW IF EXISTS ${tname}`);
+  db.sync.exec(`DROP VIEW IF EXISTS ${tname}`);
 }
 
 /** Diff old vs new fields and emit ALTER TABLE statements. Throws on type-change attempts. */
@@ -691,7 +675,6 @@ export function alterUserTable(
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
   assertFieldOptions(newFields, oldFields);
   const tname = quoteIdent(userTableName(collectionName));
-  const client = rawClient();
 
   const oldByName = new Map(oldFields.filter((f) => !f.system).map((f) => [f.name, f]));
   const newByName = new Map(newFields.filter((f) => !f.system).map((f) => [f.name, f]));
@@ -702,10 +685,10 @@ export function alterUserTable(
   // table use SQLite's inline constraint instead, which can't be dropped.
   const uniqueIndex = (field: string) => quoteIdent(`uq_${table}_${field}`);
   const hasUniqueIndex = (field: string) =>
-    !!client.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`).get(`uq_${table}_${field}`);
+    !!db.sync.get(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`, [`uq_${table}_${field}`]);
   const addUniqueIndex = (field: string) => {
     try {
-      client.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
+      db.sync.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
     } catch (e) {
       if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
         throw new CollectionValidationError({
@@ -737,8 +720,8 @@ export function alterUserTable(
 
   for (const [from, to] of renamed) {
     const hadUnique = hasUniqueIndex(from);
-    if (hadUnique) client.exec(`DROP INDEX ${uniqueIndex(from)}`);
-    client.exec(`ALTER TABLE ${tname} RENAME COLUMN ${quoteIdent(from)} TO ${quoteIdent(to)}`);
+    if (hadUnique) db.sync.exec(`DROP INDEX ${uniqueIndex(from)}`);
+    db.sync.exec(`ALTER TABLE ${tname} RENAME COLUMN ${quoteIdent(from)} TO ${quoteIdent(to)}`);
     if (hadUnique) addUniqueIndex(to);
     oldByName.set(to, { ...oldByName.get(from)!, name: to });
     oldByName.delete(from);
@@ -748,8 +731,8 @@ export function alterUserTable(
   for (const oldName of oldByName.keys()) {
     if (!newByName.has(oldName)) {
       // SQLite refuses to drop an indexed column.
-      if (hasUniqueIndex(oldName)) client.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
-      client.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
+      if (hasUniqueIndex(oldName)) db.sync.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
+      db.sync.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
     }
   }
 
@@ -761,7 +744,7 @@ export function alterUserTable(
       // table, and rejects UNIQUE outright. Strip both: required is enforced
       // at app level, unique by an index.
       const safeDef = def.replace(/ NOT NULL/, "").replace(/ UNIQUE/, "");
-      client.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
+      db.sync.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
       if (newField.options?.unique) addUniqueIndex(newName);
     }
   }
@@ -775,7 +758,7 @@ export function alterUserTable(
     if (now && !was && !hasUniqueIndex(name)) addUniqueIndex(name);
     if (!now && was) {
       if (hasUniqueIndex(name)) {
-        client.exec(`DROP INDEX ${uniqueIndex(name)}`);
+        db.sync.exec(`DROP INDEX ${uniqueIndex(name)}`);
       } else {
         throw new CollectionValidationError({
           [name]: `'${name}' was created as unique; drop and re-add the field to remove the constraint`,
@@ -926,13 +909,13 @@ async function renameCollectionStorage(
   viewQuery: string | null | undefined,
 ): Promise<void> {
   assertSqlIdent(newName, "collection");
-  const db = getDb();
-  const clash = await db.select({ id: collections.id }).from(collections)
+  const orm = getDb();
+  const clash = await orm.select({ id: collections.id }).from(collections)
     .where(eq(collections.name, newName)).limit(1);
   if (clash.length > 0) throw new Error(`A collection named '${newName}' already exists`);
 
   const oldName = before.name;
-  const all = await db.select().from(collections);
+  const all = await orm.select().from(collections);
   const relationUpdates: Array<{ id: string; name: string; fields: string }> = [];
   for (const c of all) {
     let fields: FieldDef[];
@@ -944,12 +927,11 @@ async function renameCollectionStorage(
     if (changed) relationUpdates.push({ id: c.id, name: c.name, fields: JSON.stringify(fields) });
   }
 
-  const client = rawClient();
   const oldTable = userTableName(oldName);
   const newTable = userTableName(newName);
   // Commit open record writes first; this schema change runs on its own.
   flushGroupCommit();
-  client.transaction(() => {
+  db.sync.transaction(() => {
     if (type === "view") {
       if (!viewQuery) throw new Error("View collections require a view_query");
       dropUserView(oldName);
@@ -957,25 +939,22 @@ async function renameCollectionStorage(
     } else {
       // The search index is named after the collection; rebuilt below.
       dropFts(oldName);
-      client.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
+      db.sync.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
       // under the new name from its stored definition.
-      const indexes = client
-        .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`)
-        .all(newTable) as Array<{ name: string; sql: string }>;
+      const indexes = db.sync.all<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, [newTable]);
       for (const { name, sql } of indexes) {
         if (!name.includes(oldTable)) continue;
         const renamed = name.replace(oldTable, newTable);
-        client.exec(`DROP INDEX ${quoteIdent(name)}`);
-        client.exec(sql.replace(name, renamed));
+        db.sync.exec(`DROP INDEX ${quoteIdent(name)}`);
+        db.sync.exec(sql.replace(name, renamed));
       }
     }
-    const setFields = client.prepare(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`);
-    for (const u of relationUpdates) setFields.run(u.fields, u.id);
-    client.prepare(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`).run(newName, oldName);
-    client.prepare(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`).run(newName, oldName);
-  })();
+    for (const u of relationUpdates) db.sync.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);
+    db.sync.run(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`, [newName, oldName]);
+    db.sync.run(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`, [newName, oldName]);
+  }, { immediate: false });
   if (type !== "view") syncFts(newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
@@ -994,9 +973,7 @@ async function renameCollectionStorage(
 async function renameInHookFiles(newName: string): Promise<void> {
   const { codeFilesDir, updateCodeFile } = await import("./code-files.ts");
   if (!codeFilesDir()) return;
-  const rows = rawClient()
-    .prepare(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`)
-    .all(newName) as Array<Record<string, unknown> & { id: string; file_path: string | null }>;
+  const rows = db.sync.all<Record<string, unknown> & { id: string; file_path: string | null }>(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`, [newName]);
   for (const row of rows) {
     try {
       await updateCodeFile("hook", row, { collection_name: newName }, undefined);

@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Database } from "bun:sqlite";
 import { getDb, onCloseDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
 import type { RequestContextLike } from "./filter.ts";
@@ -20,7 +19,7 @@ import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
 import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges } from "./table-writes.ts";
-import { db, driverOpen } from "../db/index.ts";
+import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
 import { isReadWorker } from "./thread-bus.ts";
 
 /**
@@ -30,47 +29,13 @@ import { isReadWorker } from "./thread-bus.ts";
  * cache. Cold-cache → returns null and the compiler conservatively denies
  * for non-admin callers.
  */
-/**
- * Prepared-statement cache — bun:sqlite re-parses SQL on every `.prepare()`
- * call which dominates list-endpoint latency under load. We keep one cached
- * statement per unique SQL string. Evicted only on schema changes (collection
- * rename / field add/drop).
- */
-const STMT_CACHE = new Map<string, { stmt: ReturnType<Database["prepare"]> }>();
-const STMT_CACHE_MAX = 256;
-
-function getCachedStmt(client: Database, sql: string): ReturnType<Database["prepare"]> {
-  const hit = STMT_CACHE.get(sql);
-  if (hit) return hit.stmt;
-  if (STMT_CACHE.size >= STMT_CACHE_MAX) {
-    const oldest = STMT_CACHE.keys().next().value;
-    if (oldest !== undefined) STMT_CACHE.delete(oldest);
-  }
-  const stmt = client.prepare(sql);
-  STMT_CACHE.set(sql, { stmt });
-  return stmt;
-}
-
-function preparedAll(client: Database, sql: string, params: unknown[]): unknown[] {
-  return (getCachedStmt(client, sql) as unknown as {
-    all: (...args: unknown[]) => unknown[];
-  }).all(...params);
-}
-
-function preparedGet(client: Database, sql: string, params: unknown[]): unknown {
-  return (getCachedStmt(client, sql) as unknown as {
-    get: (...args: unknown[]) => unknown;
-  }).get(...params);
-}
-
 /** Test hook: statements held right now. */
 export function _preparedStatementCount(): number {
-  return STMT_CACHE.size;
+  return driverOpen() ? db.preparedStatementCount() : 0;
 }
 
 /** Drop the cache when collection schema changes. */
 export function invalidatePreparedStatements(): void {
-  STMT_CACHE.clear();
   COUNT_CACHE.clear();
   if (driverOpen()) db.invalidateStatements();
 }
@@ -98,7 +63,8 @@ onCloseDb(invalidatePreparedStatements);
 const COUNT_CACHE = new Map<string, { c: number; tv: number }>();
 const COUNT_CACHE_MAX = 512;
 let countCacheSeen: { t: number; d: number; s: number } | null = null;
-let versionProbe: { client: Database; stmt: ReturnType<Database["prepare"]> } | null = null;
+/** The driver the cache was filled through; a reopened database gets a new one. */
+let versionProbe: DbDriver | null = null;
 const countCacheStats = { hits: 0, misses: 0 };
 
 /** Test hook: how often the totals cache answered. */
@@ -111,21 +77,19 @@ export function _countCacheStats(): { hits: number; misses: number } {
  * connection committed, the schema changed, or this connection wrote rows
  * nobody reported; otherwise the per-table versions decide.
  */
-function syncCountCache(client: Database): void {
-  if (versionProbe?.client !== client) {
+function syncCountCache(): void {
+  const driver = getDriver();
+  if (versionProbe !== driver) {
     // A reopened database (restore) starts its counters over, so its
     // versions can repeat the old connection's.
     COUNT_CACHE.clear();
     countCacheSeen = null;
     takeReportedChanges();
-    versionProbe = {
-      client,
-      stmt: client.prepare(
-        `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
-      ),
-    };
+    versionProbe = driver;
   }
-  const v = versionProbe.stmt.get() as { t: number; d: number; s: number };
+  const v = db.sync.get<{ t: number; d: number; s: number }>(
+    `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
+  )!;
   const reported = takeReportedChanges();
   const seen = countCacheSeen;
   // Another connection committed. On the main thread that is always
@@ -148,10 +112,10 @@ function countKey(sql: string, params: unknown[]): string {
   return key;
 }
 
-function cachedCount(client: Database, sql: string, params: unknown[], table: string): number {
-  const count = () => (preparedGet(client, sql, params) as { c: number } | undefined)?.c ?? 0;
-  const inTransaction = client.inTransaction;
-  syncCountCache(client);
+function cachedCount(sql: string, params: unknown[], table: string): number {
+  const count = () => db.sync.get<{ c: number }>(sql, params)?.c ?? 0;
+  const inTransaction = db.sync.inTransaction;
+  syncCountCache();
   const tv = tableVersion(table);
   const key = countKey(sql, params);
   const hit = COUNT_CACHE.get(key);
@@ -428,10 +392,6 @@ export interface RecordWithMeta {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
-
 /**
  * SQLite identifier quoting — doubles up embedded `"` per spec. Mirrors
  * `core/collections.ts::quoteIdent`. All identifier inputs at this layer
@@ -611,7 +571,6 @@ export async function listRecords(
   const fields = cachedFields(col.fields);
   const tname = userTableName(col.name);
   const tableRef = quoteIdent(tname);
-  const client = rawClient();
 
   // Guard against values that would reach SQL as-is: LIMIT -1 means "no
   // limit" in SQLite, 0 gives Infinity pages, NaN fails the bind.
@@ -697,14 +656,14 @@ export async function listRecords(
   const queryStart = performance.now();
   try {
     // Execute SELECT — prepared statement cached by SQL string shape.
-    rows = preparedAll(client, selectSql, selectParams) as Record<string, unknown>[];
+    rows = db.sync.all<Record<string, unknown>>(selectSql, selectParams);
     if (!opts.skipTotal) {
       const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
       // A view's SELECT, or strftime('now', …) in a filter, can change its
       // answer without any write, so those are always counted fresh.
       totalItems = col.type === "view" || /strftime\(/i.test(whereSql)
-        ? (preparedGet(client, countSql, whereParams) as { c: number } | undefined)?.c ?? 0
-        : cachedCount(client, countSql, whereParams, tname);
+        ? db.sync.get<{ c: number }>(countSql, whereParams)?.c ?? 0
+        : cachedCount(countSql, whereParams, tname);
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {
@@ -762,8 +721,7 @@ export async function getRecord(
   if (!col) return null;
   const fields = cachedFields(col.fields);
   const tableRef = quoteIdent(userTableName(col.name));
-  const client = rawClient();
-  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown> | undefined;
+  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]);
   return row ? await rowToMetaAsync(row, col, fields) : null;
 }
 
@@ -827,13 +785,12 @@ async function createRecordImpl(
   const colsSql = insertCols.map(quoteIdent).join(", ");
   const placeholders = insertCols.map(() => "?").join(", ");
 
-  const client = rawClient();
   // Cached statements: compiling these two on every write was ~a fifth of
   // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
   // AFTER triggers an admin may have added through the SQL page.)
   db.sync.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
 
-  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
+  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id])!;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "create",
@@ -920,7 +877,6 @@ async function updateRecordImpl(
   setCols.push(`"updated_at" = ?`);
   setVals.push(now);
 
-  const client = rawClient();
 
   if (setCols.length > 1) {
     db.sync.run(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id], { table: userTableName(col.name) });
@@ -929,7 +885,7 @@ async function updateRecordImpl(
   // re-search sees the new value.
   invalidateRecordVectors(col.id, id);
 
-  const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
+  const row = db.sync.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id])!;
   const result = await rowToMetaAsync(row, col, fields);
   await maybeRecordHistory(col, id, {
     op: "update",
@@ -988,9 +944,10 @@ export function canSeeAs(auth: AuthContext | null, request: RequestContextLike |
     if (target.view_rule === "") return false;
     const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request });
     const tableRef = quoteIdent(userTableName(target.name));
-    const row = rawClient().prepare(
+    const row = db.sync.get(
       `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
-    ).get(id, ...whereParams);
+      [id, ...whereParams],
+    );
     return !!row;
   };
 }
@@ -1143,13 +1100,10 @@ async function findIncomingRefs(targetCollectionName: string): Promise<IncomingR
 /** Throw RestrictError if any `restrict` relation still references `id`. */
 async function checkRestrict(targetColName: string, id: string): Promise<void> {
   const refs = await findIncomingRefs(targetColName);
-  const client = rawClient();
   for (const ref of refs) {
     if (ref.cascade !== "restrict") continue;
     const refTable = quoteIdent(userTableName(ref.collection.name));
-    const row = client
-      .prepare(`SELECT "id" FROM ${refTable} WHERE ${quoteIdent(ref.fieldName)} = ? LIMIT 1`)
-      .get(id);
+    const row = db.sync.get(`SELECT "id" FROM ${refTable} WHERE ${quoteIdent(ref.fieldName)} = ? LIMIT 1`, [id]);
     if (row) {
       throw new RestrictError({
         [ref.collection.name]: `${ref.collection.name}.${ref.fieldName} still references this record`,
@@ -1175,7 +1129,6 @@ async function applyCascades(
 
   const refs = await findIncomingRefs(targetColName);
   if (refs.length === 0) return;
-  const client = rawClient();
 
   for (const ref of refs) {
     const refTable = quoteIdent(userTableName(ref.collection.name));
@@ -1184,9 +1137,7 @@ async function applyCascades(
     const refCol = guard.cascadeAllowed ? await getCollection(ref.collection.name) : null;
 
     if (ref.cascade === "setNull") {
-      const affected = client
-        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
-        .all(id) as Array<{ id: string }>;
+      const affected = db.sync.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
       if (affected.length === 0) continue;
       if (guard.cascadeAllowed) {
         for (const r of affected) {
@@ -1212,9 +1163,7 @@ async function applyCascades(
     }
 
     if (ref.cascade === "cascade") {
-      const affected = client
-        .prepare(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`)
-        .all(id) as Array<{ id: string }>;
+      const affected = db.sync.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
       for (const r of affected) {
         if (guard.cascadeAllowed) {
           const rec = await getRecord(ref.collection.name, r.id);
@@ -1319,7 +1268,6 @@ async function expandRelations(
   request: RequestContextLike | null = null,
 ): Promise<void> {
   if (items.length === 0 || expandPaths.length === 0) return;
-  const client = rawClient();
   const tree = parseExpandTree(expandPaths);
 
   for (const [fieldName, restPaths] of tree) {
@@ -1364,9 +1312,7 @@ async function expandRelations(
     if (ids.length === 0) continue;
 
     const placeholders = ids.map(() => "?").join(", ");
-    const rows = client
-      .prepare(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})${ruleSql}`)
-      .all(...ids, ...ruleParams) as Record<string, unknown>[];
+    const rows = db.sync.all<Record<string, unknown>>(`SELECT * FROM ${targetTable} WHERE "id" IN (${placeholders})${ruleSql}`, [...ids, ...ruleParams]);
 
     const expanded = await rowsToMeta(rows, targetCol, targetFields);
     const byId = new Map(expanded.map((rec) => [rec.id, rec]));
@@ -1438,41 +1384,22 @@ async function deleteRecordOwned(
   if (!cascades) return withSharedWrite(run);
 
   const mode = gateMode();
-  if (mode === "exclusive") return inSavepoint(run);
+  if (mode === "exclusive") return db.savepoint(run);
   // Nested inside another ordinary write (e.g. a hook deleting a record):
   // taking the gate exclusively here would wait on ourselves. Runs without
   // a transaction; hook-before-cascade ordering still applies.
   if (mode === "shared") return run();
 
-  const client = rawClient();
   return withExclusiveWrite(async (tx) => {
     try {
-      client.exec("BEGIN");
-      await run();
-      client.exec("COMMIT");
+      // The lock is taken at the first write, as it always was here.
+      await db.transaction(run, { immediate: false });
       flushTableReports();
       tx.commit();
     } catch (e) {
-      if (client.inTransaction) client.exec("ROLLBACK");
       discardTableReports();
       tx.rollback();
       throw e;
     }
   });
-}
-
-let savepointSeq = 0;
-
-async function inSavepoint(fn: () => Promise<void>): Promise<void> {
-  const name = `vb_delete_${++savepointSeq}`;
-  const client = rawClient();
-  client.exec(`SAVEPOINT ${name}`);
-  try {
-    await fn();
-    client.exec(`RELEASE ${name}`);
-  } catch (e) {
-    client.exec(`ROLLBACK TO ${name}`);
-    client.exec(`RELEASE ${name}`);
-    throw e;
-  }
 }
