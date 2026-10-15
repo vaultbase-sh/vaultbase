@@ -9,6 +9,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Fixed
+
+- **List totals stay cached across writes to other collections.** Every write used to
+  empty the whole totals cache, so under a mixed workload every list recounted its total.
+  Record and user writes now report their table, and only that collection's totals are
+  recounted; raw SQL from a hook or the SQL page still empties everything. Inside a
+  transaction the cache answers but is not filled.
+
 ### Changed
 
 - **Deploy notes:** the nginx template's header says to raise `worker_connections` (Ubuntu's
