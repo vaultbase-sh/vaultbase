@@ -1,0 +1,621 @@
+{
+  "vb_gold | title = \"hello\"": {
+    "sql": "\"vb_gold\".\"title\" = ?",
+    "params": [
+      "hello"
+    ]
+  },
+  "vb_gold | title != \"hello\"": {
+    "sql": "\"vb_gold\".\"title\" != ?",
+    "params": [
+      "hello"
+    ]
+  },
+  "vb_gold | price > 10": {
+    "sql": "\"vb_gold\".\"price\" > ?",
+    "params": [
+      10
+    ]
+  },
+  "vb_gold | price >= 10.5": {
+    "error": "invalid field name: 10"
+  },
+  "vb_gold | price < -3": {
+    "parse": null
+  },
+  "vb_gold | price <= 3": {
+    "sql": "\"vb_gold\".\"price\" <= ?",
+    "params": [
+      3
+    ]
+  },
+  "vb_gold | active = true": {
+    "sql": "\"vb_gold\".\"active\" = ?",
+    "params": [
+      1
+    ]
+  },
+  "vb_gold | active = false": {
+    "sql": "\"vb_gold\".\"active\" = ?",
+    "params": [
+      0
+    ]
+  },
+  "vb_gold | status = \"published\"": {
+    "sql": "\"vb_gold\".\"status\" = ?",
+    "params": [
+      "published"
+    ]
+  },
+  "vb_gold | when = null": {
+    "sql": "\"vb_gold\".\"when\" IS NULL",
+    "params": []
+  },
+  "vb_gold | when != null": {
+    "sql": "\"vb_gold\".\"when\" IS NOT NULL",
+    "params": []
+  },
+  "vb_gold | contact = \"\"": {
+    "sql": "\"vb_gold\".\"contact\" = ?",
+    "params": [
+      ""
+    ]
+  },
+  "vb_gold | id = \"abc\"": {
+    "sql": "\"vb_gold\".\"id\" = ?",
+    "params": [
+      "abc"
+    ]
+  },
+  "vb_gold | created_at > 1700000000": {
+    "sql": "\"vb_gold\".\"created_at\" > ?",
+    "params": [
+      1700000000
+    ]
+  },
+  "vb_gold | title = \"it's \\\"quoted\\\" 100%\"": {
+    "sql": "\"vb_gold\".\"title\" = ?",
+    "params": [
+      "it's \"quoted\" 100%"
+    ]
+  },
+  "vb_gold | status = \"published\" && active = true": {
+    "sql": "(\"vb_gold\".\"status\" = ? AND \"vb_gold\".\"active\" = ?)",
+    "params": [
+      "published",
+      1
+    ]
+  },
+  "vb_gold | status = \"published\" || active = true": {
+    "sql": "(\"vb_gold\".\"status\" = ? OR \"vb_gold\".\"active\" = ?)",
+    "params": [
+      "published",
+      1
+    ]
+  },
+  "vb_gold | (status = \"published\" || status = \"draft\") && price > 0": {
+    "sql": "((\"vb_gold\".\"status\" = ? OR \"vb_gold\".\"status\" = ?) AND \"vb_gold\".\"price\" > ?)",
+    "params": [
+      "published",
+      "draft",
+      0
+    ]
+  },
+  "vb_gold | !(active = true)": {
+    "parse": null
+  },
+  "vb_gold | title ~ \"hel\"": {
+    "sql": "coalesce(\"vb_gold\".\"title\" LIKE ?, 0)",
+    "params": [
+      "%hel%"
+    ]
+  },
+  "vb_gold | title !~ \"hel\"": {
+    "sql": "NOT coalesce(\"vb_gold\".\"title\" LIKE ?, 0)",
+    "params": [
+      "%hel%"
+    ]
+  },
+  "vb_gold | title ~ \"100%_\"": {
+    "sql": "coalesce(\"vb_gold\".\"title\" LIKE ?, 0)",
+    "params": [
+      "%100%_%"
+    ]
+  },
+  "vb_gold | title ~ \"\"": {
+    "sql": "coalesce(\"vb_gold\".\"title\" LIKE ?, 0)",
+    "params": [
+      null
+    ]
+  },
+  "vb_gold | title ~ \"x\" || body ~ \"x\"": {
+    "sql": "(coalesce(\"vb_gold\".\"title\" LIKE ?, 0) OR coalesce(\"vb_gold\".\"body\" LIKE ?, 0))",
+    "params": [
+      "%x%",
+      "%x%"
+    ]
+  },
+  "vb_gold | title:lower = \"HELLO\"": {
+    "sql": "LOWER(\"vb_gold\".\"title\") = ?",
+    "params": [
+      "HELLO"
+    ]
+  },
+  "vb_gold | title:lower ~ \"HEL\"": {
+    "sql": "coalesce(LOWER(\"vb_gold\".\"title\") LIKE ?, 0)",
+    "params": [
+      "%HEL%"
+    ]
+  },
+  "vb_gold | tags:length = 2": {
+    "sql": "COALESCE(json_array_length(\"vb_gold\".\"tags\"), length(\"vb_gold\".\"tags\")) = ?",
+    "params": [
+      2
+    ]
+  },
+  "vb_gold | tags:length > 0": {
+    "sql": "COALESCE(json_array_length(\"vb_gold\".\"tags\"), length(\"vb_gold\".\"tags\")) > ?",
+    "params": [
+      0
+    ]
+  },
+  "vb_gold | docs:length = 0": {
+    "sql": "COALESCE(json_array_length(\"vb_gold\".\"docs\"), length(\"vb_gold\".\"docs\")) = ?",
+    "params": [
+      0
+    ]
+  },
+  "vb_gold | tags:each = \"a\"": {
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (value = ?)))",
+    "params": [
+      "a"
+    ]
+  },
+  "vb_gold | tags:each != \"a\"": {
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (value != ?)))",
+    "params": [
+      "a"
+    ]
+  },
+  "vb_gold | tags:each ~ \"a\"": {
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (coalesce(value LIKE ?, 0))))",
+    "params": [
+      "%a%"
+    ]
+  },
+  "vb_gold | tags ?= \"a\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?)",
+    "params": [
+      "a"
+    ]
+  },
+  "vb_gold | tags ?!= \"a\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value != ?)",
+    "params": [
+      "a"
+    ]
+  },
+  "vb_gold | tags ?~ \"a\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE coalesce(value LIKE ?, 0))",
+    "params": [
+      "%a%"
+    ]
+  },
+  "vb_gold | tags ?!~ \"a\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT coalesce(value LIKE ?, 0))",
+    "params": [
+      "%a%"
+    ]
+  },
+  "vb_gold | editors ?= \"p1\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"editors\") WHERE value = ?)",
+    "params": [
+      "p1"
+    ]
+  },
+  "vb_gold | tags ?= \"a\" && tags ?= \"b\"": {
+    "sql": "(EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?))",
+    "params": [
+      "a",
+      "b"
+    ]
+  },
+  "vb_gold | meta.a = 1": {
+    "sql": "json_extract(\"vb_gold\".\"meta\", '$.a') = ?",
+    "params": [
+      1
+    ]
+  },
+  "vb_gold | meta.a.b.c = \"deep\"": {
+    "sql": "json_extract(json_extract(json_extract(\"vb_gold\".\"meta\", '$.a'), '$.b'), '$.c') = ?",
+    "params": [
+      "deep"
+    ]
+  },
+  "vb_gold | meta.list:length > 1": {
+    "sql": "COALESCE(json_array_length(json_extract(\"vb_gold\".\"meta\", '$.list')), length(json_extract(\"vb_gold\".\"meta\", '$.list'))) > ?",
+    "params": [
+      1
+    ]
+  },
+  "vb_gold | meta.list ?= \"x\"": {
+    "sql": "EXISTS (SELECT 1 FROM json_each(json_extract(\"vb_gold\".\"meta\", '$.list')) WHERE value = ?)",
+    "params": [
+      "x"
+    ]
+  },
+  "vb_gold | author = @request.auth.id": {
+    "public": {
+      "sql": "\"vb_gold\".\"author\" = ?",
+      "params": [
+        null
+      ]
+    },
+    "user": {
+      "sql": "\"vb_gold\".\"author\" = ?",
+      "params": [
+        "u1"
+      ]
+    },
+    "admin": {
+      "sql": "\"vb_gold\".\"author\" = ?",
+      "params": [
+        "a1"
+      ]
+    }
+  },
+  "vb_gold | author != \"\" && author = @request.auth.id": {
+    "user": {
+      "sql": "(\"vb_gold\".\"author\" != ? AND \"vb_gold\".\"author\" = ?)",
+      "params": [
+        "",
+        "u1"
+      ]
+    }
+  },
+  "vb_gold | editors ?= @request.auth.id": {
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"editors\") WHERE value = ?)",
+      "params": [
+        "u1"
+      ]
+    }
+  },
+  "vb_gold | @request.auth.verified = true": {
+    "public": {
+      "sql": "? = ?",
+      "params": [
+        null,
+        1
+      ]
+    },
+    "user": {
+      "sql": "? = ?",
+      "params": [
+        1,
+        1
+      ]
+    }
+  },
+  "vb_gold | @request.auth.type = \"user\"": {
+    "public": {
+      "sql": "? = ?",
+      "params": [
+        null,
+        "user"
+      ]
+    },
+    "user": {
+      "sql": "? = ?",
+      "params": [
+        "user",
+        "user"
+      ]
+    },
+    "admin": {
+      "sql": "? = ?",
+      "params": [
+        "admin",
+        "user"
+      ]
+    }
+  },
+  "vb_gold | @request.auth.collectionName = \"users\"": {
+    "user": {
+      "sql": "? = ?",
+      "params": [
+        null,
+        "users"
+      ]
+    }
+  },
+  "vb_gold | @request.auth.anonymous = false": {
+    "user": {
+      "sql": "? = ?",
+      "params": [
+        0,
+        0
+      ]
+    }
+  },
+  "vb_gold | @request.method = \"GET\" | {\"method\":\"GET\"}": {
+    "sql": "? = ?",
+    "params": [
+      "GET",
+      "GET"
+    ]
+  },
+  "vb_gold | @request.context = \"realtime\" | {\"context\":\"realtime\"}": {
+    "sql": "? = ?",
+    "params": [
+      "realtime",
+      "realtime"
+    ]
+  },
+  "vb_gold | @request.headers.x_tenant = \"t1\" | {\"headers\":{\"x_tenant\":\"t1\"}}": {
+    "sql": "? = ?",
+    "params": [
+      "t1",
+      "t1"
+    ]
+  },
+  "vb_gold | @request.query.view = \"all\" | {\"query\":{\"view\":\"all\"}}": {
+    "sql": "? = ?",
+    "params": [
+      "all",
+      "all"
+    ]
+  },
+  "vb_gold | @request.body.title = \"x\" | {\"body\":{\"title\":\"x\"}}": {
+    "sql": "? = ?",
+    "params": [
+      "x",
+      "x"
+    ]
+  },
+  "vb_gold | @request.body.title:isset = true | {\"body\":{\"title\":\"x\"}}": {
+    "sql": "(?) = (?)",
+    "params": [
+      1,
+      1
+    ]
+  },
+  "vb_gold | @request.body.title:isset = true | {\"body\":{}}": {
+    "sql": "(?) = (?)",
+    "params": [
+      0,
+      1
+    ]
+  },
+  "vb_gold | @request.body.title:changed = true | {\"body\":{\"title\":\"new\"},\"existing\":{\"title\":\"old\"}}": {
+    "sql": "(?) = (?)",
+    "params": [
+      1,
+      1
+    ]
+  },
+  "vb_gold | title ~ @request.query.q | {\"query\":{\"q\":\"50%_off\"}}": {
+    "sql": "coalesce(\"vb_gold\".\"title\" LIKE ? ESCAPE '\\', 0)",
+    "params": [
+      "%50\\%\\_off%"
+    ]
+  },
+  "vb_gold | @collection.gold_people.name = \"bob\"": {
+    "public": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "params": [
+        null,
+        "",
+        "bob"
+      ]
+    },
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "params": [
+        "u1",
+        "",
+        "bob"
+      ]
+    },
+    "admin": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "params": [
+        "a1",
+        "",
+        "bob"
+      ]
+    }
+  },
+  "vb_gold | @collection.gold_people.id = author": {
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
+      "params": [
+        "u1",
+        ""
+      ]
+    },
+    "admin": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
+      "params": [
+        "a1",
+        ""
+      ]
+    }
+  },
+  "vb_gold | @collection.gold_people.role = \"staff\" && @collection.gold_people.id = author": {
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE (_vbj1.\"role\" = ? AND _vbj1.\"id\" = \"vb_gold\".\"author\"))",
+      "params": [
+        "u1",
+        "",
+        "staff"
+      ]
+    }
+  },
+  "vb_gold | @collection.gold_people:a.id = author && @collection.gold_people:b.name = \"x\"": {
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? LEFT JOIN \"vb_gold_people\" AS _vbj2 ON ? != ? WHERE (_vbj1.\"id\" = \"vb_gold\".\"author\" AND _vbj2.\"name\" = ?))",
+      "params": [
+        "u1",
+        "",
+        "u1",
+        "",
+        "x"
+      ]
+    }
+  },
+  "vb_gold | @collection.gold_people.id != author": {
+    "public": {
+      "sql": "0",
+      "params": []
+    },
+    "user": {
+      "sql": "0",
+      "params": []
+    },
+    "admin": {
+      "sql": "NOT EXISTS (SELECT 1 FROM \"vb_gold_people\" WHERE ? != ? AND \"vb_gold_people\".\"id\" = \"vb_gold\".\"author\")",
+      "params": [
+        "a1",
+        ""
+      ]
+    }
+  },
+  "vb_gold | @collection.gold_people.name != \"x\"": {
+    "user": {
+      "sql": "0",
+      "params": []
+    }
+  },
+  "vb_gold | @collection.gold_people.name = \"bob\" | client": {
+    "user": {
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON (? != ?) AND (\"_vbj1\".\"role\" = ?) WHERE _vbj1.\"name\" = ?)",
+      "params": [
+        "u1",
+        "",
+        "staff",
+        "bob"
+      ]
+    }
+  },
+  "vb_gold | @collection.missing.x = 1": {
+    "public": {
+      "error": "unknown collection in @collection.*: missing"
+    },
+    "admin": {
+      "error": "unknown collection in @collection.*: missing"
+    }
+  },
+  "vb_gold_people | gold_via_author:length > 0": {
+    "public": {
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "params": [
+        0
+      ]
+    },
+    "user": {
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "params": [
+        0
+      ]
+    },
+    "admin": {
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "params": [
+        0
+      ]
+    }
+  },
+  "vb_gold_people | gold_via_author:length = 1000": {
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) = ?",
+    "params": [
+      1000
+    ]
+  },
+  "vb_gold_people | gold_via_author.status ?= \"published\"": {
+    "public": {
+      "error": "array-prefix operator requires a field operand"
+    },
+    "user": {
+      "error": "array-prefix operator requires a field operand"
+    }
+  },
+  "vb_gold_people | gold_via_author.price:length > 0": {
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+    "params": [
+      0
+    ]
+  },
+  "vb_gold_people | gold_via_author.title ?~ \"x\" | client": {
+    "user": {
+      "error": "array-prefix operator requires a field operand"
+    }
+  },
+  "vb_gold_people | gold_via_editors:length > 0": {
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+    "params": [
+      0
+    ]
+  },
+  "vb_gold | when <= @now": {
+    "sql": "\"vb_gold\".\"when\" <= ?",
+    "params": {
+      "count": 1
+    }
+  },
+  "vb_gold | when >= @todayStart && when <= @todayEnd": {
+    "sql": "(\"vb_gold\".\"when\" >= ? AND \"vb_gold\".\"when\" <= ?)",
+    "params": {
+      "count": 2
+    }
+  },
+  "vb_gold | when > @yesterday || when < @tomorrow": {
+    "sql": "(\"vb_gold\".\"when\" > ? OR \"vb_gold\".\"when\" < ?)",
+    "params": {
+      "count": 2
+    }
+  },
+  "vb_gold | when >= @monthStart && when <= @monthEnd": {
+    "sql": "(\"vb_gold\".\"when\" >= ? AND \"vb_gold\".\"when\" <= ?)",
+    "params": {
+      "count": 2
+    }
+  },
+  "vb_gold | when >= @yearStart && when <= @yearEnd": {
+    "sql": "(\"vb_gold\".\"when\" >= ? AND \"vb_gold\".\"when\" <= ?)",
+    "params": {
+      "count": 2
+    }
+  },
+  "vb_gold | price = @second || price = @minute || price = @hour || price = @day || price = @weekday || price = @month || price = @year": {
+    "sql": "((((((\"vb_gold\".\"price\" = ? OR \"vb_gold\".\"price\" = ?) OR \"vb_gold\".\"price\" = ?) OR \"vb_gold\".\"price\" = ?) OR \"vb_gold\".\"price\" = ?) OR \"vb_gold\".\"price\" = ?) OR \"vb_gold\".\"price\" = ?)",
+    "params": {
+      "count": 7
+    }
+  },
+  "vb_gold | stamp < @now": {
+    "sql": "\"vb_gold\".\"stamp\" < ?",
+    "params": {
+      "count": 1
+    }
+  },
+  "vb_gold | geoDistance(pt.lon, pt.lat, 13.4, 52.5) < 10": {
+    "error": "invalid field name: 13"
+  },
+  "vb_gold | strftime(\"%Y\", when, \"unixepoch\") = \"2026\"": {
+    "sql": "strftime(?, \"vb_gold\".\"when\", ?) = ?",
+    "params": [
+      "%Y",
+      "unixepoch",
+      "2026"
+    ]
+  },
+  "vb_gold | strftime(\"%Y-%m\", created_at, \"unixepoch\") = \"2026-10\"": {
+    "sql": "strftime(?, \"vb_gold\".\"created_at\", ?) = ?",
+    "params": [
+      "%Y-%m",
+      "unixepoch",
+      "2026-10"
+    ]
+  }
+}
