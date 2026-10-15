@@ -14,8 +14,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Read worker threads (experimental) follow changes on the main thread.** A collection
   or settings change now reaches the workers at once instead of after a restart, and a
   write no longer empties the workers' list-totals cache for every collection: the main
-  thread tells them which tables a commit touched. Still missing before the flag can be
-  recommended: the Monitoring page only sees the main thread's share of forwarded requests.
+  thread tells them which tables a commit touched. The Monitoring page now shows the
+  workers' per-step latencies and their query shapes alongside the main thread's, and
+  `GET /api/v1/_/metrics` gains `read_workers` (count, forwarded, in flight, dropped).
 
 ## [0.21.3] — 2026-10-15
 
