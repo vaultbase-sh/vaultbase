@@ -78,7 +78,7 @@ export async function findUserByEmail(col: Collection, email: string): Promise<A
 
 // The column cache lives next to the collection cache; the names stay
 // importable from here.
-import { tableColumns, invalidateUserTableColumnCache } from "./collections.ts";
+import { tableColumns, loadTableColumns, invalidateUserTableColumnCache } from "./collections.ts";
 export { tableColumns, invalidateUserTableColumnCache };
 
 interface InsertInput {
@@ -104,7 +104,7 @@ interface InsertInput {
  */
 export async function insertUser(col: Collection, input: InsertInput): Promise<void> {
   const tname = quoteIdent(userTableName(col.name));
-  const cols = tableColumns(col.name);
+  const cols = await loadTableColumns(col.name);
 
   const insertCols: string[] = [];
   const placeholders: string[] = [];
@@ -154,7 +154,7 @@ export async function updateUserById(
   patch: Record<string, unknown>,
 ): Promise<void> {
   const tname = quoteIdent(userTableName(col.name));
-  const cols = tableColumns(col.name);
+  const cols = await loadTableColumns(col.name);
 
   const sets: string[] = [];
   const vals: unknown[] = [];

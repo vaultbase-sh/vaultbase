@@ -161,7 +161,7 @@ const cache = new Map<string, Collection>();
 const columnsCache = new Map<string, { driver: DbDriver; token: number; cols: string[] }>();
 
 function columnsSql(collectionName: string): string {
-  return `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`;
+  return db.dialect.listColumnsSql(userTableName(collectionName));
 }
 
 function rememberColumns(collectionName: string, driver: DbDriver, token: number, rows: Array<{ name: string }>): string[] {
