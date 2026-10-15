@@ -11,6 +11,9 @@ import { stopWebhookDispatcher } from "./core/webhooks.ts";
 import { stopBackupScheduler } from "./core/backups.ts";
 import { stopUpdateCheckScheduler } from "./core/update-check.ts";
 import { runMigrations } from "./db/migrate.ts";
+
+/** How long an idle keep-alive connection stays open, seconds (see `listen`). */
+export const IDLE_TIMEOUT_S = 120;
 import { admin } from "./db/schema.ts";
 import { createServer } from "./server.ts";
 import { applySnapshot, SnapshotShapeError, type ApplyMode } from "./core/migrations.ts";
@@ -447,7 +450,17 @@ async function main() {
   // listened on every interface. Unset keeps Bun's default (all interfaces,
   // IPv4 and IPv6).
   const hostname = process.env["VAULTBASE_HOST"]?.trim();
-  server.listen({ port: config.port, ...(hostname ? { hostname } : {}), ...(isWorker ? { reusePort: true } : {}) });
+  server.listen({
+    port: config.port,
+    ...(hostname ? { hostname } : {}),
+    ...(isWorker ? { reusePort: true } : {}),
+    // Keep-alive connections a reverse proxy holds open must outlive the
+    // proxy's own idle limit (60 s in the nginx and Caddy configs under
+    // deploy/), or the proxy reuses a connection this server already closed
+    // and the request fails with "connection reset by peer". Elysia's
+    // default is 30 s. Bun allows up to 255.
+    idleTimeout: IDLE_TIMEOUT_S,
+  });
 
   // Graceful shutdown: stop taking connections, let in-flight requests
   // finish (up to 10 s), stop background work, flush logs, close the

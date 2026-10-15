@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Idle keep-alive connections are kept for 120 s instead of 30 s.** A reverse proxy
+  that holds upstream connections open longer than the server does (nginx and Caddy with
+  the `deploy/` configs keep them for 60 s) reused connections the server had already
+  closed, and those requests failed with "connection reset by peer" / 502 in bursts after
+  quiet periods. The proxy's keepalive timeout must stay below 120 s.
+
 ## [0.21.1] — 2026-10-15
 
 ### Fixed
