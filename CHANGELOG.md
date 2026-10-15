@@ -7,6 +7,29 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **`autodate` fields are stored.** They were computed on create and update and then
+  skipped on the way to the table, which had no column for them. They now have a column,
+  the server sets them on create and update when the field opts in (`onCreate`,
+  `onUpdate`), a value the client sends is dropped, and collections created before this
+  release get the column at the next start.
+- **Renaming a field keeps its data.** A renamed field reached the schema diff as a
+  different name, so the column was dropped and a new, empty one added. The admin editor
+  now sends the previous name (`renamedFrom` on the field) and the column is renamed in
+  place, with its unique index and the search index following. API callers can send the
+  same hint with `PATCH /api/v1/collections/<id>`.
+- **Datetime macros compare correctly.** `@now`, `@todayStart` and the other datetime
+  macros bound ISO-8601 strings while `date` and `autodate` fields hold Unix seconds, so a
+  comparison was decided by SQLite's type ordering rather than by the dates. They are Unix
+  seconds now, in filters, rules and the in-process rule evaluator alike.
+- **The 1,000-row cap on `_via_` back-relations applies.** It sat on the aggregate, where
+  LIMIT bounds the single output row and capped nothing.
+- **Caches bound to the database connection are cleared before `closeDb` returns** (restore,
+  tests), not a few ticks later.
+
 ## [0.22.0] — 2026-10-15
 
 ### Changed
