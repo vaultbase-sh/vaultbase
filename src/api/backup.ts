@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, renameSync, rmSync } from "fs";
 import Elysia from "elysia";
 import { closeDb, getRawClient, initDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
 import { _resetCollectionCache, invalidateSensitiveSchema } from "../core/collections.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
@@ -145,11 +146,19 @@ function clusterRestoreRefusal(set: { status?: number | string }) {
   };
 }
 
+/** 501 on a database Vaultbase does not back up itself. */
+function noFileBackups(set: { status?: number | string }) {
+  if (db.capabilities.fileBackups) return null;
+  set.status = 501;
+  return { error: `Backups are not available on ${db.name}: use pg_dump or your provider's backups.`, code: 501 };
+}
+
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
   return new Elysia({ name: "backup" })
     .use(adminGuard(jwtSecret))
     // Download SQLite snapshot
     .get("/admin/backup", async ({ set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       if (!existsSync(dbPath)) {
         set.status = 404;
         return { error: "Database file not found", code: 404 };
@@ -171,12 +180,14 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     }, { requireAdmin: true })
 
     // Stored backups + schedule status
-    .get("/admin/backups", async () => {
+    .get("/admin/backups", async ({ set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       return { data: { items: listBackups(), status: getBackupStatus() } };
     }, { requireAdmin: true })
 
     // Take a backup now (same pipeline as the schedule: local, S3, prune)
     .post("/admin/backups", async ({ set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       try {
         return { data: await runBackup() };
       } catch (e) {
@@ -186,6 +197,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     }, { requireAdmin: true })
 
     .get("/admin/backups/:name", async ({ params, set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       const p = backupPath(params.name);
       if (!p) {
         set.status = 404;
@@ -197,6 +209,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     }, { requireAdmin: true })
 
     .delete("/admin/backups/:name", async ({ params, set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       if (!deleteBackup(params.name)) {
         set.status = 404;
         return { error: "Backup not found", code: 404 };
@@ -205,6 +218,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     }, { requireAdmin: true })
 
     .post("/admin/backups/:name/restore", async ({ params, set }) => {
+      { const r = noFileBackups(set); if (r) return r; }
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
       const p = backupPath(params.name);

@@ -38,12 +38,21 @@ import {
   updateSavedQuery,
 } from "../core/sql-queries.ts";
 import { adminGuard } from "./_admin.ts";
+import { db } from "../db/index.ts";
+
+/** 501 for the sandbox on a database without one. */
+function noSandbox(set: { status?: number | string }) {
+  if (db.capabilities.sandbox) return null;
+  set.status = 501;
+  return { error: `The SQL sandbox is not available on ${db.name}; run queries read-only.`, code: 501 };
+}
 
 export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
   return new Elysia({ name: "sql-runner" })
     .use(adminGuard(jwtSecret))
     // ── Run ────────────────────────────────────────────────────────────
-    .post("/admin/sql/run", async ({ admin: me, body }) => {
+    .post("/admin/sql/run", async ({ admin: me, body, set }) => {
+      if (body.mode === "sandbox") { const r = noSandbox(set); if (r) return r; }
       if (body.mode === "sandbox" && !sandboxExists(me.id)) {
         // Auto-create on first sandbox run for a friendlier UX. Caller can
         // also explicitly POST /sandbox/reset to rebuild on demand.
@@ -70,10 +79,12 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
     })
 
     // ── Sandbox lifecycle ──────────────────────────────────────────────
-    .get("/admin/sql/sandbox", async ({ admin: me }) => {
+    .get("/admin/sql/sandbox", async ({ admin: me, set }) => {
+      const r = noSandbox(set); if (r) return r;
       return { data: describeSandbox(me.id) };
     }, { requireAdmin: { cookie: true, session: true } })
     .post("/admin/sql/sandbox/reset", async ({ admin: me, set }) => {
+      const r = noSandbox(set); if (r) return r;
       try {
         const info = resetSandbox(me.id, dbPath);
         return { data: info };
@@ -83,7 +94,8 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
         return { error: `Sandbox reset failed: ${msg}`, code: 500 };
       }
     }, { requireAdmin: { cookie: true, session: true } })
-    .delete("/admin/sql/sandbox", async ({ admin: me }) => {
+    .delete("/admin/sql/sandbox", async ({ admin: me, set }) => {
+      const r = noSandbox(set); if (r) return r;
       const removed = dropSandbox(me.id);
       return { data: { removed } };
     }, { requireAdmin: { cookie: true, session: true } })
@@ -151,6 +163,7 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
       const q = await getSavedQuery(params.id, me.id);
       if (!q) { set.status = 404; return { error: "Not found", code: 404 }; }
 
+      if (body.mode === "sandbox") { const r = noSandbox(set); if (r) return r; }
       if (body.mode === "sandbox" && !sandboxExists(me.id)) resetSandbox(me.id, dbPath);
 
       const result = await runSql({

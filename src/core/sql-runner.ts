@@ -28,6 +28,7 @@ import { Database } from "bun:sqlite";
 import { getSandboxDb, replaceSandboxDb } from "./sql-sandbox.ts";
 import { execOnImage, execReadOnly, ExecTimeout, type ExecResult } from "./sql-exec.ts";
 import { scanSql } from "./sql-scan.ts";
+import { db } from "../db/index.ts";
 
 export { scanSql };
 
@@ -122,6 +123,21 @@ function sandboxQueue<T>(adminId: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+async function runReadOnlyOnDriver(req: { sql: string; params: ReadonlyArray<unknown>; maxRows: number }, timeoutMs: number): Promise<ExecResult> {
+  try {
+    return await db.transaction(async () => {
+      await db.exec("SET TRANSACTION READ ONLY");
+      await db.exec(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
+      const rows = await db.all<Record<string, unknown>>(req.sql, req.params);
+      return { ok: true as const, total: rows.length, rows: rows.slice(0, req.maxRows) };
+    });
+  } catch (e) {
+    const code = (e as { errno?: unknown }).errno;
+    if (code === "57014") throw new ExecTimeout();
+    return { ok: false, error: e instanceof Error ? e.message : String(e), code: typeof code === "string" ? code : null };
+  }
+}
+
 export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
   const start = Date.now();
   const timeout = Math.min(Math.max(opts.timeoutMs ?? SQL_QUERY_TIMEOUT_MS, 100), 30_000);
@@ -150,7 +166,14 @@ export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
   const req = { sql: opts.sql, params: opts.params ?? [], maxRows: MAX_SQL_RESULT_ROWS };
   let out: ExecResult;
   try {
-    if (opts.mode === "sandbox") {
+    if (!db.capabilities.sandbox && opts.mode === "sandbox") {
+      return fail("The SQL sandbox is not available on this database.", "VAULTBASE_NO_SANDBOX");
+    }
+    if (db.name !== "sqlite") {
+      // No file to open read-only: a read-only transaction with a statement
+      // timeout on the pool does the same job on the server side.
+      out = await runReadOnlyOnDriver(req, timeout);
+    } else if (opts.mode === "sandbox") {
       if (!opts.adminId) return fail("adminId is required for sandbox mode", "VAULTBASE_NO_SANDBOX");
       const sb = getSandboxDb(opts.adminId);
       if (!sb) return fail("Sandbox not initialised — reset the sandbox first.", "VAULTBASE_NO_SANDBOX");

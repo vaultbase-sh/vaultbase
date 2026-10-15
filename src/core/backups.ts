@@ -22,6 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getSetting, setSetting, invalidateSetting } from "../api/settings.ts";
 import { nextRunFromCron, validateCron } from "./jobs.ts";
 
@@ -265,6 +266,7 @@ export function getBackupStatus(): BackupStatus {
 
 export function startBackupScheduler(): void {
   if (ticker) return;
+  if (!db.capabilities.fileBackups) return; // nothing this process can snapshot
   const tick = () => { void backupTick().catch(() => { /* recorded in backups.last_error */ }); };
   ticker = setInterval(tick, 60_000);
   ticker.unref?.();

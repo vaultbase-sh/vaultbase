@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from "crypto";
 import { statSync } from "fs";
 import { globalMetrics, STEPS } from "../core/perf-metrics.ts";
 import { getRawClient } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
 import { getSetting } from "./settings.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
 import { connectionCount } from "../realtime/manager.ts";
@@ -24,6 +24,7 @@ interface SqliteSnapshot {
 }
 
 async function sqliteSnapshot(): Promise<SqliteSnapshot | null> {
+  if (getDriver().name !== "sqlite") return null;
   try {
     const pc = await db.get<{ page_count: number }>("PRAGMA page_count");
     const ps = await db.get<{ page_size: number }>("PRAGMA page_size");

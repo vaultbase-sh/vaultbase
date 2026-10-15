@@ -687,9 +687,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       // Reads go through the admin SQL runner: a separate read-only
       // connection with query_only on (so a PRAGMA can't change the server's
       // own connection) and the same time budget.
-      // TODO(db-facade): the driver does not expose the database path yet
-      const file = getRawClient().filename;
-      if (!file || file === ":memory:") {
+      const file = db.name === "sqlite" ? getRawClient().filename : "";
+      if (db.name === "sqlite" && (!file || file === ":memory:")) {
         // An in-memory database (tests) has no file a second connection can
         // open: keyword-check and read it in place.
         const bad = detectMutation(q);

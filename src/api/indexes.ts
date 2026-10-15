@@ -19,34 +19,30 @@ export class IndexError extends Error {
   constructor(message: string, public readonly status: 422 = 422) { super(message); }
 }
 
+/** The column list of an index from its definition: the text between the parentheses after ON. */
+function indexColumnsFromSql(sql: string): string[] {
+  const on = sql.search(/\bON\b/i);
+  const open = on < 0 ? -1 : sql.indexOf("(", on);
+  const close = open < 0 ? -1 : sql.indexOf(")", open);
+  if (open < 0 || close < 0) return [];
+  return sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1")).filter(Boolean);
+}
+
 async function listIndexes(tableName: string): Promise<IndexInfo[]> {
-  // PRAGMA index_list returns: { seq, name, unique, origin, partial }
-  const rows = await db.all<{
-    seq: number;
-    name: string;
-    unique: number;
-    origin: string;
-    partial: number;
-  }>(`PRAGMA index_list(${JSON.stringify(tableName)})`);
-  // Skip auto-generated indexes (e.g. for PRIMARY KEY) — origin == 'pk' or 'u' from schema
-  // Keep only indexes we created (origin === 'c' = created by user) AND named with our prefix
+  // Only indexes we created, named with our prefix; the database's own
+  // (primary keys, inline UNIQUEs) have no definition text or another name.
+  const rows = await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [tableName]);
   const result: IndexInfo[] = [];
   for (const r of rows) {
-    if (r.origin !== "c") continue;
+    if (!r.sql) continue;
     if (!r.name.startsWith("idx_") && !r.name.startsWith("uniq_")) continue;
-    // Get the column(s) the index covers
-    const cols = await db.all<{
-      seqno: number;
-      cid: number;
-      name: string;
-    }>(`PRAGMA index_info(${JSON.stringify(r.name)})`);
-    if (cols.length === 0) continue;
-    const names = cols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name);
+    const names = indexColumnsFromSql(r.sql);
+    if (names.length === 0) continue;
     result.push({
       name: r.name,
       field: names.join(","),
       fields: names,
-      unique: r.unique === 1,
+      unique: /^\s*CREATE\s+UNIQUE/i.test(r.sql),
     });
   }
   return result;

@@ -179,9 +179,8 @@ export function tableColumns(collectionName: string): string[] {
 }
 
 /** Fill the column cache for a collection without blocking: the warm path for every driver. */
-export async function loadTableColumns(collectionName: string): Promise<string[]> {
+export async function loadTableColumns(collectionName: string, token = db.schemaToken()): Promise<string[]> {
   const driver = getDriver();
-  const token = db.schemaToken();
   const hit = columnsCache.get(collectionName);
   if (hit && hit.driver === driver && hit.token === token) return hit.cols;
   return rememberColumns(collectionName, driver, token, await db.all<{ name: string }>(columnsSql(collectionName)));
@@ -540,9 +539,9 @@ type CollectionShapeRow = { name: string; type: string; fields: string; view_que
 const SENSITIVE_SQL = "SELECT name, type, fields, view_query FROM vaultbase_collections";
 let sensitiveCache: { driver: DbDriver; token: number; value: SensitiveSchema } | null = null;
 
-function sensitiveFresh(): SensitiveSchema | null {
+function sensitiveFresh(token = db.schemaToken()): SensitiveSchema | null {
   if (!sensitiveCache) return null;
-  if (sensitiveCache.driver !== getDriver() || sensitiveCache.token !== db.schemaToken()) return null;
+  if (sensitiveCache.driver !== getDriver() || sensitiveCache.token !== token) return null;
   return sensitiveCache.value;
 }
 
@@ -564,8 +563,8 @@ export function sensitiveSchema(): SensitiveSchema {
 }
 
 /** Fill the sensitive-schema map without blocking: the warm path for every driver. */
-export async function loadSensitiveSchema(): Promise<SensitiveSchema> {
-  const fresh = sensitiveFresh();
+export async function loadSensitiveSchema(token = db.schemaToken()): Promise<SensitiveSchema> {
+  const fresh = sensitiveFresh(token);
   if (fresh) return fresh;
   let rows: CollectionShapeRow[] = [];
   try {
@@ -884,8 +883,23 @@ async function schemaChange<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
+/**
+ * The caches the request path reads synchronously, filled for `name` if
+ * they are cold or stale (a schema change moved the token). Cheap when
+ * they are fresh: a map lookup and the schema token.
+ */
+async function warmDerived(name: string): Promise<void> {
+  const token = db.schemaToken();
+  try { await loadTableColumns(name, token); } catch { /* table missing mid-migration; tableColumns falls back */ }
+  await loadSensitiveSchema(token);
+}
+
 export async function getCollection(nameOrId: string): Promise<Collection | null> {
-  if (cache.has(nameOrId)) return cache.get(nameOrId)!;
+  const hit = cache.get(nameOrId);
+  if (hit) {
+    await warmDerived(hit.name);
+    return hit;
+  }
   const db = getDb();
   const row = await db
     .select()
@@ -896,10 +910,7 @@ export async function getCollection(nameOrId: string): Promise<Collection | null
   if (found) {
     cache.set(found.id, found);
     cache.set(found.name, found);
-    // The derived caches the request path reads synchronously, filled here
-    // so no driver has to answer them on the spot.
-    try { await loadTableColumns(found.name); } catch { /* table missing mid-migration; tableColumns falls back */ }
-    await loadSensitiveSchema();
+    await warmDerived(found.name);
   }
   return found;
 }
