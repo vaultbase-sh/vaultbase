@@ -68,6 +68,27 @@ export function readPoolStats(): { workers: number; forwarded: number; inflight:
   return { workers: slots.length, forwarded, inflight: slots.reduce((n, s) => n + s.inflight, 0), dropped };
 }
 
+/** Most read workers started by default; more rarely helps and each costs memory. */
+export const MAX_DEFAULT_READ_WORKERS = 8;
+
+/**
+ * How many read workers to start: `VAULTBASE_READ_WORKERS` when set (`0`
+ * keeps everything on one thread), otherwise one fewer than the cores, at
+ * most {@link MAX_DEFAULT_READ_WORKERS}. Always 0 under `vaultbase cluster`
+ * (its worker processes already use every core) and for an in-memory
+ * database (nothing to share).
+ */
+export function readWorkerCount(env: Record<string, string | undefined>, cores: number, dbPath: string): number {
+  if (env["VAULTBASE_WORKER_ID"]) return 0;
+  if (dbPath === ":memory:" || dbPath === "file::memory:") return 0;
+  const raw = env["VAULTBASE_READ_WORKERS"];
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  return Math.max(0, Math.min(MAX_DEFAULT_READ_WORKERS, cores - 1));
+}
+
 /**
  * Only the two record reads go to a worker: `GET /api/v1/<collection>` and
  * `GET /api/v1/<collection>/<id>`, for a collection the main thread already

@@ -16,6 +16,7 @@ export function isClusterWorker(env: Record<string, string | undefined> = proces
 }
 
 export const CLUSTER_LIMITS_WARNING =
-  "vaultbase: cluster mode — each worker keeps its own caches, realtime connections and rate limits. " +
+  "vaultbase: cluster mode is deprecated: a single process now serves record reads on worker threads (one per spare core by default) and will replace it. " +
+  "Each cluster worker keeps its own caches, realtime connections and rate limits. " +
   "Realtime events only reach clients on the worker that made the change, rate limits apply per worker, " +
   "and collection/hook/route changes reach other workers only after a restart. Online restore is disabled.\n";

@@ -422,13 +422,15 @@ async function main() {
   await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
 
   const server = createServer(config);
-  // Read worker threads (src/core/read-pool.ts). Off unless asked for, and
-  // never under `vaultbase cluster`, whose workers already use every core.
+  // Read worker threads (src/core/read-pool.ts): record reads on one thread
+  // per spare core by default; VAULTBASE_READ_WORKERS sets the count (0 keeps
+  // one thread). Never under `vaultbase cluster`, whose processes already
+  // use every core, and never for an in-memory database.
   {
-    const raw = process.env["VAULTBASE_READ_WORKERS"];
-    const n = raw === undefined || raw === "" ? 0 : parseInt(raw, 10);
-    if (n > 0 && !process.env["VAULTBASE_WORKER_ID"]) {
-      const { startReadPool } = await import("./core/read-pool.ts");
+    const { readWorkerCount, startReadPool } = await import("./core/read-pool.ts");
+    const { availableParallelism } = await import("node:os");
+    const n = readWorkerCount(process.env, availableParallelism(), config.dbPath);
+    if (n > 0) {
       try {
         // The URL is made here, next to the entry file, so it resolves both in
         // development and inside the compiled binary (see core/read-pool.ts).
@@ -437,7 +439,7 @@ async function main() {
       } catch (e) {
         process.stderr.write(`vaultbase: read workers not started: ${e instanceof Error ? e.message : String(e)}\n`);
       }
-    } else if (n > 0) {
+    } else if (process.env["VAULTBASE_WORKER_ID"] && process.env["VAULTBASE_READ_WORKERS"]) {
       process.stderr.write("vaultbase: VAULTBASE_READ_WORKERS is ignored under cluster mode\n");
     }
   }

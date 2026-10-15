@@ -16,7 +16,7 @@ import { admin as adminTable } from "../db/schema.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { createRecord } from "../core/records.ts";
 import { createServer } from "../server.ts";
-import { readTarget, startReadPool, stopReadPool, readPoolStats } from "../core/read-pool.ts";
+import { readTarget, startReadPool, stopReadPool, readPoolStats, readWorkerCount } from "../core/read-pool.ts";
 import { stopScheduler } from "../core/jobs.ts";
 import { stopQueueScheduler } from "../core/queues.ts";
 import { stopWebhookDispatcher } from "../core/webhooks.ts";
@@ -53,6 +53,24 @@ afterAll(async () => {
   _resetCollectionCache();
   closeDb();
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+});
+
+describe("readWorkerCount", () => {
+  it("defaults to one fewer than the cores, at most 8, and honours the variable", () => {
+    expect(readWorkerCount({}, 4, "/d/data.db")).toBe(3);
+    expect(readWorkerCount({}, 1, "/d/data.db")).toBe(0);
+    expect(readWorkerCount({}, 32, "/d/data.db")).toBe(8);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "2" }, 16, "/d/data.db")).toBe(2);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "0" }, 16, "/d/data.db")).toBe(0);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "" }, 4, "/d/data.db")).toBe(3);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "nope" }, 4, "/d/data.db")).toBe(0);
+  });
+
+  it("stays at zero under cluster mode and for an in-memory database", () => {
+    expect(readWorkerCount({ VAULTBASE_WORKER_ID: "0" }, 8, "/d/data.db")).toBe(0);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "3", VAULTBASE_WORKER_ID: "1" }, 8, "/d/data.db")).toBe(0);
+    expect(readWorkerCount({}, 8, ":memory:")).toBe(0);
+  });
 });
 
 describe("readTarget", () => {

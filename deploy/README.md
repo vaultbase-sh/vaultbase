@@ -47,7 +47,7 @@ Options (`-Version`, `-InstallDir`, `-VerifySig`, `-NoPath`) need the
 script-block form:
 
 ```powershell
-& ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.21.3
+& ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.22.0
 ```
 
 ## get.vaultbase.dev
@@ -93,10 +93,22 @@ sudo systemctl enable --now vaultbase
 Make sure `/etc/vaultbase/vaultbase.env` exists with at least
 `VAULTBASE_JWT_SECRET=<48-bytes-base64>` set.
 
-## Cluster mode (multi-process throughput)
+## Read worker threads
 
-Single Bun process saturates one core. For higher throughput on multi-core
-hosts, switch the systemd unit's `ExecStart` to:
+Record list and get-one requests run on worker threads, one per spare core
+by default (`VAULTBASE_READ_WORKERS`; `0` keeps everything on one thread, a
+number sizes the pool, at most 8 by default). Each worker holds its own
+database connection and costs roughly 50–100 MB. Writes, auth, admin, files,
+realtime and user code stay on the main thread. The service log says how
+many started; the admin **Monitoring** page shows them under
+"read workers · forwarded".
+
+## Cluster mode (multi-process throughput) — deprecated
+
+Read worker threads replace this: one process now uses every core, with
+one set of rate limits and realtime connections. Cluster mode still works
+and prints a deprecation line at start; a later release removes it. To use
+it anyway, switch the systemd unit's `ExecStart` to:
 
 ```ini
 ExecStart=/usr/local/bin/vaultbase cluster
