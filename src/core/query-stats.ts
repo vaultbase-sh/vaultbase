@@ -89,6 +89,20 @@ export const SUGGEST_MIN_ROWS = 1_000;
 const ROWS_TTL_MS = 30_000;
 
 const shapes = new Map<string, Shape>();
+/** Shapes reported by read worker threads, latest per worker; merged into the report. */
+const external = new Map<string, ExportedShape[]>();
+
+/** A shape without its cached plan, as a worker posts it. */
+export type ExportedShape = Omit<Shape, "plan">;
+
+export function exportShapes(): ExportedShape[] {
+  return [...shapes.values()].map(({ plan: _plan, ...rest }) => rest);
+}
+
+/** Replace what one worker last reported. `null` forgets it. */
+export function setExternalShapes(id: string, list: ExportedShape[] | null): void {
+  if (list) external.set(id, list); else external.delete(id);
+}
 
 export function recordListQuery(s: ListQuerySample): void {
   const now = Date.now();
@@ -131,7 +145,27 @@ function evictCheapest(): void {
 
 export function resetQueryStats(): void {
   shapes.clear();
+  external.clear();
   rowCounts.clear();
+}
+
+/** This thread's shapes plus the workers', summed by SQL. Plans are cached on the merged copy. */
+const mergedPlans = new Map<string, { schema: number; rows: PlanRow[] }>();
+function mergedShapes(): Shape[] {
+  const out = new Map<string, Shape>();
+  const add = (e: ExportedShape, plan: Shape["plan"]) => {
+    const m = out.get(e.selectSql);
+    if (!m) { out.set(e.selectSql, { ...e, plan }); return; }
+    m.count += e.count;
+    m.total_us += e.total_us;
+    if (e.max_us > m.max_us) m.max_us = e.max_us;
+    if (e.first_seen < m.first_seen) m.first_seen = e.first_seen;
+    if (e.last_seen > m.last_seen) m.last_seen = e.last_seen;
+    if (!m.filter && e.filter) m.filter = e.filter;
+  };
+  for (const e of shapes.values()) add(e, e.plan);
+  for (const list of external.values()) for (const e of list) add(e, mergedPlans.get(e.selectSql) ?? null);
+  return [...out.values()];
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────
@@ -282,9 +316,11 @@ export function queryStatsReport(client: Database, limit = 50): QueryReport[] {
   const schema = schemaVersion(client);
   const indexCache = new Map<string, string[][]>();
   const out: QueryReport[] = [];
-  const sorted = [...shapes.values()].sort((a, b) => b.total_us - a.total_us).slice(0, limit);
+  const sorted = mergedShapes().sort((a, b) => b.total_us - a.total_us).slice(0, limit);
   for (const e of sorted) {
     const planRows = explain(client, e, schema);
+    // Keep the plan for shapes that live only on a worker, so it isn't re-explained per report.
+    if (!shapes.has(e.selectSql) && e.plan) mergedPlans.set(e.selectSql, e.plan);
     const deep = / IN \(SELECT /.test(e.selectSql);
     const plan = analyzePlan(costRows(planRows, deep).map((r) => r.detail), e.table);
     const rows = e.view ? 0 : rowCount(client, e.table);

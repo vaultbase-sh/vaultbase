@@ -19,6 +19,15 @@ import { invalidateCorsCache } from "./core/cors.ts";
 import { invalidateEgressCache } from "./core/hook-egress.ts";
 import { invalidateEmailCache } from "./core/email.ts";
 import { invalidateStorageCache } from "./core/storage.ts";
+import { globalMetrics } from "./core/perf-metrics.ts";
+import { exportShapes, resetQueryStats } from "./core/query-stats.ts";
+import type { WorkerStats } from "./core/thread-bus.ts";
+
+/** Post this thread's step histograms and query shapes to the main thread. */
+function postStats(): void {
+  const m: WorkerStats = { type: "stats", steps: globalMetrics.exportSteps() as WorkerStats["steps"], queries: exportShapes() };
+  scope.postMessage(m);
+}
 
 interface WorkerScope {
   onmessage: ((e: MessageEvent) => void) | null;
@@ -37,6 +46,11 @@ function dispatchBus(m: BusMessage): void {
       break;
     case "collections":
       _resetCollectionCache();
+      break;
+    case "metrics-reset":
+      globalMetrics.reset();
+      resetQueryStats();
+      postStats();
       break;
     case "settings":
       invalidateSetting(m.key);
@@ -57,6 +71,8 @@ async function start(config: Config): Promise<void> {
   initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
   const { createServer } = await import("./server.ts");
   app = createServer(config, { role: "reader" }) as unknown as { handle: (req: Request) => Promise<Response> };
+  const timer = setInterval(postStats, 1_000);
+  (timer as { unref?: () => void }).unref?.();
 }
 
 async function serve(m: ForwardRequest): Promise<void> {

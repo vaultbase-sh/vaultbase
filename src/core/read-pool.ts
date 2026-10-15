@@ -20,7 +20,9 @@
  */
 import { getCollectionCached } from "./collections.ts";
 import type { Config } from "../config.ts";
-import { setBusSender } from "./thread-bus.ts";
+import { setBusSender, type WorkerStats } from "./thread-bus.ts";
+import { globalMetrics, type HistogramParts, type Step } from "./perf-metrics.ts";
+import { setExternalShapes, type ExportedShape } from "./query-stats.ts";
 
 export interface ForwardRequest {
   type: "request";
@@ -43,6 +45,9 @@ interface Slot {
   worker: Worker;
   inflight: number;
   served: number;
+  /** Spawn time, part of the id its stats are filed under. */
+  born: number;
+  statsId?: string;
 }
 
 const slots: Slot[] = [];
@@ -114,6 +119,13 @@ export async function forwardRead(request: Request, peerIp: string | null): Prom
   }
 }
 
+function onStats(slot: Slot, m: WorkerStats): void {
+  const id = `w${slots.indexOf(slot)}:${slot.born}`;
+  globalMetrics.setExternalSteps(id, m.steps as Partial<Record<Step, HistogramParts>>);
+  setExternalShapes(id, m.queries as ExportedShape[]);
+  slot.statsId = id;
+}
+
 function onReply(e: MessageEvent): void {
   const m = e.data as ForwardReply | { type: string };
   if (m.type !== "reply") return;
@@ -139,6 +151,7 @@ function dropWorker(slot: Slot, reason: string): void {
   const i = slots.indexOf(slot);
   if (i >= 0) slots.splice(i, 1);
   dropped++;
+  if (slot.statsId) { globalMetrics.setExternalSteps(slot.statsId, null); setExternalShapes(slot.statsId, null); }
   failSlot(slot, reason);
   try { slot.worker.terminate(); } catch { /* gone */ }
   process.stderr.write(`vaultbase: read worker dropped (${reason}); ${slots.length} left\n`);
@@ -158,7 +171,7 @@ export async function startReadPool(n: number, env: Record<string, string>, conf
   const started: Slot[] = [];
   for (let i = 0; i < n; i++) {
     const worker = new Worker(workerUrl, { env: { ...env, VAULTBASE_READ_WORKER: String(i) } });
-    const slot: Slot = { worker, inflight: 0, served: 0 };
+    const slot: Slot = { worker, inflight: 0, served: 0, born: Date.now() };
     started.push(slot);
     ready.push(new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`read worker ${i} did not start in ${START_TIMEOUT_MS} ms`)), START_TIMEOUT_MS);
@@ -166,6 +179,7 @@ export async function startReadPool(n: number, env: Record<string, string>, conf
         const m = e.data as { type: string; message?: string };
         if (m.type === "ready") { clearTimeout(timer); resolve(); }
         else if (m.type === "error") { clearTimeout(timer); reject(new Error(m.message ?? "read worker error")); }
+        else if (m.type === "stats") onStats(slot, m as unknown as WorkerStats);
         else onReply(e);
       };
       worker.onerror = (e) => {
@@ -192,6 +206,7 @@ export async function stopReadPool(): Promise<void> {
   setBusSender(null);
   const all = slots.splice(0);
   for (const s of all) {
+    if (s.statsId) { globalMetrics.setExternalSteps(s.statsId, null); setExternalShapes(s.statsId, null); }
     failSlot(s, "pool stopped");
     try { s.worker.postMessage({ type: "stop" }); } catch { /* gone */ }
     s.worker.terminate();

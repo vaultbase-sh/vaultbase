@@ -69,6 +69,14 @@ function bucketUpperBoundUs(idx: number): number {
   return Math.pow(2, (idx + 1) / SUBBUCKETS_PER_POW2);
 }
 
+/** A histogram's buckets as plain numbers (what a read worker posts). */
+export interface HistogramParts {
+  counts: number[];
+  count: number;
+  sum_us: number;
+  max_us: number;
+}
+
 export class Histogram {
   private readonly counts = new Uint32Array(NUM_BUCKETS);
   private _count = 0;
@@ -108,6 +116,21 @@ export class Histogram {
   count(): number { return this._count; }
   maxUs(): number { return Math.round(this._maxUs); }
   meanUs(): number { return this._count === 0 ? 0 : Math.round(this._sumUs / this._count); }
+
+  /** The raw buckets, for sending to another thread. */
+  export_(): HistogramParts {
+    return { counts: Array.from(this.counts), count: this._count, sum_us: this._sumUs, max_us: this._maxUs };
+  }
+
+  /** This histogram plus `parts`, as a new histogram. */
+  plus(parts: HistogramParts): Histogram {
+    const h = new Histogram();
+    for (let i = 0; i < NUM_BUCKETS; i++) h.counts[i] = (this.counts[i] ?? 0) + (parts.counts[i] ?? 0);
+    h._count = this._count + parts.count;
+    h._sumUs = this._sumUs + parts.sum_us;
+    h._maxUs = Math.max(this._maxUs, parts.max_us);
+    return h;
+  }
 
   reset(): void {
     this.counts.fill(0);
@@ -265,6 +288,12 @@ const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export class MetricsRegistry {
   private readonly histograms: Record<Step, Histogram> = Object.create(null);
+  /**
+   * Step histograms reported by read worker threads, latest per worker.
+   * Forwarded requests are timed end to end on the main thread, so only
+   * the steps come from the worker; its own totals are not added.
+   */
+  private readonly external = new Map<string, Partial<Record<Step, HistogramParts>>>();
   private readonly rps = new RpsTracker();
   private readonly total = new Histogram();
   private readonly reads = new Histogram();
@@ -282,6 +311,18 @@ export class MetricsRegistry {
   recordStep(step: Step, us: number): void {
     const h = this.histograms[step];
     if (h) h.record(us);
+  }
+
+  /** The step histograms as parts, for a worker to post. */
+  exportSteps(): Partial<Record<Step, HistogramParts>> {
+    const out: Partial<Record<Step, HistogramParts>> = {};
+    for (const s of STEPS) { const h = this.histograms[s]!; if (h.count() > 0) out[s] = h.export_(); }
+    return out;
+  }
+
+  /** Replace what one worker last reported. `null` forgets it. */
+  setExternalSteps(id: string, steps: Partial<Record<Step, HistogramParts>> | null): void {
+    if (steps) this.external.set(id, steps); else this.external.delete(id);
   }
 
   finalizeRequest(totalUs?: number, method?: string, status?: number): void {
@@ -303,6 +344,7 @@ export class MetricsRegistry {
 
   reset(): void {
     for (const s of STEPS) this.histograms[s]!.reset();
+    this.external.clear();
     this.total.reset();
     this.reads.reset();
     this.writes.reset();
@@ -315,7 +357,11 @@ export class MetricsRegistry {
 
   snapshot(): MetricsSnapshot {
     const stepsOut = Object.create(null) as MetricsSnapshot["steps"];
-    for (const s of STEPS) stepsOut[s] = this.histograms[s]!.snapshot();
+    for (const s of STEPS) {
+      let h = this.histograms[s]!;
+      for (const ext of this.external.values()) { const parts = ext[s]; if (parts) h = h.plus(parts); }
+      stepsOut[s] = h.snapshot();
+    }
     return {
       uptime_seconds: Math.floor((Date.now() - this.startedAt) / 1000),
       requests_total: this.requestsTotal,

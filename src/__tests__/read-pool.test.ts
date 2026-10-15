@@ -11,6 +11,9 @@ import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, createCollection, getCollection, updateCollection } from "../core/collections.ts";
 import { setSetting } from "../api/settings.ts";
+import { getDb } from "../db/client.ts";
+import { admin as adminTable } from "../db/schema.ts";
+import { signAuthToken } from "../core/sec.ts";
 import { createRecord } from "../core/records.ts";
 import { createServer } from "../server.ts";
 import { readTarget, startReadPool, stopReadPool, readPoolStats } from "../core/read-pool.ts";
@@ -150,6 +153,33 @@ describe("forwarding", () => {
     expect(await total()).toBe(n);
     await createRecord("posts", { title: "counted", tags: [] });
     expect(await total()).toBe(n + 1);
+  });
+
+  it("a worker's steps and query shapes show in the main thread's metrics, and reset clears them", async () => {
+    await getDb().insert(adminTable).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    const { token } = await signAuthToken({ payload: { id: "a1", email: "a@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    const headers = { authorization: `Bearer ${token}` };
+    await app.handle(new Request("http://localhost/api/v1/_/metrics/reset", { method: "POST", headers }));
+    for (let i = 0; i < 5; i++) expect(fromWorker(await get("/api/v1/posts?perPage=2&sort=title"))).not.toBeNull();
+    // Workers post once a second.
+    type Snap = { steps: Record<string, { count: number }>; read_workers: { workers: number; forwarded: number } };
+    let snap: Snap | null = null;
+    for (let i = 0; i < 40; i++) {
+      await Bun.sleep(100);
+      snap = (await (await app.handle(new Request("http://localhost/api/v1/_/metrics", { headers }))).json()) as Snap;
+      if (snap.steps["db_exec"]!.count >= 5) break;
+    }
+    expect(snap!.read_workers.workers).toBe(2);
+    expect(snap!.read_workers.forwarded).toBeGreaterThanOrEqual(5);
+    expect(snap!.steps["db_exec"]!.count).toBeGreaterThanOrEqual(5);
+    const queries = (await (await app.handle(new Request("http://localhost/api/v1/_/metrics/queries", { headers }))).json()) as { data: Array<{ collection: string; sort: string | null; count: number }> };
+    const shape = queries.data.find((q) => q.collection === "posts" && q.sort === "title");
+    expect(shape).toBeDefined();
+    expect(shape!.count).toBeGreaterThanOrEqual(5);
+    await app.handle(new Request("http://localhost/api/v1/_/metrics/reset", { method: "POST", headers }));
+    await Bun.sleep(1_300);
+    const after = (await (await app.handle(new Request("http://localhost/api/v1/_/metrics", { headers }))).json()) as { steps: Record<string, { count: number }> };
+    expect(after.steps["db_exec"]!.count).toBe(0);
   });
 
   it("leaves other routes on the main thread and stops cleanly", async () => {

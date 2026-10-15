@@ -10,7 +10,15 @@
 export type BusMessage =
   | { type: "bus"; kind: "tables"; tables: Array<[table: string, changes: number]> }
   | { type: "bus"; kind: "collections" }
-  | { type: "bus"; kind: "settings"; key: string };
+  | { type: "bus"; kind: "settings"; key: string }
+  | { type: "bus"; kind: "metrics-reset" };
+
+/** What a worker posts back once a second: its step histograms and query shapes. */
+export interface WorkerStats {
+  type: "stats";
+  steps: Record<string, { counts: number[]; count: number; sum_us: number; max_us: number }>;
+  queries: unknown[];
+}
 
 let sender: ((m: BusMessage) => void) | null = null;
 

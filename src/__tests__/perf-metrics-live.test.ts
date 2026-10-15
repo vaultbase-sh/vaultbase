@@ -46,3 +46,28 @@ describe("MetricsRegistry live fields", () => {
     expect(s.total.count).toBe(0);
   });
 });
+
+describe("steps reported by read workers", () => {
+  test("a worker's histogram parts add into the snapshot and reset forgets them", () => {
+    const m = new MetricsRegistry();
+    m.recordStep("db_exec", 100);
+    const worker = new MetricsRegistry();
+    worker.recordStep("db_exec", 300);
+    worker.recordStep("db_exec", 500);
+    worker.recordStep("serialize", 40);
+    m.setExternalSteps("w0", worker.exportSteps());
+    let s = m.snapshot();
+    expect(s.steps.db_exec.count).toBe(3);
+    expect(s.steps.db_exec.max_us).toBe(500);
+    expect(s.steps.db_exec.mean_us).toBe(300);
+    expect(s.steps.serialize.count).toBe(1);
+    // Totals are the main thread's own: the worker's requests were timed here.
+    expect(s.total.count).toBe(0);
+    m.setExternalSteps("w0", null);
+    expect(m.snapshot().steps.db_exec.count).toBe(1);
+    m.setExternalSteps("w0", worker.exportSteps());
+    m.reset();
+    s = m.snapshot();
+    expect(s.steps.db_exec.count).toBe(0);
+  });
+});

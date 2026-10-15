@@ -9,7 +9,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { admin as adminTable } from "../db/schema.ts";
 import { _resetCollectionCache, getCollection } from "../core/collections.ts";
 import { listRecords } from "../core/records.ts";
-import { queryStatsReport, resetQueryStats, analyzePlan, constrainedColumns, SUGGEST_MIN_ROWS } from "../core/query-stats.ts";
+import { queryStatsReport, resetQueryStats, analyzePlan, constrainedColumns, SUGGEST_MIN_ROWS, exportShapes, setExternalShapes } from "../core/query-stats.ts";
 import { createCollectionIndex, makeIndexesPlugin, IndexError } from "../api/indexes.ts";
 import { makeMetricsPlugin } from "../api/metrics.ts";
 import { signAuthToken } from "../core/sec.ts";
@@ -139,6 +139,30 @@ describe("query stats", () => {
     expect(deep[0]!.scan).toBe(false);
     expect(deep[0]!.suggestion).toBeNull();
     expect(deep[0]!.plan.some((p) => p.startsWith("  "))).toBe(true);
+  });
+
+  it("merges shapes reported by read workers by SQL", async () => {
+    await seedPosts(50);
+    await listRecords("posts", {});
+    await listRecords("posts", { filter: 'status = "draft"' });
+    const mine = exportShapes();
+    expect(mine).toHaveLength(2);
+    // A worker that ran the plain list 5 more times and one shape of its own.
+    const plain = mine.find((s) => s.filter === null)!;
+    setExternalShapes("w0", [
+      { ...plain, count: 5, total_us: plain.total_us * 5, max_us: plain.max_us + 1 },
+      { ...plain, selectSql: plain.selectSql + " -- elsewhere", count: 1, total_us: 1 },
+    ]);
+    const rows = report();
+    expect(rows).toHaveLength(3);
+    const merged = rows.find((r) => r.filter === null && !r.deep && r.count === 6)!;
+    expect(merged.total_us).toBe(Math.round(plain.total_us * 6));
+    expect(merged.max_us).toBe(Math.round(plain.max_us + 1));
+    setExternalShapes("w0", null);
+    expect(report()).toHaveLength(2);
+    setExternalShapes("w0", [plain]);
+    resetQueryStats();
+    expect(report()).toHaveLength(0);
   });
 
   it("orders by total time and reset empties it", async () => {
