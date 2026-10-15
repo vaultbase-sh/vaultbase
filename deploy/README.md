@@ -95,9 +95,10 @@ Make sure `/etc/vaultbase/vaultbase.env` exists with at least
 
 ## Read worker threads
 
-Record list and get-one requests run on worker threads, one per spare core
-by default (`VAULTBASE_READ_WORKERS`; `0` keeps everything on one thread, a
-number sizes the pool, at most 8 by default). Each worker holds its own
+Record list and get-one requests run on worker threads, cores minus two of
+them by default, at least one on two cores or more and at most 8
+(`VAULTBASE_READ_WORKERS`; `0` keeps everything on one thread, a number
+sizes the pool). Each worker holds its own
 database connection and costs roughly 50–100 MB. Writes, auth, admin, files,
 realtime and user code stay on the main thread. The service log says how
 many started; the admin **Monitoring** page shows them under
