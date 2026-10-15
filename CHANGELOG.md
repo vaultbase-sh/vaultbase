@@ -13,9 +13,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - **Postgres (beta).** Set `VAULTBASE_DATABASE_URL=postgres://…` and Vaultbase runs on
   Postgres instead of the SQLite file: the schema is created and kept up to date at start,
-  and records, rules, filters, expand, batch, history, files, auth, admin, MCP, hooks and
-  realtime work the same. Not on Postgres yet, each answering with a clear error: full-text
-  search, the backups page and scheduled backups (use `pg_dump`), the SQL sandbox (read-only
+  and records, rules, filters, full-text search (a generated `tsvector` column with a GIN
+  index, accents folded with `unaccent`), expand, batch, history, files, auth, admin, MCP,
+  hooks and realtime work the same. Not on Postgres yet, each answering with a clear error:
+  the backups page and scheduled backups (use `pg_dump`), the SQL sandbox (read-only
   queries work), plan-based index suggestions, read worker threads and `strftime()` in
   filters. The test suite runs against Postgres in CI. See the Databases page.
 - **`helpers.sql` in hooks, routes, jobs and workers.** Asynchronous SQL with `?`
