@@ -176,6 +176,21 @@ class TokenStream {
     this.skipWs();
     return this.src[this.pos] ?? "";
   }
+
+  /**
+   * A number literal at the cursor: an optional sign, digits, an optional
+   * fraction, not running into an identifier (`10abc`). Field names never
+   * start with a digit, so a leading digit is always a number. Decimals
+   * used to be read as a dotted path (`10.5` as field `10`, key `5`) and a
+   * sign never matched, so `price >= 10.5` and `price < -3` failed to parse.
+   */
+  readNumber(): number | null {
+    this.skipWs();
+    const m = /^-?\d+(?:\.\d+)?(?![A-Za-z0-9_.])/.exec(this.src.slice(this.pos));
+    if (!m) return null;
+    this.pos += m[0].length;
+    return Number(m[0]);
+  }
 }
 
 export function parseExpression(input: string): Expr | null {
@@ -256,7 +271,10 @@ function readOperand(ts: TokenStream): Operand {
     return readAtRef(ts);
   }
 
-  // Numeric / keyword / field. May be followed by a modifier (`:isset` etc.)
+  const n = ts.readNumber();
+  if (n !== null) return { kind: "literal", value: n };
+
+  // Keyword / field. May be followed by a modifier (`:isset` etc.)
   // or a function call (`foo(...)`).
   const w = readDottedWord(ts);
   if (!w) throw new Error("Expected operand");

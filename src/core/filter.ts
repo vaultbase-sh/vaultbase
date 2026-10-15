@@ -686,12 +686,18 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
 function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): string {
   if (op.name === "geoDistance") {
     if (op.args.length !== 4) throw new Error("geoDistance expects 4 args");
-    const [lonA, latA, lonB, latB] = op.args.map((a) => compileOperand(a, ctx));
+    const [lonA, latA, lonB, latB] = op.args as [Operand, Operand, Operand, Operand];
+    // Each latitude appears twice in the SQL, so it is compiled once per
+    // appearance, in SQL order: a literal binds a parameter every time it
+    // is compiled, and compiling it once for two placeholders left the
+    // statement one value short.
+    const c = (a: Operand) => compileOperand(a, ctx);
+    const latB1 = c(latB), latA1 = c(latA), latA2 = c(latA), latB2 = c(latB), lonB1 = c(lonB), lonA1 = c(lonA);
     // Haversine in km. Earth radius 6371.
     return `(2 * 6371 * asin(sqrt(` +
-      `pow(sin(radians(${latB} - ${latA}) / 2), 2) + ` +
-      `cos(radians(${latA})) * cos(radians(${latB})) * ` +
-      `pow(sin(radians(${lonB} - ${lonA}) / 2), 2)` +
+      `pow(sin(radians(${latB1} - ${latA1}) / 2), 2) + ` +
+      `cos(radians(${latA2})) * cos(radians(${latB2})) * ` +
+      `pow(sin(radians(${lonB1} - ${lonA1}) / 2), 2)` +
     `)))`;
   }
   if (op.name === "strftime") {

@@ -18,10 +18,16 @@
     ]
   },
   "vb_gold | price >= 10.5": {
-    "error": "invalid field name: 10"
+    "sql": "\"vb_gold\".\"price\" >= ?",
+    "params": [
+      10.5
+    ]
   },
   "vb_gold | price < -3": {
-    "parse": null
+    "sql": "\"vb_gold\".\"price\" < ?",
+    "params": [
+      -3
+    ]
   },
   "vb_gold | price <= 3": {
     "sql": "\"vb_gold\".\"price\" <= ?",
@@ -600,7 +606,13 @@
     }
   },
   "vb_gold | geoDistance(pt.lon, pt.lat, 13.4, 52.5) < 10": {
-    "error": "invalid field name: 13"
+    "sql": "(2 * 6371 * asin(sqrt(pow(sin(radians(? - json_extract(\"vb_gold\".\"pt\", '$.lat')) / 2), 2) + cos(radians(json_extract(\"vb_gold\".\"pt\", '$.lat'))) * cos(radians(?)) * pow(sin(radians(? - json_extract(\"vb_gold\".\"pt\", '$.lon')) / 2), 2)))) < ?",
+    "params": [
+      52.5,
+      52.5,
+      13.4,
+      10
+    ]
   },
   "vb_gold | strftime(\"%Y\", when, \"unixepoch\") = \"2026\"": {
     "sql": "strftime(?, \"vb_gold\".\"when\", ?) = ?",

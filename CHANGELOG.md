@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Decimal and negative numbers in filters and rules.** `price >= 10.5` was read as a
+  dotted path (field `10`, key `5`) and `price < -3` did not parse at all; both work now,
+  in `?filter=` and in rules alike.
+- **`geoDistance()` with literal coordinates.** The compiled SQL used each latitude twice
+  but bound it once, so the documented radius search failed with a parameter-count error.
+
 ## [0.22.1] — 2026-10-15
 
 ### Changed
