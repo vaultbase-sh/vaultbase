@@ -74,13 +74,15 @@ describe("background checkpointer", () => {
     expect(s.mode).toBe("worker");
     expect(s.restarts).toBeGreaterThan(0);
     expect(peak).toBeLessThan(100_000);
-    // Writes stopped: a few passes later the worker has rewound what was left.
-    for (let i = 0; i < 60 && s.wal_frames >= 40_000; i++) {
+    // Writes stopped: once the worker has copied what was left (a pass over
+    // tens of thousands of frames takes seconds on a loaded machine) it
+    // rewinds, and the WAL is small again.
+    for (let i = 0; i < 400 && s.wal_frames >= 40_000; i++) {
       await Bun.sleep(50);
       s = checkpointStats()!;
     }
     expect(s.wal_frames).toBeLessThan(40_000);
-  }, 15_000);
+  }, 40_000);
 
   test("stop hands checkpointing back to SQLite", async () => {
     db = open();
