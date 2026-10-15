@@ -1,8 +1,14 @@
 /**
- * Read worker thread entry (see core/read-pool.ts). Step 1: answers every
- * forwarded request with a fixed echo so the forwarding path can be
- * measured; step 2 boots the app and serves list / get-one for real.
+ * Read worker thread entry (see core/read-pool.ts).
+ *
+ * Opens its own connection to the same database, builds the app in the
+ * "reader" role (same routes, nothing in the background) and serves each
+ * forwarded request through `app.handle`. The reply carries the status,
+ * the headers and the body as a transferred buffer.
  */
+import { initDb } from "./db/client.ts";
+import { rememberPeer } from "./core/sec.ts";
+import type { Config } from "./config.ts";
 import type { ForwardRequest, ForwardReply } from "./core/read-pool.ts";
 
 interface WorkerScope {
@@ -12,15 +18,44 @@ interface WorkerScope {
 }
 const scope = globalThis as unknown as WorkerScope;
 
-type Incoming = { type: "start" } | { type: "stop" } | ForwardRequest;
+type Incoming = { type: "start"; config: Config } | { type: "stop" } | ForwardRequest;
 
 const WORKER_ID = process.env["VAULTBASE_READ_WORKER"] ?? "";
-const ECHO = new TextEncoder().encode(JSON.stringify({ data: [], echo: true, worker: WORKER_ID }));
+let app: { handle: (req: Request) => Promise<Response> } | null = null;
+
+async function start(config: Config): Promise<void> {
+  initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
+  const { createServer } = await import("./server.ts");
+  app = createServer(config, { role: "reader" }) as unknown as { handle: (req: Request) => Promise<Response> };
+}
+
+async function serve(m: ForwardRequest): Promise<void> {
+  let status = 500;
+  let headers: Array<[string, string]> = [["content-type", "application/json"]];
+  let body: ArrayBuffer;
+  try {
+    const req = new Request(m.url, { method: m.method, headers: m.headers });
+    rememberPeer(req, m.peerIp);
+    const res = await app!.handle(req);
+    status = res.status;
+    headers = [];
+    res.headers.forEach((v, k) => headers.push([k, v]));
+    headers.push(["x-vaultbase-read-worker", WORKER_ID]);
+    body = await res.arrayBuffer();
+  } catch (e) {
+    body = new TextEncoder().encode(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 500 })).buffer as ArrayBuffer;
+  }
+  const reply: ForwardReply = { type: "reply", id: m.id, status, headers, body };
+  scope.postMessage(reply, [body]);
+}
 
 scope.onmessage = (e: MessageEvent) => {
   const m = e.data as Incoming;
   if (m.type === "start") {
-    scope.postMessage({ type: "ready" });
+    start(m.config).then(
+      () => scope.postMessage({ type: "ready" }),
+      (err) => scope.postMessage({ type: "error", message: err instanceof Error ? err.message : String(err) }),
+    );
     return;
   }
   if (m.type === "stop") {
@@ -28,14 +63,11 @@ scope.onmessage = (e: MessageEvent) => {
     return;
   }
   if (m.type === "request") {
-    const body = ECHO.slice().buffer;
-    const reply: ForwardReply = {
-      type: "reply",
-      id: m.id,
-      status: 200,
-      headers: [["content-type", "application/json"], ["x-vaultbase-read-worker", WORKER_ID]],
-      body,
-    };
-    scope.postMessage(reply, [body]);
+    if (!app) {
+      const body = new TextEncoder().encode(JSON.stringify({ error: "read worker not ready", code: 503 })).buffer as ArrayBuffer;
+      scope.postMessage({ type: "reply", id: m.id, status: 503, headers: [["content-type", "application/json"]], body } satisfies ForwardReply, [body]);
+      return;
+    }
+    void serve(m);
   }
 };

@@ -175,12 +175,37 @@ function startFileTokenUsesPrune(): void {
   setInterval(prune, HOUR_MS).unref?.();
 }
 
-export function createServer(config: Config) {
+export interface ServerOptions {
+  /**
+   * "main" (default) runs the schedulers and owns writes, rate limits,
+   * realtime and token telemetry. "reader" is a read worker thread
+   * (src/read-worker.ts): the same routes on its own connection, nothing in
+   * the background, and no rate limiting or telemetry, which the main
+   * thread already applied before forwarding.
+   */
+  role?: "main" | "reader";
+}
+
+/** Record last-used for a request bearing a `vbat_` API token. Off the response path; failures are ignored. */
+function recordUsageFor(request: Request, server: { requestIP?: (r: Request) => { address: string } | null } | null, jwtSecret: string): void {
+  const auth = request.headers.get("authorization") ?? "";
+  const m = /^Bearer\s+vbat_([A-Za-z0-9._\-]+)/i.exec(auth);
+  if (!m) return;
+  // The auth step verified this same token, so this is a cache hit.
+  const payload = verifyHs256(m[1] ?? "", jwtSecret, { issuer: "vaultbase", audience: "api" });
+  if (!payload || typeof payload["jti"] !== "string") return;
+  const peerIp = server?.requestIP?.(request)?.address ?? null;
+  recordApiTokenUsage(payload["jti"], trustedClientIp(request, peerIp), request.headers.get("user-agent"));
+}
+
+export function createServer(config: Config, opts: ServerOptions = {}) {
+  const reader = opts.role === "reader";
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
   setSandboxDir(`${config.dataDir}/sandboxes`);
   setBackupsDir(`${config.dataDir}/backups`);
   configureSetupKey(config.dataDir);
+  if (!reader) {
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
@@ -212,6 +237,7 @@ export function createServer(config: Config) {
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.
   setInterval(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000).unref?.();
+  }
   // Client realtime messages are small JSON commands; Bun closes a socket
   // sending anything larger (1009). This is server-wide websocket config —
   // a limit on the .ws() route is ignored.
@@ -222,7 +248,8 @@ export function createServer(config: Config) {
       attachTimer(request, new RequestTimer());
       // Record the socket peer so every client-IP reader applies the
       // trusted-proxy rule (sec.ts clientIp) instead of trusting headers.
-      rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
+      // A read worker has no socket; its entry remembers the forwarded peer.
+      if (!reader) rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
     })
     // CORS preflight short-circuit — must run before any normal route.
     .onRequest(({ request }) => {
@@ -267,16 +294,19 @@ export function createServer(config: Config) {
       const res = await tryDispatchCustom(request, config.jwtSecret);
       if (res) return res;
     })
-    .use(makeRateLimitPlugin(config.jwtSecret))
+    // The main thread rate-limits before forwarding; a reader skips it.
+    .use(reader ? new Elysia({ name: "rate-limit-off" }) : makeRateLimitPlugin(config.jwtSecret))
     // ── Read worker pool ─────────────────────────────────────────────
     // Record list / get-one of a known collection go to a worker thread
     // when a pool is running (VAULTBASE_READ_WORKERS). Returning a Response
-    // here ends the pipeline, so the request timer is finished by hand.
+    // here ends the pipeline, so the request timer and the token telemetry
+    // are finished by hand.
     .onRequest(async ({ request, server }) => {
-      if (readPoolSize() === 0) return;
+      if (reader || readPoolSize() === 0) return;
       const target = readTarget(request.method, new URL(request.url).pathname);
       if (!target) return;
-      const peerIp = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      const srv = server as { requestIP?: (r: Request) => { address: string } | null } | null;
+      const peerIp = srv?.requestIP?.(request)?.address ?? null;
       let status = 500;
       try {
         const res = await forwardRead(request, peerIp);
@@ -286,6 +316,7 @@ export function createServer(config: Config) {
         return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 503 }), { status: (status = 503), headers: { "content-type": "application/json" } });
       } finally {
         detachTimer(request)?.finish(request.method, status);
+        recordUsageFor(request, srv, config.jwtSecret);
       }
     })
     // ── API-token usage telemetry ────────────────────────────────────
@@ -293,19 +324,11 @@ export function createServer(config: Config) {
     // Records last_used_at + IP + UA for any request that arrived
     // bearing a vbat_-prefixed token. Pure observability — failures
     // never block a request.
+    // Verify the signature before recording: an unsigned look at the jti
+    // let a forged token overwrite a real token's last-used IP / UA.
     .onAfterHandle({ as: "global" }, ({ request, server }) => {
-      const auth = request.headers.get("authorization") ?? "";
-      const m = /^Bearer\s+vbat_([A-Za-z0-9._\-]+)/i.exec(auth);
-      if (!m) return;
-      // Verify the signature before recording: an unsigned look at the jti
-      // let a forged token overwrite a real token's last-used IP / UA.
-      // Off the response path; failures are ignored.
-      // The auth step verified this same token, so this is a cache hit.
-      const payload = verifyHs256(m[1] ?? "", config.jwtSecret, { issuer: "vaultbase", audience: "api" });
-      if (!payload || typeof payload["jti"] !== "string") return;
-      const peerIp = (server as { requestIP?: (r: Request) => { address: string } | null } | null)
-        ?.requestIP?.(request)?.address ?? null;
-      recordApiTokenUsage(payload["jti"], trustedClientIp(request, peerIp), request.headers.get("user-agent"));
+      if (reader) return;
+      recordUsageFor(request, server as { requestIP?: (r: Request) => { address: string } | null } | null, config.jwtSecret);
     })
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the

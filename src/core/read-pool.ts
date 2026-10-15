@@ -13,6 +13,7 @@
  * `forwardRead` is never called and nothing here runs.
  */
 import { getCollectionCached } from "./collections.ts";
+import type { Config } from "../config.ts";
 
 export interface ForwardRequest {
   type: "request";
@@ -29,8 +30,6 @@ export interface ForwardReply {
   status: number;
   headers: Array<[string, string]>;
   body: ArrayBuffer | null;
-  /** jti of the API token the worker verified, for usage telemetry on main. */
-  jti?: string;
 }
 
 interface Slot {
@@ -115,8 +114,8 @@ function failSlot(slot: Slot, reason: string): void {
   }
 }
 
-/** Spawn `n` workers; resolves once each has its database open. */
-export async function startReadPool(n: number, env: Record<string, string>): Promise<void> {
+/** Spawn `n` workers; resolves once each has its database open and its app built. */
+export async function startReadPool(n: number, env: Record<string, string>, config: Config): Promise<void> {
   if (slots.length > 0 || n <= 0) return;
   const ready: Array<Promise<void>> = [];
   for (let i = 0; i < n; i++) {
@@ -132,7 +131,7 @@ export async function startReadPool(n: number, env: Record<string, string>): Pro
       };
       worker.onerror = (e) => { failSlot(slot, e.message); reject(new Error(e.message)); };
     }));
-    worker.postMessage({ type: "start" });
+    worker.postMessage({ type: "start", config });
   }
   await Promise.all(ready);
   // Workers must never keep the process alive on their own.
