@@ -17,6 +17,7 @@ import { makeAuthPlugin } from "../api/auth.ts";
 import { getCollection } from "../core/collections.ts";
 import { hashedTokenId, seedAuthUser } from "./_helpers.ts";
 import { startSmtpSink, tokenFrom, type SmtpSink } from "./_smtp.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const SECRET = "test-secret-token-hashing";
 let tmpDir: string;
@@ -49,7 +50,7 @@ async function emailedResetToken(): Promise<string> {
   return tokenFrom(smtp.last("reset"));
 }
 
-describe("one-time tokens at rest", () => {
+describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
   it("the emailed token is not in the database; its hash is", async () => {
     const token = await emailedResetToken();
     const ids = (await getDb().select().from(authTokens)).map((r) => r.id);

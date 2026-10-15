@@ -472,11 +472,11 @@
   },
   "vb_gold | @collection.gold_people.id != author": {
     "public": {
-      "sql": "0",
+      "sql": "1=0",
       "params": []
     },
     "user": {
-      "sql": "0",
+      "sql": "1=0",
       "params": []
     },
     "admin": {
@@ -489,7 +489,7 @@
   },
   "vb_gold | @collection.gold_people.name != \"x\"": {
     "user": {
-      "sql": "0",
+      "sql": "1=0",
       "params": []
     }
   },
@@ -606,7 +606,7 @@
     }
   },
   "vb_gold | geoDistance(pt.lon, pt.lat, 13.4, 52.5) < 10": {
-    "sql": "(2 * 6371 * asin(sqrt(pow(sin(radians(? - json_extract(\"vb_gold\".\"pt\", '$.lat')) / 2), 2) + cos(radians(json_extract(\"vb_gold\".\"pt\", '$.lat'))) * cos(radians(?)) * pow(sin(radians(? - json_extract(\"vb_gold\".\"pt\", '$.lon')) / 2), 2)))) < ?",
+    "sql": "(2 * 6371 * asin(sqrt(pow(sin(radians(? - CAST(json_extract(\"vb_gold\".\"pt\", '$.lat') AS DOUBLE PRECISION)) / 2), 2) + cos(radians(CAST(json_extract(\"vb_gold\".\"pt\", '$.lat') AS DOUBLE PRECISION))) * cos(radians(?)) * pow(sin(radians(? - CAST(json_extract(\"vb_gold\".\"pt\", '$.lon') AS DOUBLE PRECISION)) / 2), 2)))) < ?",
     "params": [
       52.5,
       52.5,

@@ -399,18 +399,19 @@ const EMAIL_COOLDOWN_SECONDS = 60;
  * minute while the owner is never kept waiting longer than that.
  */
 async function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): Promise<boolean> {
-  const since = Math.floor(Date.now() / 1000) - EMAIL_COOLDOWN_SECONDS;
+  // The window is measured on the database's clock, the one that stamped
+  // created_at; a server on another machine may disagree with this process
+  // by seconds.
   // Only tokens issued before this one count, so parallel requests agree on
-  // one winner. SQLite has the insertion order (rowid); elsewhere the order
-  // is the second of issue, then the id, which within one second lets a
-  // request slip through at most until its own token is the oldest.
+  // one winner. SQLite has the insertion order (rowid); elsewhere it is the
+  // millisecond of issue, then the id.
   const earlier = db.dialect.tieBreak === "rowid"
     ? `rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`
-    : `(created_at, id) < (SELECT created_at, id FROM vaultbase_auth_tokens WHERE id = ?)`;
+    : `(issued_ms, id) < (SELECT issued_ms, id FROM vaultbase_auth_tokens WHERE id = ?)`;
   const row = (await db.get(
     `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
-      WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ? AND ${earlier}`,
-    [userId, collectionId, purpose, since, id],
+      WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ${db.dialect.epochNow} - ${EMAIL_COOLDOWN_SECONDS} AND ${earlier}`,
+    [userId, collectionId, purpose, id],
   )) as { n: number };
   return row.n === 0;
 }

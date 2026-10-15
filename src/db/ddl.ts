@@ -14,7 +14,7 @@
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import { SQL } from "drizzle-orm";
 import { db } from "./index.ts";
-import { EPOCH_NOW } from "./schema.ts";
+import { EPOCH_MS_NOW, EPOCH_NOW } from "./schema.ts";
 import { FIXED_INDEXES, FIXED_TABLES } from "./fixed-schema.ts";
 
 export type ColumnType = "text" | "integer" | "real" | "blob";
@@ -25,7 +25,7 @@ export interface ColumnSpec {
   primaryKey: boolean;
   notNull: boolean;
   unique: boolean;
-  default?: { kind: "literal"; value: string | number } | { kind: "epochNow" };
+  default?: { kind: "literal"; value: string | number } | { kind: "epochNow" } | { kind: "epochMsNow" };
 }
 
 export interface IndexSpec {
@@ -47,6 +47,7 @@ export function columnSpecs(table: SQLiteTable): ColumnSpec[] {
     const spec: ColumnSpec = { name: c.name, type, primaryKey: c.primary, notNull: c.notNull, unique: c.isUnique };
     if (c.default !== undefined) {
       if (c.default === EPOCH_NOW) spec.default = { kind: "epochNow" };
+      else if (c.default === EPOCH_MS_NOW) spec.default = { kind: "epochMsNow" };
       else if (typeof c.default === "string" || typeof c.default === "number") spec.default = { kind: "literal", value: c.default };
       else if (c.default instanceof SQL) throw new Error(`${cfg.name}.${c.name}: SQL defaults other than EPOCH_NOW are not supported`);
       else throw new Error(`${cfg.name}.${c.name}: unsupported default ${String(c.default)}`);
@@ -69,8 +70,14 @@ export async function ensureFixedSchema(): Promise<void> {
     const present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
     for (const spec of specs) {
       if (present.has(spec.name)) continue;
-      if (spec.default?.kind === "epochNow") {
-        throw new Error(`[migrate] ${name}.${spec.name} is missing and has an expression default; add it by hand`);
+      const expression = spec.default?.kind === "epochNow" || spec.default?.kind === "epochMsNow";
+      if (expression && !d.addColumnExpressionDefault) {
+        if (spec.notNull) throw new Error(`[migrate] ${name}.${spec.name} is missing and has an expression default; add it by hand`);
+        // A nullable column with an expression default: added without the
+        // default, so existing rows and rows inserted without it hold NULL.
+        const { default: _d, ...bare } = spec;
+        await db.exec(d.addColumn(name, bare));
+        continue;
       }
       await db.exec(d.addColumn(name, spec));
     }

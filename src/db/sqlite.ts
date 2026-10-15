@@ -37,6 +37,7 @@ function columnDef(c: ColumnSpec): string {
   else if (c.notNull) out += " NOT NULL";
   if (c.unique) out += " UNIQUE";
   if (c.default?.kind === "epochNow") out += " DEFAULT (unixepoch())";
+  else if (c.default?.kind === "epochMsNow") out += " DEFAULT (unixepoch('subsec') * 1000)";
   else if (c.default?.kind === "literal") out += ` DEFAULT ${typeof c.default.value === "number" ? String(c.default.value) : `'${c.default.value.replace(/'/g, "''")}'`}`;
   return out;
 }
@@ -63,6 +64,8 @@ export const SQLITE_DIALECT: Dialect = {
   jsonArrayLength: (expr) => `json_array_length(${expr})`,
   jsonEach: (expr) => `json_each(${expr})`,
   jsonGroupArray: (expr) => `json_group_array(${expr})`,
+  asText: (expr) => expr,
+  addColumnExpressionDefault: false,
   createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
   addColumn: (table, column) => {
     if (column.unique) throw new Error(`${table}.${column.name}: SQLite cannot add a UNIQUE column; add an index`);

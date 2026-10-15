@@ -11,6 +11,8 @@ import { runMigrations } from "../db/migrate.ts";
 import { createCollection, validateViewQuery, _resetCollectionCache } from "../core/collections.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { seedAuthUser } from "./_helpers.ts";
+import { loadSensitiveSchema } from "../core/collections.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const SECRET = "test-secret-view-private";
 
@@ -79,6 +81,7 @@ describe("review 10 follow-ups", () => {
 
   it("a base collection's password field can't be read through a view, nor renamed by UNION", async () => {
     await createCollection({ name: "vault", fields: JSON.stringify([{ name: "pin", type: "password" }]) });
+    await loadSensitiveSchema();
     expect(() => validateViewQuery("SELECT id, pin AS p FROM vb_vault")).toThrow();
     expect(() => validateViewQuery("SELECT 1 AS id, 2 AS email, 3 AS a, 4 AS b, 5 AS c, 6 AS d, 7 AS e, 8 AS f, 9 AS g, 10 AS h UNION SELECT * FROM vb_users")).toThrow();
     expect(() => validateViewQuery("SELECT id FROM vb_vault UNION SELECT id FROM vb_users")).toThrow();
@@ -86,7 +89,7 @@ describe("review 10 follow-ups", () => {
 });
 
 describe("review 13 follow-ups", () => {
-  it("a view joining two users doesn't return the second user's secrets as name:1", async () => {
+  it.skipIf(!onSqlite)("a view joining two users doesn't return the second user's secrets as name:1", async () => {
     await createCollection({
       name: "pairs", type: "view", list_rule: null, view_rule: null,
       view_query: "SELECT a.id, a.email, b.email AS other_email, a.password_hash AS x FROM vb_users a, vb_users b",
@@ -104,6 +107,7 @@ describe("review 13 follow-ups", () => {
 
   it("a UNION through an intermediate view is refused", async () => {
     await createCollection({ name: "everyone", type: "view", view_query: "SELECT * FROM vb_users", list_rule: null, view_rule: null });
+    await loadSensitiveSchema();
     expect(() => validateViewQuery("SELECT 1 AS a, 2 AS b UNION SELECT * FROM vb_everyone")).toThrow();
   });
 

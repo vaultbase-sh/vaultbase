@@ -11,8 +11,9 @@ import { _resetCollectionCache, getCollectionCached } from "../core/collections.
 import { listRecords, _preparedStatementCount } from "../core/records.ts";
 import { tableColumns } from "../core/users-table.ts";
 import { createPublicCollection } from "./_helpers.ts";
+import { onSqlite } from "./_helpers.ts";
 
-describe("closeDb", () => {
+describe.skipIf(!onSqlite)("closeDb", () => {
   it("clears the statement, column and collection caches synchronously", async () => {
     await initDb(":memory:");
     await runMigrations();

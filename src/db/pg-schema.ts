@@ -11,9 +11,10 @@ import { getTableColumns } from "drizzle-orm";
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import { doublePrecision, integer, pgTable, text, type PgColumnBuilderBase } from "drizzle-orm/pg-core";
 import * as sqliteSchema from "./schema.ts";
-import { EPOCH_NOW } from "./schema.ts";
+import { EPOCH_MS_NOW, EPOCH_NOW } from "./schema.ts";
 
 const PG_EPOCH_NOW = sql`(extract(epoch from now())::integer)`;
+const PG_EPOCH_MS_NOW = sql`(extract(epoch from clock_timestamp()) * 1000)`;
 
 function pgColumn(name: string, c: { getSQLType(): string; primary: boolean; notNull: boolean; isUnique: boolean; default: unknown }): PgColumnBuilderBase {
   const t = c.getSQLType().toLowerCase();
@@ -23,6 +24,7 @@ function pgColumn(name: string, c: { getSQLType(): string; primary: boolean; not
   if (c.isUnique) b = b.unique() as typeof b;
   if (c.default !== undefined) {
     if (c.default === EPOCH_NOW) b = b.default(PG_EPOCH_NOW) as typeof b;
+    else if (c.default === EPOCH_MS_NOW) b = b.default(PG_EPOCH_MS_NOW) as typeof b;
     else b = b.default(c.default as never) as typeof b;
   }
   return b as unknown as PgColumnBuilderBase;

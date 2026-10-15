@@ -43,6 +43,7 @@ function columnDef(c: ColumnSpec): string {
   else if (c.notNull) out += " NOT NULL";
   if (c.unique) out += " UNIQUE";
   if (c.default?.kind === "epochNow") out += ` DEFAULT ${POSTGRES_DIALECT.epochNow}`;
+  else if (c.default?.kind === "epochMsNow") out += " DEFAULT (extract(epoch from clock_timestamp()) * 1000)";
   else if (c.default?.kind === "literal") out += ` DEFAULT ${typeof c.default.value === "number" ? String(c.default.value) : sqlLiteral(c.default.value)}`;
   return out;
 }
@@ -76,6 +77,8 @@ export const POSTGRES_DIALECT: Dialect = {
   jsonArrayLength: (expr) => `(CASE WHEN (${expr})::text LIKE '[%' THEN jsonb_array_length((${expr})::text::jsonb) END)`,
   jsonEach: (expr) => `jsonb_array_elements_text(${expr}::jsonb)`,
   jsonGroupArray: (expr) => `json_agg(${expr})`,
+  asText: (expr) => `(${expr})::text`,
+  addColumnExpressionDefault: true,
   createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
   addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${columnDef(column)}`,
   createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,

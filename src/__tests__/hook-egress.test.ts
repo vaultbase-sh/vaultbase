@@ -20,6 +20,7 @@ import {
 } from "../core/hook-egress.ts";
 import { makeExtraHelpers } from "../core/hook-helpers-extra.ts";
 import { invalidateSetting } from "../api/settings.ts";
+import { db } from "../db/index.ts";
 
 beforeEach(async () => {
   await initDb(":memory:");
@@ -125,12 +126,10 @@ describe("assertEgressAllowed (default deny)", () => {
 
 describe("operator overrides via settings", () => {
   async function setSetting(key: string, value: string): Promise<void> {
-    const { getDb } = await import("../db/client.ts");
-    const { sql } = await import("drizzle-orm");
-    // The settings table is created lazily by the settings plugin; touch it
-    // via raw SQL so this test doesn't depend on importing the plugin.
-    await getDb().run(sql`CREATE TABLE IF NOT EXISTS vaultbase_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT (unixepoch()))`);
-    await getDb().run(sql.raw(`INSERT INTO vaultbase_settings (key, value) VALUES ('${key}', '${value.replace(/'/g, "''")}') ON CONFLICT(key) DO UPDATE SET value = excluded.value`));
+    await db.run(
+      `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [key, value],
+    );
     await invalidateSetting(key);
     invalidateEgressCache();
   }

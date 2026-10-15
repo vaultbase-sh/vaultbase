@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { makeExtraHelpers } from "../core/hook-helpers-extra.ts";
 import { initDb, closeDb } from "../db/client.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const h = makeExtraHelpers();
 
@@ -253,7 +254,7 @@ describe("fs", () => {
   });
 });
 
-describe("db", () => {
+describe.skipIf(!onSqlite)("db", () => {
   beforeAll(async () => { await initDb(":memory:"); });
   afterAll(async () => { await closeDb(); });
 
@@ -282,7 +283,7 @@ describe("sql", () => {
 
   it("query, queryOne, exec and a transaction that rolls back on a throw", async () => {
     await h.sql.exec(`CREATE TABLE s (id INTEGER PRIMARY KEY, name TEXT)`);
-    expect(await h.sql.exec("INSERT INTO s (name) VALUES (?), (?)", ["a", "b"])).toEqual({ changes: 2 });
+    expect(await h.sql.exec("INSERT INTO s (id, name) VALUES (?, ?), (?, ?)", [1, "a", 2, "b"])).toEqual({ changes: 2 });
     expect(await h.sql.query<{ name: string }>("SELECT name FROM s ORDER BY id")).toEqual([{ name: "a" }, { name: "b" }]);
     expect(await h.sql.queryOne<{ name: string }>("SELECT name FROM s WHERE id = ?", [2])).toEqual({ name: "b" });
     expect(await h.sql.queryOne("SELECT name FROM s WHERE id = ?", [99])).toBeNull();

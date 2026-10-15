@@ -70,7 +70,7 @@ describe("If-Match follow-ups (review 09)", () => {
     const { invalidateHookCache } = await import("../core/hooks.ts");
     await getDb().insert(hooks).values({
       id: "h-touch", name: "touch", collection_name: "posts", event: "beforeUpdate", enabled: 1,
-      code: "ctx.helpers.db.exec(`UPDATE vb_posts SET title = 'touched-by-hook' WHERE id = ?`, ctx.existing.id);",
+      code: "await ctx.helpers.sql.exec(`UPDATE vb_posts SET title = 'touched-by-hook' WHERE id = ?`, [ctx.existing.id]);",
     });
     invalidateHookCache();
     try {

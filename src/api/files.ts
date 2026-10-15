@@ -329,6 +329,9 @@ export function _thumbStats(): { generated: number } {
 async function generateThumbOnce(cachePath: string, make: () => Promise<Uint8Array>): Promise<Uint8Array> {
   const pending = thumbsInFlight.get(cachePath);
   if (pending) return pending;
+  // A request that missed the cache before an identical one finished
+  // generating finds the file here instead of generating it again.
+  if (existsSync(cachePath)) return new Uint8Array(await Bun.file(cachePath).arrayBuffer());
   const job = (async () => {
     thumbsGenerated++;
     const thumb = await make();

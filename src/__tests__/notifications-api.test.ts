@@ -380,9 +380,9 @@ describe("DELETE notifications/devices/:token", () => {
     const user = await seedUserToken("user-a");
     const other = await seedUserToken("user-b");
     const now = Math.floor(Date.now() / 1000);
-    await db.run(`INSERT INTO vb_device_tokens (id, user, provider, token, platform, enabled, last_seen, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    await db.run(`INSERT INTO vb_device_tokens (id, "user", provider, token, platform, enabled, last_seen, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
       ["a", "user-a", "fcm", "tok-a", "ios", now, now]);
-    await db.run(`INSERT INTO vb_device_tokens (id, user, provider, token, platform, enabled, last_seen, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+    await db.run(`INSERT INTO vb_device_tokens (id, "user", provider, token, platform, enabled, last_seen, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
       ["b", "user-b", "fcm", "tok-b", "ios", now, now]);
 
     const app = makeNotificationsPlugin(JWT_SECRET);

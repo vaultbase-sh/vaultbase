@@ -513,7 +513,7 @@ function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx):
   if (!ctx.lookup) return ctx.auth?.type === "admin" ? dialect().always : dialect().never;
   const meta = ctx.lookup(collection);
   if (!meta) throw new Error(`unknown collection in @collection.*: ${collection}`);
-  return joinedCollectionGuard(meta, collection, alias, ctx) ?? "1";
+  return joinedCollectionGuard(meta, collection, alias, ctx) ?? dialect().always;
 }
 
 /**
@@ -614,7 +614,7 @@ function compileCollectionRef(
       if (ctx.auth?.type !== "admin" && !(meta && meta.viewRule === null)) {
         // Still refuse private fields, as every other path does.
         if (meta && (meta.isPrivateField(head) || !meta.isFilterable(head))) throw new PrivateFieldError(head);
-        return "0";
+        return dialect().never;
       }
     }
 
@@ -721,7 +721,9 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
     // appearance, in SQL order: a literal binds a parameter every time it
     // is compiled, and compiling it once for two placeholders left the
     // statement one value short.
-    const c = (a: Operand) => compileOperand(a, ctx);
+    // A coordinate read from a JSON path is text on some databases; the
+    // arithmetic needs a number.
+    const c = (a: Operand) => isJsonPath(a) ? `CAST(${compileOperand(a, ctx)} AS DOUBLE PRECISION)` : compileOperand(a, ctx);
     const latB1 = c(latB), latA1 = c(latA), latA2 = c(latA), latB2 = c(latB), lonB1 = c(lonB), lonA1 = c(lonA);
     // Haversine in km. Earth radius 6371.
     return `(2 * 6371 * asin(sqrt(` +
@@ -743,7 +745,7 @@ function applyModifierToSql(expr: string, m?: FieldModifier): string {
   if (!m) return expr;
   switch (m) {
     case "lower":  return `LOWER(${expr})`;
-    case "length": return `COALESCE(${dialect().jsonArrayLength(expr)}, length(${expr}))`;
+    case "length": return `COALESCE(${dialect().jsonArrayLength(expr)}, length(${dialect().asText(expr)}))`;
     case "isset":
     case "changed":
     case "each":
@@ -803,7 +805,7 @@ function isValueOperand(operand: Operand): boolean {
 
 /** A LIKE pattern matching SQL value `col` as plain text; NULL when it is empty or NULL. */
 function sqlLikePattern(col: string): string {
-  return `'%' || replace(replace(replace(nullif(${col}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
+  return `'%' || replace(replace(replace(nullif(${dialect().asText(col)}, ''), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%' ESCAPE '\\'`;
 }
 
 /** The LIKE pattern for `right`; NULL when the right side is empty or NULL. */

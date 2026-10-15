@@ -78,6 +78,10 @@ export interface Dialect {
   /** A table expression yielding one row per element of the JSON array `expr`, with a `value` column. */
   jsonEach(expr: string): string;
   jsonGroupArray(expr: string): string;
+  /** `expr` as text, for LIKE and length over a value that may be JSON-typed. */
+  asText(expr: string): string;
+  /** Whether ADD COLUMN accepts an expression default; SQLite does not. */
+  readonly addColumnExpressionDefault: boolean;
 
   /** DDL for the fixed tables (db/ddl.ts). */
   createTable(name: string, columns: ColumnSpec[]): string;

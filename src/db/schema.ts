@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /**
  * The epoch-seconds default every timestamp column carries. One object on
@@ -7,6 +7,8 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
  * dialect writes it in its own words.
  */
 export const EPOCH_NOW = sql`(unixepoch())`;
+/** Milliseconds since the epoch, for an order finer than a second. */
+export const EPOCH_MS_NOW = sql`(unixepoch('subsec') * 1000)`;
 
 /** One-off data migrations that have run (see migrate.ts). */
 export const migrations = sqliteTable("vaultbase_migrations", {
@@ -66,6 +68,12 @@ export const authTokens = sqliteTable("vaultbase_auth_tokens", {
   attempts: integer("attempts").notNull().default(0),
   /** Purpose-specific data, e.g. the new address for `email_change`. */
   payload: text("payload"),
+  /**
+   * When the token was issued, in milliseconds: the order the email
+   * cooldown needs on a database without SQLite's rowid. NULL on SQLite
+   * databases upgraded past this column (they order by rowid).
+   */
+  issued_ms: real("issued_ms").default(EPOCH_MS_NOW),
 });
 
 /**
