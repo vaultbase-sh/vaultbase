@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **Read worker threads (experimental) follow changes on the main thread.** A collection
+  or settings change now reaches the workers at once instead of after a restart, and a
+  write no longer empties the workers' list-totals cache for every collection: the main
+  thread tells them which tables a commit touched. Still missing before the flag can be
+  recommended: the Monitoring page only sees the main thread's share of forwarded requests.
+
 ## [0.21.3] — 2026-10-15
 
 ### Fixed
