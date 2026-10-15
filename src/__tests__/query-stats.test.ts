@@ -34,8 +34,8 @@ async function seedPosts(rows: number, name = "posts") {
 }
 
 const report = () => queryStatsReport();
-const shape = (pred: (r: ReturnType<typeof report>[number]) => boolean) => {
-  const r = report().find(pred);
+const shape = async (pred: (r: Awaited<ReturnType<typeof report>>[number]) => boolean) => {
+  const r = (await report()).find(pred);
   if (!r) throw new Error("shape not recorded");
   return r;
 };
@@ -58,9 +58,9 @@ describe.skipIf(!onSqlite)("query stats", () => {
     await listRecords("posts", { filter: 'status = "published"' });
     await listRecords("posts", { filter: 'status = "draft"' });
     await listRecords("posts", {});
-    const rows = report();
+    const rows = await report();
     expect(rows).toHaveLength(2);
-    const filtered = shape((r) => r.filter !== null);
+    const filtered = await shape((r) => r.filter !== null);
     expect(filtered.count).toBe(2);
     expect(filtered.filter).toBe('status = "published"');
     expect(filtered.sort).toBeNull();
@@ -73,7 +73,7 @@ describe.skipIf(!onSqlite)("query stats", () => {
   it("suggests the equality columns then the sort column for a scanned filter + sort", async () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
     await listRecords("posts", { filter: 'status = "published"', sort: "-views" });
-    const r = shape((r) => r.sort === "-views");
+    const r = await shape((r) => r.sort === "-views");
     expect(r.scan).toBe(true);
     expect(r.temp_sort).toBe(true);
     expect(r.suggestion).toEqual({ fields: ["status", "views"], name: "idx_posts_status_views" });
@@ -82,14 +82,14 @@ describe.skipIf(!onSqlite)("query stats", () => {
   it("suggests the sort column alone for an unfiltered sort on an unindexed field", async () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
     await listRecords("posts", { sort: "-views" });
-    const r = shape((r) => r.sort === "-views");
+    const r = await shape((r) => r.sort === "-views");
     expect(r.suggestion).toEqual({ fields: ["views"], name: "idx_posts_views" });
   });
 
   it("suggests (filter, created_at) when the default sort walks the created_at index past the filter", async () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
     await listRecords("posts", { filter: 'status = "published"' });
-    const r = shape((r) => r.filter !== null);
+    const r = await shape((r) => r.filter !== null);
     expect(r.plan.join(" | ")).toContain("idx_vb_posts_created_at");
     expect(r.suggestion).toEqual({ fields: ["status", "created_at"], name: "idx_posts_status_created_at" });
   });
@@ -100,10 +100,10 @@ describe.skipIf(!onSqlite)("query stats", () => {
     await listRecords("posts", {});
     await listRecords("posts", { filter: "views > 5000", sort: "-views" });
     await listRecords("posts", { search: "post" });
-    for (const r of report()) expect(r.suggestion).toBeNull();
-    expect(shape((r) => r.search).search).toBe(true);
+    for (const r of await report()) expect(r.suggestion).toBeNull();
+    expect((await shape((r) => r.search)).search).toBe(true);
     // The default sort walks the created_at index: not a scan, not a temp sort.
-    const dflt = shape((r) => r.filter === null && !r.search);
+    const dflt = await shape((r) => r.filter === null && !r.search);
     expect(dflt.scan).toBe(false);
     expect(dflt.temp_sort).toBe(false);
   });
@@ -111,16 +111,16 @@ describe.skipIf(!onSqlite)("query stats", () => {
   it("stays quiet on small tables and once the index exists", async () => {
     await seedPosts(SUGGEST_MIN_ROWS - 1);
     await listRecords("posts", { filter: 'status = "published"', sort: "-views" });
-    expect(shape((r) => r.sort === "-views").suggestion).toBeNull();
+    expect((await shape((r) => r.sort === "-views")).suggestion).toBeNull();
   });
 
   it("re-explains after the suggested index is created", async () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
     await listRecords("posts", { filter: 'status = "published"', sort: "-views" });
-    const before = shape((r) => r.sort === "-views");
+    const before = await shape((r) => r.sort === "-views");
     expect(before.suggestion).not.toBeNull();
     await createCollectionIndex((await getCollection("posts"))!, before.suggestion!.fields);
-    const after = shape((r) => r.sort === "-views");
+    const after = await shape((r) => r.sort === "-views");
     expect(after.scan).toBe(false);
     expect(after.temp_sort).toBe(false);
     expect(after.suggestion).toBeNull();
@@ -131,9 +131,9 @@ describe.skipIf(!onSqlite)("query stats", () => {
     await seedPosts(SUGGEST_MIN_ROWS + 200);
     await listRecords("posts", { page: 1, perPage: 30 });
     await listRecords("posts", { page: 200, perPage: 30 });
-    const deep = report().filter((r) => r.deep);
+    const deep = (await report()).filter((r) => r.deep);
     expect(deep).toHaveLength(1);
-    expect(report()).toHaveLength(2);
+    expect(await report()).toHaveLength(2);
     // The outer query re-sorts only the page's rows; that isn't a temp sort worth flagging.
     expect(deep[0]!.temp_sort).toBe(false);
     expect(deep[0]!.scan).toBe(false);
@@ -153,24 +153,24 @@ describe.skipIf(!onSqlite)("query stats", () => {
       { ...plain, count: 5, total_us: plain.total_us * 5, max_us: plain.max_us + 1 },
       { ...plain, selectSql: plain.selectSql + " -- elsewhere", count: 1, total_us: 1 },
     ]);
-    const rows = report();
+    const rows = await report();
     expect(rows).toHaveLength(3);
     const merged = rows.find((r) => r.filter === null && !r.deep && r.count === 6)!;
     expect(merged.total_us).toBe(Math.round(plain.total_us * 6));
     expect(merged.max_us).toBe(Math.round(plain.max_us + 1));
     setExternalShapes("w0", null);
-    expect(report()).toHaveLength(2);
+    expect(await report()).toHaveLength(2);
     setExternalShapes("w0", [plain]);
     resetQueryStats();
-    expect(report()).toHaveLength(0);
+    expect(await report()).toHaveLength(0);
   });
 
   it("orders by total time and reset empties it", async () => {
     await seedPosts(50);
     await listRecords("posts", {});
-    expect(report()).toHaveLength(1);
+    expect(await report()).toHaveLength(1);
     resetQueryStats();
-    expect(report()).toHaveLength(0);
+    expect(await report()).toHaveLength(0);
   });
 });
 

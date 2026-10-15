@@ -172,13 +172,13 @@ function mergedShapes(): Shape[] {
 
 const rowCounts = new Map<string, { at: number; rows: number }>();
 
-function rowCount(table: string): number {
+async function rowCount(table: string): Promise<number> {
   const hit = rowCounts.get(table);
   const now = Date.now();
   if (hit && now - hit.at < ROWS_TTL_MS) return hit.rows;
   let rows = 0;
   try {
-    rows = db.sync.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${quote(table)}`)!.c;
+    rows = (await db.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${quote(table)}`))!.c;
   } catch { /* table gone: report 0 */ }
   rowCounts.set(table, { at: now, rows });
   return rows;
@@ -189,21 +189,76 @@ function quote(name: string): string {
 }
 
 function schemaVersion(): number {
-  try {
-    return db.sync.get<{ schema_version: number }>("PRAGMA schema_version")!.schema_version;
-  } catch { return 0; }
+  try { return db.schemaToken(); } catch { return 0; }
 }
 
-function explain(e: Shape, schema: number): PlanRow[] {
+async function explain(e: Shape, schema: number): Promise<PlanRow[]> {
   if (e.plan && e.plan.schema === schema) return e.plan.rows;
   let rows: PlanRow[] = [];
   try {
-    // Unbound parameters are NULL; the plan doesn't depend on them.
-    rows = db.sync.all<{ id: number; parent: number; detail: string }>(`EXPLAIN QUERY PLAN ${e.selectSql}`)
-      .map((r) => ({ id: r.id, parent: r.parent, detail: r.detail }));
-  } catch { /* a view that no longer exists, or a MATCH on a dropped FTS table */ }
+    if (db.capabilities.explain === "pg") {
+      // GENERIC_PLAN (Postgres 16+) plans the statement with its parameters
+      // unbound, as SQLite does for an unbound `?`.
+      const out = await db.all<{ "QUERY PLAN": Array<{ Plan: PgPlanNode }> }>(`EXPLAIN (GENERIC_PLAN, FORMAT JSON) ${e.selectSql}`);
+      rows = pgPlanRows(out[0]!["QUERY PLAN"][0]!.Plan);
+    } else if (db.capabilities.explain === "sqlite") {
+      // Unbound parameters are NULL; the plan doesn't depend on them.
+      rows = (await db.all<{ id: number; parent: number; detail: string }>(`EXPLAIN QUERY PLAN ${e.selectSql}`))
+        .map((r) => ({ id: r.id, parent: r.parent, detail: r.detail }));
+    }
+  } catch { /* a view that no longer exists, or a search index that was dropped */ }
   e.plan = { schema, rows };
   return rows;
+}
+
+/** A node of a Postgres JSON plan, the fields this module reads. */
+interface PgPlanNode {
+  "Node Type": string;
+  "Relation Name"?: string;
+  "Index Name"?: string;
+  "Index Cond"?: string;
+  "Sort Key"?: string[];
+  Plans?: PgPlanNode[];
+}
+
+/**
+ * A Postgres plan tree as plan rows: one per node, nested under its parent,
+ * worded like EXPLAIN's text form (`Seq Scan on vb_posts`).
+ */
+export function pgPlanRows(root: PgPlanNode): PlanRow[] {
+  const rows: PlanRow[] = [];
+  const walk = (n: PgPlanNode, parent: number) => {
+    const id = rows.length + 1;
+    let detail = n["Node Type"];
+    if (n["Index Name"]) detail += ` using ${n["Index Name"]}`;
+    if (n["Relation Name"]) detail += ` on ${n["Relation Name"]}`;
+    if (n["Index Cond"]) detail += ` (${n["Index Cond"]})`;
+    if (n["Sort Key"]) detail += ` (${n["Sort Key"].join(", ")})`;
+    rows.push({ id, parent, detail });
+    for (const c of n.Plans ?? []) walk(c, id);
+  };
+  walk(root, 0);
+  return rows;
+}
+
+/**
+ * The same three signals from a Postgres plan: a sequential scan of the
+ * host table, an index walked without a condition (an ordered walk, not a
+ * seek), and a full sort. An incremental sort finishes an order an index
+ * already mostly gives, so it does not count.
+ */
+export function analyzePgPlan(details: string[], table: string, deep: boolean): PlanShape {
+  const name = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const seq = new RegExp(`^Seq Scan on ${name}$`);
+  const walk = new RegExp(`^Index (Only )?Scan using \\S+ on ${name}$`);
+  const sorts = details.filter((d) => /^Sort\b/.test(d)).length;
+  return {
+    fullScan: details.some((d) => seq.test(d)),
+    indexScan: details.some((d) => walk.test(d)),
+    // A deep page re-sorts its page of rows in the outer query; only a
+    // second sort is the expensive one.
+    temp_sort: deep ? sorts > 1 : sorts > 0,
+  };
 }
 
 /** Plan rows as text, nested rows indented. */
@@ -228,8 +283,22 @@ function costRows(rows: PlanRow[], deep: boolean): PlanRow[] {
 }
 
 /** Existing indexes on `table`, each as its column list in order. */
-function indexColumns(table: string): string[][] {
+async function indexColumns(table: string): Promise<string[][]> {
   const out: string[][] = [];
+  if (db.name !== "sqlite") {
+    // Every index, the primary key and UNIQUE constraints included, from its definition.
+    try {
+      for (const r of await db.all<{ sql: string | null }>(db.dialect.listIndexesSql(), [table])) {
+        if (!r.sql) continue;
+        const on = r.sql.search(/\bON\b/i);
+        const open = on < 0 ? -1 : r.sql.indexOf("(", on);
+        const close = open < 0 ? -1 : r.sql.indexOf(")", open);
+        if (open < 0 || close < 0) continue;
+        out.push(r.sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1")));
+      }
+    } catch { /* not a table */ }
+    return out;
+  }
   try {
     const list = db.sync.all<{ name: string }>(`PRAGMA index_list(${quote(table)})`);
     for (const ix of list) {
@@ -312,20 +381,22 @@ export function suggestIndex(e: Pick<Shape, "collection" | "table" | "view" | "w
 }
 
 /** Shapes sorted by total time, with plans and suggestions. */
-export function queryStatsReport(limit = 50): QueryReport[] {
+export async function queryStatsReport(limit = 50): Promise<QueryReport[]> {
   const schema = schemaVersion();
   const indexCache = new Map<string, string[][]>();
   const out: QueryReport[] = [];
   const sorted = mergedShapes().sort((a, b) => b.total_us - a.total_us).slice(0, limit);
   for (const e of sorted) {
-    const planRows = explain(e, schema);
+    const planRows = await explain(e, schema);
     // Keep the plan for shapes that live only on a worker, so it isn't re-explained per report.
     if (!shapes.has(e.selectSql) && e.plan) mergedPlans.set(e.selectSql, e.plan);
     const deep = / IN \(SELECT /.test(e.selectSql);
-    const plan = analyzePlan(costRows(planRows, deep).map((r) => r.detail), e.table);
-    const rows = e.view ? 0 : rowCount(e.table);
+    const plan = db.capabilities.explain === "pg"
+      ? analyzePgPlan(planRows.map((r) => r.detail), e.table, deep)
+      : analyzePlan(costRows(planRows, deep).map((r) => r.detail), e.table);
+    const rows = e.view ? 0 : await rowCount(e.table);
     let existing = indexCache.get(e.table);
-    if (!existing) { existing = e.view ? [] : indexColumns(e.table); indexCache.set(e.table, existing); }
+    if (!existing) { existing = e.view ? [] : await indexColumns(e.table); indexCache.set(e.table, existing); }
     out.push({
       id: Bun.hash(e.selectSql).toString(36),
       collection: e.collection,

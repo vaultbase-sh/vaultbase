@@ -111,7 +111,7 @@ export const POSTGRES_CAPABILITIES: Capabilities = {
   checkpointer: false,
   readWorkerThreads: false,
   foreignCommitProbe: false,
-  explain: "none",
+  explain: "pg",
   fts: "tsvector",
   statementAtomicity: false,
 };

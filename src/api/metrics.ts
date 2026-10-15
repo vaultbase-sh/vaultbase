@@ -130,7 +130,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
     // would serve a scan or an in-memory sort. See core/query-stats.ts.
     .get("/_/metrics/queries", async () => {
       try {
-        return { data: queryStatsReport() };
+        return { data: await queryStatsReport() };
       } catch {
         return { data: [] };
       }
