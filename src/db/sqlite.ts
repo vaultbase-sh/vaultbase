@@ -12,7 +12,7 @@
  * are what keep that orderly.
  */
 import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
-import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TransactionOptions } from "./driver.ts";
+import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
 
@@ -69,6 +69,22 @@ export const SQLITE_DIALECT: Dialect = {
   },
   createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,
   listColumnsSql: (table) => `SELECT name FROM pragma_table_info('${table.replace(/'/g, "''")}')`,
+  createView: (name, body) => `CREATE VIEW IF NOT EXISTS ${name} AS ${body}`,
+  indexExistsSql: () => `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`,
+  listIndexesSql: () => `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`,
+  // SQLite keeps an index's name through a table rename; recreate it under the new one.
+  renameIndex: (name, newName, sql) => [`DROP INDEX ${quoteIdent(name)}`, sql.replace(name, newName)],
+  timeBucket: (format, expr) => `strftime('${SQLITE_BUCKET[format]}', ${expr}, 'unixepoch')`,
+  isUniqueViolation: (e, column) =>
+    e instanceof Error && /UNIQUE constraint failed/i.test(e.message) && (!column || e.message.includes(`.${column}`)),
+};
+
+const SQLITE_BUCKET: Record<TimeBucket, string> = {
+  hour: "%Y-%m-%dT%H:00",
+  day: "%Y-%m-%d",
+  week: "%Y-W%W",
+  month: "%Y-%m",
+  year: "%Y",
 };
 
 export const SQLITE_CAPABILITIES: Capabilities = {

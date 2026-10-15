@@ -103,7 +103,7 @@ function parseAggs(col: Collection, fields: FieldDef[], raw: string | undefined)
   return out;
 }
 
-interface GroupSpec { alias: string; sql: string }
+interface GroupSpec { alias: string; sql: string; bucketed?: boolean }
 
 function parseGroupBy(col: Collection, fields: FieldDef[], raw: string | undefined): GroupSpec[] {
   const parts = (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -120,7 +120,7 @@ function parseGroupBy(col: Collection, fields: FieldDef[], raw: string | undefin
     }
     if (!(bucket in BUCKET_FMT)) throw new FilterError(`invalid bucket '${bucket}' (use hour, day, week, month, year)`);
     if (c.type !== null && !TIME.has(c.type)) throw new FilterError(`'${name}:${bucket}': '${name}' is not a date field`);
-    out.push({ alias, sql: `strftime('${BUCKET_FMT[bucket as Bucket]}', ${c.sql}, 'unixepoch')` });
+    out.push({ alias, sql: db.dialect.timeBucket(bucket as Bucket, c.sql), bucketed: true });
   }
   return out;
 }
@@ -137,7 +137,7 @@ function parseSort(raw: string | undefined, aliases: Set<string>, groups: GroupS
     // Time buckets read naturally oldest-first; other groups biggest-first.
     if (groups.length > 0) {
       const first = aggs[0]!;
-      clauses.push(groups[0]!.sql.startsWith("strftime(") ? `${q(groups[0]!.alias)} ASC` : `${q(first.alias)} DESC`);
+      clauses.push(groups[0]!.bucketed ? `${q(groups[0]!.alias)} ASC` : `${q(first.alias)} DESC`);
     }
   }
   return clauses.length > 0 ? `ORDER BY ${clauses.join(", ")}` : "";

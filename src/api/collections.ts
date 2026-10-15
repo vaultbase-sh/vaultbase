@@ -71,7 +71,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
             return { error: e.message, code: 422 };
           }
           // SQLite UNIQUE on collection name → friendly 400 instead of crashing
-          if (e instanceof Error && /UNIQUE constraint failed.*collections\.name/i.test(e.message)) {
+          if (db.dialect.isUniqueViolation(e, "name")) {
             set.status = 400;
             return { error: `A collection named '${body.name}' already exists`, code: 400 };
           }
@@ -122,7 +122,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
             set.status = 422;
             return { error: e.message, code: 422 };
           }
-          if (e instanceof Error && /UNIQUE constraint failed.*collections\.name/i.test(e.message)) {
+          if (db.dialect.isUniqueViolation(e, "name")) {
             set.status = 400;
             return { error: `A collection with that name already exists`, code: 400 };
           }

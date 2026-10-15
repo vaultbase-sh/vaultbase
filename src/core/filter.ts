@@ -1,5 +1,13 @@
 import type { AuthContext } from "./rules.ts";
 import type { Expr, Operand, AnyCmpOp, FieldModifier, AuthProp } from "./expression.ts";
+import { db, driverOpen } from "../db/index.ts";
+import { SQLITE_DIALECT } from "../db/sqlite.ts";
+import type { Dialect } from "../db/driver.ts";
+
+/** The open driver's dialect; SQLite's when nothing is open (rules compiled offline, tests). */
+function dialect(): Dialect {
+  return driverOpen() ? db.dialect : SQLITE_DIALECT;
+}
 import { requestMapHas, requestMapValue } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 
@@ -322,7 +330,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return compileCollectionRef(coll, ctx, (inner) => {
       if (op === "!~") {
         if (leftColl) return likeSql(inner, "~", other, ctx);
-        return `coalesce(${compileOperand(other, ctx)} LIKE ${sqlLikePattern(inner)}, 0)`;
+        return dialect().like(compileOperand(other, ctx), sqlLikePattern(inner));
       }
       const otherSql = compileOperand(other, ctx);
       return leftColl ? `${inner} = ${otherSql}` : `${otherSql} = ${inner}`;
@@ -371,7 +379,8 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
     const right = compileOperand(scalarOperand, ctx);
     cmp = `value ${sqlOpFor(op)} ${right}`;
   }
-  return `(json_array_length(${arraySql}) > 0 AND NOT EXISTS (SELECT 1 FROM json_each(${arraySql}) WHERE NOT (${cmp})))`;
+  const d = dialect();
+  return `(${d.jsonArrayLength(arraySql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${d.jsonEach(arraySql)} WHERE NOT (${cmp})))`;
 }
 
 /** `column ARRAY-OP value` — wraps in `EXISTS (... json_each ...)`. */
@@ -404,7 +413,7 @@ function compileArrayCmp(
   }
   // Splice inner params into outer in the right position.
   ctx.params.push(...inner);
-  return `EXISTS (SELECT 1 FROM json_each(${arraySql}) WHERE ${cmp})`;
+  return `EXISTS (SELECT 1 FROM ${dialect().jsonEach(arraySql)} WHERE ${cmp})`;
 }
 
 function compileOperand(op: Operand, ctx: CompileCtx): string {
@@ -461,7 +470,7 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
   let expr = baseCol;
   for (const seg of op.path) {
     if (!IDENT_RE.test(seg)) throw new Error(`invalid field path segment: ${seg}`);
-    expr = `json_extract(${expr}, '$.${seg}')`;
+    expr = dialect().jsonExtract(expr, `$.${seg}`);
   }
   return applyModifierToSql(expr, op.modifier);
 }
@@ -480,7 +489,7 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
  * to check it with) for non-admins.
  */
 function collectionRowGuard(collection: string, alias: string, ctx: CompileCtx): string {
-  if (!ctx.lookup) return ctx.auth?.type === "admin" ? "1" : "1=0";
+  if (!ctx.lookup) return ctx.auth?.type === "admin" ? dialect().always : dialect().never;
   const meta = ctx.lookup(collection);
   if (!meta) throw new Error(`unknown collection in @collection.*: ${collection}`);
   return joinedCollectionGuard(meta, collection, alias, ctx) ?? "1";
@@ -506,10 +515,10 @@ function joinedCollectionGuard(
     if (rule === null) continue;
     if (rule === "") {
       if (ctx.auth?.type === "admin") continue;
-      return "1=0";
+      return dialect().never;
     }
     const innerAst = parseExpression(rule);
-    if (!innerAst) return "1=0";
+    if (!innerAst) return dialect().never;
     const innerCtx: CompileCtx = guardCtx(ctx, {
       tableName: table,
       hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
@@ -559,7 +568,7 @@ function compileCollectionRef(
         ctx.hoist.joins.push(join);
       }
       let col = `${join.alias}.${escapeIdent(head)}`;
-      for (let i = 1; i < op.path.length; i++) col = `json_extract(${col}, '$.${op.path[i]}')`;
+      for (let i = 1; i < op.path.length; i++) col = dialect().jsonExtract(col, `$.${op.path[i]}`);
       return applyModifierToSql(col, op.modifier);
     }
     // `@collection.users.password_hash` is the same oracle as a local ref.
@@ -569,7 +578,7 @@ function compileCollectionRef(
     }
     let inner = `${escapeIdent(targetTable)}.${escapeIdent(head)}`;
     for (let i = 1; i < op.path.length; i++) {
-      inner = `json_extract(${inner}, '$.${op.path[i]}')`;
+      inner = dialect().jsonExtract(inner, `$.${op.path[i]}`);
     }
 
     if (negate) {
@@ -603,7 +612,7 @@ function compileCollectionRef(
       if (guard) where = ` WHERE ${guard}`;
     } else if (ctx.auth?.type !== "admin") {
       // No lookup + non-admin caller → admin-trust shortcut, deny.
-      where = " WHERE 1=0";
+      where = ` WHERE ${dialect().never}`;
     }
     return where;
     };
@@ -642,7 +651,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       : (() => {
           let inner = `${escapeIdent(targetTable)}.${escapeIdent(op.path[0]!)}`;
           for (let i = 1; i < op.path.length; i++) {
-            inner = `json_extract(${inner}, '$.${op.path[i]}')`;
+            inner = dialect().jsonExtract(inner, `$.${op.path[i]}`);
           }
           return inner;
         })();
@@ -670,13 +679,13 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       const guard = joinedCollectionGuard(meta, op.targetCollection, targetTable, ctx);
       if (guard) where += ` AND (${guard})`;
     } else if (ctx.auth?.type !== "admin") {
-      where += " AND 1=0";
+      where += ` AND ${dialect().never}`;
     }
 
     // 1000-row cap mirrors PB's hard cap to bound back-ref expansion cost.
     // The LIMIT sits on the rows being aggregated: on the aggregate itself
     // it would only limit its single output row and cap nothing.
-    const subq = `(SELECT json_group_array(_vb_v) FROM (SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000))`;
+    const subq = `(SELECT ${dialect().jsonGroupArray("_vb_v")} FROM (SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000) AS _vb_sub)`;
     return applyModifierToSql(subq, op.modifier);
   } finally {
     ctx.joinDepth--;
@@ -702,6 +711,7 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
   }
   if (op.name === "strftime") {
     if (op.args.length < 2) throw new Error("strftime expects at least 2 args");
+    if (dialect().name !== "sqlite") throw new Error("strftime() is not available on this database");
     const parts = op.args.map((a) => compileOperand(a, ctx));
     return `strftime(${parts.join(", ")})`;
   }
@@ -712,7 +722,7 @@ function applyModifierToSql(expr: string, m?: FieldModifier): string {
   if (!m) return expr;
   switch (m) {
     case "lower":  return `LOWER(${expr})`;
-    case "length": return `COALESCE(json_array_length(${expr}), length(${expr}))`;
+    case "length": return `COALESCE(${dialect().jsonArrayLength(expr)}, length(${expr}))`;
     case "isset":
     case "changed":
     case "each":
@@ -752,7 +762,7 @@ function applyModifierToValue(v: unknown, m?: FieldModifier): unknown {
  * in the rule engine.
  */
 function likeSql(leftSql: string, op: "~" | "!~", operand: Operand, ctx: CompileCtx): string {
-  const match = `coalesce(${leftSql} LIKE ${likeParam(operand, ctx)}, 0)`;
+  const match = dialect().like(leftSql, likeParam(operand, ctx));
   return op === "~" ? match : `NOT ${match}`;
 }
 

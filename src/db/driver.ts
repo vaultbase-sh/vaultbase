@@ -79,7 +79,21 @@ export interface Dialect {
   createIndex(index: IndexSpec): string;
   /** A query whose rows carry the table's column names in a `name` column. */
   listColumnsSql(table: string): string;
+  /** A view over a SELECT body, replacing an existing one of that name. */
+  createView(name: string, body: string): string;
+  /** `SELECT 1 …` with one `?` for the index name. */
+  indexExistsSql(): string;
+  /** Rows `{ name, sql }` for every index of the table named by one `?`. */
+  listIndexesSql(): string;
+  /** Statements that rename an index, given its current definition. */
+  renameIndex(name: string, newName: string, sql: string): string[];
+  /** A time bucket of an epoch-seconds expression, in one of the five formats of aggregate.ts. */
+  timeBucket(format: TimeBucket, expr: string): string;
+  /** Whether `e` is a unique-constraint failure; `column` narrows it to one column. */
+  isUniqueViolation(e: unknown, column?: string): boolean;
 }
+
+export type TimeBucket = "hour" | "day" | "week" | "month" | "year";
 
 export interface Capabilities {
   /** `VACUUM INTO`-style file backups and file-swap restore. */

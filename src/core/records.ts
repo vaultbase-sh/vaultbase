@@ -87,9 +87,14 @@ async function syncCountCache(): Promise<void> {
     takeReportedChanges();
     versionProbe = driver;
   }
-  const v = (await db.get<{ t: number; d: number; s: number }>(
-    `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
-  ))!;
+  // Without SQLite's counters the reported writes are the whole story: a
+  // write nobody reported (raw SQL) is not seen, which the per-table
+  // versions and the schema token bound to "stale until the next write".
+  const v = db.capabilities.foreignCommitProbe
+    ? (await db.get<{ t: number; d: number; s: number }>(
+        `SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s`,
+      ))!
+    : { t: 0, d: 0, s: db.schemaToken() };
   const reported = takeReportedChanges();
   const seen = countCacheSeen;
   // Another connection committed. On the main thread that is always
@@ -143,6 +148,8 @@ const ROWID_FIRST_OFFSET = 3000;
  * the other aliases); null when all three are taken.
  */
 function rowidAlias(fields: FieldDef[]): string | null {
+  const tie = db.dialect.tieBreak;
+  if (tie !== "rowid") return tie; // a real column (the primary key)
   const taken = new Set(fields.map((f) => f.name.toLowerCase()));
   return ["rowid", "_rowid_", "oid"].find((a) => !taken.has(a)) ?? null;
 }
@@ -555,6 +562,7 @@ function searchMatch(col: Collection, search: string | undefined): { table: stri
   if (search === undefined) return null;
   const query = toFtsQuery(search);
   if (!query) return null;
+  if (db.capabilities.fts === "none") throw new FilterError("full-text search is not available on this database");
   if (col.type === "view" || !hasFts(col.name)) {
     throw new FilterError(`collection '${col.name}' has no searchable fields`);
   }

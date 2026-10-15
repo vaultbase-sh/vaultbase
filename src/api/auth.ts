@@ -400,10 +400,16 @@ const EMAIL_COOLDOWN_SECONDS = 60;
  */
 async function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): Promise<boolean> {
   const since = Math.floor(Date.now() / 1000) - EMAIL_COOLDOWN_SECONDS;
+  // Only tokens issued before this one count, so parallel requests agree on
+  // one winner. SQLite has the insertion order (rowid); elsewhere the order
+  // is the second of issue, then the id, which within one second lets a
+  // request slip through at most until its own token is the oldest.
+  const earlier = db.dialect.tieBreak === "rowid"
+    ? `rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`
+    : `(created_at, id) < (SELECT created_at, id FROM vaultbase_auth_tokens WHERE id = ?)`;
   const row = (await db.get(
     `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
-      WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ?
-        AND rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`,
+      WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ? AND ${earlier}`,
     [userId, collectionId, purpose, since, id],
   )) as { n: number };
   return row.n === 0;
@@ -572,7 +578,7 @@ async function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], e
   const exact = await findUserByEmail(col, email);
   if (exact) return exact;
   const row = await db.get<{ id: string }>(
-    `SELECT id FROM "${userTableName(col.name)}" WHERE email = ? COLLATE NOCASE LIMIT 1`,
+    `SELECT id FROM "${userTableName(col.name)}" WHERE LOWER(email) = LOWER(?) LIMIT 1`,
     [email],
   );
   return row ? await findUserById(col, row.id) : null;

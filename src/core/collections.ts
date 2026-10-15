@@ -736,7 +736,7 @@ export async function createUserView(collectionName: string, query: string): Pro
   validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
   const body = query.trim().replace(/;\s*$/, "");
-  await db.exec(`CREATE VIEW IF NOT EXISTS ${tname} AS ${body}`);
+  await db.exec(db.dialect.createView(tname, body));
 }
 
 /** Drop the SQLite VIEW backing a view collection. */
@@ -767,12 +767,12 @@ export async function alterUserTable(
   // table use SQLite's inline constraint instead, which can't be dropped.
   const uniqueIndex = (field: string) => quoteIdent(`uq_${table}_${field}`);
   const hasUniqueIndex = async (field: string) =>
-    !!(await db.get(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`, [`uq_${table}_${field}`]));
+    !!(await db.get(db.dialect.indexExistsSql(), [`uq_${table}_${field}`]));
   const addUniqueIndex = async (field: string) => {
     try {
       await db.exec(db.dialect.createIndex({ name: uniqueIndex(field), table: tname, columns: [quoteIdent(field)], unique: true }));
     } catch (e) {
-      if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
+      if (db.dialect.isUniqueViolation(e)) {
         throw new CollectionValidationError({
           [field]: `Can't make '${field}' unique: existing records have duplicate values`,
         });
@@ -1048,12 +1048,10 @@ async function renameCollectionStorage(
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
       // under the new name from its stored definition.
-      const indexes = await db.all<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, [newTable]);
+      const indexes = await db.all<{ name: string; sql: string }>(db.dialect.listIndexesSql(), [newTable]);
       for (const { name, sql } of indexes) {
         if (!name.includes(oldTable)) continue;
-        const renamed = name.replace(oldTable, newTable);
-        await db.exec(`DROP INDEX ${quoteIdent(name)}`);
-        await db.exec(sql.replace(name, renamed));
+        for (const stmt of db.dialect.renameIndex(name, name.replace(oldTable, newTable), sql)) await db.exec(stmt);
       }
     }
     for (const u of relationUpdates) await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);

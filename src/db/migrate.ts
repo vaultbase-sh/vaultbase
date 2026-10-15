@@ -91,6 +91,14 @@ export async function runMigrations() {
 
   // ── v0.22.1: autodate fields get their column ──
   await ensureAutodateColumns();
+
+  // The settings store, read synchronously on every request: filled here
+  // for a driver that cannot answer synchronously (api/settings.ts). SQLite
+  // keeps filling it on first use, after any rows written directly.
+  if (db.name !== "sqlite") {
+    const { loadSettings } = await import("../api/settings.ts");
+    await loadSettings();
+  }
 }
 
 /**

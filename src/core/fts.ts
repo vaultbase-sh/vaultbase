@@ -58,7 +58,13 @@ export function searchableErrors(fields: readonly FieldLike[]): Record<string, s
 }
 
 /** Columns of the existing index, or null when there is none. */
+/** Whether the open driver has FTS5 at all; every function here is a no-op without it. */
+function available(): boolean {
+  return db.capabilities.fts === "fts5";
+}
+
 export function ftsColumns(collection: string): string[] | null {
+  if (!available()) return null;
   const exists = db.sync.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, [ftsTableName(collection)]);
   if (!exists) return null;
   const rows = db.sync.all<{ name: string }>(`PRAGMA table_info(${q(ftsTableName(collection))})`);
@@ -71,6 +77,7 @@ export function hasFts(collection: string): boolean {
 
 /** Drop the index and its triggers. Needed before dropping an indexed column. */
 export function dropFts(collection: string): void {
+  if (!available()) return;
   for (const t of triggerNames(collection)) db.sync.exec(`DROP TRIGGER IF EXISTS ${q(t)}`);
   db.sync.exec(`DROP TABLE IF EXISTS ${q(ftsTableName(collection))}`);
 }
@@ -81,6 +88,7 @@ export function dropFts(collection: string): void {
  * otherwise leave it alone. Idempotent; run at boot and after schema DDL.
  */
 export function syncFts(collection: string, fields: readonly FieldLike[]): void {
+  if (!available()) return;
   const cols = searchableColumns(fields);
   const current = ftsColumns(collection);
   const [ai, ad, au] = triggerNames(collection);

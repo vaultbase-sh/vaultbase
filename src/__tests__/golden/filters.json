@@ -514,26 +514,26 @@
   },
   "vb_gold_people | gold_via_author:length > 0": {
     "public": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     },
     "user": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     },
     "admin": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     }
   },
   "vb_gold_people | gold_via_author:length = 1000": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) = ?",
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) = ?",
     "params": [
       1000
     ]
@@ -547,7 +547,7 @@
     }
   },
   "vb_gold_people | gold_via_author.price:length > 0": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
     "params": [
       0
     ]
@@ -558,7 +558,7 @@
     }
   },
   "vb_gold_people | gold_via_editors:length > 0": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000))), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000)))) > ?",
+    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
     "params": [
       0
     ]

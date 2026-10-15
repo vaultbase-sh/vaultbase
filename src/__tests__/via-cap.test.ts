@@ -41,6 +41,6 @@ describe("_via_ cap", () => {
 
   it("puts the LIMIT on the rows, not on the aggregate", () => {
     const r = parseFilter(`posts_via_author:length > 0`, "vb_authors", { id: "x", type: "admin" });
-    expect(r?.sql).toMatch(/json_group_array\(_vb_v\) FROM \(SELECT .* LIMIT 1000\)\)/);
+    expect(r?.sql).toMatch(/json_group_array\(_vb_v\) FROM \(SELECT .* LIMIT 1000\) AS _vb_sub\)/);
   });
 });

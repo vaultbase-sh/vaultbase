@@ -18,7 +18,7 @@
  */
 import { SQL } from "bun";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TransactionOptions } from "./driver.ts";
+import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { toPositional } from "./placeholders.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
@@ -71,7 +71,8 @@ export const POSTGRES_DIALECT: Dialect = {
   quoteIdent,
   like: (left, pattern) => `COALESCE(${left} ILIKE ${pattern}, FALSE)`,
   jsonExtract: (expr, path) => `(${expr}::jsonb #>> ${jsonPathArray(path)})`,
-  jsonArrayLength: (expr) => `jsonb_array_length(${expr}::jsonb)`,
+  // NULL for anything that is not a JSON array, as SQLite answers, instead of a cast error.
+  jsonArrayLength: (expr) => `(CASE WHEN ${expr} LIKE '[%' THEN jsonb_array_length(${expr}::jsonb) END)`,
   jsonEach: (expr) => `jsonb_array_elements_text(${expr}::jsonb)`,
   jsonGroupArray: (expr) => `json_agg(${expr})`,
   createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
@@ -79,6 +80,24 @@ export const POSTGRES_DIALECT: Dialect = {
   createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,
   listColumnsSql: (table) =>
     `SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ${sqlLiteral(bareIdent(table))} ORDER BY ordinal_position`,
+  createView: (name, body) => `CREATE OR REPLACE VIEW ${name} AS ${body}`,
+  indexExistsSql: () => `SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?`,
+  listIndexesSql: () => `SELECT indexname AS name, indexdef AS sql FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ?`,
+  renameIndex: (name, newName) => [`ALTER INDEX ${quoteIdent(name)} RENAME TO ${quoteIdent(newName)}`],
+  timeBucket: (format, expr) => `to_char(to_timestamp(${expr}), '${PG_BUCKET[format]}')`,
+  isUniqueViolation: (e, column) =>
+    typeof e === "object" && e !== null && (e as { errno?: unknown }).errno === "23505" &&
+    (!column || String((e as { message?: string }).message).includes(`_${column}_`)),
+};
+
+// `to_char` formats for the five buckets. Weeks are ISO weeks here, where
+// SQLite counts weeks from the first Monday of the year.
+const PG_BUCKET: Record<TimeBucket, string> = {
+  hour: 'YYYY-MM-DD"T"HH24:00',
+  day: "YYYY-MM-DD",
+  week: 'IYYY-"W"IW',
+  month: "YYYY-MM",
+  year: "YYYY",
 };
 
 export const POSTGRES_CAPABILITIES: Capabilities = {
@@ -227,6 +246,9 @@ export class PostgresDriver implements DbDriver {
   }
 
   close(): void {
-    void this.pool.close({ timeout: 2 });
+    // Queries still in flight (side effects after a test, a request racing a
+    // shutdown) reject with "Connection closed"; that is their callers'
+    // problem, not an unhandled rejection of the close itself.
+    this.pool.close({ timeout: 2 }).catch(() => { /* already closed */ });
   }
 }
