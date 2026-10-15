@@ -4,7 +4,8 @@
  * were never stored.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, getCollection, updateCollection } from "../core/collections.ts";
 import { createRecord, getRecord, updateRecord, listRecords } from "../core/records.ts";
@@ -36,7 +37,7 @@ describe("autodate", () => {
     expect(stored["published_at"]).toBeGreaterThanOrEqual(before);
     expect(stored["touched_at"]).toBeGreaterThanOrEqual(before);
     expect(stored["never"]).toBeNull();
-    getRawClient().prepare(`UPDATE "vb_posts" SET "touched_at" = 1, "published_at" = 1 WHERE "id" = ?`).run(rec.id);
+    await db.run(`UPDATE "vb_posts" SET "touched_at" = 1, "published_at" = 1 WHERE "id" = ?`, [rec.id]);
     await updateRecord("posts", rec.id, { title: "b" });
     const after = (await getRecord("posts", rec.id))!;
     expect(after["published_at"]).toBe(1);
@@ -65,9 +66,9 @@ describe("autodate", () => {
   });
 
   it("gets its column at boot on a collection created before the fix", async () => {
-    getRawClient().exec(`ALTER TABLE "vb_posts" DROP COLUMN "published_at"`);
+    await db.exec(`ALTER TABLE "vb_posts" DROP COLUMN "published_at"`);
     await runMigrations();
-    const cols = (getRawClient().query(`PRAGMA table_info("vb_posts")`).all() as Array<{ name: string }>).map((c) => c.name);
+    const cols = (await db.all<{ name: string }>(db.dialect.listColumnsSql("vb_posts"))).map((c) => c.name);
     expect(cols).toContain("published_at");
   });
 });

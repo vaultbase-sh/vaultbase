@@ -4,6 +4,7 @@
  * indexes created, one-off migrations recorded in vaultbase_migrations.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { closeDb, getRawClient, initDb } from "../db/client.ts";
 import { runMigrations, runOnce } from "../db/migrate.ts";
 import { columnSpecs, ensureFixedSchema, tableName } from "../db/ddl.ts";
@@ -18,7 +19,7 @@ afterEach(async () => { _resetCollectionCache(); await closeDb(); });
 const columnsOf = (table: string) =>
   (getRawClient().prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((c) => c.name);
 
-describe("fixed schema", () => {
+describe.skipIf(!onSqlite)("fixed schema", () => {
   it("adds the columns an older database is missing, in the declared shape", async () => {
     // A v0.10-era collections table: no history_enabled, no view_query.
     getRawClient().exec(`CREATE TABLE vaultbase_collections (

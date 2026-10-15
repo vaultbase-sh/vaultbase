@@ -2,6 +2,7 @@
  * Scheduled backups: snapshot, retention, schedule claim, admin API.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -50,7 +51,7 @@ async function adminReq(method: string, path: string, body?: unknown): Promise<R
   });
 }
 
-describe("runBackup", () => {
+describe.skipIf(!onSqlite)("runBackup", () => {
   it("writes a restorable snapshot", async () => {
     setSetting("probe", "hello");
     const info = await runBackup();
@@ -80,7 +81,7 @@ describe("runBackup", () => {
   });
 });
 
-describe("backupTick", () => {
+describe.skipIf(!onSqlite)("backupTick", () => {
   it("does nothing while disabled", async () => {
     expect(await backupTick()).toBeNull();
     expect(getSetting("backups.next_run", "")).toBe("");
@@ -110,7 +111,7 @@ describe("backupTick", () => {
   });
 });
 
-describe("admin API", () => {
+describe.skipIf(!onSqlite)("admin API", () => {
   it("rejects anonymous callers", async () => {
     const res = await makeBackupPlugin(SECRET, dbPath).handle(new Request("http://localhost/admin/backups"));
     expect(res.status).toBe(401);
@@ -167,7 +168,7 @@ describe("admin API", () => {
   });
 });
 
-describe("settings validation", () => {
+describe.skipIf(!onSqlite)("settings validation", () => {
   it("rejects a bad cron or keep", async () => {
     const app = makeSettingsPlugin(SECRET);
     expect((await app.handle(await adminReq("PATCH", "/admin/settings", { "backups.cron": "nope" }))).status).toBe(422);

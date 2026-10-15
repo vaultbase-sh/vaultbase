@@ -6,6 +6,7 @@
  * killed when the budget runs out.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -45,7 +46,7 @@ async function ticksDuring<T>(p: () => Promise<T>): Promise<{ value: T; ticks: n
   }
 }
 
-describe("SQL time budget", () => {
+describe.skipIf(!onSqlite)("SQL time budget", () => {
   it("read-only: a runaway query times out and the server keeps serving", async () => {
     const t0 = Date.now();
     const { value, ticks } = await ticksDuring(() => runSql({ sql: RUNAWAY, dbPath, mode: "readonly", timeoutMs: 500 }));
@@ -81,7 +82,7 @@ describe("SQL time budget", () => {
   });
 });
 
-describe("sandbox isolation", () => {
+describe.skipIf(!onSqlite)("sandbox isolation", () => {
   it("ATTACH can't reach the live database from the sandbox", async () => {
     resetSandbox("a1", dbPath);
     const r = await runSql({ sql: `ATTACH DATABASE '${dbPath}' AS live`, dbPath, adminId: "a1", mode: "sandbox" });
@@ -109,7 +110,7 @@ describe("sandbox isolation", () => {
   });
 });
 
-describe("sandbox keyword check can't be smuggled past", () => {
+describe.skipIf(!onSqlite)("sandbox keyword check can't be smuggled past", () => {
   it("a '--' inside a string doesn't hide a following ATTACH (review 07 payload)", async () => {
     resetSandbox("a1", dbPath);
     const payload = `CREATE TABLE p (x); INSERT INTO p VALUES ('--'); ATTACH '${dbPath}' AS live; DELETE FROM live.vaultbase_admin`;
@@ -137,7 +138,7 @@ describe("sandbox keyword check can't be smuggled past", () => {
   });
 });
 
-describe("concurrent sandbox queries", () => {
+describe.skipIf(!onSqlite)("concurrent sandbox queries", () => {
   it("two writes in flight at once both land", async () => {
     resetSandbox("a1", dbPath);
     await runSql({ sql: "CREATE TABLE c (x)", dbPath, adminId: "a1", mode: "sandbox" });
@@ -147,7 +148,7 @@ describe("concurrent sandbox queries", () => {
   });
 });
 
-describe("sandbox details (review 08)", () => {
+describe.skipIf(!onSqlite)("sandbox details (review 08)", () => {
   it("CREATE TRIGGER with a multi-statement body is one statement", async () => {
     resetSandbox("a1", dbPath);
     await runSql({ sql: "CREATE TABLE tr (x)", dbPath, adminId: "a1", mode: "sandbox" });

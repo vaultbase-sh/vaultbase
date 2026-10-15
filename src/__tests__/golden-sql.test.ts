@@ -22,7 +22,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 import { parseFilter, type CollectionLookup, type ParseFilterOpts } from "../core/filter.ts";
 import type { AuthContext } from "../core/rules.ts";
-import { createPublicCollection } from "./_helpers.ts";
+import { onSqlite, createPublicCollection } from "./_helpers.ts";
 import { db } from "../db/index.ts";
 import { createRecord, deleteRecord, getRecord, listRecords, updateRecord } from "../core/records.ts";
 
@@ -257,7 +257,7 @@ function compile(c: Case, caller: "public" | "user" | "admin"): unknown {
   }
 }
 
-describe("golden SQL", () => {
+describe.skipIf(!onSqlite)("golden SQL", () => {
   beforeEach(async () => {
     await initDb(":memory:");
     await runMigrations();
@@ -304,7 +304,7 @@ describe("golden SQL", () => {
  * and a cascading delete. The sequence is run once untraced so every cache
  * (settings, totals, columns, statements) is warm, then once traced.
  */
-describe("golden SQL: operations", () => {
+describe.skipIf(!onSqlite)("golden SQL: operations", () => {
   const CASCADE_PEOPLE = [{ name: "name", type: "text" }];
   const CASCADE_GOLD = GOLD_FIELDS.map((f) => (f.name === "author" ? { ...f, options: { cascade: "cascade" } } : f));
 

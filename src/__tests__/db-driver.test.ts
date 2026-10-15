@@ -5,6 +5,7 @@
  * reopened database.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { closeDb, getRawClient, initDb } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { _resetTableWrites, tableVersion, takeReportedChanges } from "../core/table-writes.ts";
@@ -19,7 +20,7 @@ afterEach(async () => {
   _resetTableWrites();
 });
 
-describe("facade", () => {
+describe.skipIf(!onSqlite)("facade", () => {
   it("throws before initDb and after closeDb", async () => {
     await closeDb();
     expect(() => db.all("SELECT 1")).toThrow(/not initialized/);
@@ -48,7 +49,7 @@ describe("facade", () => {
   });
 });
 
-describe("SQLite driver", () => {
+describe.skipIf(!onSqlite)("SQLite driver", () => {
   it("returns plain values, not promises, on every call", () => {
     const run = db.run(`INSERT INTO t (name) VALUES (?)`, ["a"]);
     expect(run).not.toBeInstanceOf(Promise);

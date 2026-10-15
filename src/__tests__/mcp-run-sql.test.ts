@@ -7,6 +7,7 @@
  * database file.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -44,7 +45,7 @@ async function runSql(scopes: string[], args: Record<string, unknown>): Promise<
 
 const count = () => (getRawClient().query("SELECT count(*) AS n FROM t").get() as { n: number }).n;
 
-describe("MCP run_sql", () => {
+describe.skipIf(!onSqlite)("MCP run_sql", () => {
   it("allow_write needs mcp:admin; mcp:sql alone can't write", async () => {
     const r = await runSql(["mcp:sql"], { query: "DELETE FROM t", allow_write: true });
     expect(r.isError).toBe(true);

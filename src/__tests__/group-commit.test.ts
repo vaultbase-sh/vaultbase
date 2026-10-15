@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -33,7 +34,7 @@ const insert = (v: string) => withSharedWrite(async () => {
   getRawClient().query("INSERT INTO t (v) VALUES (?)").run(v);
 });
 
-describe("group commit", () => {
+describe.skipIf(!onSqlite)("group commit", () => {
   test("concurrent writes share one transaction and are committed when they return", async () => {
     const commits: number[] = [];
     const writes = Array.from({ length: 20 }, (_, i) => insert(`v${i}`).then(() => commits.push(committedCount())));

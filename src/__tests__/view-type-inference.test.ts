@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getDb } from "../db/client.ts";
-import type { Database } from "bun:sqlite";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, inferViewFields, parseFields } from "../core/collections.ts";
 
@@ -11,18 +11,13 @@ beforeEach(async () => {
 
 afterEach(() => closeDb());
 
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
-
 /**
  * Build a raw source table so each column's storage type is exactly what we
  * want — bypassing records.ts encoders (which would, e.g., serialize JSON to
  * a TEXT BLOB on the way in).
  */
-function seedSource(): void {
-  const client = rawClient();
-  client.exec(`
+async function seedSource(): Promise<void> {
+  await db.exec(`
     CREATE TABLE src (
       id TEXT PRIMARY KEY,
       title TEXT,
@@ -38,9 +33,9 @@ function seedSource(): void {
       empty_col TEXT
     )
   `);
-  client.prepare(
-    `INSERT INTO src VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+  await db.run(
+    `INSERT INTO src VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
     "r1",
     "hi",
     42,
@@ -52,13 +47,14 @@ function seedSource(): void {
     "2026-04-27T10:00:00Z",
     1,                            // is_admin — bool by name hint
     1,                            // flag_count — number, no bool name hint
-    null
+    null,
+    ],
   );
 }
 
 describe("inferViewFields()", () => {
   it("classifies number, url, email, json, date, and text from a sample row", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(
       `SELECT id, title, score, link, contact, body, published_at, iso_when FROM src`
     );
@@ -75,20 +71,20 @@ describe("inferViewFields()", () => {
   });
 
   it("falls back to text when the sample row is all-null for a column", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT empty_col FROM src`);
     expect(fields).toHaveLength(1);
     expect(fields[0]).toMatchObject({ name: "empty_col", type: "text" });
   });
 
   it("falls back to text when the query returns no rows", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT title, score FROM src WHERE 1 = 0`);
     expect(fields.map((f) => f.type)).toEqual(["text", "text"]);
   });
 
   it("treats integer 0/1 as bool when column name hints (is_*), as number otherwise", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT is_admin, flag_count, active FROM src`);
     const byName = new Map(fields.map((f) => [f.name, f.type]));
     expect(byName.get("is_admin")).toBe("bool");
@@ -102,19 +98,19 @@ describe("inferViewFields()", () => {
     // boolean we exercise classifyValue indirectly by selecting a JSON object
     // through json_extract — but easier: just verify the algorithm via a SELECT
     // that returns boolean-ish numbers under a `*_enabled` name.
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT is_admin AS feature_enabled FROM src`);
     expect(fields[0]).toMatchObject({ name: "feature_enabled", type: "bool" });
   });
 
   it("recognizes ISO-8601 date strings as date", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT iso_when FROM src`);
     expect(fields[0]).toMatchObject({ name: "iso_when", type: "date" });
   });
 
   it("recognizes 10-digit unix timestamps in *_at columns as date", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT published_at FROM src`);
     expect(fields[0]).toMatchObject({ name: "published_at", type: "date" });
     // Same number, different name → number
@@ -123,15 +119,14 @@ describe("inferViewFields()", () => {
   });
 
   it("recognizes JSON-shaped strings as json (object and array)", async () => {
-    const client = rawClient();
-    client.exec(`CREATE TABLE jsrc (a TEXT, b TEXT)`);
-    client.prepare(`INSERT INTO jsrc VALUES (?, ?)`).run(`{"k":1}`, `[1,2,3]`);
+    await db.exec(`CREATE TABLE jsrc (a TEXT, b TEXT)`);
+    await db.run(`INSERT INTO jsrc VALUES (?, ?)`, [`{"k":1}`, `[1,2,3]`]);
     const fields = await inferViewFields(`SELECT a, b FROM jsrc`);
     expect(fields.map((f) => f.type)).toEqual(["json", "json"]);
   });
 
   it("recognizes URL and email strings", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT link, contact FROM src`);
     const byName = new Map(fields.map((f) => [f.name, f.type]));
     expect(byName.get("link")).toBe("url");
@@ -139,17 +134,16 @@ describe("inferViewFields()", () => {
   });
 
   it("classifies plain strings as text", async () => {
-    seedSource();
+    await seedSource();
     const fields = await inferViewFields(`SELECT title FROM src`);
     expect(fields[0]).toMatchObject({ name: "title", type: "text" });
   });
 
   it("filters meta columns (id, created, created_at, updated, updated_at)", async () => {
-    const client = rawClient();
-    client.exec(`
+    await db.exec(`
       CREATE TABLE m (id TEXT, created INTEGER, created_at INTEGER, updated INTEGER, updated_at INTEGER, payload TEXT)
     `);
-    client.prepare(`INSERT INTO m VALUES (?, ?, ?, ?, ?, ?)`).run("1", 1, 1, 1, 1, "x");
+    await db.run(`INSERT INTO m VALUES (?, ?, ?, ?, ?, ?)`, ["1", 1, 1, 1, 1, "x"]);
     const fields = await inferViewFields(`SELECT id, created, created_at, updated, updated_at, payload FROM m`);
     expect(fields.map((f) => f.name)).toEqual(["payload"]);
   });
@@ -157,7 +151,7 @@ describe("inferViewFields()", () => {
 
 describe("createCollection (view) — uses inferViewFields", () => {
   it("populates typed fields when caller omits explicit fields", async () => {
-    seedSource();
+    await seedSource();
     const col = await createCollection({
       name: "post_view",
       type: "view",

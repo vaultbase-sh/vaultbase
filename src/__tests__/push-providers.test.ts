@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { eq } from "drizzle-orm";
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { setSetting } from "../api/settings.ts";
@@ -72,15 +73,14 @@ describe("registered push providers", () => {
 
   it("disables the device tokens a provider reports as dead", async () => {
     setSetting("notifications.providers.pager.enabled", "1");
-    const db = getRawClient();
-    db.exec(`CREATE TABLE vb_device_tokens (id TEXT PRIMARY KEY, user TEXT, provider TEXT, token TEXT, enabled INTEGER)`);
-    db.exec(`INSERT INTO vb_device_tokens VALUES ('t1', 'user-1', 'pager', 'abc', 1)`);
+    await db.exec(`CREATE TABLE vb_device_tokens (id TEXT PRIMARY KEY, user TEXT, provider TEXT, token TEXT, enabled INTEGER)`);
+    await db.exec(`INSERT INTO vb_device_tokens VALUES ('t1', 'user-1', 'pager', 'abc', 1)`);
     respond = () => ({ ok: true, delivered: 0, message: "gone", invalidTokens: ["t1"] });
 
     const out = await dispatchNotification("user-1", { title: "Hi", body: "x" }, { inbox: false, providers: ["pager"] });
     startQueueScheduler();
     await waitForStatus(out.enqueued[0]!.jobId, "succeeded");
-    expect((db.prepare(`SELECT enabled FROM vb_device_tokens WHERE id = 't1'`).get() as { enabled: number }).enabled).toBe(0);
+    expect((await db.get<{ enabled: number }>(`SELECT enabled FROM vb_device_tokens WHERE id = 't1'`))!.enabled).toBe(0);
   });
 
   it("ignores provider names nobody registered", async () => {

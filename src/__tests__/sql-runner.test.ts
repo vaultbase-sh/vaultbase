@@ -7,6 +7,7 @@
  * exercised separately in sql-http.test.ts.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -70,7 +71,7 @@ afterEach(async () => {
 
 // ── detectMutation ───────────────────────────────────────────────────────
 
-describe("detectMutation", () => {
+describe.skipIf(!onSqlite)("detectMutation", () => {
   it("flags INSERT/UPDATE/DELETE/DROP", () => {
     expect(detectMutation("INSERT INTO t VALUES (1)")).toBe("INSERT");
     expect(detectMutation("update t set x = 1")).toBe("UPDATE");
@@ -97,7 +98,7 @@ describe("detectMutation", () => {
 
 // ── readonly mode ────────────────────────────────────────────────────────
 
-describe("runSql — read-only mode", () => {
+describe.skipIf(!onSqlite)("runSql — read-only mode", () => {
   it("returns rows with columns + row count for a SELECT", async () => {
     const res = await runSql({
       sql: "SELECT 1 AS one, 'two' AS two",
@@ -153,7 +154,7 @@ describe("runSql — read-only mode", () => {
 
 // ── sandbox mode ─────────────────────────────────────────────────────────
 
-describe("runSql — sandbox mode", () => {
+describe.skipIf(!onSqlite)("runSql — sandbox mode", () => {
   it("returns 'no sandbox' error when adminId missing or sandbox unset", async () => {
     const res = await runSql({
       sql: "SELECT 1",
@@ -224,7 +225,7 @@ describe("runSql — sandbox mode", () => {
 
 // ── sandbox lifecycle ────────────────────────────────────────────────────
 
-describe("sandbox lifecycle", () => {
+describe.skipIf(!onSqlite)("sandbox lifecycle", () => {
   it("describe + reset + drop", async () => {
     const me = await seedAdmin();
 
@@ -257,7 +258,7 @@ describe("sandbox lifecycle", () => {
 
 // ── saved queries ────────────────────────────────────────────────────────
 
-describe("saved queries — CRUD", () => {
+describe.skipIf(!onSqlite)("saved queries — CRUD", () => {
   it("create + list scoped to owner", async () => {
     const a1 = await seedAdmin("a1");
     const a2 = await seedAdmin("a2");
@@ -343,7 +344,7 @@ import Elysia from "elysia";
 import { signAuthToken } from "../core/sec.ts";
 import { makeSqlPlugin } from "../api/sql.ts";
 
-describe("/admin/sql/schema endpoint", () => {
+describe.skipIf(!onSqlite)("/admin/sql/schema endpoint", () => {
   function mkApp(): Elysia {
     return new Elysia()
       .group("/api/v1", (app) => app.use(makeSqlPlugin("test-secret-sql-schema", dbPath))) as unknown as Elysia;

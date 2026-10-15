@@ -5,7 +5,8 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import Elysia from "elysia";
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { admin, auditLog } from "../db/schema.ts";
 import { makeAuditLogPlugin } from "../api/audit-log.ts";
@@ -50,20 +51,21 @@ describe("audit actor", () => {
 });
 
 describe("audit retention", () => {
-  const insertAt = (id: string, at: number) => getRawClient().prepare(
+  const insertAt = (id: string, at: number) => db.run(
     `INSERT INTO vaultbase_audit_log (id, method, path, action, status, at) VALUES (?, 'POST', '/x', 'x', 200, ?)`,
-  ).run(id, at);
+    [id, at],
+  );
 
   it("keeps everything by default", async () => {
-    insertAt("old", 1);
+    await insertAt("old", 1);
     await pruneHistory();
     expect((await getDb().select().from(auditLog)).length).toBe(1);
   });
 
   it("drops entries older than audit.retention_days when set", async () => {
     const now = Math.floor(Date.now() / 1000);
-    insertAt("old", now - 40 * 86400);
-    insertAt("new", now - 86400);
+    await insertAt("old", now - 40 * 86400);
+    await insertAt("new", now - 86400);
     setSetting("audit.retention_days", "30");
     const r = await pruneHistory();
     expect(r.auditEntries).toBe(1);

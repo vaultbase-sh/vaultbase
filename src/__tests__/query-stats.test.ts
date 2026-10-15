@@ -13,7 +13,7 @@ import { queryStatsReport, resetQueryStats, analyzePlan, constrainedColumns, SUG
 import { createCollectionIndex, makeIndexesPlugin, IndexError } from "../api/indexes.ts";
 import { makeMetricsPlugin } from "../api/metrics.ts";
 import { signAuthToken } from "../core/sec.ts";
-import { createPublicCollection } from "./_helpers.ts";
+import { onSqlite, createPublicCollection } from "./_helpers.ts";
 
 const SECRET = "test-secret-query-stats";
 
@@ -52,7 +52,7 @@ afterEach(async () => {
   await closeDb();
 });
 
-describe("query stats", () => {
+describe.skipIf(!onSqlite)("query stats", () => {
   it("records a shape per SQL with count, mean and max", async () => {
     await seedPosts(50);
     await listRecords("posts", { filter: 'status = "published"' });
@@ -174,7 +174,7 @@ describe("query stats", () => {
   });
 });
 
-describe("plan analysis", () => {
+describe.skipIf(!onSqlite)("plan analysis", () => {
   it("tells scans from seeks and spots temp sorts", () => {
     expect(analyzePlan(["SCAN vb_posts", "USE TEMP B-TREE FOR ORDER BY"], "vb_posts")).toEqual({ fullScan: true, indexScan: false, temp_sort: true });
     expect(analyzePlan(["SCAN vb_posts USING INDEX idx_vb_posts_created_at"], "vb_posts")).toEqual({ fullScan: false, indexScan: true, temp_sort: false });
@@ -191,7 +191,7 @@ describe("plan analysis", () => {
   });
 });
 
-describe("composite indexes", () => {
+describe.skipIf(!onSqlite)("composite indexes", () => {
   it("creates an index over several fields in order and lists it", async () => {
     await seedPosts(10);
     const col = (await getCollection("posts"))!;
@@ -235,7 +235,7 @@ describe("composite indexes", () => {
   });
 });
 
-describe("GET /_/metrics/queries", () => {
+describe.skipIf(!onSqlite)("GET /_/metrics/queries", () => {
   it("returns the report to admins only", async () => {
     await seedPosts(10);
     await listRecords("posts", {});

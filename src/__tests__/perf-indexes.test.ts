@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, updateCollection, _resetCollectionCache } from "../core/collections.ts";
@@ -28,7 +29,7 @@ afterEach(async () => {
   await closeDb();
 });
 
-describe("record table indexes", () => {
+describe.skipIf(!onSqlite)("record table indexes", () => {
   it("the default sort on created_at uses an index", async () => {
     await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
     const p = plan(`SELECT * FROM "vb_posts" ORDER BY "created_at" DESC LIMIT 30`);
@@ -51,7 +52,7 @@ describe("record table indexes", () => {
   });
 });
 
-describe("vaultbase_files indexes", () => {
+describe.skipIf(!onSqlite)("vaultbase_files indexes", () => {
   it("lookup by filename uses an index", () => {
     expect(plan(`SELECT * FROM vaultbase_files WHERE filename = ?`, "x.png")).toContain("USING INDEX");
   });

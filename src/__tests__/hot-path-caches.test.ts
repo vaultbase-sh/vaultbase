@@ -4,7 +4,8 @@
  * source changes.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, cachedFields, getCollection, privateFieldNames } from "../core/collections.ts";
 import { getSetting, setSetting, _resetSettingsCache, _reloadSettings, loadSettings, invalidateSetting, getAllSettings } from "../api/settings.ts";
@@ -26,11 +27,11 @@ afterEach(async () => {
 });
 
 describe("settings cache", () => {
-  it("a write through setSetting is visible at once, a direct write after the reset hook", () => {
+  it("a write through setSetting is visible at once, a direct write after the reset hook", async () => {
     expect(getSetting("app.name", "dflt")).toBe("dflt");
     setSetting("app.name", "one");
     expect(getSetting("app.name", "dflt")).toBe("one");
-    getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`).run();
+    await db.run(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`);
     expect(getSetting("app.name", "dflt")).toBe("one");
     _resetSettingsCache();
     expect(getSetting("app.name", "dflt")).toBe("two");
@@ -38,14 +39,14 @@ describe("settings cache", () => {
 
   it("the background reload and invalidateSetting pick up a direct write; loadSettings fills the store at boot", async () => {
     setSetting("app.name", "one");
-    getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`).run();
+    await db.run(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`);
     expect(getSetting("app.name", "dflt")).toBe("one");
     await _reloadSettings();
     expect(getSetting("app.name", "dflt")).toBe("two");
-    getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'three' WHERE key = 'app.name'`).run();
+    await db.run(`UPDATE vaultbase_settings SET value = 'three' WHERE key = 'app.name'`);
     await invalidateSetting("app.name");
     expect(getSetting("app.name", "dflt")).toBe("three");
-    getRawClient().prepare(`DELETE FROM vaultbase_settings WHERE key = 'app.name'`).run();
+    await db.run(`DELETE FROM vaultbase_settings WHERE key = 'app.name'`);
     await invalidateSetting("app.name");
     expect(getSetting("app.name", "dflt")).toBe("dflt");
     setSetting("app.name", "four");
@@ -94,7 +95,7 @@ describe("tableColumns cache", () => {
     const a = tableColumns("posts");
     expect(a).toContain("title");
     expect(tableColumns("posts")).toBe(a);
-    getRawClient().exec(`ALTER TABLE "vb_posts" ADD COLUMN "extra" TEXT`);
+    await db.exec(`ALTER TABLE "vb_posts" ADD COLUMN "extra" TEXT`);
     expect(tableColumns("posts")).toContain("extra");
   });
 });

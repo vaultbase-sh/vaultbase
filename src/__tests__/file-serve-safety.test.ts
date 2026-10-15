@@ -12,7 +12,8 @@
  * genuinely *was* text/html, so there was nothing to sniff.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, _resetCollectionCache } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
@@ -155,7 +156,7 @@ describe("stored extensions come from the MIME, not the filename", () => {
     // Full upload flow is covered end-to-end elsewhere; here we assert the
     // invariant that matters: no stored filename ends in an executable type.
     await plant("a.png", "image/png", "x");
-    const rows = getRawClient().prepare("SELECT filename FROM vaultbase_files").all() as Array<{ filename: string }>;
+    const rows = await db.all<{ filename: string }>("SELECT filename FROM vaultbase_files");
     for (const r of rows) {
       expect(r.filename).not.toMatch(/\.(html?|xhtml|svg|js|mjs)$/i);
     }

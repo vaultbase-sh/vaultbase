@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, getCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
@@ -55,8 +56,7 @@ describe("POST /api/auth/:collection/promote", () => {
     expect(payload["email"]).toBe("real@test.local");
 
     // DB row flipped — read from per-collection table.
-    const row = getRawClient().prepare(`SELECT email, is_anonymous FROM vb_users WHERE id = ?`).get(id) as
-      { email: string; is_anonymous: number } | undefined;
+    const row = await db.get<{ email: string; is_anonymous: number }>(`SELECT email, is_anonymous FROM vb_users WHERE id = ?`, [id]);
     expect(row?.is_anonymous).toBe(0);
     expect(row?.email).toBe("real@test.local");
   });

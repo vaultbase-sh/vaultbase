@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -83,7 +84,7 @@ describe("bootstrapNotificationCollections", () => {
     expect(provider?.options?.values).toEqual(["fcm", "apns"]);
   });
 
-  it("creates the underlying SQL tables (vb_notifications, vb_device_tokens)", async () => {
+  it.skipIf(!onSqlite)("creates the underlying SQL tables (vb_notifications, vb_device_tokens)", async () => {
     await bootstrapNotificationCollections();
     const client = (getDb() as unknown as { $client: import("bun:sqlite").Database }).$client;
     const rows = client

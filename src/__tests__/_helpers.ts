@@ -98,3 +98,6 @@ export async function signUserJwt(
 export function hashedTokenId(raw: string): string {
   return "h:" + new Bun.CryptoHasher("sha256").update(raw).digest("hex");
 }
+
+/** The driver the suite runs on: SQLite unless VAULTBASE_TEST_DB names a Postgres server. */
+export const onSqlite = !/^postgres/i.test(process.env["VAULTBASE_TEST_DB"] ?? "");

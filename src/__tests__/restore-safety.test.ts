@@ -6,6 +6,7 @@
  * swapped the database under one worker only.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -46,7 +47,7 @@ async function restoreLatest(): Promise<Response> {
   }));
 }
 
-describe("restore", () => {
+describe.skipIf(!onSqlite)("restore", () => {
   it("keeps revocations made after the backup", async () => {
     await runBackup();
     const exp = Math.floor(Date.now() / 1000) + 3600;
@@ -71,7 +72,7 @@ describe("restore", () => {
   });
 });
 
-describe("restore keeps sign-out-everywhere (review 17 F-3)", () => {
+describe.skipIf(!onSqlite)("restore keeps sign-out-everywhere (review 17 F-3)", () => {
   it("an admin token ended by a password_reset_at bump stays dead after restore", async () => {
     const { verifyAuthToken } = await import("../core/sec.ts");
     const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 3600, jwtSecret: SECRET });

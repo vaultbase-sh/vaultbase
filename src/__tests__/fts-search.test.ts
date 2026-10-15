@@ -3,11 +3,13 @@
  * `?search=` on the list endpoint.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import {
@@ -98,7 +100,7 @@ describe("index lifecycle", () => {
     expect(hasFts("memos")).toBe(false);
   });
 
-  it("is restored at boot if missing", async () => {
+  it.skipIf(!onSqlite)("is restored at boot if missing", async () => {
     await notes();
     await createRecord("notes", { title: "boot check" });
     getRawClient().exec(`DROP TABLE vb_notes_fts`);
@@ -135,7 +137,7 @@ describe("search", () => {
     expect(await ids("before")).toEqual([]);
     expect(await ids("after")).toEqual(["after"]);
     // Writes that skip the records API are covered by the triggers too.
-    getRawClient().prepare(`UPDATE vb_notes SET title = 'raw sql' WHERE id = ?`).run(String(r.id));
+    await db.run(`UPDATE vb_notes SET title = 'raw sql' WHERE id = ?`, [String(r.id)]);
     expect(await ids("raw")).toEqual(["raw sql"]);
     await deleteRecord("notes", String(r.id));
     expect(await ids("raw")).toEqual([]);

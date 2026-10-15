@@ -6,6 +6,7 @@
  * lock failed at once with SQLITE_BUSY.
  */
 import { describe, expect, it } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -13,7 +14,7 @@ import { join } from "path";
 import { addColumn } from "../db/migrate.ts";
 import { initDb, closeDb } from "../db/client.ts";
 
-describe("addColumn", () => {
+describe.skipIf(!onSqlite)("addColumn", () => {
   it("tolerates a column that already exists (legitimate path)", () => {
     const db = new Database(":memory:");
     db.exec("CREATE TABLE t (a TEXT)");
@@ -30,7 +31,7 @@ describe("addColumn", () => {
   });
 });
 
-describe("opening a locked database", () => {
+describe.skipIf(!onSqlite)("opening a locked database", () => {
   it("waits for the lock instead of failing with SQLITE_BUSY", async () => {
     const dir = mkdtempSync(join(tmpdir(), "vb-busy-"));
     const path = join(dir, "data.db");

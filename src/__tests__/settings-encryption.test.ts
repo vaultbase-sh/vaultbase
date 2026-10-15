@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import {
@@ -71,14 +72,11 @@ describe("shouldEncryptSettingKey", () => {
 describe("setSetting / getSetting with encryption key set", () => {
   beforeEach(() => { process.env["VAULTBASE_ENCRYPTION_KEY"] = TEST_KEY; });
 
-  it("encrypts a secret-shaped value at rest, returns plaintext on read", () => {
+  it("encrypts a secret-shaped value at rest, returns plaintext on read", async () => {
     setSetting("smtp.password", "hunter2");
 
     // Raw row in SQLite must NOT be the plaintext.
-    const { getDb } = require("../db/client.ts");
-    const raw = (getDb() as any).$client
-      .prepare(`SELECT value FROM vaultbase_settings WHERE key = ?`)
-      .get("smtp.password") as { value: string };
+    const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, ["smtp.password"]))!;
     expect(raw.value).not.toBe("hunter2");
     expect(isEncrypted(raw.value)).toBe(true);
 
@@ -86,11 +84,9 @@ describe("setSetting / getSetting with encryption key set", () => {
     expect(getSetting("smtp.password", "")).toBe("hunter2");
   });
 
-  it("does not encrypt non-secret keys even with key set", () => {
+  it("does not encrypt non-secret keys even with key set", async () => {
     setSetting("theme.accent", "#ff00ff");
-    const raw = (require("../db/client.ts").getDb() as any).$client
-      .prepare(`SELECT value FROM vaultbase_settings WHERE key = ?`)
-      .get("theme.accent") as { value: string };
+    const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, ["theme.accent"]))!;
     expect(raw.value).toBe("#ff00ff");
     expect(isEncrypted(raw.value)).toBe(false);
   });

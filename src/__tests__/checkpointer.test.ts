@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -29,7 +30,7 @@ function open(): Database {
 const autocheckpoint = (d: Database) =>
   (d.query("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint;
 
-describe("background checkpointer", () => {
+describe.skipIf(!onSqlite)("background checkpointer", () => {
   test("takes over checkpointing and drains the WAL off the main connection", async () => {
     db = open();
     await startCheckpointer(db, join(dir, "data.db"), 67_108_864);

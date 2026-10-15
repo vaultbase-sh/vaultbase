@@ -2,7 +2,8 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { initDb, closeDb, getDb } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { setSetting } from "../api/settings.ts";
@@ -26,8 +27,7 @@ afterEach(async () => {
 
 describe("helpers.notify", () => {
   it("enqueues to all enabled providers and inserts inbox when table exists", async () => {
-    const client = (getDb() as unknown as { $client: import("bun:sqlite").Database }).$client;
-    client.exec(`
+    await db.exec(`
       CREATE TABLE vb_notifications (
         id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
         data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -45,17 +45,14 @@ describe("helpers.notify", () => {
     expect(result.enqueued[0]!.provider).toBe("onesignal");
     expect(result.enqueued[0]!.deduped).toBe(false);
 
-    const row = client.prepare(`SELECT * FROM vb_notifications WHERE id = ?`).get(result.inboxRowId) as {
-      title: string; user: string; type: string;
-    };
+    const row = (await db.get<{ title: string; user: string; type: string }>(`SELECT * FROM vb_notifications WHERE id = ?`, [result.inboxRowId]))!;
     expect(row.title).toBe("Hi");
     expect(row.user).toBe("user-1");
     expect(row.type).toBe("msg");
   });
 
   it("opts.inbox=false skips inbox row even when table exists", async () => {
-    const client = (getDb() as unknown as { $client: import("bun:sqlite").Database }).$client;
-    client.exec(`
+    await db.exec(`
       CREATE TABLE vb_notifications (
         id TEXT PRIMARY KEY, user TEXT NOT NULL, type TEXT, title TEXT, body TEXT,
         data TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch())

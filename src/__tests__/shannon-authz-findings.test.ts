@@ -13,6 +13,7 @@
  *    schema and absolute file path to unauthenticated readers.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import {
@@ -49,7 +50,7 @@ beforeEach(async () => {
 afterEach(() => closeDb());
 
 // ── 1. DROP INDEX scoping ─────────────────────────────────────────────────────
-describe("DROP INDEX is bound to the named collection", () => {
+describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => {
   async function setup() {
     await createCollection({
       name: "posts", type: "base",

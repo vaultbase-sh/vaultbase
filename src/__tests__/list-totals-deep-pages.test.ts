@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createRecord, deleteRecord, listRecords , _countCacheStats } from "../core/records.ts";
-import { createPublicCollection } from "./_helpers.ts";
+import { onSqlite, createPublicCollection } from "./_helpers.ts";
 
 // Deep pages fetch rowids first; totals come from a cache keyed on the
 // database version. Both must return exactly what the plain queries would.
@@ -44,7 +44,7 @@ async function allPages(collection: string, opts: { sort?: string; filter?: stri
   }
 }
 
-describe("deep pages (rowid first)", () => {
+describe.skipIf(!onSqlite)("deep pages (rowid first)", () => {
   const fields = JSON.stringify([{ name: "n", type: "number" }, { name: "status", type: "text" }]);
 
   it("pages past the threshold match one full ordered scan, ties included", async () => {
@@ -73,7 +73,7 @@ describe("deep pages (rowid first)", () => {
   });
 });
 
-describe("list totals cache", () => {
+describe.skipIf(!onSqlite)("list totals cache", () => {
   const fields = JSON.stringify([{ name: "n", type: "number" }, { name: "status", type: "text" }]);
   const total = async (filter?: string) => (await listRecords("items", { perPage: 1, ...(filter ? { filter } : {}) })).totalItems;
 

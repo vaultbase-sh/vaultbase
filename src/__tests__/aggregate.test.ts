@@ -7,7 +7,8 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { admin } from "../db/schema.ts";
@@ -54,7 +55,7 @@ async function seed(listRule: string | null = null) {
   ];
   for (const [status, amount, paid, ts] of rows) {
     const r = await createRecord("orders", { status, amount, paid });
-    getRawClient().prepare(`UPDATE vb_orders SET created_at = ? WHERE id = ?`).run(ts, String(r.id));
+    await db.run(`UPDATE vb_orders SET created_at = ? WHERE id = ?`, [ts, String(r.id)]);
   }
 }
 

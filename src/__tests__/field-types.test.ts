@@ -3,13 +3,15 @@
  * returned like the built-ins, and described in the OpenAPI document.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, getCollection, updateCollection } from "../core/collections.ts";
 import { createRecord, getRecord, updateRecord } from "../core/records.ts";
 import { listFieldTypes, registerFieldType } from "../core/field-types.ts";
 import { buildOpenApi } from "../core/openapi.ts";
 import { ValidationError } from "../core/validate.ts";
+import { onSqlite } from "./_helpers.ts";
 
 const offs: Array<() => void> = [];
 
@@ -39,11 +41,13 @@ describe("custom field types", () => {
       name: "orders",
       fields: JSON.stringify([{ name: "total", type: "money" }, { name: "at", type: "point3" }]),
     });
-    const cols = getRawClient().prepare(`PRAGMA table_info("vb_orders")`).all() as Array<{ name: string; type: string }>;
-    expect(cols.find((c) => c.name === "total")?.type).toBe("INTEGER");
+    if (onSqlite) {
+      const cols = await db.all<{ name: string; type: string }>(`PRAGMA table_info("vb_orders")`);
+      expect(cols.find((c) => c.name === "total")?.type).toBe("INTEGER");
+    }
 
     const r = await createRecord("orders", { total: "12.50", at: { x: 1, y: 2, z: 3 } }, null);
-    const raw = getRawClient().prepare(`SELECT total, at FROM vb_orders WHERE id = ?`).get(r.id) as { total: number; at: string };
+    const raw = (await db.get<{ total: number; at: string }>(`SELECT total, at FROM vb_orders WHERE id = ?`, [r.id]))!;
     expect(raw.total).toBe(1250);
     expect(raw.at).toBe('{"x":1,"y":2,"z":3}');
 

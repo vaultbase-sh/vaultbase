@@ -9,7 +9,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { loadEncryptionKey } from "../config.ts";
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { encryptPlaintextSecretSettings, getSetting } from "../api/settings.ts";
 
@@ -47,11 +48,11 @@ describe("encryption key file", () => {
     await initDb(":memory:");
     await runMigrations();
     try {
-      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("smtp.pass", "plain-pw");
-      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("smtp.host", "mail.example.com");
+      await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["smtp.pass", "plain-pw"]);
+      await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["smtp.host", "mail.example.com"]);
       loadEncryptionKey(dir);
       expect(await encryptPlaintextSecretSettings()).toBe(1);
-      const raw = getRawClient().prepare(`SELECT value FROM vaultbase_settings WHERE key = 'smtp.pass'`).get() as { value: string };
+      const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = 'smtp.pass'`))!;
       expect(raw.value).not.toContain("plain-pw");
       expect(getSetting("smtp.pass", "")).toBe("plain-pw");
       expect(getSetting("smtp.host", "")).toBe("mail.example.com");
@@ -94,8 +95,8 @@ describe("key check tolerates foreign values (review 18 F-3)", () => {
       loadEncryptionKey(dir);
       // A ciphertext from another install, and a non-secret key with the
       // prefix — stored first, so a check that samples one row hits them.
-      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("app.name", "vbenc:1:not-really");
-      getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("oauth2.x.client_secret", "vbenc:1:AAAA:BBBB");
+      await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["app.name", "vbenc:1:not-really"]);
+      await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["oauth2.x.client_secret", "vbenc:1:AAAA:BBBB"]);
       setSetting("smtp.pass", "secret");
       expect(await encryptionKeyMatchesData()).toBe(true);
     } finally {

@@ -7,7 +7,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { Image } from "imagescript";
 
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, deleteCollection, updateCollection } from "../core/collections.ts";
 import { createRecord, deleteRecord, updateRecord } from "../core/records.ts";
@@ -45,7 +46,7 @@ async function setup(opts: { history?: boolean; multiple?: boolean } = {}) {
     name: "pics",
     fields: JSON.stringify([{ name: "img", type: "file", options: opts.multiple ? { multiple: true } : {} }, { name: "title", type: "text" }]),
   });
-  if (opts.history) getRawClient().prepare(`UPDATE vaultbase_collections SET history_enabled = 1 WHERE id = ?`).run(col.id);
+  if (opts.history) await db.run(`UPDATE vaultbase_collections SET history_enabled = 1 WHERE id = ?`, [col.id]);
   const app = makeFilesPlugin(dir, SECRET);
   const upload = async (recordId: string) => {
     const form = new FormData();
@@ -61,7 +62,7 @@ async function setup(opts: { history?: boolean; multiple?: boolean } = {}) {
 }
 
 const stored = (f: string) => existsSync(join(dir, f));
-const rows = () => (getRawClient().prepare(`SELECT COUNT(*) AS n FROM vaultbase_files`).get() as { n: number }).n;
+const rows = async () => (await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM vaultbase_files`))!.n;
 
 describe("sweepOrphanFiles", () => {
   it("keeps referenced files and removes ones whose record is gone", async () => {
@@ -80,7 +81,7 @@ describe("sweepOrphanFiles", () => {
     expect(r.deleted).toBe(1);
     expect(stored(fa)).toBe(true);
     expect(stored(fb)).toBe(false);
-    expect(rows()).toBe(1);
+    expect(await rows()).toBe(1);
   });
 
   it("removes a replaced file and files never attached", async () => {
@@ -134,7 +135,7 @@ describe("sweepOrphanFiles", () => {
     expect((await sweepOrphanFiles(later())).deleted).toBe(0);
     expect(stored(f)).toBe(true);
 
-    getRawClient().prepare(`UPDATE vaultbase_collections SET history_enabled = 0`).run();
+    await db.run(`UPDATE vaultbase_collections SET history_enabled = 0`);
     setSetting("files.orphan_cleanup", "0");
     expect((await sweepOrphanFiles(later())).deleted).toBe(0);
     setSetting("files.orphan_cleanup", "1");

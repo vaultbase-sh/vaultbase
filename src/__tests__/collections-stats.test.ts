@@ -9,7 +9,8 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { admin } from "../db/schema.ts";
@@ -67,10 +68,9 @@ describe("GET /admin/collections/stats", () => {
       view_rule: null,
     });
     const now = Math.floor(Date.now() / 1000);
-    const c = getRawClient();
-    c.prepare(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p1', 'a', ?, ?)`).run(now - 7200, now - 7200);
-    c.prepare(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p2', 'b', ?, ?)`).run(now - 1800, now - 1800);
-    c.prepare(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p3', 'c', ?, ?)`).run(now, now);
+    await db.run(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p1', 'a', ?, ?)`, [now - 7200, now - 7200]);
+    await db.run(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p2', 'b', ?, ?)`, [now - 1800, now - 1800]);
+    await db.run(`INSERT INTO vb_posts (id, title, created_at, updated_at) VALUES ('p3', 'c', ?, ?)`, [now, now]);
 
     const app = mkApp();
     const res = await app.handle(new Request("http://localhost/api/v1/admin/collections/stats", {
@@ -115,12 +115,14 @@ describe("GET /admin/collections/stats", () => {
       fields: JSON.stringify([]), view_rule: null,
     });
     const now = Math.floor(Date.now() / 1000);
-    getRawClient().prepare(
+    await db.run(
       `INSERT INTO vb_members (id, email, password_hash, created_at, updated_at) VALUES ('m1', 'a@x.com', 'h', ?, ?)`,
-    ).run(now, now);
-    getRawClient().prepare(
+      [now, now],
+    );
+    await db.run(
       `INSERT INTO vb_members (id, email, password_hash, created_at, updated_at) VALUES ('m2', 'b@x.com', 'h', ?, ?)`,
-    ).run(now - 7200, now - 7200);
+      [now - 7200, now - 7200],
+    );
 
     const app = mkApp();
     const res = await app.handle(new Request("http://localhost/api/v1/admin/collections/stats", {
@@ -141,9 +143,8 @@ describe("GET /admin/collections/stats", () => {
     });
     const now = Math.floor(Date.now() / 1000);
     const week_ago = now - 7 * 86400;
-    const c = getRawClient();
-    c.prepare(`INSERT INTO vb_logs (id, msg, created_at, updated_at) VALUES ('l1', 'old', ?, ?)`).run(week_ago, week_ago);
-    c.prepare(`INSERT INTO vb_logs (id, msg, created_at, updated_at) VALUES ('l2', 'new', ?, ?)`).run(now, now);
+    await db.run(`INSERT INTO vb_logs (id, msg, created_at, updated_at) VALUES ('l1', 'old', ?, ?)`, [week_ago, week_ago]);
+    await db.run(`INSERT INTO vb_logs (id, msg, created_at, updated_at) VALUES ('l2', 'new', ?, ?)`, [now, now]);
 
     const app = mkApp();
     const res = await app.handle(new Request("http://localhost/api/v1/admin/collections/stats", {

@@ -7,6 +7,7 @@
  *   - end-to-end: real snapshot + local-file destination round-trip
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { admin } from "../db/schema.ts";
 import { parseBackupArgs, parseDestination, runBackup } from "../scripts/backup.ts";
 
-describe("parseDestination", () => {
+describe.skipIf(!onSqlite)("parseDestination", () => {
   it("treats a bare path as a local file", () => {
     const d = parseDestination("/tmp/foo.db");
     expect(d.kind).toBe("file");
@@ -49,7 +50,7 @@ describe("parseDestination", () => {
   });
 });
 
-describe("parseBackupArgs", () => {
+describe.skipIf(!onSqlite)("parseBackupArgs", () => {
   it("parses --to in equals form", () => {
     const o = parseBackupArgs(["--to=/tmp/x.db"]);
     expect(o.to).toBe("/tmp/x.db");
@@ -68,7 +69,7 @@ describe("parseBackupArgs", () => {
   });
 });
 
-describe("end-to-end: local snapshot", () => {
+describe.skipIf(!onSqlite)("end-to-end: local snapshot", () => {
   let tmpDir: string;
   let dbPath: string;
 

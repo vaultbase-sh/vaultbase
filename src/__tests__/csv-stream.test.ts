@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
 import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection, type FieldDef } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
@@ -211,8 +212,7 @@ describe("streaming CSV export", () => {
 describe("export past the list offset cap", () => {
   it("streams every row of a table larger than 100,000 records", async () => {
     await createCollection({ name: "big", fields: JSON.stringify([{ name: "n", type: "number" }]) });
-    const { getRawClient } = await import("../db/client.ts");
-    getRawClient().exec(`
+    await db.exec(`
       INSERT INTO vb_big (id, n, created_at, updated_at)
       WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 100600)
       SELECT printf('id%07d', x), x, x, x FROM c`);

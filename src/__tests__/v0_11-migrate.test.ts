@@ -12,6 +12,7 @@
  *     switched over yet — that lands in phase 2).
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { onSqlite } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -39,7 +40,7 @@ afterEach(async () => {
   catch { /* swallow */ }
 });
 
-describe("v0.11 phase 1 — auth columns added to vb_<col>", () => {
+describe.skipIf(!onSqlite)("v0.11 phase 1 — auth columns added to vb_<col>", () => {
   it("createCollection(type='auth') puts auth columns on vb_<name>", async () => {
     await createCollection({
       name: "users", type: "auth", create_rule: null,
@@ -74,7 +75,7 @@ describe("v0.11 phase 1 — auth columns added to vb_<col>", () => {
   });
 });
 
-describe("v0.11 migration — vaultbase_users → vb_<col> + drop legacy", () => {
+describe.skipIf(!onSqlite)("v0.11 migration — vaultbase_users → vb_<col> + drop legacy", () => {
   it("on a fresh install drops the empty vaultbase_users at end of migration", async () => {
     // runMigrations already ran in beforeEach. With no v0.10 rows present,
     // FinalizeAuthMigration drops the legacy table.
@@ -131,7 +132,7 @@ describe("v0.11 migration — vaultbase_users → vb_<col> + drop legacy", () =>
   });
 });
 
-describe("v0.11 phase 3 — records.ts handles auth collections", () => {
+describe.skipIf(!onSqlite)("v0.11 phase 3 — records.ts handles auth collections", () => {
   it("listRecords on auth collection returns rows from vb_<col>, password_hash stripped", async () => {
     const { listRecords } = await import("../core/records.ts");
     await createCollection({
@@ -193,7 +194,7 @@ describe("v0.11 phase 3 — records.ts handles auth collections", () => {
   });
 });
 
-describe("v0.11 — /register writes to vb_<col>", () => {
+describe.skipIf(!onSqlite)("v0.11 — /register writes to vb_<col>", () => {
   it("/register on auth collection populates vb_<col> with auth + custom columns", async () => {
     const { makeAuthPlugin } = await import("../api/auth.ts");
     await createCollection({
@@ -220,7 +221,7 @@ describe("v0.11 — /register writes to vb_<col>", () => {
   });
 });
 
-describe("vaultbase doctor — pre-migration checks", () => {
+describe.skipIf(!onSqlite)("vaultbase doctor — pre-migration checks", () => {
   it("reports clean on a fresh install with no auth collections", async () => {
     await closeDb();
     const r = runDoctor(dbPath);

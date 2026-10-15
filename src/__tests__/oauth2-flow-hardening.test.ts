@@ -20,7 +20,7 @@ import { setSetting } from "../api/settings.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 import { authTokens, oauthLinks } from "../db/schema.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
-import { hashedTokenId, seedAuthUser } from "./_helpers.ts";
+import { onSqlite, hashedTokenId, seedAuthUser } from "./_helpers.ts";
 import { generateSecret } from "../core/totp.ts";
 import { getCollection } from "../core/collections.ts";
 import { updateUserById } from "../core/users-table.ts";
@@ -247,7 +247,7 @@ describe("review 14 follow-ups", () => {
     expect(res.status).toBe(409);
   });
 
-  it("register treats a different-case address as taken", async () => {
+  it.skipIf(!onSqlite)("register treats a different-case address as taken", async () => {
     const res = await json("/auth/users/register", { email: "SEED@test.local", password: "another-password-1" });
     expect(res.status).toBe(200);
     const col = (await getCollection("users"))!;

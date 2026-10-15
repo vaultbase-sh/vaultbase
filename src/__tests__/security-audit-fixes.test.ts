@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { createCollection, getCollection } from "../core/collections.ts";
@@ -53,7 +54,7 @@ describe("sign-up honours the auth collection's create rule", () => {
       req("POST", "/auth/staff/register", { email: "x@test.local", password: PASSWORD }),
     );
     expect(res.status).toBe(403);
-    expect(getRawClient().prepare(`SELECT COUNT(*) AS n FROM vb_staff`).get()).toEqual({ n: 0 });
+    expect(await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM vb_staff`)).toEqual({ n: 0 });
   });
 
   it("allows /register when the create rule is public", async () => {
@@ -106,19 +107,18 @@ describe("sign-up honours the auth collection's create rule", () => {
   it("upgrade opens existing admin-only auth collections once, then leaves them alone", async () => {
     await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
     await createCollection({ name: "notes", type: "base", fields: JSON.stringify([]) });
-    const db = getRawClient();
     // Simulate a pre-v0.18 database: the one-time marker isn't there yet.
-    db.prepare(`DELETE FROM vaultbase_settings WHERE key = '_migrations.v0_18_auth_create_rule'`).run();
+    await db.run(`DELETE FROM vaultbase_settings WHERE key = '_migrations.v0_18_auth_create_rule'`);
     await runMigrations();
-    const rule = (name: string) =>
-      (db.prepare(`SELECT create_rule FROM vaultbase_collections WHERE name = ?`).get(name) as { create_rule: string | null }).create_rule;
-    expect(rule("users")).toBeNull();
-    expect(rule("notes")).toBe(""); // base collections untouched
+    const rule = async (name: string) =>
+      (await db.get<{ create_rule: string | null }>(`SELECT create_rule FROM vaultbase_collections WHERE name = ?`, [name]))!.create_rule;
+    expect(await rule("users")).toBeNull();
+    expect(await rule("notes")).toBe(""); // base collections untouched
 
     // An admin closes sign-up again; later boots keep it closed.
-    db.prepare(`UPDATE vaultbase_collections SET create_rule = '' WHERE name = 'users'`).run();
+    await db.run(`UPDATE vaultbase_collections SET create_rule = '' WHERE name = 'users'`);
     await runMigrations();
-    expect(rule("users")).toBe("");
+    expect(await rule("users")).toBe("");
   });
 
   it("a fresh install leaves new auth collections admin-only", async () => {
@@ -201,7 +201,7 @@ describe("client filters join other collections under their list rule", () => {
 
   it("an admin-only list rule denies the join for a caller's filter", () => {
     const r = parseFilter(`@collection.invites.code = "AB"`, "vb_posts", { auth: USER, lookup, clientFilter: true });
-    expect(r?.sql).toContain("1=0");
+    expect(r?.sql).toContain(db.dialect.never);
   });
 
   it("admin-written rules still join under the view rule only", () => {
