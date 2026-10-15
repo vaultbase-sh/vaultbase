@@ -419,6 +419,23 @@ async function main() {
   await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
 
   const server = createServer(config);
+  // Read worker threads (src/core/read-pool.ts). Off unless asked for, and
+  // never under `vaultbase cluster`, whose workers already use every core.
+  {
+    const raw = process.env["VAULTBASE_READ_WORKERS"];
+    const n = raw === undefined || raw === "" ? 0 : parseInt(raw, 10);
+    if (n > 0 && !process.env["VAULTBASE_WORKER_ID"]) {
+      const { startReadPool } = await import("./core/read-pool.ts");
+      try {
+        await startReadPool(n, { ...process.env as Record<string, string> });
+        process.stderr.write(`vaultbase: ${n} read worker thread(s)\n`);
+      } catch (e) {
+        process.stderr.write(`vaultbase: read workers not started: ${e instanceof Error ? e.message : String(e)}\n`);
+      }
+    } else if (n > 0) {
+      process.stderr.write("vaultbase: VAULTBASE_READ_WORKERS is ignored under cluster mode\n");
+    }
+  }
   // Cluster mode: when spawned by `src/cluster.ts`, every worker calls
   // `Bun.serve({ reusePort: true })` so the kernel load-balances incoming
   // connections (SO_REUSEPORT; Linux only — see cluster.ts). Single-process mode behaves exactly as
@@ -448,6 +465,7 @@ async function main() {
         () => drainLogBuffer(),
         () => flushGroupCommit(),
         () => stopCheckpointer(),
+        async () => { const { stopReadPool } = await import("./core/read-pool.ts"); await stopReadPool(); },
         () => closeDb(),
       ],
       timeoutMs: 10_000,

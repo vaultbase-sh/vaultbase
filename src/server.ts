@@ -3,6 +3,7 @@ import { runsSingletonDuties } from "./core/cluster-role.ts";
 import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
 import { verifyHs256 } from "./core/jwt-hs256.ts";
+import { forwardRead, readPoolSize, readTarget } from "./core/read-pool.ts";
 import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
@@ -267,6 +268,26 @@ export function createServer(config: Config) {
       if (res) return res;
     })
     .use(makeRateLimitPlugin(config.jwtSecret))
+    // ── Read worker pool ─────────────────────────────────────────────
+    // Record list / get-one of a known collection go to a worker thread
+    // when a pool is running (VAULTBASE_READ_WORKERS). Returning a Response
+    // here ends the pipeline, so the request timer is finished by hand.
+    .onRequest(async ({ request, server }) => {
+      if (readPoolSize() === 0) return;
+      const target = readTarget(request.method, new URL(request.url).pathname);
+      if (!target) return;
+      const peerIp = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      let status = 500;
+      try {
+        const res = await forwardRead(request, peerIp);
+        status = res.status;
+        return res;
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 503 }), { status: (status = 503), headers: { "content-type": "application/json" } });
+      } finally {
+        detachTimer(request)?.finish(request.method, status);
+      }
+    })
     // ── API-token usage telemetry ────────────────────────────────────
     // Fires AFTER the handler so we don't add latency to the hot path.
     // Records last_used_at + IP + UA for any request that arrived
