@@ -262,10 +262,10 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           // Upsert by token. The notifications collection bootstrap creates
           // `token` UNIQUE so this conflict resolution works.
           await db.run(
-            `INSERT INTO vb_device_tokens (id, user, provider, token, platform, app_version, enabled, last_seen, created_at)
+            `INSERT INTO vb_device_tokens (id, "user", provider, token, platform, app_version, enabled, last_seen, created_at)
              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
              ON CONFLICT(token) DO UPDATE SET
-               user = excluded.user,
+               "user" = excluded."user",
                provider = excluded.provider,
                platform = excluded.platform,
                app_version = excluded.app_version,
@@ -314,7 +314,7 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           // Soft delete (enabled=0) — preserves the row so we can analytics-on-it.
           // Restrict to the calling user's own tokens (defense against ID forgery).
           await db.run(
-            `UPDATE vb_device_tokens SET enabled = 0 WHERE token = ? AND user = ?`,
+            `UPDATE vb_device_tokens SET enabled = 0 WHERE token = ? AND "user" = ?`,
             [params.token, user.id],
           );
         } catch (e) {

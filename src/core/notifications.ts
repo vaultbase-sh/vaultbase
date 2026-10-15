@@ -497,7 +497,7 @@ export async function dispatchNotification(
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
       await db.run(
-        `INSERT INTO vb_notifications (id, user, type, title, body, data, created_at)
+        `INSERT INTO vb_notifications (id, "user", type, title, body, data, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
@@ -676,7 +676,7 @@ registerPushProvider({
     try {
       tokens = helpers.db.query<{ id: string; token: string }>(
         `SELECT id, token FROM vb_device_tokens
-         WHERE user = ? AND provider = 'fcm' AND enabled = 1`,
+         WHERE "user" = ? AND provider = 'fcm' AND enabled = 1`,
         userId,
       );
     } catch (e) {
