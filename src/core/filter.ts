@@ -734,11 +734,52 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
   }
   if (op.name === "strftime") {
     if (op.args.length < 2) throw new Error("strftime expects at least 2 args");
-    if (dialect().name !== "sqlite") throw new Error("strftime() is not available on this database");
+    if (dialect().name !== "sqlite") return compilePgStrftime(op.args, ctx);
     const parts = op.args.map((a) => compileOperand(a, ctx));
     return `strftime(${parts.join(", ")})`;
   }
   throw new Error(`unknown function: ${op.name}`);
+}
+
+/** SQLite strftime codes and their Postgres to_char patterns: the subset filters may use elsewhere. */
+const PG_STRFTIME: Readonly<Record<string, string>> = {
+  Y: "YYYY", m: "MM", d: "DD", H: "HH24", M: "MI", S: "SS", j: "DDD", "%": "%",
+};
+
+/**
+ * `strftime(format, time, mods…)` for databases other than SQLite, as
+ * `to_char` in UTC. The format must be a literal made of the codes above;
+ * the time is `'now'`, a literal timestamp, or a value with the
+ * `unixepoch` modifier (dates are stored as Unix seconds). Anything else
+ * is refused rather than answered differently from SQLite.
+ */
+function compilePgStrftime(args: Operand[], ctx: CompileCtx): string {
+  const [fmtArg, timeArg, ...mods] = args as [Operand, Operand, ...Operand[]];
+  if (fmtArg.kind !== "literal" || typeof fmtArg.value !== "string") throw new Error("strftime() needs a literal format on this database");
+  const modValues = mods.map((m) => (m.kind === "literal" ? m.value : null));
+  if (modValues.some((m) => m !== "unixepoch")) throw new Error("strftime() supports only the 'unixepoch' modifier on this database");
+  let pattern = "";
+  let literal = "";
+  const flush = () => { if (literal) { pattern += `"${literal.replace(/"/g, "\\\"")}"`; literal = ""; } };
+  const fmt = fmtArg.value;
+  for (let i = 0; i < fmt.length; i++) {
+    if (fmt[i] === "%") {
+      const code = fmt[i + 1] ?? "";
+      const mapped = PG_STRFTIME[code];
+      if (!mapped) throw new Error(`strftime() code %${code} is not available on this database (use %Y %m %d %H %M %S %j)`);
+      if (code === "%") literal += "%";
+      else { flush(); pattern += mapped; }
+      i++;
+    } else literal += fmt[i];
+  }
+  flush();
+  let time: string;
+  if (timeArg.kind === "literal" && timeArg.value === "now" && modValues.length === 0) time = "now()";
+  else if (modValues.length === 1) time = `to_timestamp(CAST(${compileOperand(timeArg, ctx)} AS DOUBLE PRECISION))`;
+  else if (timeArg.kind === "literal" && typeof timeArg.value === "string") time = `CAST(${compileOperand(timeArg, ctx)} AS TIMESTAMPTZ)`;
+  else throw new Error("strftime() needs the 'unixepoch' modifier for a stored date on this database");
+  ctx.params.push(pattern);
+  return `to_char(${time} AT TIME ZONE 'UTC', ?)`;
 }
 
 function applyModifierToSql(expr: string, m?: FieldModifier): string {
