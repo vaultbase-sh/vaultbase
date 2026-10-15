@@ -75,7 +75,7 @@ describe.skipIf(!onSqlite)("fixed schema", () => {
 
   it("every declared default is a literal or the epoch expression", () => {
     for (const t of FIXED_TABLES) for (const c of columnSpecs(t)) {
-      if (c.default) expect(["literal", "epochNow"]).toContain(c.default.kind);
+      if (c.default) expect(["literal", "epochNow", "epochMsNow"]).toContain(c.default.kind);
     }
   });
 });
