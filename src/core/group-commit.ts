@@ -27,7 +27,7 @@
  * turns it off everywhere.
  */
 import { onBeforeCloseDb } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, driverOpen, getDriver } from "../db/index.ts";
 import { discardTableReports, flushTableReports } from "./table-writes.ts";
 
 // The group spans event-loop turns, so it opens and commits with plain
@@ -45,6 +45,9 @@ onBeforeCloseDb(() => flushGroupCommit());
 
 function enabled(): boolean {
   if (process.env["VAULTBASE_GROUP_COMMIT"] === "0") return false;
+  // One shared connection with one writer is what the group amortises;
+  // a pooled driver has nothing to gain and no synchronous surface.
+  if (driverOpen() && getDriver().name !== "sqlite") return false;
   return !process.env["VAULTBASE_WORKER_ID"];
 }
 

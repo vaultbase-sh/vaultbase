@@ -1,6 +1,7 @@
 import { loadConfig, loadServiceEnvFile } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
 import { initDb, getDb, closeDb, getRawClient, JOURNAL_SIZE_LIMIT } from "./db/client.ts";
+import { db } from "./db/index.ts";
 import { startCheckpointer, stopCheckpointer } from "./db/checkpointer.ts";
 import { flushGroupCommit } from "./core/group-commit.ts";
 import { shutdownGracefully } from "./core/shutdown.ts";
@@ -361,7 +362,10 @@ async function main() {
   }
   const config = await loadConfig();
 
-  initDb(`file:${config.dbPath}`);
+  // The database: SQLite at the data directory unless VAULTBASE_DATABASE_URL
+  // names another (postgres://…). The URL is environment, never a setting:
+  // the database has to be open before any setting can be read.
+  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${config.dbPath}`);
   await runMigrations();
   const { loadSettings } = await import("./api/settings.ts");
   await loadSettings();
@@ -421,7 +425,7 @@ async function main() {
 
   // Move WAL checkpoints off the request thread (see src/db/checkpointer.ts).
   // Only the long-running server needs it; CLI paths above exit first.
-  await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
+  if (db.capabilities.checkpointer) await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
 
   const server = createServer(config);
   // Read worker threads (src/core/read-pool.ts): record reads on cores minus
@@ -431,7 +435,7 @@ async function main() {
   {
     const { readWorkerCount, startReadPool } = await import("./core/read-pool.ts");
     const { availableParallelism } = await import("node:os");
-    const n = readWorkerCount(process.env, availableParallelism(), config.dbPath);
+    const n = db.capabilities.readWorkerThreads ? readWorkerCount(process.env, availableParallelism(), config.dbPath) : 0;
     if (n > 0) {
       try {
         // The URL is made here, next to the entry file, so it resolves both in

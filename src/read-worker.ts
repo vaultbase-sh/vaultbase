@@ -68,7 +68,7 @@ const WORKER_ID = process.env["VAULTBASE_READ_WORKER"] ?? "";
 let app: { handle: (req: Request) => Promise<Response> } | null = null;
 
 async function start(config: Config): Promise<void> {
-  initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
+  await initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
   await loadSettings();
   const { createServer } = await import("./server.ts");
   app = createServer(config, { role: "reader" }) as unknown as { handle: (req: Request) => Promise<Response> };
