@@ -3,6 +3,7 @@ import { eq, or } from "drizzle-orm";
 import { gateMode, withExclusiveWrite } from "./write-gate.ts";
 import { getDb, onCloseDb } from "../db/client.ts";
 import { db, getDriver, type DbDriver } from "../db/index.ts";
+import type { ColumnSpec } from "../db/ddl.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
@@ -364,11 +365,15 @@ export function assertSqlIdent(name: string, kind: string): void {
   }
 }
 
-function colDefSql(field: FieldDef): string {
-  const type = colSqlType(field.type);
-  const notNull = field.required ? " NOT NULL" : "";
-  const unique = field.options?.unique ? " UNIQUE" : "";
-  return `${quoteIdent(field.name)} ${type}${notNull}${unique}`;
+/** The column a field is stored in, for the dialect's DDL. */
+function fieldColumn(field: FieldDef): ColumnSpec {
+  return {
+    name: quoteIdent(field.name),
+    type: colSqlType(field.type).toLowerCase() as ColumnSpec["type"],
+    primaryKey: false,
+    notNull: !!field.required,
+    unique: !!field.options?.unique,
+  };
 }
 
 /** Create the per-collection user table. */
@@ -377,16 +382,13 @@ export async function createUserTable(collectionName: string, fields: FieldDef[]
   for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
   assertFieldOptions(fields, []);
   const tname = quoteIdent(userTableName(collectionName));
-  const userColDefs = fields
-    .filter((f) => !f.system)
-    .map(colDefSql);
-  const cols = [
-    `"id" TEXT PRIMARY KEY`,
-    ...userColDefs,
-    `"created_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
-    `"updated_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
+  const cols: ColumnSpec[] = [
+    { name: `"id"`, type: "text", primaryKey: true, notNull: true, unique: false },
+    ...fields.filter((f) => !f.system).map(fieldColumn),
+    { name: `"created_at"`, type: "integer", primaryKey: false, notNull: true, unique: false, default: { kind: "epochNow" } },
+    { name: `"updated_at"`, type: "integer", primaryKey: false, notNull: true, unique: false, default: { kind: "epochNow" } },
   ];
-  await db.exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
+  await db.exec(db.dialect.createTable(tname, cols));
   await ensureTimestampIndexes(collectionName);
   syncFts(collectionName, fields);
 }
@@ -424,9 +426,7 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
 export async function ensureTimestampIndexes(collectionName: string): Promise<void> {
   const table = userTableName(collectionName);
   for (const col of ["created_at", "updated_at"]) {
-    await db.exec(
-      `CREATE INDEX IF NOT EXISTS ${quoteIdent(`idx_${table}_${col}`)} ON ${quoteIdent(table)}(${quoteIdent(col)})`,
-    );
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${col}`), table: quoteIdent(table), columns: [quoteIdent(col)] }));
   }
 }
 
@@ -447,14 +447,16 @@ export async function dropUserTable(collectionName: string): Promise<void> {
  * `vaultbase_users` keyed by collection_id). These columns are the auth
  * surface that flows into every `vb_<auth-col>`.
  */
-export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<{ name: string; sql: string }> = [
-  { name: "email",             sql: "TEXT" },
-  { name: "password_hash",     sql: "TEXT" },
-  { name: "email_verified",    sql: "INTEGER NOT NULL DEFAULT 0" },
-  { name: "totp_secret",       sql: "TEXT" },
-  { name: "totp_enabled",      sql: "INTEGER NOT NULL DEFAULT 0" },
-  { name: "is_anonymous",      sql: "INTEGER NOT NULL DEFAULT 0" },
-  { name: "password_reset_at", sql: "INTEGER NOT NULL DEFAULT 0" },
+const flag = (name: string): ColumnSpec => ({ name, type: "integer", primaryKey: false, notNull: true, unique: false, default: { kind: "literal", value: 0 } });
+const str = (name: string): ColumnSpec => ({ name, type: "text", primaryKey: false, notNull: false, unique: false });
+export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<ColumnSpec> = [
+  str("email"),
+  str("password_hash"),
+  flag("email_verified"),
+  str("totp_secret"),
+  flag("totp_enabled"),
+  flag("is_anonymous"),
+  flag("password_reset_at"),
 ];
 
 /**
@@ -469,13 +471,13 @@ export async function ensureAuthColumns(collectionName: string): Promise<void> {
   const tname = quoteIdent(userTableName(collectionName));
   for (const c of AUTH_SYSTEM_COLUMNS) {
     try {
-      await db.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
+      await db.exec(db.dialect.addColumn(tname, { ...c, name: quoteIdent(c.name) }));
     } catch { /* column exists — idempotent */ }
   }
   // Unique email index — anonymous users get a synthetic uniqe email so the
   // unconditional UNIQUE works without a partial-index workaround.
   try {
-    await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
+    await db.exec(db.dialect.createIndex({ name: `"idx_${userTableName(collectionName)}_email"`, table: tname, columns: ["email"], unique: true }));
   } catch { /* may already exist or fail on duplicates pre-migration */ }
 }
 
@@ -768,7 +770,7 @@ export async function alterUserTable(
     !!(await db.get(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`, [`uq_${table}_${field}`]));
   const addUniqueIndex = async (field: string) => {
     try {
-      await db.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
+      await db.exec(db.dialect.createIndex({ name: uniqueIndex(field), table: tname, columns: [quoteIdent(field)], unique: true }));
     } catch (e) {
       if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
         throw new CollectionValidationError({
@@ -819,12 +821,11 @@ export async function alterUserTable(
   // Add fields new in new
   for (const [newName, newField] of newByName) {
     if (!oldByName.has(newName)) {
-      const def = colDefSql(newField);
+
       // SQLite ADD COLUMN can't enforce NOT NULL without DEFAULT or empty
       // table, and rejects UNIQUE outright. Strip both: required is enforced
       // at app level, unique by an index.
-      const safeDef = def.replace(/ NOT NULL/, "").replace(/ UNIQUE/, "");
-      await db.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
+      await db.exec(db.dialect.addColumn(tname, { ...fieldColumn(newField), notNull: false, unique: false }));
       if (newField.options?.unique) await addUniqueIndex(newName);
     }
   }

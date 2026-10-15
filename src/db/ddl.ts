@@ -17,7 +17,7 @@ import { db } from "./index.ts";
 import { EPOCH_NOW } from "./schema.ts";
 import { FIXED_INDEXES, FIXED_TABLES } from "./fixed-schema.ts";
 
-export type ColumnType = "text" | "integer" | "real";
+export type ColumnType = "text" | "integer" | "real" | "blob";
 
 export interface ColumnSpec {
   name: string;
