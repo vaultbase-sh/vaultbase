@@ -331,7 +331,7 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
   assertFieldOptions(fields, []);
   const tname = quoteIdent(userTableName(collectionName));
   const userColDefs = fields
-    .filter((f) => !f.system && f.type !== "autodate")
+    .filter((f) => !f.system)
     .map(colDefSql);
   const cols = [
     `"id" TEXT PRIMARY KEY`,
@@ -687,8 +687,8 @@ export function alterUserTable(
   const tname = quoteIdent(userTableName(collectionName));
   const client = rawClient();
 
-  const oldByName = new Map(oldFields.filter((f) => !f.system && f.type !== "autodate").map((f) => [f.name, f]));
-  const newByName = new Map(newFields.filter((f) => !f.system && f.type !== "autodate").map((f) => [f.name, f]));
+  const oldByName = new Map(oldFields.filter((f) => !f.system).map((f) => [f.name, f]));
+  const newByName = new Map(newFields.filter((f) => !f.system).map((f) => [f.name, f]));
 
   const table = userTableName(collectionName);
   // Unique constraints added after table creation live in a named index

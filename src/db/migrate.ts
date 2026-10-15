@@ -471,6 +471,28 @@ export async function runMigrations() {
       console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
     }
   }
+
+  // ── v0.22.1: autodate fields get their column ──
+  ensureAutodateColumns(client);
+}
+
+/**
+ * autodate fields had no column before v0.22.1: the server computed the
+ * value and then skipped it on insert and update. Add the column on every
+ * collection that declares one, so records written from now on keep it.
+ */
+function ensureAutodateColumns(client: Database): void {
+  const cols = client.prepare(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`)
+    .all() as Array<{ name: string; fields: string }>;
+  for (const col of cols) {
+    let fields: Array<{ name?: unknown; type?: unknown; system?: unknown; implicit?: unknown }> = [];
+    try { fields = JSON.parse(col.fields || "[]") as typeof fields; } catch { continue; }
+    for (const f of fields) {
+      if (f.type !== "autodate" || typeof f.name !== "string" || f.system || f.implicit) continue;
+      if (!/^[a-z][a-z0-9_]*$/.test(f.name) || !/^[a-z0-9_]+$/.test(col.name)) continue;
+      addColumn(client, `ALTER TABLE "vb_${col.name}" ADD COLUMN "${f.name}" INTEGER`);
+    }
+  }
 }
 
 /**

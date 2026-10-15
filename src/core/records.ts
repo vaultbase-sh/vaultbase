@@ -805,9 +805,12 @@ async function createRecordImpl(
   const fieldByName = new Map(userFields.map((f) => [f.name, f]));
   const now = Math.floor(Date.now() / 1000);
 
-  // Apply autodate onCreate
+  // autodate is server-managed: whatever the client sent is dropped, and
+  // the field is set now only when it opts in to onCreate.
   for (const f of userFields) {
-    if (f.type === "autodate" && f.onCreate) (data as Record<string, unknown>)[f.name] = now;
+    if (f.type !== "autodate") continue;
+    delete (data as Record<string, unknown>)[f.name];
+    if (f.onCreate) (data as Record<string, unknown>)[f.name] = now;
   }
 
   type Binding = string | number | bigint | boolean | null | Uint8Array;
@@ -816,7 +819,6 @@ async function createRecordImpl(
   const insertVals: Binding[] = [id];
 
   for (const f of userFields) {
-    if (f.type === "autodate") continue; // not stored as user column
     if (Object.prototype.hasOwnProperty.call(data, f.name)) {
       insertCols.push(f.name);
       insertVals.push(await encodeForStorage((data as Record<string, unknown>)[f.name], f) as Binding);
@@ -903,16 +905,18 @@ async function updateRecordImpl(
   const userFields = fields.filter((f) => !f.system && !f.implicit);
   const now = Math.floor(Date.now() / 1000);
 
-  // Apply autodate onUpdate
+  // autodate is server-managed: the client's value is dropped, and the
+  // field moves only when it opts in to onUpdate.
   for (const f of userFields) {
-    if (f.type === "autodate" && f.onUpdate) (data as Record<string, unknown>)[f.name] = now;
+    if (f.type !== "autodate") continue;
+    delete (data as Record<string, unknown>)[f.name];
+    if (f.onUpdate) (data as Record<string, unknown>)[f.name] = now;
   }
 
   type Binding = string | number | bigint | boolean | null | Uint8Array;
   const setCols: string[] = [];
   const setVals: Binding[] = [];
   for (const f of userFields) {
-    if (f.type === "autodate") continue;
     if (Object.prototype.hasOwnProperty.call(data, f.name)) {
       setCols.push(`${quoteIdent(f.name)} = ?`);
       setVals.push(await encodeForStorage((data as Record<string, unknown>)[f.name], f) as Binding);
