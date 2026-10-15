@@ -180,7 +180,7 @@ export async function runTokenCli(argv: string[], dbPath: string, jwtSecret: str
     return;
   }
 
-  initDb(`file:${dbPath}`);
+  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
   await runMigrations();
   try {
     if (sub === "mint") {

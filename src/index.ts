@@ -294,6 +294,12 @@ async function main() {
   // `vaultbase doctor` — pre-flight checks for the v0.11 auth-collection
   // migration. Read-only DB inspection; reports blockers + warnings and
   // exits non-zero on blockers so CI / scripts can guard.
+  // The file tools work on the SQLite file; on another database the
+  // provider's own tools do these jobs.
+  if (process.env["VAULTBASE_DATABASE_URL"] && ["doctor", "wipe", "backup"].includes(process.argv[2] ?? "")) {
+    process.stderr.write(`vaultbase ${process.argv[2]}: not available with VAULTBASE_DATABASE_URL set (use pg_dump, DROP SCHEMA or your provider's tools)\n`);
+    process.exit(1);
+  }
   if (process.argv[2] === "doctor") {
     const config = await loadConfig();
     const { runDoctorCli } = await import("./scripts/doctor.ts");

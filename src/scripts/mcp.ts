@@ -97,7 +97,7 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
   // even though MCP doesn't serve file content (some admin tools probe).
   setLogsDir(logsDir);
   setUploadDir(uploadDir);
-  initDb(`file:${dbPath}`);
+  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
   await runMigrations();
 
   const ctx = await verifyAuthToken(stripApiTokenPrefix(tokenRaw), jwtSecret, { audience: "api" });
