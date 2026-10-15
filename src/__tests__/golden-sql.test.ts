@@ -7,8 +7,9 @@
  * `UPDATE_GOLDEN=1 bun test golden-sql`) or be undone.
  *
  * Three goldens, under `src/__tests__/golden/`:
- *   fixed-schema.sql  every table, index, view and trigger a fresh database
- *                     has after `runMigrations` (from `sqlite_master`)
+ *   fixed-schema.txt  every table a fresh database has after `runMigrations`,
+ *                     as columns in order with type, nullability, default
+ *                     and primary key, plus every index by its SQL
  *   user-table.sql    the table, indexes and full-text index of a collection
  *                     with every built-in field type
  *   filters.json      the SQL and parameters the filter compiler emits for a
@@ -37,6 +38,36 @@ async function check(name: string, actual: string): Promise<void> {
   const expected = (await file.exists()) ? await file.text() : null;
   expect(expected, `${name} missing — run UPDATE_GOLDEN=1 bun test golden-sql`).not.toBeNull();
   expect(actual).toBe(expected!);
+}
+
+/**
+ * The fixed schema as structure, not text: every table's columns in order
+ * (type, nullability, default, primary key) and every index, view and
+ * trigger by its SQL. CREATE TABLE text is generated from the drizzle
+ * declarations, so the wording may change while the schema may not.
+ */
+function dumpStructure(): string {
+  const tables = getRawClient()
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+    .all() as Array<{ name: string }>;
+  const out: string[] = [];
+  for (const { name } of tables) {
+    out.push(`-- table ${name}`);
+    const cols = getRawClient().prepare(`PRAGMA table_info("${name}")`).all() as Array<{ cid: number; name: string; type: string; notnull: number; dflt_value: string | null; pk: number }>;
+    for (const c of cols) out.push(`  ${c.name} ${c.type || "ANY"}${c.pk ? " PK" : ""}${c.notnull ? " NOT NULL" : ""}${c.dflt_value === null ? "" : " DEFAULT " + c.dflt_value}`);
+    // Inline UNIQUE constraints have no SQL of their own in sqlite_master.
+    const uniques = getRawClient().prepare(`PRAGMA index_list("${name}")`).all() as Array<{ name: string; unique: number; origin: string }>;
+    for (const u of uniques.filter((u) => u.origin === "u")) {
+      const ucols = getRawClient().prepare(`PRAGMA index_info("${u.name}")`).all() as Array<{ seqno: number; name: string }>;
+      out.push(`  UNIQUE(${ucols.sort((x, y) => x.seqno - y.seqno).map((c) => c.name).join(", ")})`);
+    }
+    out.push("");
+  }
+  const rest = getRawClient()
+    .prepare(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type != 'table' AND name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+    .all() as Array<{ type: string; name: string; sql: string }>;
+  for (const r of rest) out.push(`-- ${r.type} ${r.name}`, `${r.sql};`, "");
+  return out.join("\n") + "\n";
 }
 
 function dumpSchema(where: string): string {
@@ -237,7 +268,7 @@ describe("golden SQL", () => {
   });
 
   it("fixed schema", async () => {
-    await check("fixed-schema.sql", dumpSchema("name NOT LIKE 'sqlite_%'"));
+    await check("fixed-schema.txt", dumpStructure());
   });
 
   it("user table with every field type", async () => {
