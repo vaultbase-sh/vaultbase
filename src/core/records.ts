@@ -19,7 +19,8 @@ import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
-import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges, trackWrite } from "./table-writes.ts";
+import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges } from "./table-writes.ts";
+import { db, driverOpen } from "../db/index.ts";
 import { isReadWorker } from "./thread-bus.ts";
 
 /**
@@ -62,13 +63,6 @@ function preparedGet(client: Database, sql: string, params: unknown[]): unknown 
   }).get(...params);
 }
 
-/** Runs a cached statement; returns the rows it changed. */
-function preparedRun(client: Database, sql: string, params: unknown[]): number {
-  return ((getCachedStmt(client, sql) as unknown as {
-    run: (...args: unknown[]) => { changes: number };
-  }).run(...params)).changes;
-}
-
 /** Test hook: statements held right now. */
 export function _preparedStatementCount(): number {
   return STMT_CACHE.size;
@@ -78,6 +72,7 @@ export function _preparedStatementCount(): number {
 export function invalidatePreparedStatements(): void {
   STMT_CACHE.clear();
   COUNT_CACHE.clear();
+  if (driverOpen()) db.invalidateStatements();
 }
 onCloseDb(invalidatePreparedStatements);
 
@@ -836,7 +831,7 @@ async function createRecordImpl(
   // Cached statements: compiling these two on every write was ~a fifth of
   // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
   // AFTER triggers an admin may have added through the SQL page.)
-  trackWrite(client, userTableName(col.name), () => preparedRun(client, `INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals));
+  db.sync.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
 
   const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
@@ -928,7 +923,7 @@ async function updateRecordImpl(
   const client = rawClient();
 
   if (setCols.length > 1) {
-    trackWrite(client, userTableName(col.name), () => preparedRun(client, `UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id]));
+    db.sync.run(`UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id], { table: userTableName(col.name) });
   }
   // updated_at has 1 s resolution; drop the cached vector so a same-second
   // re-search sees the new value.
@@ -1204,9 +1199,7 @@ async function applyCascades(
       const now = Math.floor(Date.now() / 1000);
       for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
       const fullRef = refCol ?? await getCollection(ref.collection.name);
-      trackWrite(client, userTableName(ref.collection.name), () => client
-        .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
-        .run(now, id));
+      db.sync.run(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`, [now, id], { table: userTableName(ref.collection.name) });
       // Realtime gets the full records; hooks and webhooks skip cascades (see
       // event-listeners.ts).
       for (const r of affected) {
@@ -1283,7 +1276,7 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited, guard);
 
-  trackWrite(rawClient(), userTableName(col.name), () => preparedRun(rawClient(), `DELETE FROM ${tableRef} WHERE "id" = ?`, [id]));
+  db.sync.run(`DELETE FROM ${tableRef} WHERE "id" = ?`, [id], { table: userTableName(col.name) });
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
     op: "delete",

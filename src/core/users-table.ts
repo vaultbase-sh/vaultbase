@@ -20,7 +20,7 @@
 import type { Database } from "bun:sqlite";
 import { getRawClient, onCloseDb } from "../db/client.ts";
 import { userTableName } from "./collections.ts";
-import { trackWrite } from "./table-writes.ts";
+import { db } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 
 /** Auth-system columns guaranteed to exist on every `vb_<auth-col>`. */
@@ -173,9 +173,7 @@ export async function insertUser(col: Collection, input: InsertInput): Promise<v
     }
   }
 
-  const stmt = rawClient()
-    .prepare(`INSERT INTO ${tname} (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`);
-  trackWrite(rawClient(), userTableName(col.name), () => stmt.run(...(values as never[])));
+  db.sync.run(`INSERT INTO ${tname} (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`, values, { table: userTableName(col.name) });
 }
 
 /**
@@ -199,9 +197,7 @@ export async function updateUserById(
     }
   }
   if (sets.length > 0) {
-    const stmt = rawClient()
-      .prepare(`UPDATE ${tname} SET ${sets.join(", ")} WHERE id = ?`);
-    trackWrite(rawClient(), userTableName(col.name), () => stmt.run(...(vals as never[]), id));
+    db.sync.run(`UPDATE ${tname} SET ${sets.join(", ")} WHERE id = ?`, [...vals, id], { table: userTableName(col.name) });
   }
 }
 
@@ -209,6 +205,6 @@ export async function updateUserById(
 export function deleteUserById(col: Collection, id: string): void {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    trackWrite(rawClient(), userTableName(col.name), () => rawClient().prepare(`DELETE FROM ${tname} WHERE id = ?`).run(id));
+    db.sync.run(`DELETE FROM ${tname} WHERE id = ?`, [id], { table: userTableName(col.name) });
   } catch { /* table missing or row absent */ }
 }

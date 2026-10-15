@@ -20,6 +20,11 @@ export function _setDriver(driver: DbDriver | null): void {
   current = driver;
 }
 
+/** Whether a driver is open (caches that clear on close check before calling the driver). */
+export function driverOpen(): boolean {
+  return current !== null;
+}
+
 /** The open driver; throws before `initDb` and after `closeDb`. */
 export function getDriver(): DbDriver {
   if (!current) throw new Error("DB not initialized. Call initDb() first.");
