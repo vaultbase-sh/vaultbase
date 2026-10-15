@@ -674,7 +674,9 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
     }
 
     // 1000-row cap mirrors PB's hard cap to bound back-ref expansion cost.
-    const subq = `(SELECT json_group_array(${sel}) FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000)`;
+    // The LIMIT sits on the rows being aggregated: on the aggregate itself
+    // it would only limit its single output row and cap nothing.
+    const subq = `(SELECT json_group_array(_vb_v) FROM (SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000))`;
     return applyModifierToSql(subq, op.modifier);
   } finally {
     ctx.joinDepth--;
@@ -838,7 +840,9 @@ function authValue(auth: AuthContext | null, prop: AuthProp): string | number | 
 
 function macroValue(name: string): string | number {
   const now = new Date();
-  const utc = (d: Date) => d.toISOString();
+  // Unix seconds: the storage format of date and autodate fields, so a
+  // comparison with them is a comparison, not SQLite's type ordering.
+  const utc = (d: Date) => Math.floor(d.getTime() / 1000);
   switch (name) {
     case "now":          return utc(now);
     case "yesterday":    return utc(new Date(now.getTime() - 86_400_000));
