@@ -22,6 +22,8 @@ import { _resetCollectionCache } from "../core/collections.ts";
 import { parseFilter, type CollectionLookup, type ParseFilterOpts } from "../core/filter.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { createPublicCollection } from "./_helpers.ts";
+import { db } from "../db/index.ts";
+import { createRecord, deleteRecord, getRecord, listRecords, updateRecord } from "../core/records.ts";
 
 const DIR = new URL("./golden/", import.meta.url);
 const UPDATE = process.env["UPDATE_GOLDEN"] === "1";
@@ -261,5 +263,56 @@ describe("golden SQL", () => {
     const b = (() => { try { parseFilter('nothere = "x"', "vb_gold", { lookup, ...hostOpts }); return null; } catch (e) { return (e as Error).message; } })();
     expect(a).not.toBeNull();
     expect(a!.replace("secret", "<name>")).toBe(b!.replace("nothere", "<name>"));
+  });
+});
+
+/**
+ * The statement stream of the record operations: every SQL statement the
+ * driver runs for a list (plain, filtered and sorted on page 2, expanded,
+ * searched, without a total), a get, a create, an update, a plain delete
+ * and a cascading delete. The sequence is run once untraced so every cache
+ * (settings, totals, columns, statements) is warm, then once traced.
+ */
+describe("golden SQL: operations", () => {
+  const CASCADE_PEOPLE = [{ name: "name", type: "text" }];
+  const CASCADE_GOLD = GOLD_FIELDS.map((f) => (f.name === "author" ? { ...f, options: { cascade: "cascade" } } : f));
+
+  beforeEach(async () => {
+    initDb(":memory:");
+    await runMigrations();
+    await createPublicCollection({ name: "gold_people", fields: JSON.stringify(CASCADE_PEOPLE) });
+    await createPublicCollection({ name: "gold", fields: JSON.stringify(CASCADE_GOLD) });
+  });
+  afterEach(() => {
+    _resetCollectionCache();
+    closeDb();
+  });
+
+  async function sequence(): Promise<void> {
+    const person = await createRecord("gold_people", { name: "ann" });
+    const rec = await createRecord("gold", { title: "hello world", price: 2.5, active: true, tags: ["a", "b"], author: person.id });
+    await listRecords("gold");
+    await listRecords("gold", { filter: 'active = true && title ~ "hello"', sort: "-price,title", page: 2, perPage: 10 });
+    await listRecords("gold", { expand: "author", fields: "title,author" });
+    await listRecords("gold", { search: "hello" });
+    await listRecords("gold", { skipTotal: true });
+    await getRecord("gold", rec.id);
+    await updateRecord("gold", rec.id, { price: 3, tags: ["c"] });
+    await deleteRecord("gold", rec.id);
+    const again = await createRecord("gold", { title: "second", author: person.id });
+    await deleteRecord("gold_people", person.id); // cascades into gold
+    expect(await getRecord("gold", again.id)).toBeNull();
+  }
+
+  it("statement stream", async () => {
+    await sequence();
+    const seen: string[] = [];
+    db.trace((sql) => seen.push(sql));
+    try {
+      await sequence();
+    } finally {
+      db.trace(null);
+    }
+    await check("operations.sql", seen.map((s) => s.replace(/\s+/g, " ").trim() + ";").join("\n") + "\n");
   });
 });
