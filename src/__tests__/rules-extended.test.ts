@@ -151,12 +151,14 @@ describe("Phase 1 — @request.* expansions", () => {
 });
 
 describe("Phase 1 — datetime macros", () => {
-  it("@now resolves to a current ISO-8601 datetime", () => {
-    expect(evaluateRule(
-      `@now > "2000-01-01"`,
-      USER,
-      {},
-    )).toBe(true);
+  it("@now resolves to the current time in Unix seconds, the format date fields use", () => {
+    // 2000-01-01T00:00:00Z
+    expect(evaluateRule(`@now > 946684800`, USER, {})).toBe(true);
+    expect(evaluateRule(`@now < 946684800`, USER, {})).toBe(false);
+    const nowSec = Math.floor(Date.now() / 1000);
+    expect(evaluateRule(`published_at <= @now`, USER, { published_at: nowSec - 10 })).toBe(true);
+    expect(evaluateRule(`published_at <= @now`, USER, { published_at: nowSec + 3600 })).toBe(false);
+    expect(evaluateRule(`published_at >= @todayStart && published_at <= @todayEnd`, USER, { published_at: nowSec })).toBe(true);
   });
 
   it("@year compiles into the SQL filter", () => {
