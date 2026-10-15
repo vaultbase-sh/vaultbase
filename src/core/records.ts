@@ -16,7 +16,7 @@ import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
-import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
+import { hasFts, isSearchSyntaxError, rankedSelect, searchPredicate, searchQuery, SEARCH_COLUMN } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
 import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges } from "./table-writes.ts";
 import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
@@ -297,7 +297,7 @@ function buildRecord(
   };
   for (const k in row) {
     const v = row[k];
-    if (k === "id" || k === "created_at" || k === "updated_at") continue;
+    if (k === "id" || k === "created_at" || k === "updated_at" || k === SEARCH_COLUMN) continue;
     // Auth-system columns are private — never emit on the wire. In a view,
     // also password fields, and duplicates SQLite renames to `name:1`.
     if (col.type === "auth" && AUTH_PRIVATE_COLUMNS.has(k)) continue;
@@ -544,9 +544,9 @@ export async function compileListWhere(
     whereParts.push(compiled.sql);
     whereParams.push(...(compiled.params as Binding[]));
   }
-  const match = searchMatch(col, opts.search);
+  const match = await searchMatch(col, opts.search);
   if (match) {
-    whereParts.push(`${quoteIdent(tname)}.rowid IN (SELECT rowid FROM ${quoteIdent(match.table)} WHERE ${quoteIdent(match.table)} MATCH ?)`);
+    whereParts.push(searchPredicate(col.name, quoteIdent(tname)));
     whereParams.push(match.query);
   }
   const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
@@ -554,19 +554,19 @@ export async function compileListWhere(
 }
 
 /**
- * Resolve `?search=` to an FTS5 query against the collection's index.
+ * Resolve `?search=` to a query for the collection's index (fts.ts).
  * Null when the input is blank; FilterError when the collection has no
- * searchable fields.
+ * searchable fields or the database has no search.
  */
-function searchMatch(col: Collection, search: string | undefined): { table: string; query: string } | null {
+async function searchMatch(col: Collection, search: string | undefined): Promise<{ query: string } | null> {
   if (search === undefined) return null;
-  const query = toFtsQuery(search);
-  if (!query) return null;
   if (db.capabilities.fts === "none") throw new FilterError("full-text search is not available on this database");
-  if (col.type === "view" || !hasFts(col.name)) {
+  const query = searchQuery(search);
+  if (!query) return null;
+  if (col.type === "view" || !(await hasFts(col.name))) {
     throw new FilterError(`collection '${col.name}' has no searchable fields`);
   }
-  return { table: ftsTableName(col.name), query };
+  return { query };
 }
 
 export async function listRecords(
@@ -595,7 +595,7 @@ export async function listRecords(
   const { whereSql, whereParams } = await compileListWhere(col, opts);
   // A search with no explicit sort orders by relevance (bm25): the SELECT
   // joins the match set itself, so it skips the search clause in WHERE.
-  const match = opts.sort === undefined ? searchMatch(col, opts.search) : null;
+  const match = opts.sort === undefined ? await searchMatch(col, opts.search) : null;
   const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
@@ -645,12 +645,8 @@ export async function listRecords(
   }
   const orderSql = orderClauses.length > 0 ? `ORDER BY ${orderClauses.join(", ")}` : "";
 
-  const fts = match ? quoteIdent(match.table) : "";
   const selectSql = match && rankedWhere
-    ? `SELECT ${tableRef}.* FROM ${tableRef}
-         JOIN (SELECT rowid AS vb_fts_rowid, rank AS vb_fts_rank FROM ${fts} WHERE ${fts} MATCH ?) AS vb_fts
-           ON vb_fts.vb_fts_rowid = ${tableRef}.rowid
-         ${rankedWhere.whereSql} ORDER BY vb_fts.vb_fts_rank LIMIT ? OFFSET ?`
+    ? rankedSelect(col.name, tableRef, rankedWhere.whereSql)
     : rowid && orderSql && offset >= ROWID_FIRST_OFFSET
       ? `SELECT * FROM ${tableRef} WHERE ${rowid} IN (SELECT ${rowid} FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?) ${orderSql}`
       : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
@@ -675,9 +671,9 @@ export async function listRecords(
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {
-    // toFtsQuery quotes every term, but report anything FTS5 still rejects
-    // as a bad request rather than a 500.
-    if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
+    // The query builders quote every term, but report anything the search
+    // engine still rejects as a bad request rather than a 500.
+    if (opts.search && isSearchSyntaxError(e)) throw new FilterError(`invalid search: ${(e as Error).message}`);
     throw e;
   }
   recordListQuery({

@@ -106,7 +106,7 @@ describe("aggregates", () => {
   it("applies filter and search", async () => {
     await seed();
     expect((await agg("agg=sum(amount)&filter=paid%20%3D%20true")).body.data).toEqual([{ sum_amount: 50 }]);
-    if (onSqlite) expect((await agg("search=open")).body.data).toEqual([{ count: 2 }]);
+    expect((await agg("search=open")).body.data).toEqual([{ count: 2 }]);
   });
 });
 

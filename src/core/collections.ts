@@ -6,7 +6,7 @@ import { db, getDriver, type DbDriver } from "../db/index.ts";
 import type { ColumnSpec } from "../db/ddl.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
-import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
+import { dropFts, ftsColumns, searchableErrors, syncFts, SEARCH_COLUMN } from "./fts.ts";
 import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
 
@@ -165,7 +165,7 @@ function columnsSql(collectionName: string): string {
 }
 
 function rememberColumns(collectionName: string, driver: DbDriver, token: number, rows: Array<{ name: string }>): string[] {
-  const cols = rows.map((r) => r.name);
+  const cols = rows.map((r) => r.name).filter((n) => n !== SEARCH_COLUMN);
   columnsCache.set(collectionName, { driver, token, cols });
   return cols;
 }
@@ -389,7 +389,7 @@ export async function createUserTable(collectionName: string, fields: FieldDef[]
   ];
   await db.exec(db.dialect.createTable(tname, cols));
   await ensureTimestampIndexes(collectionName);
-  syncFts(collectionName, fields);
+  await syncFts(collectionName, fields);
 }
 
 /**
@@ -433,7 +433,7 @@ export async function ensureTimestampIndexes(collectionName: string): Promise<vo
 export async function dropUserTable(collectionName: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
-  dropFts(collectionName);
+  await dropFts(collectionName);
   await db.exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
@@ -796,8 +796,8 @@ export async function alterUserTable(
   // The search index triggers reference their columns, which blocks DROP
   // COLUMN and keep a renamed column's old name; drop the index first and
   // let syncFts below recreate it.
-  const indexed = ftsColumns(collectionName) ?? [];
-  if (indexed.some((c) => !newByName.has(c))) dropFts(collectionName);
+  const indexed = (await ftsColumns(collectionName)) ?? [];
+  if (indexed.some((c) => !newByName.has(c))) await dropFts(collectionName);
 
   for (const [from, to] of renamed) {
     const hadUnique = await hasUniqueIndex(from);
@@ -858,7 +858,7 @@ export async function alterUserTable(
     }
   }
 
-  syncFts(collectionName, newFields);
+  await syncFts(collectionName, newFields);
   });
 }
 
@@ -1054,7 +1054,7 @@ async function renameCollectionStorage(
       await createUserView(newName, viewQuery);
     } else {
       // The search index is named after the collection; rebuilt below.
-      dropFts(oldName);
+      await dropFts(oldName);
       await db.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
@@ -1069,7 +1069,7 @@ async function renameCollectionStorage(
     await db.run(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`, [newName, oldName]);
     await db.run(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`, [newName, oldName]);
   });
-  if (type !== "view") syncFts(newName, parseFields(before.fields).filter((f) => !f.implicit));
+  if (type !== "view") await syncFts(newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
   broadcast({ type: "bus", kind: "collections" });

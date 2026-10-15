@@ -112,7 +112,7 @@ export const POSTGRES_CAPABILITIES: Capabilities = {
   readWorkerThreads: false,
   foreignCommitProbe: false,
   explain: "none",
-  fts: "none",
+  fts: "tsvector",
   statementAtomicity: false,
 };
 

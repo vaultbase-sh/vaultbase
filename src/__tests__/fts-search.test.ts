@@ -16,7 +16,7 @@ import {
   createCollection, updateCollection, deleteCollection, getCollection, type FieldDef,
 } from "../core/collections.ts";
 import { createRecord, updateRecord, deleteRecord, listRecords, FilterError } from "../core/records.ts";
-import { ftsColumns, hasFts, toFtsQuery } from "../core/fts.ts";
+import { ftsColumns, hasFts, toFtsQuery, toTsQuery } from "../core/fts.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 
 let tmpDir: string;
@@ -56,12 +56,20 @@ describe("toFtsQuery", () => {
     expect(toFtsQuery("  ")).toBeNull();
     expect(toFtsQuery(`say "hi"`)).toBe(`"say" "hi"*`);
   });
+
+  it("builds the Postgres form: words only, ANDed, the last a prefix", () => {
+    expect(toTsQuery("hello world")).toBe(`'hello' & 'world':*`);
+    expect(toTsQuery("-plain title:x")).toBe(`'plain' & 'title' & 'x':*`);
+    expect(toTsQuery("it's")).toBe(`'it' & 's':*`);
+    expect(toTsQuery("مرحبا")).toBe(`'مرحبا':*`);
+    expect(toTsQuery("&|!()*:")).toBeNull();
+  });
 });
 
-describe.skipIf(!onSqlite)("index lifecycle", () => {
+describe("index lifecycle", () => {
   it("creates the index only for searchable fields", async () => {
     await notes();
-    expect(ftsColumns("notes")).toEqual(["title", "body"]);
+    expect(await ftsColumns("notes")).toEqual(["title", "body"]);
   });
 
   it("rejects searchable on a non-text or encrypted field", async () => {
@@ -71,7 +79,7 @@ describe.skipIf(!onSqlite)("index lifecycle", () => {
 
   it("backfills when a field becomes searchable, and survives dropping it", async () => {
     const col = await notes([{ name: "title", type: "text" }, { name: "status", type: "text" }]);
-    expect(hasFts("notes")).toBe(false);
+    expect(await hasFts("notes")).toBe(false);
     await createRecord("notes", { title: "existing row", status: "open" });
 
     await updateCollection(col.id, { fields: JSON.stringify([
@@ -83,21 +91,21 @@ describe.skipIf(!onSqlite)("index lifecycle", () => {
 
     // Dropping an indexed column must not be blocked by the triggers.
     await updateCollection(col.id, { fields: JSON.stringify([{ name: "title", type: "text", options: { searchable: true } }]) });
-    expect(ftsColumns("notes")).toEqual(["title"]);
+    expect(await ftsColumns("notes")).toEqual(["title"]);
     expect(await ids("existing")).toEqual(["existing row"]);
 
     await updateCollection(col.id, { fields: JSON.stringify([{ name: "title", type: "text" }]) });
-    expect(hasFts("notes")).toBe(false);
+    expect(await hasFts("notes")).toBe(false);
   });
 
   it("follows a rename and goes away with the collection", async () => {
     const col = await notes();
     await createRecord("notes", { title: "renamed one" });
     await updateCollection(col.id, { name: "memos" });
-    expect(hasFts("notes")).toBe(false);
+    expect(await hasFts("notes")).toBe(false);
     expect((await listRecords("memos", { search: "renamed" })).data.length).toBe(1);
     await deleteCollection(col.id);
-    expect(hasFts("memos")).toBe(false);
+    expect(await hasFts("memos")).toBe(false);
   });
 
   it.skipIf(!onSqlite)("is restored at boot if missing", async () => {
@@ -109,7 +117,7 @@ describe.skipIf(!onSqlite)("index lifecycle", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("search", () => {
+describe("search", () => {
   it("matches words, prefixes and accents", async () => {
     await notes();
     await createRecord("notes", { title: "Café opening", body: "<p>Fresh bread</p>" });
@@ -168,7 +176,7 @@ describe.skipIf(!onSqlite)("search", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("API", () => {
+describe("API", () => {
   it("applies the list rule to search results", async () => {
     await notes(FIELDS, { list_rule: `status = "public"` });
     await createRecord("notes", { title: "secret plan", status: "private" });

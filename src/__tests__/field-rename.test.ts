@@ -51,7 +51,7 @@ describe("field rename", () => {
     // Uniqueness survived the rename.
     await expect(createRecord("posts", { headline: "x", handle: "hello", body: "" })).rejects.toThrow();
     // Search still works on the renamed column.
-    if (onSqlite) expect((await listRecords("posts", { search: "hello" })).data.map((r) => r.id)).toEqual([rec.id]);
+    expect((await listRecords("posts", { search: "hello" })).data.map((r) => r.id)).toEqual([rec.id]);
     const cols = (await db.all<{ name: string }>(db.dialect.listColumnsSql("vb_posts"))).map((c) => c.name);
     expect(cols).toContain("headline");
     expect(cols).not.toContain("title");

@@ -44,6 +44,8 @@ export async function runOnce(key: string, fn: () => Promise<void> | void): Prom
 
 export async function runMigrations() {
   await ensureFixedSchema();
+  // The text function the Postgres search index is built on (core/fts.ts).
+  await (await import("../core/fts.ts")).ensureSearchFunction();
 
   // Tables of earlier designs: single-table records, DB-backed logs.
   await db.exec(`DROP TABLE IF EXISTS vaultbase_records`);
@@ -75,14 +77,14 @@ export async function runMigrations() {
 
   // ── v0.15: full-text index for `searchable` fields ──
   // No-op when the index already matches; (re)builds it otherwise.
-  if (db.capabilities.fts === "fts5") {
+  if (db.capabilities.fts !== "none") {
     const { syncFts } = await import("../core/fts.ts");
     const ftsRows = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
     for (const { name, fields } of ftsRows) {
       try {
         const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
           .filter((f) => !f.implicit);
-        syncFts(name, parsed);
+        await syncFts(name, parsed);
       } catch (e) {
         console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
       }
