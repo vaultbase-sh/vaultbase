@@ -7,6 +7,20 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.21.1] — 2026-10-15
+
+### Fixed
+
+- **Read worker threads (experimental): a pool that fails to start no longer takes
+  requests.** In 0.21.0, when `VAULTBASE_READ_WORKERS` was set and the workers could not
+  start, the server logged it but still forwarded every record list and get-one to the
+  missing workers, and those requests never answered. A pool that can't start now leaves
+  nothing behind, a worker that dies is dropped with its in-flight requests failed, and a
+  forwarded request that gets no reply within 30 s fails with 503 instead of hanging.
+- **Read worker threads (experimental): the worker is included in the compiled binaries.**
+  0.21.0's binaries could not start it at all (`ModuleNotFound`); running from source
+  worked. The build now compiles `src/read-worker.ts` as a second entry point.
+
 ## [0.21.0] — 2026-10-15
 
 ### Added
