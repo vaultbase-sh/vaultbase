@@ -15,10 +15,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   Postgres instead of the SQLite file: the schema is created and kept up to date at start,
   and records, rules, filters, full-text search (a generated `tsvector` column with a GIN
   index, accents folded with `unaccent`), expand, batch, history, files, auth, admin, MCP,
-  hooks and realtime work the same. Not on Postgres yet, each answering with a clear error:
-  the backups page and scheduled backups (use `pg_dump`), the SQL sandbox (read-only
-  queries work), plan-based index suggestions, read worker threads and `strftime()` in
-  filters. The test suite runs against Postgres in CI. See the Databases page.
+  hooks and realtime work the same. Index suggestions read Postgres plans, the
+  Monitoring page shows the database size and connections, `strftime()` in filters covers
+  the common codes, and backups (scheduled, S3, download) run `pg_dump` when it is
+  installed. Not on Postgres yet, each answering with a clear error: restore from the
+  backups page (use `pg_restore`), the SQL sandbox (read-only queries work) and read worker
+  threads. The test suite runs against Postgres in CI. See the Databases page.
 - **`helpers.sql` in hooks, routes, jobs and workers.** Asynchronous SQL with `?`
   placeholders and an array of parameters: `query`, `queryOne`, `exec` and
   `transaction(fn)`. `helpers.db` stays as it is but is deprecated: it is synchronous and

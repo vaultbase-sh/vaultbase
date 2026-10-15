@@ -66,6 +66,10 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install pg_dump
+        # Backups on Postgres run pg_dump; the client must match the server (16).
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
+
       - name: Test on Postgres
         # Every initDb(":memory:") opens a fresh schema on the service
         # (src/db/client.ts); SQLite-only suites skip themselves.

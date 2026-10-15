@@ -145,12 +145,15 @@ export class PostgresDriver implements DbDriver {
   readonly capabilities = POSTGRES_CAPABILITIES;
 
   private readonly pool: SQL;
+  /** The connection URL, for tools that open their own connection (pg_dump). */
+  readonly url: string;
   private readonly als = new AsyncLocalStorage<SQL>();
   private token = 1;
   private traceFn: ((sql: string) => void) | null = null;
   private savepointSeq = 0;
 
   constructor(url: string, opts: { max?: number } = {}) {
+    this.url = url;
     // bigint: COUNT, SUM and bigint columns come back as BigInt instead of
     // strings; the row mapper turns them into numbers (see `rows`).
     const Client = SQL as unknown as new (url: string, options: Record<string, unknown>) => SQL;

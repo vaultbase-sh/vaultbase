@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { getRawClient } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
 import { getSetting, setSetting, invalidateSetting } from "../api/settings.ts";
 import { nextRunFromCron, validateCron } from "./jobs.ts";
 
@@ -30,7 +30,7 @@ export const DEFAULT_BACKUP_CRON = "0 3 * * *";
 export const DEFAULT_BACKUP_KEEP = 7;
 export const MAX_BACKUP_KEEP = 1000;
 
-const NAME_RE = /^vaultbase-\d{8}-\d{6}-\d{3}\.db$/;
+const NAME_RE = /^vaultbase-\d{8}-\d{6}-\d{3}\.(db|dump)$/;
 
 let backupsDir = "";
 let ticker: ReturnType<typeof setInterval> | null = null;
@@ -83,18 +83,62 @@ function cronExpr(): string {
 }
 
 /** `vaultbase-20261011-030000-000.db` (UTC), so lexical order is chronological. */
-function stampName(ms: number): string {
+function stampName(ms: number, ext: string): string {
   const iso = new Date(ms).toISOString(); // 2026-10-11T03:00:00.000Z
-  return `vaultbase-${iso.slice(0, 10).replace(/-/g, "")}-${iso.slice(11, 19).replace(/:/g, "")}-${iso.slice(20, 23)}.db`;
+  return `vaultbase-${iso.slice(0, 10).replace(/-/g, "")}-${iso.slice(11, 19).replace(/:/g, "")}-${iso.slice(20, 23)}.${ext}`;
+}
+
+/** The pg_dump binary: `VAULTBASE_PG_DUMP`, or `pg_dump` on the PATH. Null when there is none. */
+function pgDumpBinary(): string | null {
+  const named = process.env["VAULTBASE_PG_DUMP"];
+  if (named) return existsSync(named) ? named : Bun.which(named);
+  return Bun.which("pg_dump");
 }
 
 /**
- * Atomic snapshot of the live DB. `VACUUM INTO` writes committed state with
- * WAL pages merged, so the file is restorable on its own.
+ * How this server takes a backup: SQLite copies its file (VACUUM INTO);
+ * Postgres runs pg_dump over the server's schema when the binary is there.
+ * Null when neither applies; the backups API then says so.
  */
-export function snapshotTo(path: string): void {
+export function backupEngine(): "sqlite" | "pg_dump" | null {
+  const name = getDriver().name;
+  if (name === "sqlite") return "sqlite";
+  if (name === "postgres" && pgDumpBinary()) return "pg_dump";
+  return null;
+}
+
+/** File extension and content type of a backup taken by the open driver. */
+export function backupFormat(): { ext: string; type: string } {
+  return backupEngine() === "pg_dump"
+    ? { ext: "dump", type: "application/octet-stream" }
+    : { ext: "db", type: "application/vnd.sqlite3" };
+}
+
+/**
+ * Write a consistent copy of the database to `path`. SQLite: `VACUUM INTO`
+ * writes committed state with WAL pages merged, so the file is restorable
+ * on its own. Postgres: a pg_dump archive in the custom format of the
+ * server's schema; restore it with pg_restore.
+ */
+export async function snapshotTo(path: string): Promise<void> {
   if (existsSync(path)) rmSync(path);
-  getRawClient().exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+  const engine = backupEngine();
+  if (engine === "sqlite") {
+    getRawClient().exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+    return;
+  }
+  if (engine !== "pg_dump") throw new Error(`backups are not available on ${getDriver().name}`);
+  const schema = (await db.get<{ s: string }>(`SELECT current_schema() AS s`))!.s;
+  const url = (getDriver() as unknown as { url: string }).url;
+  const proc = Bun.spawn([pgDumpBinary()!, "--format=custom", "--no-owner", `--schema=${schema}`, `--dbname=${url}`], {
+    stdout: Bun.file(path),
+    stderr: "pipe",
+  });
+  const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+  if (code !== 0) {
+    if (existsSync(path)) rmSync(path);
+    throw new Error(`pg_dump failed (exit ${code}): ${err.trim().slice(0, 300)}`);
+  }
 }
 
 export function listBackups(): BackupInfo[] {
@@ -166,13 +210,14 @@ async function doBackup(): Promise<BackupInfo> {
   if (!backupsDir) throw new Error("backups directory not configured");
   if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
 
+  const { ext, type } = backupFormat();
   let ms = Date.now();
-  while (existsSync(join(backupsDir, stampName(ms)))) ms++;
-  const name = stampName(ms);
+  while (existsSync(join(backupsDir, stampName(ms, ext)))) ms++;
+  const name = stampName(ms, ext);
   const final = join(backupsDir, name);
   const tmp = join(backupsDir, `.${name}.tmp`);
   try {
-    snapshotTo(tmp);
+    await snapshotTo(tmp);
     renameSync(tmp, final);
   } finally {
     if (existsSync(tmp)) rmSync(tmp, { force: true });
@@ -183,7 +228,7 @@ async function doBackup(): Promise<BackupInfo> {
 
   const s3 = s3Target();
   if (s3) {
-    await s3.client.write(`${s3.prefix}${name}`, Bun.file(final), { type: "application/vnd.sqlite3" });
+    await s3.client.write(`${s3.prefix}${name}`, Bun.file(final), { type });
     await pruneS3(s3, keep);
   }
 
@@ -238,10 +283,11 @@ export async function backupTick(nowSec = Math.floor(Date.now() / 1000)): Promis
     return null;
   }
   if (next.at > nowSec) return null;
-  // Claim: only the worker whose UPDATE matches the old value runs.
-  const claimed = getRawClient()
-    .prepare(`UPDATE vaultbase_settings SET value = ?, updated_at = unixepoch() WHERE key = 'backups.next_run' AND value = ?`)
-    .run(`${cron}|${nextRunFromCron(cron, nowSec)}`, raw).changes;
+  // Claim: only the process whose UPDATE matches the old value runs.
+  const claimed = (await db.run(
+    `UPDATE vaultbase_settings SET value = ?, updated_at = ${db.dialect.epochNow} WHERE key = 'backups.next_run' AND value = ?`,
+    [`${cron}|${nextRunFromCron(cron, nowSec)}`, raw],
+  )).changes;
   // The claim bypassed setSetting, so drop the cached value either way.
   await invalidateSetting("backups.next_run");
   if (claimed !== 1) return null;
@@ -266,7 +312,7 @@ export function getBackupStatus(): BackupStatus {
 
 export function startBackupScheduler(): void {
   if (ticker) return;
-  if (!db.capabilities.fileBackups) return; // nothing this process can snapshot
+  if (!backupEngine()) return; // nothing this process can snapshot
   const tick = () => { void backupTick().catch(() => { /* recorded in backups.last_error */ }); };
   ticker = setInterval(tick, 60_000);
   ticker.unref?.();

@@ -20,7 +20,7 @@ import { invalidateStorageCache } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
+import { backupEngine, backupFormat, backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
 import { adminGuard } from "./_admin.ts";
 
 // SQLite magic header — used to verify uploads
@@ -146,11 +146,18 @@ function clusterRestoreRefusal(set: { status?: number | string }) {
   };
 }
 
-/** 501 on a database Vaultbase does not back up itself. */
+/** 501 when this server has no way to take a backup (Postgres without pg_dump). */
 function noFileBackups(set: { status?: number | string }) {
+  if (backupEngine()) return null;
+  set.status = 501;
+  return { error: `Backups need pg_dump on ${db.name}: install it, or set VAULTBASE_PG_DUMP, or use your provider's backups.`, code: 501 };
+}
+
+/** Restore swaps the database file; on Postgres an archive is restored with pg_restore. */
+function noRestore(set: { status?: number | string }) {
   if (db.capabilities.fileBackups) return null;
   set.status = 501;
-  return { error: `Backups are not available on ${db.name}: use pg_dump or your provider's backups.`, code: 501 };
+  return { error: "Restore from the admin is SQLite-only. On Postgres, stop the server and run pg_restore with the downloaded .dump.", code: 501 };
 }
 
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
@@ -159,23 +166,23 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     // Download SQLite snapshot
     .get("/admin/backup", async ({ set }) => {
       { const r = noFileBackups(set); if (r) return r; }
-      if (!existsSync(dbPath)) {
+      if (backupEngine() === "sqlite" && !existsSync(dbPath)) {
         set.status = 404;
         return { error: "Database file not found", code: 404 };
       }
       // Snapshot rather than stream the live file: under WAL the main file
-      // alone can miss committed pages.
+      // alone can miss committed pages. On Postgres, a pg_dump archive.
       const snap = `${dbPath}.download-${Date.now()}`;
       let bytes: Uint8Array;
       try {
-        snapshotTo(snap);
+        await snapshotTo(snap);
         bytes = await Bun.file(snap).bytes();
       } finally {
         rmSync(snap, { force: true });
       }
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       set.headers["Content-Type"] = "application/octet-stream";
-      set.headers["Content-Disposition"] = `attachment; filename="vaultbase-backup-${stamp}.db"`;
+      set.headers["Content-Disposition"] = `attachment; filename="vaultbase-backup-${stamp}.${backupFormat().ext}"`;
       return new Response(bytes);
     }, { requireAdmin: true })
 
@@ -218,7 +225,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     }, { requireAdmin: true })
 
     .post("/admin/backups/:name/restore", async ({ params, set }) => {
-      { const r = noFileBackups(set); if (r) return r; }
+      { const r = noRestore(set); if (r) return r; }
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
       const p = backupPath(params.name);
