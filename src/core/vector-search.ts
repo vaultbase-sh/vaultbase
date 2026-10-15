@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 import { getSchemaVersion, userTableName } from "./collections.ts";
 import { compileListWhere, type ListOptions } from "./records.ts";
@@ -42,22 +41,23 @@ export async function searchVectors(
     _resetVectorCache();
     cacheSchemaVersion = getSchemaVersion();
   }
-  const client: Database = getRawClient();
   const table = quoteIdent(userTableName(col.name));
   const fieldQ = quoteIdent(field);
   const { whereSql, whereParams } = await compileListWhere(col, opts);
 
-  const candidates = client
-    .prepare(`SELECT "id", "updated_at" FROM ${table} ${whereSql} ORDER BY "created_at" DESC LIMIT ${MAX_CANDIDATES}`)
-    .all(...whereParams) as Array<{ id: string; updated_at: number }>;
+  const candidates = db.sync.all<{ id: string; updated_at: number }>(
+    `SELECT "id", "updated_at" FROM ${table} ${whereSql} ORDER BY "created_at" DESC LIMIT ${MAX_CANDIDATES}`,
+    whereParams,
+  );
 
   const bucket = bucketFor(col.id, field);
   const misses = candidates.filter((c) => bucket.entries.get(c.id)?.updated !== c.updated_at);
   for (let i = 0; i < misses.length; i += ID_CHUNK) {
     const chunk = misses.slice(i, i + ID_CHUNK);
-    const rows = client
-      .prepare(`SELECT "id", "updated_at", ${fieldQ} AS v FROM ${table} WHERE "id" IN (${chunk.map(() => "?").join(",")})`)
-      .all(...chunk.map((c) => c.id)) as Array<{ id: string; updated_at: number; v: unknown }>;
+    const rows = db.sync.all<{ id: string; updated_at: number; v: unknown }>(
+      `SELECT "id", "updated_at", ${fieldQ} AS v FROM ${table} WHERE "id" IN (${chunk.map(() => "?").join(",")})`,
+      chunk.map((c) => c.id),
+    );
     for (const r of rows) {
       let arr: unknown = null;
       try { arr = typeof r.v === "string" ? JSON.parse(r.v) : null; } catch { arr = null; }

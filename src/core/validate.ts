@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { customFieldType } from "./field-types.ts";
 import { type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
@@ -273,24 +272,21 @@ async function checkUnique(
   value: unknown,
   existingId?: string
 ): Promise<boolean> {
-  const client = (getDb() as unknown as { $client: Database }).$client;
   const tableRef = `"${userTableName(collection.name)}"`;
   const where = existingId
     ? `WHERE "${fieldName}" = ? AND "id" != ?`
     : `WHERE "${fieldName}" = ?`;
-  type Binding = string | number | bigint | boolean | null | Uint8Array;
-  const params: Binding[] = existingId ? [value as Binding, existingId] : [value as Binding];
-  const row = client.prepare(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`).get(...params);
-  return row === null || row === undefined;
+  const params: unknown[] = existingId ? [value, existingId] : [value];
+  const row = db.sync.get(`SELECT "id" FROM ${tableRef} ${where} LIMIT 1`, params);
+  return row === null;
 }
 
 async function checkRelationTarget(field: FieldDef, id: string, canSee?: CanSeeRecord): Promise<string | null> {
   if (!field.collection) return `${field.name}: relation has no target collection configured`;
   const target = await getCollection(field.collection);
   if (!target) return `${field.name}: target collection '${field.collection}' not found`;
-  const client = (getDb() as unknown as { $client: Database }).$client;
   const tableRef = `"${userTableName(target.name)}"`;
-  const row = client.prepare(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`).get(id);
+  const row = db.sync.get(`SELECT "id" FROM ${tableRef} WHERE "id" = ? LIMIT 1`, [id]);
   // A record the caller can't view gets the same answer as one that doesn't
   // exist: otherwise the error tells them which ids exist in a collection
   // they can't read, and lets them link to someone else's private record.

@@ -131,17 +131,34 @@ describe("SQLite driver", () => {
     expect(db.all(`SELECT name FROM t ORDER BY id`)).toEqual([{ name: "outer" }, { name: "kept" }]);
   });
 
+  it("runs a synchronous transaction with no gap, nesting as a savepoint", () => {
+    const seen: string[] = [];
+    db.trace((sql) => seen.push(sql));
+    const out = db.sync.transaction(() => {
+      db.sync.run(`INSERT INTO t (name) VALUES ('s1')`);
+      expect(() => db.sync.transaction(() => { db.sync.run(`INSERT INTO t (name) VALUES ('s2')`); throw new Error("inner"); })).toThrow("inner");
+      return 42;
+    }, { immediate: false });
+    db.trace(null);
+    expect(out).toBe(42);
+    expect(seen).toEqual(["BEGIN", "INSERT INTO t (name) VALUES ('s1')", "SAVEPOINT vb_sp_1", "INSERT INTO t (name) VALUES ('s2')", "ROLLBACK TO vb_sp_1", "RELEASE vb_sp_1", "COMMIT"]);
+    expect(db.sync.all(`SELECT name FROM t`)).toEqual([{ name: "s1" }]);
+    expect(() => db.sync.transaction(() => { db.sync.run(`INSERT INTO t (name) VALUES ('s3')`); throw new Error("outer"); })).toThrow("outer");
+    expect(db.inTransaction).toBe(false);
+    expect(db.sync.all(`SELECT name FROM t`)).toEqual([{ name: "s1" }]);
+  });
+
   it("a savepoint outside a transaction commits on its own", async () => {
     await db.savepoint(async () => { db.run(`INSERT INTO t (name) VALUES ('sp')`); });
     expect(db.inTransaction).toBe(false);
     expect(db.sync.get<{ name: string }>(`SELECT name FROM t`)).toEqual({ name: "sp" });
   });
 
-  it("takes the write lock up front by default and only a read lock on request", async () => {
+  it("takes the write lock up front by default and defers it on request", async () => {
     const seen: string[] = [];
     db.trace((sql) => seen.push(sql));
     await db.transaction(async () => {});
-    await db.transaction(async () => {}, { mode: "read" });
+    await db.transaction(async () => {}, { immediate: false });
     db.trace(null);
     expect(seen).toEqual(["BEGIN IMMEDIATE", "COMMIT", "BEGIN", "COMMIT"]);
   });

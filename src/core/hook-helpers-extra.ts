@@ -8,6 +8,7 @@
  * timeouts, body sizes) to prevent footguns from typos.
  */
 import * as jose from "jose";
+import { db } from "../db/index.ts";
 
 // ── security ────────────────────────────────────────────────────────────────
 
@@ -454,6 +455,11 @@ function makeUtil(): UtilHelpers {
 
 // ── db ──────────────────────────────────────────────────────────────────────
 
+/**
+ * `helpers.db`: synchronous, SQLite-only raw SQL for hooks, kept for
+ * compatibility. It runs on the driver's synchronous surface
+ * (`db.sync`, see `db/driver.ts`), which only the SQLite driver honours.
+ */
 export interface DbHelpers {
   /**
    * Run a SELECT and return rows. `params` are bound positionally as `?` or
@@ -469,12 +475,6 @@ export interface DbHelpers {
 }
 
 function makeDb(): DbHelpers {
-  function loadClient() {
-    // Lazy-load to avoid breaking builds that import this module before DB init
-    // (e.g. CLI scripts that build helpers in isolation).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("../db/client.ts").getRawClient() as import("bun:sqlite").Database;
-  }
   function flatten(params: unknown[]): unknown[] {
     if (params.length === 1 && params[0] !== null && typeof params[0] === "object" && !Array.isArray(params[0]) && !(params[0] instanceof Uint8Array)) {
       return [params[0]];
@@ -483,21 +483,17 @@ function makeDb(): DbHelpers {
   }
   return {
     query<T>(sql: string, ...params: unknown[]): T[] {
-      const stmt = loadClient().query(sql);
-      return stmt.all(...(flatten(params) as never[])) as T[];
+      return db.sync.all<T>(sql, flatten(params));
     },
     queryOne<T>(sql: string, ...params: unknown[]): T | null {
-      const stmt = loadClient().query(sql);
-      const row = stmt.get(...(flatten(params) as never[]));
-      return (row ?? null) as T | null;
+      return db.sync.get<T>(sql, flatten(params));
     },
     exec(sql: string, ...params: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
-      const stmt = loadClient().query(sql);
-      const r = stmt.run(...(flatten(params) as never[]));
+      const r = db.sync.run(sql, flatten(params));
       return { changes: r.changes, lastInsertRowid: r.lastInsertRowid };
     },
     execMulti(sql: string): void {
-      loadClient().exec(sql);
+      db.sync.exec(sql);
     },
   };
 }

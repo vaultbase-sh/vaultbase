@@ -20,7 +20,7 @@
  */
 import { existsSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getSetting } from "../api/settings.ts";
 import { parseFields } from "./collections.ts";
 import { deleteFile, thumbCacheDir } from "./storage.ts";
@@ -64,18 +64,18 @@ export interface SweepResult { checked: number; deleted: number; errors: number 
 export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): Promise<SweepResult> {
   const result: SweepResult = { checked: 0, deleted: 0, errors: 0 };
   if (getSetting("files.orphan_cleanup", "1") !== "1") return result;
-  const client = getRawClient();
   const cols = new Map(
-    (client.prepare(`SELECT id, name, type, fields, history_enabled FROM vaultbase_collections`).all() as ColRow[])
+    db.sync.all<ColRow>(`SELECT id, name, type, fields, history_enabled FROM vaultbase_collections`)
       .map((c) => [c.id, c]),
   );
   const cutoff = nowSec - GRACE_SECONDS;
   let after = "";
   for (;;) {
-    const rows = client
-      .prepare(`SELECT id, collection_id, record_id, field_name, filename FROM vaultbase_files
-                 WHERE created_at < ? AND id > ? ORDER BY id LIMIT ?`)
-      .all(cutoff, after, BATCH) as FileRow[];
+    const rows = db.sync.all<FileRow>(
+      `SELECT id, collection_id, record_id, field_name, filename FROM vaultbase_files
+                 WHERE created_at < ? AND id > ? ORDER BY id LIMIT ?`,
+      [cutoff, after, BATCH],
+    );
     if (rows.length === 0) break;
     after = rows[rows.length - 1]!.id;
     for (const f of rows) {
@@ -93,7 +93,7 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
         } else {
           let row: Record<string, unknown> | null;
           try {
-            row = client.prepare(`SELECT ${q(f.field_name)} AS v FROM ${q(`vb_${col.name}`)} WHERE id = ?`).get(f.record_id) as Record<string, unknown> | null;
+            row = db.sync.get<Record<string, unknown>>(`SELECT ${q(f.field_name)} AS v FROM ${q(`vb_${col.name}`)} WHERE id = ?`, [f.record_id]);
           } catch {
             continue; // table or column in flux; try again next sweep
           }
@@ -104,7 +104,7 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
       try {
         await deleteFile(f.filename);
         deleteThumbs(f.filename);
-        client.prepare(`DELETE FROM vaultbase_files WHERE id = ?`).run(f.id);
+        db.sync.run(`DELETE FROM vaultbase_files WHERE id = ?`, [f.id]);
         result.deleted++;
       } catch (e) {
         result.errors++;

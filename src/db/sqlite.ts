@@ -128,6 +128,7 @@ export class SqliteDriver implements DbDriver {
       exec: (sql) => self.exec(sql),
       describe: (sql) => self.describe(sql),
       get inTransaction() { return self.raw.inTransaction; },
+      transaction: (fn, opts) => self.transactionSync(fn, opts),
     };
   }
 
@@ -193,7 +194,7 @@ export class SqliteDriver implements DbDriver {
 
   async transaction<T>(fn: () => Promise<T>, opts?: TransactionOptions): Promise<T> {
     if (this.raw.inTransaction) return this.savepoint(fn);
-    this.exec(opts?.mode === "read" ? "BEGIN" : "BEGIN IMMEDIATE");
+    this.exec(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
     try {
       const out = await fn();
       this.exec("COMMIT");
@@ -201,6 +202,31 @@ export class SqliteDriver implements DbDriver {
     } catch (e) {
       // A statement that failed because the connection was closed, or a
       // COMMIT that failed, may have ended the transaction already.
+      if (this.raw.inTransaction) { try { this.exec("ROLLBACK"); } catch { /* closed */ } }
+      throw e;
+    }
+  }
+
+  private transactionSync<T>(fn: () => T, opts?: TransactionOptions): T {
+    if (this.raw.inTransaction) {
+      const name = `vb_sp_${++this.savepointSeq}`;
+      this.exec(`SAVEPOINT ${name}`);
+      try {
+        const out = fn();
+        this.exec(`RELEASE ${name}`);
+        return out;
+      } catch (e) {
+        this.exec(`ROLLBACK TO ${name}`);
+        this.exec(`RELEASE ${name}`);
+        throw e;
+      }
+    }
+    this.exec(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
+    try {
+      const out = fn();
+      this.exec("COMMIT");
+      return out;
+    } catch (e) {
       if (this.raw.inTransaction) { try { this.exec("ROLLBACK"); } catch { /* closed */ } }
       throw e;
     }

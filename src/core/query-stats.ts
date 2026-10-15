@@ -11,7 +11,7 @@
  * only explained when a report is asked for, once per shape until the
  * schema changes (an index was created or dropped).
  */
-import type { Database } from "bun:sqlite";
+import { db } from "../db/index.ts";
 
 export interface ListQuerySample {
   collection: string;
@@ -172,13 +172,13 @@ function mergedShapes(): Shape[] {
 
 const rowCounts = new Map<string, { at: number; rows: number }>();
 
-function rowCount(client: Database, table: string): number {
+function rowCount(table: string): number {
   const hit = rowCounts.get(table);
   const now = Date.now();
   if (hit && now - hit.at < ROWS_TTL_MS) return hit.rows;
   let rows = 0;
   try {
-    rows = (client.prepare(`SELECT COUNT(*) AS c FROM ${quote(table)}`).get() as { c: number }).c;
+    rows = db.sync.get<{ c: number }>(`SELECT COUNT(*) AS c FROM ${quote(table)}`)!.c;
   } catch { /* table gone: report 0 */ }
   rowCounts.set(table, { at: now, rows });
   return rows;
@@ -188,18 +188,18 @@ function quote(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-function schemaVersion(client: Database): number {
+function schemaVersion(): number {
   try {
-    return (client.prepare("PRAGMA schema_version").get() as { schema_version: number }).schema_version;
+    return db.sync.get<{ schema_version: number }>("PRAGMA schema_version")!.schema_version;
   } catch { return 0; }
 }
 
-function explain(client: Database, e: Shape, schema: number): PlanRow[] {
+function explain(e: Shape, schema: number): PlanRow[] {
   if (e.plan && e.plan.schema === schema) return e.plan.rows;
   let rows: PlanRow[] = [];
   try {
     // Unbound parameters are NULL; the plan doesn't depend on them.
-    rows = (client.prepare(`EXPLAIN QUERY PLAN ${e.selectSql}`).all() as Array<{ id: number; parent: number; detail: string }>)
+    rows = db.sync.all<{ id: number; parent: number; detail: string }>(`EXPLAIN QUERY PLAN ${e.selectSql}`)
       .map((r) => ({ id: r.id, parent: r.parent, detail: r.detail }));
   } catch { /* a view that no longer exists, or a MATCH on a dropped FTS table */ }
   e.plan = { schema, rows };
@@ -228,12 +228,12 @@ function costRows(rows: PlanRow[], deep: boolean): PlanRow[] {
 }
 
 /** Existing indexes on `table`, each as its column list in order. */
-function indexColumns(client: Database, table: string): string[][] {
+function indexColumns(table: string): string[][] {
   const out: string[][] = [];
   try {
-    const list = client.prepare(`PRAGMA index_list(${quote(table)})`).all() as Array<{ name: string }>;
+    const list = db.sync.all<{ name: string }>(`PRAGMA index_list(${quote(table)})`);
     for (const ix of list) {
-      const cols = client.prepare(`PRAGMA index_info(${quote(ix.name)})`).all() as Array<{ seqno: number; name: string | null }>;
+      const cols = db.sync.all<{ seqno: number; name: string | null }>(`PRAGMA index_info(${quote(ix.name)})`);
       out.push(cols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name ?? ""));
     }
   } catch { /* not a table */ }
@@ -312,20 +312,20 @@ export function suggestIndex(e: Pick<Shape, "collection" | "table" | "view" | "w
 }
 
 /** Shapes sorted by total time, with plans and suggestions. */
-export function queryStatsReport(client: Database, limit = 50): QueryReport[] {
-  const schema = schemaVersion(client);
+export function queryStatsReport(limit = 50): QueryReport[] {
+  const schema = schemaVersion();
   const indexCache = new Map<string, string[][]>();
   const out: QueryReport[] = [];
   const sorted = mergedShapes().sort((a, b) => b.total_us - a.total_us).slice(0, limit);
   for (const e of sorted) {
-    const planRows = explain(client, e, schema);
+    const planRows = explain(e, schema);
     // Keep the plan for shapes that live only on a worker, so it isn't re-explained per report.
     if (!shapes.has(e.selectSql) && e.plan) mergedPlans.set(e.selectSql, e.plan);
     const deep = / IN \(SELECT /.test(e.selectSql);
     const plan = analyzePlan(costRows(planRows, deep).map((r) => r.detail), e.table);
-    const rows = e.view ? 0 : rowCount(client, e.table);
+    const rows = e.view ? 0 : rowCount(e.table);
     let existing = indexCache.get(e.table);
-    if (!existing) { existing = e.view ? [] : indexColumns(client, e.table); indexCache.set(e.table, existing); }
+    if (!existing) { existing = e.view ? [] : indexColumns(e.table); indexCache.set(e.table, existing); }
     out.push({
       id: Bun.hash(e.selectSql).toString(36),
       collection: e.collection,

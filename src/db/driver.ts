@@ -42,8 +42,12 @@ export interface RunOptions {
 }
 
 export interface TransactionOptions {
-  /** `write` takes the write lock up front (SQLite `BEGIN IMMEDIATE`). Default. */
-  mode?: "write" | "read";
+  /**
+   * Take the write lock when the transaction opens (SQLite `BEGIN
+   * IMMEDIATE`) rather than at its first write. Default true: a writer
+   * that waits for the lock up front cannot be told to retry halfway.
+   */
+  immediate?: boolean;
 }
 
 /** SQL fragments and names that differ between databases. SQLite's are today's strings. */
@@ -94,6 +98,13 @@ export interface SyncDb {
   /** Column names a SELECT would produce, without running it. */
   describe(sql: string): string[];
   readonly inTransaction: boolean;
+  /**
+   * A transaction around synchronous work: nothing else can run on the
+   * connection between its BEGIN and COMMIT, which schema changes rely on
+   * (a write that joined an open transaction would vanish with its
+   * rollback). Nested in an open transaction it is a savepoint.
+   */
+  transaction<T>(fn: () => T, opts?: TransactionOptions): T;
 }
 
 export interface DbDriver {

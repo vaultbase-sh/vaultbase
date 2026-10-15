@@ -12,7 +12,7 @@ import {
   userTableName,
   validateViewQuery,
 } from "../core/collections.ts";
-import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { adminGuard } from "./_admin.ts";
 
 export function makeCollectionsPlugin(jwtSecret: string) {
@@ -191,7 +191,6 @@ export function makeCollectionsPlugin(jwtSecret: string) {
     // table-level cardinality.
     .get("/admin/collections/stats", async ({ query }) => {
       const cols = await listCollections();
-      const client = getRawClient();
       const now = Math.floor(Date.now() / 1000);
       // `window` drives `recentWrites` (dashboard range picker). Defaults to
       // 24h, which is what this endpoint always used; clamped to 30d so a
@@ -219,9 +218,10 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         const tname = `"${userTableName(c.name).replace(/"/g, '""')}"`;
         try {
           // Capped count: SELECT count over a LIMIT'd subquery.
-          const r = client.prepare(
+          const r = db.sync.get<{ n: number }>(
             `SELECT count(*) AS n FROM (SELECT 1 FROM ${tname} LIMIT ?)`,
-          ).get(COUNT_CAP + 1) as { n: number } | undefined;
+            [COUNT_CAP + 1],
+          );
           if (r) {
             if (r.n > COUNT_CAP) {
               out.recordCount = COUNT_CAP;
@@ -232,15 +232,16 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           }
         } catch { /* table missing — leave null */ }
         try {
-          const r = client.prepare(
+          const r = db.sync.get<{ m: number | null }>(
             `SELECT max(updated_at) AS m FROM ${tname}`,
-          ).get() as { m: number | null } | undefined;
+          );
           if (r?.m != null) out.lastUpdated = r.m;
         } catch { /* skip */ }
         try {
-          const r = client.prepare(
+          const r = db.sync.get<{ n: number }>(
             `SELECT count(*) AS n FROM ${tname} WHERE updated_at > ?`,
-          ).get(cutoff) as { n: number } | undefined;
+            [cutoff],
+          );
           if (r) out.recentWrites = r.n;
         } catch { /* skip */ }
         return out;

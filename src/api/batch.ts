@@ -1,7 +1,6 @@
 import { discardTableReports, flushTableReports } from "../core/table-writes.ts";
-import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
 import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, updateRecord } from "../core/records.ts";
@@ -225,24 +224,23 @@ export function makeBatchPlugin(jwtSecret: string) {
         }
       }
 
-      const client = (getDb() as unknown as { $client: Database }).$client;
-      // Atomic: BEGIN ... COMMIT or ROLLBACK. The transaction lives on the
-      // shared connection and spans awaits, so the write gate keeps every
-      // other record write (and other batches) out until it finishes.
+      // Atomic: one transaction, committed or rolled back as a whole. It
+      // lives on the shared connection and spans awaits, so the write gate
+      // keeps every other record write (and other batches) out until it
+      // finishes. The lock is taken at the first write, as it always was.
       return withExclusiveWrite(async (tx) => {
         const results: BatchResult[] = [];
         try {
-          client.exec("BEGIN");
-          for (let i = 0; i < parsed.length; i++) {
-            const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, principalFor(auth, parsed[i]!));
-            results.push(result);
-          }
-          client.exec("COMMIT");
+          await db.transaction(async () => {
+            for (let i = 0; i < parsed.length; i++) {
+              const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, principalFor(auth, parsed[i]!));
+              results.push(result);
+            }
+          }, { immediate: false });
           flushTableReports();
           tx.commit(); // realtime / webhooks / after-hooks for the committed writes
           return { data: results };
         } catch (e) {
-          if (client.inTransaction) client.exec("ROLLBACK");
           discardTableReports();
           tx.rollback();
           return batchError(e, results.length, auth, set);

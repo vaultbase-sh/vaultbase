@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
+import { db, getDriver, type DbDriver } from "../db/index.ts";
 import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
@@ -18,10 +17,6 @@ import {
   isEncrypted,
 } from "../core/encryption.ts";
 import { adminGuard } from "./_admin.ts";
-
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
 
 /**
  * Setting keys whose values look like secrets and should be AES-GCM-encrypted
@@ -110,9 +105,7 @@ function maybeDecrypt(key: string, value: string): string {
  * as "" and could overwrite them.
  */
 export function encryptionKeyMatchesData(): boolean {
-  const rows = rawClient()
-    .prepare(`SELECT key, value FROM vaultbase_settings`)
-    .all() as Array<{ key: string; value: string }>;
+  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   // Only secret settings, and the key is wrong only if none of them decrypt:
   // one value copied in from another install (or typed with a "vbenc:"
   // prefix) mustn't stop every later start.
@@ -130,9 +123,7 @@ export function encryptionKeyMatchesData(): boolean {
  */
 export function encryptPlaintextSecretSettings(): number {
   if (!isEncryptionAvailable()) return 0;
-  const rows = rawClient()
-    .prepare(`SELECT key, value FROM vaultbase_settings`)
-    .all() as Array<{ key: string; value: string }>;
+  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   let n = 0;
   for (const r of rows) {
     if (!shouldEncryptSettingKey(r.key) || r.value === "" || isEncrypted(r.value)) continue;
@@ -150,18 +141,17 @@ export function encryptPlaintextSecretSettings(): number {
  * Entries are tied to the connection, so a reopened database starts fresh.
  */
 const SETTING_TTL_MS = 2_000;
-const settingCache = new Map<string, { client: Database; at: number; value: string | null }>();
+const settingCache = new Map<string, { client: DbDriver; at: number; value: string | null }>();
 
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
-  const client = rawClient();
+  // The open driver identifies the connection: a reopened database gets a
+  // new one, so entries cached against the old connection are skipped.
+  const client = getDriver();
   const now = Date.now();
   const hit = settingCache.get(key);
   if (hit && hit.client === client && now - hit.at < SETTING_TTL_MS) return hit.value ?? defaultVal;
-  const row = client
-    .query(`SELECT value FROM vaultbase_settings WHERE key = ?`)
-    .get(key) as { value: string } | undefined | null;
-  // bun:sqlite returns null (not undefined) on no-match — must catch both.
+  const row = db.sync.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
   const value = row == null ? null : maybeDecrypt(key, row.value);
   settingCache.set(key, { client, at: now, value });
   return value ?? defaultVal;
@@ -181,18 +171,15 @@ export function setSetting(key: string, value: string): void {
   settingCache.delete(key);
   broadcast({ type: "bus", kind: "settings", key });
   const stored = maybeEncrypt(key, value);
-  rawClient()
-    .prepare(
-      `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, unixepoch())
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`
-    )
-    .run(key, stored);
+  db.sync.run(
+    `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, unixepoch())
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
+    [key, stored],
+  );
 }
 
 export function getAllSettings(): Record<string, string> {
-  const rows = rawClient()
-    .prepare(`SELECT key, value FROM vaultbase_settings`)
-    .all() as Array<{ key: string; value: string }>;
+  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   const out: Record<string, string> = {};
   for (const r of rows) out[r.key] = maybeDecrypt(r.key, r.value);
   return out;

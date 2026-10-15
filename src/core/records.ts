@@ -595,7 +595,7 @@ function searchMatch(col: Collection, search: string | undefined): { table: stri
   if (search === undefined) return null;
   const query = toFtsQuery(search);
   if (!query) return null;
-  if (col.type === "view" || !hasFts(rawClient(), col.name)) {
+  if (col.type === "view" || !hasFts(col.name)) {
     throw new FilterError(`collection '${col.name}' has no searchable fields`);
   }
   return { table: ftsTableName(col.name), query };

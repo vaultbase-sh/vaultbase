@@ -10,8 +10,7 @@
  * list. Every field name is checked against the schema before it reaches
  * SQL; implicit auth columns, passwords and encrypted fields are refused.
  */
-import type { Database } from "bun:sqlite";
-import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 import { privateFieldNames, parseFields, userTableName, type FieldDef } from "./collections.ts";
 import { compileListWhere, FilterError, type ListOptions } from "./records.ts";
@@ -165,10 +164,9 @@ export async function aggregateRecords(col: Collection, opts: AggregateOptions):
   const groupSql = groups.length > 0 ? `GROUP BY ${groups.map((_, i) => i + 1).join(", ")}` : "";
   const sql = `SELECT ${select} FROM ${q(userTableName(col.name))} ${where.whereSql} ${groupSql} ${orderSql} LIMIT ?`;
 
-  const client: Database = getRawClient();
   let rows: Array<Record<string, unknown>>;
   try {
-    rows = client.prepare(sql).all(...where.whereParams, limit) as Array<Record<string, unknown>>;
+    rows = db.sync.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
   } catch (e) {
     if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
     throw e;

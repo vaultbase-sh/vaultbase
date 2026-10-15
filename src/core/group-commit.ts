@@ -26,12 +26,13 @@
  * turn, and other worker processes would block on it. `VAULTBASE_GROUP_COMMIT=0`
  * turns it off everywhere.
  */
-import type { Database } from "bun:sqlite";
-import { getRawClient, onBeforeCloseDb } from "../db/client.ts";
+import { onBeforeCloseDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { discardTableReports, flushTableReports } from "./table-writes.ts";
 
+// The group spans event-loop turns, so it opens and commits with plain
+// statements rather than db.transaction(), whose scope is a callback.
 interface Group {
-  client: Database;
   waiters: Array<{ resolve: () => void; reject: (e: unknown) => void }>;
   effects: Array<() => void>;
 }
@@ -54,10 +55,9 @@ function enabled(): boolean {
  */
 export function joinGroupCommit(): void {
   if (open || !enabled()) return;
-  const client = getRawClient();
-  if (client.inTransaction) return;
-  client.exec("BEGIN IMMEDIATE");
-  open = { client, waiters: [], effects: [] };
+  if (db.sync.inTransaction) return;
+  db.sync.exec("BEGIN IMMEDIATE");
+  open = { waiters: [], effects: [] };
   if (!flushScheduled) {
     flushScheduled = true;
     setImmediate(() => {
@@ -90,10 +90,10 @@ export function flushGroupCommit(): void {
   open = null;
   let failure: unknown = null;
   try {
-    if (g.client.inTransaction) g.client.exec("COMMIT");
+    if (db.sync.inTransaction) db.sync.exec("COMMIT");
   } catch (e) {
     failure = e;
-    try { if (g.client.inTransaction) g.client.exec("ROLLBACK"); } catch { /* closed */ }
+    try { if (db.sync.inTransaction) db.sync.exec("ROLLBACK"); } catch { /* closed */ }
   }
   if (failure) {
     discardTableReports();

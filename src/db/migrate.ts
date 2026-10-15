@@ -466,7 +466,7 @@ export async function runMigrations() {
     try {
       const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
         .filter((f) => !f.implicit);
-      syncFts(client, name, parsed);
+      syncFts(name, parsed);
     } catch (e) {
       console.error(`[migrate] search index for '${name}':`, e instanceof Error ? e.message : e);
     }

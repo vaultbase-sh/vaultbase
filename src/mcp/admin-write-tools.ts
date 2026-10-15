@@ -14,6 +14,7 @@
 import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm/sql";
 import { getDb, getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { hooks, routes, jobs, webhooks } from "../db/schema.ts";
 import {
   createCollection,
@@ -675,7 +676,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
           await audit(403, "refused: allow_write needs mcp:admin");
           throw new Error("allow_write requires the mcp:admin (or admin) scope; mcp:sql alone is read-only");
         }
-        const r = getRawClient().query(q).run(...params);
+        const r = db.sync.run(q, params);
         await audit(200, `changes=${r.changes}`);
         return asJsonText({ changes: r.changes, lastInsertRowid: String(r.lastInsertRowid) });
       }
@@ -686,6 +687,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       // Reads go through the admin SQL runner: a separate read-only
       // connection with query_only on (so a PRAGMA can't change the server's
       // own connection) and the same time budget.
+      // TODO(db-facade): the driver does not expose the database path yet
       const file = getRawClient().filename;
       if (!file || file === ":memory:") {
         // An in-memory database (tests) has no file a second connection can
@@ -694,10 +696,9 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         if (bad) throw new Error(`'${bad}' is blocked without allow_write: true`);
         // query_only makes SQLite itself refuse writes, whatever the keyword
         // scan missed.
-        const client = getRawClient();
-        client.exec("PRAGMA query_only = ON");
+        db.sync.exec("PRAGMA query_only = ON");
         let all: unknown[];
-        try { all = client.query(q).all(...params) as unknown[]; } finally { client.exec("PRAGMA query_only = OFF"); }
+        try { all = db.sync.all<unknown>(q, params); } finally { db.sync.exec("PRAGMA query_only = OFF"); }
         await audit(200, `rows=${all.length}`);
         return asJsonText({ rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
       }

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import Elysia from "elysia";
-import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { isIPv6 } from "node:net";
 import { trustedClientIp } from "../core/sec.ts";
@@ -100,10 +99,9 @@ function loadConfig(): Config {
   let enabled = DEFAULT_ENABLED;
   let rules: RateLimitRule[] = DEFAULT_RULES;
   try {
-    const client = (getDb() as unknown as { $client: Database }).$client;
-    const rows = client
-      .prepare(`SELECT key, value FROM vaultbase_settings WHERE key LIKE 'rate_limit.%'`)
-      .all() as Array<{ key: string; value: string }>;
+    const rows = db.sync.all<{ key: string; value: string }>(
+      `SELECT key, value FROM vaultbase_settings WHERE key LIKE 'rate_limit.%'`,
+    );
     let rulesFromDb: RateLimitRule[] | null = null;
     let legacyMax: number | null = null;
     let legacyWindow: number | null = null;

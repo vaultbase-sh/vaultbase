@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
@@ -273,21 +274,22 @@ const STUCK_AFTER_SECONDS = 60 * 60;
  * restart it in a loop. Returns how many were re-queued.
  */
 export async function recoverInterruptedJobs(startedBefore: number): Promise<number> {
-  const client = (getDb() as unknown as { $client: { prepare: (sql: string) => { run: (...p: unknown[]) => { changes: number } } } }).$client;
   const now = Math.floor(Date.now() / 1000);
   const maxAttempts = `coalesce(j.retry_max,
       (SELECT max(w.retry_max) FROM vaultbase_workers w WHERE w.queue = j.queue AND w.enabled = 1), 3)`;
-  client.prepare(
+  db.sync.run(
     `UPDATE vaultbase_jobs_log AS j
         SET status = 'dead', finished_at = ?, error = 'interrupted: the process running this job stopped, and no attempts are left'
       WHERE j.status = 'running' AND j.started_at <= ? AND j.attempt >= ${maxAttempts}`,
-  ).run(now, startedBefore);
-  return client.prepare(
+    [now, startedBefore],
+  );
+  return db.sync.run(
     `UPDATE vaultbase_jobs_log AS j
         SET status = 'queued', attempt = j.attempt + 1, worker_id = NULL, started_at = NULL,
             scheduled_at = ?, error = 'interrupted: the process running this job stopped'
       WHERE j.status = 'running' AND j.started_at <= ?`,
-  ).run(now, startedBefore).changes;
+    [now, startedBefore],
+  ).changes;
 }
 
 /**

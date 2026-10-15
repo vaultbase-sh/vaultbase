@@ -38,6 +38,7 @@ const sync: SyncDb = {
   exec: (sql) => getDriver().sync.exec(sql),
   describe: (sql) => getDriver().sync.describe(sql),
   get inTransaction() { return getDriver().sync.inTransaction; },
+  transaction: (fn, opts) => getDriver().sync.transaction(fn, opts),
 };
 
 export const db: DbDriver = {

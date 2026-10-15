@@ -59,7 +59,7 @@ describe("toFtsQuery", () => {
 describe("index lifecycle", () => {
   it("creates the index only for searchable fields", async () => {
     await notes();
-    expect(ftsColumns(getRawClient(), "notes")).toEqual(["title", "body"]);
+    expect(ftsColumns("notes")).toEqual(["title", "body"]);
   });
 
   it("rejects searchable on a non-text or encrypted field", async () => {
@@ -69,7 +69,7 @@ describe("index lifecycle", () => {
 
   it("backfills when a field becomes searchable, and survives dropping it", async () => {
     const col = await notes([{ name: "title", type: "text" }, { name: "status", type: "text" }]);
-    expect(hasFts(getRawClient(), "notes")).toBe(false);
+    expect(hasFts("notes")).toBe(false);
     await createRecord("notes", { title: "existing row", status: "open" });
 
     await updateCollection(col.id, { fields: JSON.stringify([
@@ -81,21 +81,21 @@ describe("index lifecycle", () => {
 
     // Dropping an indexed column must not be blocked by the triggers.
     await updateCollection(col.id, { fields: JSON.stringify([{ name: "title", type: "text", options: { searchable: true } }]) });
-    expect(ftsColumns(getRawClient(), "notes")).toEqual(["title"]);
+    expect(ftsColumns("notes")).toEqual(["title"]);
     expect(await ids("existing")).toEqual(["existing row"]);
 
     await updateCollection(col.id, { fields: JSON.stringify([{ name: "title", type: "text" }]) });
-    expect(hasFts(getRawClient(), "notes")).toBe(false);
+    expect(hasFts("notes")).toBe(false);
   });
 
   it("follows a rename and goes away with the collection", async () => {
     const col = await notes();
     await createRecord("notes", { title: "renamed one" });
     await updateCollection(col.id, { name: "memos" });
-    expect(hasFts(getRawClient(), "notes")).toBe(false);
+    expect(hasFts("notes")).toBe(false);
     expect((await listRecords("memos", { search: "renamed" })).data.length).toBe(1);
     await deleteCollection(col.id);
-    expect(hasFts(getRawClient(), "memos")).toBe(false);
+    expect(hasFts("memos")).toBe(false);
   });
 
   it("is restored at boot if missing", async () => {

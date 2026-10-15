@@ -11,7 +11,7 @@
  * restored snapshot's index still lines up; `syncFts` rebuilds whenever the
  * index is created or its column set changes.
  */
-import type { Database } from "bun:sqlite";
+import { db } from "../db/index.ts";
 import { flushGroupCommit } from "./group-commit.ts";
 
 /** Field types whose stored value is plain text worth indexing. */
@@ -58,23 +58,21 @@ export function searchableErrors(fields: readonly FieldLike[]): Record<string, s
 }
 
 /** Columns of the existing index, or null when there is none. */
-export function ftsColumns(client: Database, collection: string): string[] | null {
-  const exists = client
-    .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
-    .get(ftsTableName(collection));
+export function ftsColumns(collection: string): string[] | null {
+  const exists = db.sync.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, [ftsTableName(collection)]);
   if (!exists) return null;
-  const rows = client.prepare(`PRAGMA table_info(${q(ftsTableName(collection))})`).all() as Array<{ name: string }>;
+  const rows = db.sync.all<{ name: string }>(`PRAGMA table_info(${q(ftsTableName(collection))})`);
   return rows.map((r) => r.name);
 }
 
-export function hasFts(client: Database, collection: string): boolean {
-  return ftsColumns(client, collection) !== null;
+export function hasFts(collection: string): boolean {
+  return ftsColumns(collection) !== null;
 }
 
 /** Drop the index and its triggers. Needed before dropping an indexed column. */
-export function dropFts(client: Database, collection: string): void {
-  for (const t of triggerNames(collection)) client.exec(`DROP TRIGGER IF EXISTS ${q(t)}`);
-  client.exec(`DROP TABLE IF EXISTS ${q(ftsTableName(collection))}`);
+export function dropFts(collection: string): void {
+  for (const t of triggerNames(collection)) db.sync.exec(`DROP TRIGGER IF EXISTS ${q(t)}`);
+  db.sync.exec(`DROP TABLE IF EXISTS ${q(ftsTableName(collection))}`);
 }
 
 /**
@@ -82,16 +80,15 @@ export function dropFts(client: Database, collection: string): void {
  * there are none, (re)create and rebuild it when the column set changed,
  * otherwise leave it alone. Idempotent; run at boot and after schema DDL.
  */
-export function syncFts(client: Database, collection: string, fields: readonly FieldLike[]): void {
+export function syncFts(collection: string, fields: readonly FieldLike[]): void {
   const cols = searchableColumns(fields);
-  const current = ftsColumns(client, collection);
+  const current = ftsColumns(collection);
   const [ai, ad, au] = triggerNames(collection);
   const triggersOk = () =>
-    (client.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?, ?)`)
-      .get(ai, ad, au) as { n: number }).n === 3;
+    (db.sync.get(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?, ?)`, [ai, ad, au]) as { n: number }).n === 3;
 
   if (cols.length === 0) {
-    if (current) dropFts(client, collection);
+    if (current) dropFts(collection);
     return;
   }
   if (current && current.join("\0") === cols.join("\0") && triggersOk()) return;
@@ -101,31 +98,32 @@ export function syncFts(client: Database, collection: string, fields: readonly F
   const colList = cols.map(q).join(", ");
   const vals = (p: "new" | "old") => cols.map((c) => `${p}.${q(c)}`).join(", ");
 
-  // Commit open record writes first; this schema change runs on its own.
+  // Commit open record writes first; this schema change runs on its own,
+  // synchronously, so no other write can join it.
   flushGroupCommit();
-  client.transaction(() => {
-    dropFts(client, collection);
-    client.exec(
+  db.sync.transaction(() => {
+    dropFts(collection);
+    db.sync.exec(
       `CREATE VIRTUAL TABLE ${fts} USING fts5(${colList}, content=${table}, content_rowid='rowid', tokenize='unicode61 remove_diacritics 2')`,
     );
-    client.exec(
+    db.sync.exec(
       `CREATE TRIGGER ${q(ai)} AFTER INSERT ON ${table} BEGIN
          INSERT INTO ${fts}(rowid, ${colList}) VALUES (new.rowid, ${vals("new")});
        END`,
     );
-    client.exec(
+    db.sync.exec(
       `CREATE TRIGGER ${q(ad)} AFTER DELETE ON ${table} BEGIN
          INSERT INTO ${fts}(${fts}, rowid, ${colList}) VALUES ('delete', old.rowid, ${vals("old")});
        END`,
     );
-    client.exec(
+    db.sync.exec(
       `CREATE TRIGGER ${q(au)} AFTER UPDATE OF ${colList} ON ${table} BEGIN
          INSERT INTO ${fts}(${fts}, rowid, ${colList}) VALUES ('delete', old.rowid, ${vals("old")});
          INSERT INTO ${fts}(rowid, ${colList}) VALUES (new.rowid, ${vals("new")});
        END`,
     );
-    client.exec(`INSERT INTO ${fts}(${fts}) VALUES ('rebuild')`);
-  })();
+    db.sync.exec(`INSERT INTO ${fts}(${fts}) VALUES ('rebuild')`);
+  }, { immediate: false });
 }
 
 /** Longest search string accepted; longer input is truncated. */

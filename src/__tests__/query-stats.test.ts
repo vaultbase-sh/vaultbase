@@ -33,7 +33,7 @@ async function seedPosts(rows: number, name = "posts") {
   c.exec("COMMIT");
 }
 
-const report = () => queryStatsReport(getRawClient());
+const report = () => queryStatsReport();
 const shape = (pred: (r: ReturnType<typeof report>[number]) => boolean) => {
   const r = report().find(pred);
   if (!r) throw new Error("shape not recorded");

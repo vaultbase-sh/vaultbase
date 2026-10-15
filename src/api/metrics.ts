@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from "crypto";
 import { statSync } from "fs";
 import { globalMetrics, STEPS } from "../core/perf-metrics.ts";
 import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getSetting } from "./settings.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
 import { connectionCount } from "../realtime/manager.ts";
@@ -24,13 +25,13 @@ interface SqliteSnapshot {
 
 function sqliteSnapshot(): SqliteSnapshot | null {
   try {
-    const c = getRawClient();
-    const pc = c.query("PRAGMA page_count").get() as { page_count: number } | undefined;
-    const ps = c.query("PRAGMA page_size").get() as { page_size: number } | undefined;
+    const pc = db.sync.get<{ page_count: number }>("PRAGMA page_count");
+    const ps = db.sync.get<{ page_size: number }>("PRAGMA page_size");
     // WAL size comes from the background checkpointer's last pass. Running a
     // checkpoint here on every poll cost ~10% write throughput under load.
     const ckpt = checkpointStats();
-    const file = (c as { filename?: string }).filename ?? "";
+    // TODO(db-facade): the driver does not expose the database path yet
+    const file = (getRawClient() as { filename?: string }).filename ?? "";
     return {
       db_bytes: fileBytes(file),
       wal_bytes: fileBytes(file ? `${file}-wal` : ""),
@@ -128,7 +129,7 @@ export function makeMetricsPlugin(jwtSecret: string) {
     // would serve a scan or an in-memory sort. See core/query-stats.ts.
     .get("/_/metrics/queries", async () => {
       try {
-        return { data: queryStatsReport(getRawClient()) };
+        return { data: queryStatsReport() };
       } catch {
         return { data: [] };
       }

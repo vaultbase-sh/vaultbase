@@ -3,7 +3,7 @@
  * Only finished / expired rows are removed; nothing a running job, pending
  * delivery or live token depends on.
  */
-import { getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getSetting } from "../api/settings.ts";
 import { pruneLogFiles } from "./file-logger.ts";
 
@@ -39,12 +39,11 @@ export function auditRetentionDays(): number {
 }
 
 export async function pruneHistory(): Promise<PruneResult> {
-  const client = getRawClient();
   const now = Math.floor(Date.now() / 1000);
   const days = retentionDays();
   const retentionCutoff = now - days * 24 * 60 * 60;
   const expiredCutoff = now - EXPIRY_GRACE_SECONDS;
-  const run = (sql: string, ...params: number[]) => client.prepare(sql).run(...params).changes;
+  const run = (sql: string, ...params: number[]) => db.sync.run(sql, params).changes;
   return {
     // days = 0: keep job / delivery history forever.
     jobs: days === 0 ? 0 : run(

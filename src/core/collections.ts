@@ -347,7 +347,7 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
   ];
   rawClient().exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
   ensureTimestampIndexes(rawClient(), collectionName);
-  syncFts(rawClient(), collectionName, fields);
+  syncFts(collectionName, fields);
 }
 
 /**
@@ -393,7 +393,7 @@ export function ensureTimestampIndexes(client: Database, collectionName: string)
 export function dropUserTable(collectionName: string): void {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
-  dropFts(rawClient(), collectionName);
+  dropFts(collectionName);
   rawClient().exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
@@ -732,8 +732,8 @@ export function alterUserTable(
   // The search index triggers reference their columns, which blocks DROP
   // COLUMN and keep a renamed column's old name; drop the index first and
   // let syncFts below recreate it.
-  const indexed = ftsColumns(client, collectionName) ?? [];
-  if (indexed.some((c) => !newByName.has(c))) dropFts(client, collectionName);
+  const indexed = ftsColumns(collectionName) ?? [];
+  if (indexed.some((c) => !newByName.has(c))) dropFts(collectionName);
 
   for (const [from, to] of renamed) {
     const hadUnique = hasUniqueIndex(from);
@@ -795,7 +795,7 @@ export function alterUserTable(
     }
   }
 
-  syncFts(client, collectionName, newFields);
+  syncFts(collectionName, newFields);
 }
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
@@ -956,7 +956,7 @@ async function renameCollectionStorage(
       createUserView(newName, viewQuery);
     } else {
       // The search index is named after the collection; rebuilt below.
-      dropFts(client, oldName);
+      dropFts(oldName);
       client.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
@@ -976,7 +976,7 @@ async function renameCollectionStorage(
     client.prepare(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`).run(newName, oldName);
     client.prepare(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`).run(newName, oldName);
   })();
-  if (type !== "view") syncFts(client, newName, parseFields(before.fields).filter((f) => !f.implicit));
+  if (type !== "view") syncFts(newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
   broadcast({ type: "bus", kind: "collections" });

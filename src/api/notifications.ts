@@ -12,9 +12,8 @@
  *   - POST   /notifications/devices
  *   - DELETE /notifications/devices/:token
  */
-import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { setSetting, getAllSettings } from "./settings.ts";
 import { verifyAuthToken } from "../core/sec.ts";
 import {
@@ -29,10 +28,6 @@ import {
   type NotificationPayload,
 } from "../core/notifications.ts";
 import { adminGuard } from "./_admin.ts";
-
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
 
 async function authedUser(
   request: Request,
@@ -262,12 +257,11 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           set.status = 422;
           return { error: `platform must be one of ios, android, web`, code: 422 };
         }
-        const client = rawClient();
         const now = Math.floor(Date.now() / 1000);
         try {
           // Upsert by token. The notifications collection bootstrap creates
           // `token` UNIQUE so this conflict resolution works.
-          client.prepare(
+          db.sync.run(
             `INSERT INTO vb_device_tokens (id, user, provider, token, platform, app_version, enabled, last_seen, created_at)
              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
              ON CONFLICT(token) DO UPDATE SET
@@ -277,15 +271,16 @@ export function makeNotificationsPlugin(jwtSecret: string) {
                app_version = excluded.app_version,
                enabled = 1,
                last_seen = excluded.last_seen`,
-          ).run(
-            crypto.randomUUID(),
-            user.id,
-            body.provider,
-            body.token,
-            body.platform,
-            body.app_version ?? null,
-            now,
-            now,
+            [
+              crypto.randomUUID(),
+              user.id,
+              body.provider,
+              body.token,
+              body.platform,
+              body.app_version ?? null,
+              now,
+              now,
+            ],
           );
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -315,13 +310,13 @@ export function makeNotificationsPlugin(jwtSecret: string) {
           set.status = 401;
           return { error: "Unauthorized", code: 401 };
         }
-        const client = rawClient();
         try {
           // Soft delete (enabled=0) — preserves the row so we can analytics-on-it.
           // Restrict to the calling user's own tokens (defense against ID forgery).
-          client.prepare(
+          db.sync.run(
             `UPDATE vb_device_tokens SET enabled = 0 WHERE token = ? AND user = ?`,
-          ).run(params.token, user.id);
+            [params.token, user.id],
+          );
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (msg.includes("no such table")) {

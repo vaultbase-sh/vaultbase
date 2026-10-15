@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import type { Collection } from "../db/schema.ts";
 import { adminGuard } from "./_admin.ts";
@@ -20,20 +19,15 @@ export class IndexError extends Error {
   constructor(message: string, public readonly status: 422 = 422) { super(message); }
 }
 
-function rawClient(): Database {
-  return (getDb() as unknown as { $client: Database }).$client;
-}
-
 function listIndexes(tableName: string): IndexInfo[] {
-  const client = rawClient();
   // PRAGMA index_list returns: { seq, name, unique, origin, partial }
-  const rows = client.prepare(`PRAGMA index_list(${JSON.stringify(tableName)})`).all() as Array<{
+  const rows = db.sync.all<{
     seq: number;
     name: string;
     unique: number;
     origin: string;
     partial: number;
-  }>;
+  }>(`PRAGMA index_list(${JSON.stringify(tableName)})`);
   // Skip auto-generated indexes (e.g. for PRIMARY KEY) — origin == 'pk' or 'u' from schema
   // Keep only indexes we created (origin === 'c' = created by user) AND named with our prefix
   const result: IndexInfo[] = [];
@@ -41,11 +35,11 @@ function listIndexes(tableName: string): IndexInfo[] {
     if (r.origin !== "c") continue;
     if (!r.name.startsWith("idx_") && !r.name.startsWith("uniq_")) continue;
     // Get the column(s) the index covers
-    const cols = client.prepare(`PRAGMA index_info(${JSON.stringify(r.name)})`).all() as Array<{
+    const cols = db.sync.all<{
       seqno: number;
       cid: number;
       name: string;
-    }>;
+    }>(`PRAGMA index_info(${JSON.stringify(r.name)})`);
     if (cols.length === 0) continue;
     const names = cols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name);
     result.push({
@@ -86,7 +80,7 @@ export function createCollectionIndex(col: Collection, fieldNames: string[], uni
   const cols = fieldNames.map((f) => `"${f}"`).join(", ");
   const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS "${name}" ON ${tableRef} (${cols})`;
   try {
-    rawClient().exec(sql);
+    db.sync.exec(sql);
   } catch (e) {
     throw new IndexError(e instanceof Error ? e.message : String(e));
   }
@@ -159,7 +153,7 @@ export function makeIndexesPlugin(jwtSecret: string) {
         // Escape the identifier even though it is now a verified real index
         // name — defence in depth against the quote-breakout path.
         const safe = idxName.replace(/"/g, '""');
-        rawClient().exec(`DROP INDEX IF EXISTS "${safe}"`);
+        db.sync.exec(`DROP INDEX IF EXISTS "${safe}"`);
         return { data: null };
       } catch (e) {
         set.status = 500;

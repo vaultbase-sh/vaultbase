@@ -21,6 +21,7 @@
  */
 import * as jose from "jose";
 import { getAllSettings } from "../api/settings.ts";
+import { db } from "../db/index.ts";
 import { enqueue, registerBuiltinWorker, type JobContext } from "./queues.ts";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
@@ -493,16 +494,12 @@ export async function dispatchNotification(
 
   if (inbox) {
     try {
-      const { getDb } = await import("../db/client.ts");
-      const client = (getDb() as unknown as { $client: import("bun:sqlite").Database }).$client;
       const id = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      client
-        .prepare(
-          `INSERT INTO vb_notifications (id, user, type, title, body, data, created_at)
+      db.sync.run(
+        `INSERT INTO vb_notifications (id, user, type, title, body, data, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+        [
           id,
           userId,
           (payload.data && typeof (payload.data as Record<string, unknown>)["type"] === "string")
@@ -512,7 +509,8 @@ export async function dispatchNotification(
           payload.body,
           JSON.stringify(payload.data ?? {}),
           now,
-        );
+        ],
+      );
       out.inboxRowId = id;
     } catch (e) {
       // vb_notifications doesn't exist yet — caller hasn't enabled notifications

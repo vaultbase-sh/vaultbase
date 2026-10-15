@@ -1,6 +1,7 @@
 import * as jose from "jose";
 import { eq } from "drizzle-orm";
-import { getDb, getRawClient } from "../db/client.ts";
+import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { admin, tokenRevocations } from "../db/schema.ts";
 import { verifyHs256 } from "./jwt-hs256.ts";
 import type { AuthContext } from "./rules.ts";
@@ -65,12 +66,12 @@ function getSecret(jwtSecret: string): Uint8Array {
   return new TextEncoder().encode(jwtSecret);
 }
 
-// The per-request lookups below use bun:sqlite's `query`, which keeps the
+// The per-request lookups below go through the driver, which caches the
 // compiled statement; a drizzle select re-prepared its SQL on every call.
 
 /** True if `jti` was revoked. */
 function isRevoked(jti: string): boolean {
-  return getRawClient().query(`SELECT 1 FROM vaultbase_token_revocations WHERE jti = ? LIMIT 1`).get(jti) != null;
+  return db.sync.get(`SELECT 1 FROM vaultbase_token_revocations WHERE jti = ? LIMIT 1`, [jti]) != null;
 }
 
 interface ApiTokenRow {
@@ -82,13 +83,11 @@ interface ApiTokenRow {
 }
 
 function apiTokenById(jti: string): ApiTokenRow | null {
-  return getRawClient()
-    .query(`SELECT name, scopes, created_by, created_by_email, revoked_at FROM vaultbase_api_tokens WHERE id = ? LIMIT 1`)
-    .get(jti) as ApiTokenRow | null;
+  return db.sync.get<ApiTokenRow>(`SELECT name, scopes, created_by, created_by_email, revoked_at FROM vaultbase_api_tokens WHERE id = ? LIMIT 1`, [jti]);
 }
 
 function adminResetAt(id: string): number | null {
-  const row = getRawClient().query(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`).get(id) as { password_reset_at: number } | null;
+  const row = db.sync.get<{ password_reset_at: number }>(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`, [id]);
   return row ? row.password_reset_at : null;
 }
 

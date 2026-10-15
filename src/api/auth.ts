@@ -2,7 +2,8 @@ import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import { clearSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
-import { getDb, getRawClient } from "../db/client.ts";
+import { getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
@@ -399,11 +400,12 @@ const EMAIL_COOLDOWN_SECONDS = 60;
  */
 function emailAllowed(id: string, userId: string, collectionId: string, purpose: string): boolean {
   const since = Math.floor(Date.now() / 1000) - EMAIL_COOLDOWN_SECONDS;
-  const row = getRawClient().query(
+  const row = db.sync.get(
     `SELECT COUNT(*) AS n FROM vaultbase_auth_tokens
       WHERE user_id = ? AND collection_id = ? AND purpose = ? AND created_at >= ?
         AND rowid < (SELECT rowid FROM vaultbase_auth_tokens WHERE id = ?)`,
-  ).get(userId, collectionId, purpose, since, id) as { n: number };
+    [userId, collectionId, purpose, since, id],
+  ) as { n: number };
   return row.n === 0;
 }
 
@@ -569,9 +571,10 @@ async function endRefreshedReplacement(token: string, jwtSecret: string): Promis
 function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], email: string) {
   const exact = findUserByEmail(col, email);
   if (exact) return exact;
-  const row = getRawClient().prepare(
+  const row = db.sync.get<{ id: string }>(
     `SELECT id FROM "${userTableName(col.name)}" WHERE email = ? COLLATE NOCASE LIMIT 1`,
-  ).get(email) as { id: string } | undefined;
+    [email],
+  );
   return row ? findUserById(col, row.id) : null;
 }
 
