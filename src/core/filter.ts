@@ -164,6 +164,7 @@ export function compileToSql(
     throw new Error(`invalid table identifier: ${tableName}`);
   }
   const ctx: CompileCtx = {
+    bindText: false,
     tableName,
     auth: opts.auth ?? null,
     request: opts.request ?? null,
@@ -185,6 +186,8 @@ export function compileToSql(
 }
 
 interface CompileCtx {
+  /** Set while compiling the value side of a comparison with a JSON path (see bindValue). */
+  bindText: boolean;
   tableName: string;
   auth: AuthContext | null;
   request: RequestContextLike | null;
@@ -343,9 +346,17 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return likeSql(left, op, ast.right, ctx);
   }
 
-  const left = compileOperand(ast.left, ctx);
-  const right = compileOperand(ast.right, ctx);
+  const leftJson = isJsonPath(ast.left);
+  const rightJson = isJsonPath(ast.right);
+  const left = rightJson ? withBindText(ctx, () => compileOperand(ast.left, ctx)) : compileOperand(ast.left, ctx);
+  const right = leftJson ? withBindText(ctx, () => compileOperand(ast.right, ctx)) : compileOperand(ast.right, ctx);
   return `${left} ${sqlOpFor(op)} ${right}`;
+}
+
+function withBindText<T>(ctx: CompileCtx, fn: () => T): T {
+  const prev = ctx.bindText;
+  ctx.bindText = true;
+  try { return fn(); } finally { ctx.bindText = prev; }
 }
 
 function sqlOpFor(op: AnyCmpOp): string {
@@ -416,30 +427,40 @@ function compileArrayCmp(
   return `EXISTS (SELECT 1 FROM ${dialect().jsonEach(arraySql)} WHERE ${cmp})`;
 }
 
+/** A bound comparison value; text when the other side is a JSON path the dialect reads as text. */
+function bindValue(ctx: CompileCtx, v: unknown): unknown {
+  return ctx.bindText && v !== null && v !== undefined && typeof v !== "string" && dialect().jsonCompareAsText ? String(v) : v;
+}
+
+/** Whether comparing against this operand reads a JSON path. */
+function isJsonPath(op: Operand): boolean {
+  return (op.kind === "field" || op.kind === "collection") && op.path.length > (op.kind === "field" ? 0 : 1);
+}
+
 function compileOperand(op: Operand, ctx: CompileCtx): string {
   switch (op.kind) {
     case "literal": {
-      ctx.params.push(coerceLiteral(op.value));
+      ctx.params.push(bindValue(ctx, coerceLiteral(op.value)));
       return "?";
     }
     case "auth": {
-      ctx.params.push(authValue(ctx.auth, op.prop));
+      ctx.params.push(bindValue(ctx, authValue(ctx.auth, op.prop)));
       return "?";
     }
     case "request": {
       const v = ctx.request?.[op.prop] ?? null;
-      ctx.params.push(v);
+      ctx.params.push(bindValue(ctx, v));
       return "?";
     }
     case "requestMap": {
       const map = ctx.request?.[op.mapKind];
       const raw = requestMapValue(map, op.mapKind, op.key);
       const v = applyModifierToValue(raw, op.modifier);
-      ctx.params.push(v);
+      ctx.params.push(bindValue(ctx, v));
       return "?";
     }
     case "macro": {
-      ctx.params.push(macroValue(op.name));
+      ctx.params.push(bindValue(ctx, macroValue(op.name)));
       return "?";
     }
     case "func": {

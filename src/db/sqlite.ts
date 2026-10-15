@@ -47,6 +47,7 @@ export const SQLITE_DIALECT: Dialect = {
   always: "1",
   never: "1=0",
   tieBreak: "rowid",
+  jsonCompareAsText: false,
   columnType(fieldType) {
     switch (fieldType) {
       case "number": return "REAL";

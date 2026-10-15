@@ -62,6 +62,12 @@ export interface Dialect {
   readonly never: string;
   /** The column that orders rows physically and breaks ties on a sort. */
   readonly tieBreak: string;
+  /**
+   * Whether a value extracted from a JSON path compares as text, so the
+   * other side of the comparison must be bound as text too (Postgres
+   * `#>>`); SQLite's json_extract keeps the JSON type.
+   */
+  readonly jsonCompareAsText: boolean;
   /** Storage type for a built-in field type (`TEXT`, `INTEGER`, `REAL`). */
   columnType(fieldType: string): string;
   quoteIdent(name: string): string;

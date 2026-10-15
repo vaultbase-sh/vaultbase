@@ -59,6 +59,7 @@ export const POSTGRES_DIALECT: Dialect = {
   always: "TRUE",
   never: "FALSE",
   tieBreak: `"id"`,
+  jsonCompareAsText: true,
   columnType(fieldType) {
     switch (fieldType) {
       case "number": return "double precision";
