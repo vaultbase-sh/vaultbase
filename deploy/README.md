@@ -73,7 +73,12 @@ In-process gzip / TLS were removed from Vaultbase (event-loop blockers).
 Always run behind nginx / Caddy / Cloudflare in production.
 
 - **Caddy** (auto-HTTPS): see [`caddy/Caddyfile`](caddy/Caddyfile).
-- **nginx** (manual TLS via certbot): see [`nginx/vaultbase.conf`](nginx/vaultbase.conf).
+- **nginx** (manual TLS via certbot): see [`nginx/vaultbase.conf`](nginx/vaultbase.conf). Raise
+  `worker_connections` in `nginx.conf` (the file's header says how); the Ubuntu default of 768
+  per worker runs out at a few hundred concurrent clients and shows up as 500s.
+- Don't run anything that drops the page cache (`echo 1 > /proc/sys/vm/drop_caches`, some
+  "free memory" cron scripts do): it evicts the memory-mapped database and the next requests
+  read it back from disk.
 
 ## Manual systemd setup
 

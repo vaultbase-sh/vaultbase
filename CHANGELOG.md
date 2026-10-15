@@ -7,6 +7,15 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **Deploy notes:** the nginx template's header says to raise `worker_connections` (Ubuntu's
+  default of 768 per worker shows up as 500s at a few hundred concurrent clients), and the
+  deploy README warns against cron jobs that drop the page cache, which evict the
+  memory-mapped database.
+
 ## [0.21.2] — 2026-10-15
 
 ### Fixed
