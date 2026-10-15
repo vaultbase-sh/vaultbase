@@ -192,7 +192,7 @@ export async function listRecordHistory(
   }
 
   const totalRow = await db
-    .select({ n: sql<number>`COUNT(*)` })
+    .select({ n: sql<number>`CAST(COUNT(*) AS INTEGER)` })
     .from(recordHistory)
     .where(where);
   const totalItems = (totalRow[0]?.n ?? 0) as number;

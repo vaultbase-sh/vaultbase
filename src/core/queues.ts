@@ -513,7 +513,7 @@ export async function queueStats(windowSec = 86_400): Promise<QueueStatRow[]> {
   // Count in SQL: loading every jobs_log row into JS on each dashboard load
   // grew without bound.
   const counts = await db
-    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`count(*)` })
+    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`CAST(count(*) AS INTEGER)` })
     .from(jobsLog)
     .groupBy(jobsLog.queue, jobsLog.status);
   const map = new Map<string, QueueStatRow>();
@@ -528,7 +528,7 @@ export async function queueStats(windowSec = 86_400): Promise<QueueStatRow[]> {
   // Windowed terminal counts. `finished_at` is only set once a job settles, so
   // rows still in flight are correctly excluded.
   const windowed = await db
-    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`count(*)` })
+    .select({ queue: jobsLog.queue, status: jobsLog.status, n: sql<number>`CAST(count(*) AS INTEGER)` })
     .from(jobsLog)
     .where(sql`${jobsLog.finished_at} is not null and ${jobsLog.finished_at} >= ${cutoff}`)
     .groupBy(jobsLog.queue, jobsLog.status);

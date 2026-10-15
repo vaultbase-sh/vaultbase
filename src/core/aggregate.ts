@@ -93,7 +93,9 @@ function parseAggs(col: Collection, fields: FieldDef[], raw: string | undefined)
     if ((fn === "sum" || fn === "avg") && c.type !== null && !NUMERIC.has(c.type)) {
       throw new FilterError(`${fn}(${field}): '${field}' is not a number field`);
     }
-    out.push({ fn, field, alias: `${fn}_${field}`, sql: `${fn.toUpperCase()}(${c.sql})` });
+    // AVG is an exact decimal on Postgres (a string on the wire); a double everywhere.
+    const expr = fn === "avg" ? `CAST(AVG(${c.sql}) AS DOUBLE PRECISION)` : `${fn.toUpperCase()}(${c.sql})`;
+    out.push({ fn, field, alias: `${fn}_${field}`, sql: expr });
   }
   const seen = new Set<string>();
   for (const a of out) {

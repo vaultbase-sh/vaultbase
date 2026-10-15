@@ -201,8 +201,8 @@ export async function listAuditEntries(opts: ListAuditOpts = {}): Promise<{
   const where = filters.length === 0 ? undefined : (filters.length === 1 ? filters[0] : and(...filters));
 
   const totalRow = await (where
-    ? db.select({ n: sql<number>`COUNT(*)` }).from(auditLog).where(where)
-    : db.select({ n: sql<number>`COUNT(*)` }).from(auditLog));
+    ? db.select({ n: sql<number>`CAST(COUNT(*) AS INTEGER)` }).from(auditLog).where(where)
+    : db.select({ n: sql<number>`CAST(COUNT(*) AS INTEGER)` }).from(auditLog));
   const totalItems = (totalRow[0]?.n ?? 0) as number;
 
   const rows = await (where

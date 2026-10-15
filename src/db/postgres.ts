@@ -115,6 +115,25 @@ const DDL_RE = /^\s*(CREATE|ALTER|DROP)\b/i;
 
 type Rows = unknown[] & { count?: number };
 
+/**
+ * Rows as the rest of the server expects them: BigInt (COUNT, SUM, bigint
+ * columns) as numbers. Values past 2^53 would lose precision; nothing here
+ * counts that high.
+ */
+function plainRows<T>(rows: Rows): T[] {
+  const out = new Array<T>(rows.length);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i] as Record<string, unknown>;
+    let copy: Record<string, unknown> | null = null;
+    for (const k in r) {
+      const v = r[k];
+      if (typeof v === "bigint") { copy ??= { ...r }; copy[k] = Number(v); }
+    }
+    out[i] = (copy ?? r) as T;
+  }
+  return out;
+}
+
 export class PostgresDriver implements DbDriver {
   readonly name = "postgres" as const;
   readonly dialect = POSTGRES_DIALECT;
@@ -127,7 +146,10 @@ export class PostgresDriver implements DbDriver {
   private savepointSeq = 0;
 
   constructor(url: string, opts: { max?: number } = {}) {
-    this.pool = new SQL(url, { max: opts.max ?? 8 });
+    // bigint: COUNT, SUM and bigint columns come back as BigInt instead of
+    // strings; the row mapper turns them into numbers (see `rows`).
+    const Client = SQL as unknown as new (url: string, options: Record<string, unknown>) => SQL;
+    this.pool = new Client(url, { max: opts.max ?? 8, bigint: true });
   }
 
   /** The pool, for the drizzle handle. */
@@ -151,7 +173,7 @@ export class PostgresDriver implements DbDriver {
   async all<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T[]> {
     this.traceFn?.(sql);
     const rows = await this.conn().unsafe(toPositional(sql), params as unknown[]);
-    return Array.from(rows as Rows) as T[];
+    return plainRows<T>(rows as Rows);
   }
 
   async get<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T | null> {
