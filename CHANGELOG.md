@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.21.0] — 2026-10-15
 
 ### Added
 
@@ -22,6 +22,30 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `fields: [...]` (up to 4, in index order) alongside the existing `field`; the list
   endpoint returns `fields` for every index. The collection's Indexes tab in the admin UI
   builds multi-field indexes and offers `created_at` / `updated_at` as trailing fields.
+- **Read worker threads (experimental, off by default).** `VAULTBASE_READ_WORKERS=<n>`
+  serves record list and get-one requests on worker threads, each with its own database
+  connection; everything else stays on the main thread. Not yet for production: a
+  collection or settings change made while running reaches the workers only after a
+  restart, a worker that dies is not replaced, and the flag is ignored under
+  `vaultbase cluster`. It is not in the compiled binaries' documented surface until those
+  land.
+
+### Changed
+
+- **Request authentication verifies tokens synchronously.** Bearer tokens are checked
+  with an HMAC in-process and the parsed token is remembered per token string; expiry,
+  issuer and audience are still checked on every request, and revocation and principal
+  lookups still hit the database. jose remains the signer.
+- **Per-request lookups are cached on the read path.** Settings reads (2 s, dropped at
+  once by a write through the settings API), a collection's parsed field list, its table
+  columns (per schema version), its private-field set and the per-field decoders no longer
+  repeat their work for every request.
+
+### Fixed
+
+- **Parallel refreshes of one token all get the same replacement.** The refresh handler
+  records the replacement before revoking the old token, and a refresh that loses the race
+  returns the winner's token instead of a 401 that signed every tab out.
 
 ## [0.20.1] — 2026-10-15
 
