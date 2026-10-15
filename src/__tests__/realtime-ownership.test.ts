@@ -30,7 +30,7 @@ let bobJwt: string;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-rt-own-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const alice = await seedAuthUser({ collection: "users", email: "alice@test.local" });
   const bob = await seedAuthUser({ collection: "users", email: "bob@test.local" });
@@ -45,11 +45,11 @@ beforeAll(async () => {
   base = `127.0.0.1:${server.port}`;
 });
 
-afterAll(() => {
+afterAll(async () => {
   server?.stop(true);
   stopScheduler(); stopQueueScheduler(); stopWebhookDispatcher(); stopUpdateCheckScheduler();
   resetRealtime();
-  closeDb();
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

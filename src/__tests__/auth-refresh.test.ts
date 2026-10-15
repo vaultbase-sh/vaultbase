@@ -9,7 +9,7 @@ import { seedAuthUser, signUserJwt } from "./_helpers.ts";
 const SECRET = "test-secret-auth-refresh";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

@@ -19,7 +19,7 @@ import {
 const SECRET = "test-secret-auth-tokens";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

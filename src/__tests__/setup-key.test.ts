@@ -24,12 +24,12 @@ beforeEach(async () => {
   delete process.env["VAULTBASE_SETUP_KEY"];
   dir = mkdtempSync(join(tmpdir(), "vb-setup-key-"));
   configureSetupKey(dir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   configureSetupKey(null);
   rmSync(dir, { recursive: true, force: true });
   if (savedEnv === undefined) delete process.env["VAULTBASE_SETUP_KEY"];

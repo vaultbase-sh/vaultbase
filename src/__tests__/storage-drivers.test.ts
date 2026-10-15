@@ -16,7 +16,7 @@ let created = 0;
 let off: () => void;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   objects.clear();
   created = 0;
@@ -38,10 +38,10 @@ beforeEach(async () => {
   invalidateStorageCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   off();
   invalidateStorageCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("registered storage drivers", () => {

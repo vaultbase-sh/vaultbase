@@ -20,15 +20,15 @@ let origFetch: typeof fetch;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-notify-api-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   origFetch = globalThis.fetch;
   _resetFcmTokenCache();
   _authColId = null;  // fresh per-test collection cache
 });
-afterEach(() => {
+afterEach(async () => {
   globalThis.fetch = origFetch;
-  closeDb();
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

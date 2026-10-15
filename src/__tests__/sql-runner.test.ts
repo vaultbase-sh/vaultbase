@@ -55,13 +55,13 @@ beforeEach(async () => {
   setLogsDir(tmpDir);
   setSandboxDir(join(tmpDir, "sandboxes"));
   dbPath = join(tmpDir, "data.db");
-  initDb(dbPath);
+  await initDb(dbPath);
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetSandboxRegistryForTests();
-  closeDb();
+  await closeDb();
   // Windows occasionally holds a brief lock on the sqlite file just after
   // close; tolerate flaky rm here. Tests should not fail on cleanup.
   try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }

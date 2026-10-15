@@ -5,7 +5,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { createCollection, inferViewFields, parseFields } from "../core/collections.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

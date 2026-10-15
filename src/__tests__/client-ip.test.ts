@@ -15,7 +15,7 @@ import { clientIp, perClientLimitIp, rememberPeer, requestIsHttps, trustedClient
 const req = (xff?: string) => new Request("http://localhost/", { headers: xff ? { "x-forwarded-for": xff } : {} });
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("security.trusted_proxies", "10.0.0.0/8");
 });

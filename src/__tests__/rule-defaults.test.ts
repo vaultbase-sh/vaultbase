@@ -21,7 +21,7 @@ import { admin } from "../db/schema.ts";
 const SECRET = "test-secret-rule-defaults";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
 });

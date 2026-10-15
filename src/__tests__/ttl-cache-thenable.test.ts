@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { closeDb, initDb } from "../db/client.ts";
 import { dbScopedTtlCache } from "../core/ttl-cache.ts";
 
-beforeAll(() => { initDb(":memory:"); });
-afterAll(() => { closeDb(); });
+beforeAll(async () => { await initDb(":memory:"); });
+afterAll(async () => { await closeDb(); });
 
 describe("dbScopedTtlCache", () => {
   test("a lazy thenable (drizzle query builder) runs once per TTL, not once per await", async () => {

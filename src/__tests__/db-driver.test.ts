@@ -9,29 +9,29 @@ import { closeDb, getRawClient, initDb } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { _resetTableWrites, tableVersion, takeReportedChanges } from "../core/table-writes.ts";
 
-beforeEach(() => {
-  initDb(":memory:");
+beforeEach(async () => {
+  await initDb(":memory:");
   db.exec(`CREATE TABLE t ("id" INTEGER PRIMARY KEY, "name" TEXT, "n" INTEGER DEFAULT 0)`);
   _resetTableWrites();
 });
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   _resetTableWrites();
 });
 
 describe("facade", () => {
-  it("throws before initDb and after closeDb", () => {
-    closeDb();
+  it("throws before initDb and after closeDb", async () => {
+    await closeDb();
     expect(() => db.all("SELECT 1")).toThrow(/not initialized/);
     expect(() => getDriver()).toThrow(/not initialized/);
-    initDb(":memory:");
+    await initDb(":memory:");
     expect(db.name).toBe("sqlite");
   });
 
-  it("follows a reopened database", () => {
+  it("follows a reopened database", async () => {
     db.sync.run(`INSERT INTO t (name) VALUES (?)`, ["a"]);
-    closeDb();
-    initDb(":memory:");
+    await closeDb();
+    await initDb(":memory:");
     expect(db.sync.all(`SELECT name FROM sqlite_master WHERE name = 't'`)).toEqual([]);
   });
 
@@ -66,7 +66,7 @@ describe("SQLite driver", () => {
     expect(rows[0]?.name).toBe("a");
   });
 
-  it("caches prepared statements and drops them on request and on close", () => {
+  it("caches prepared statements and drops them on request and on close", async () => {
     const before = db.preparedStatementCount();
     db.all(`SELECT 1 AS one`);
     db.all(`SELECT 1 AS one`);
@@ -76,9 +76,9 @@ describe("SQLite driver", () => {
     expect(db.preparedStatementCount()).toBe(0);
     db.all(`SELECT 1 AS one`);
     const driver = getDriver();
-    closeDb();
+    await closeDb();
     expect(driver.preparedStatementCount()).toBe(0);
-    initDb(":memory:");
+    await initDb(":memory:");
   });
 
   it("evicts the oldest statement past the cap", () => {

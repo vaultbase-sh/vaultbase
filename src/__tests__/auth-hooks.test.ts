@@ -28,13 +28,13 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-auth-hooks-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   invalidateHookCache();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* swallow */ }
 });
 

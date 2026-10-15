@@ -29,7 +29,7 @@ beforeEach(async () => {
   setLogsDir(tmpDir);
   setUploadDir(tmpDir);
   invalidateStorageCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   // A record anyone may view, with a protected one-time-token attachment.
   const col = await createPublicCollection({
@@ -50,8 +50,8 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

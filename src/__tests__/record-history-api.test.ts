@@ -11,7 +11,7 @@ import { admin as adminTable } from "../db/schema.ts";
 const SECRET = "test-secret-record-history-api";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

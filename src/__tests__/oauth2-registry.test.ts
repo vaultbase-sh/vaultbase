@@ -16,7 +16,7 @@ let server: ReturnType<typeof Bun.serve>;
 let off: () => void;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   server = Bun.serve({
     port: 0,
@@ -35,10 +35,10 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   off();
   server.stop(true);
-  closeDb();
+  await closeDb();
 });
 
 describe("registered OAuth2 providers", () => {

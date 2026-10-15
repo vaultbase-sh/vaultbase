@@ -15,7 +15,7 @@ import { signAuthToken } from "../core/sec.ts";
 const SECRET = "test-secret-admin-patch";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const hash = await Bun.password.hash("original-pw-1234");
   await getDb().insert(admin).values([

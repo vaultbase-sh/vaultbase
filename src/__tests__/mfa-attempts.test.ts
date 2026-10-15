@@ -26,7 +26,7 @@ let totpSecret: string;
 let userId: string;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const col = await ensureAuthCollection("users");
   userId = crypto.randomUUID();

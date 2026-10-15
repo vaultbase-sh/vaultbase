@@ -11,7 +11,7 @@ import { eq } from "drizzle-orm";
 const SECRET = "test-secret-anon-promote";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   // Anonymous defaults to off — turn it on so we can mint an anon user.
   setSetting("auth.anonymous.enabled", "1");

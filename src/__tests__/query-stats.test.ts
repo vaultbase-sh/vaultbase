@@ -41,15 +41,15 @@ const shape = (pred: (r: ReturnType<typeof report>[number]) => boolean) => {
 };
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   resetQueryStats();
 });
 
-afterEach(() => {
+afterEach(async () => {
   resetQueryStats();
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("query stats", () => {

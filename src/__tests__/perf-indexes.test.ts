@@ -19,13 +19,13 @@ function indexNames(table: string): string[] {
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("record table indexes", () => {

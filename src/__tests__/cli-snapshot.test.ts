@@ -15,7 +15,7 @@ import {
 } from "../core/migrations.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   _resetCollectionCache();
   await runMigrations();
 });

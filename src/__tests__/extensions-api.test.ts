@@ -13,13 +13,13 @@ const SECRET = "test-secret-extensions";
 const offs: Array<() => void> = [];
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const off of offs.splice(0)) off();
-  closeDb();
+  await closeDb();
 });
 
 async function adminToken(): Promise<string> {

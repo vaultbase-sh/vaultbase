@@ -5,7 +5,7 @@ import { setSetting } from "../api/settings.ts";
 import { isAuthFeatureEnabled, AUTH_FEATURE_DEFAULTS } from "../core/auth-features.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

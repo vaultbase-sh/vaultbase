@@ -18,7 +18,7 @@ const STRANGER = { id: "stranger-1", type: "user" as const };
 const TEAM_RULE = "@collection.teams.owner = @request.auth.id";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "teams", fields: JSON.stringify([{ name: "owner", type: "text" }]) });
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
@@ -27,9 +27,9 @@ beforeEach(async () => {
   await createRecord("posts", { title: "two" });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("list access rule — fail closed", () => {

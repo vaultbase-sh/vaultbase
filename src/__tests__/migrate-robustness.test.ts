@@ -48,7 +48,7 @@ describe("opening a locked database", () => {
     try {
       expect(() => initDb(`file:${path}`)).not.toThrow();
     } finally {
-      closeDb();
+      await closeDb();
       await holder.exited;
       rmSync(dir, { recursive: true, force: true });
     }

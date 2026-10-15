@@ -27,7 +27,7 @@ let off: () => void;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-push-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   sends.length = 0;
   respond = () => ({ ok: true, delivered: 1, message: "sent" });
@@ -39,10 +39,10 @@ beforeEach(async () => {
   registerNotificationsWorker();
 });
 
-afterEach(() => {
+afterEach(async () => {
   stopQueueScheduler();
   off();
-  closeDb();
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

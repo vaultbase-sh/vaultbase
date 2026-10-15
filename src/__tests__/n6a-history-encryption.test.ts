@@ -21,12 +21,12 @@ const ENC_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="; // 32 bytes base
 
 beforeEach(async () => {
   process.env["VAULTBASE_ENCRYPTION_KEY"] = ENC_KEY;
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   delete process.env["VAULTBASE_ENCRYPTION_KEY"];
 });
 

@@ -24,13 +24,13 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-sqltimeout-"));
   setLogsDir(tmpDir);
   dbPath = join(tmpDir, "data.db");
-  initDb(dbPath);
+  await initDb(dbPath);
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetSandboxRegistryForTests();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

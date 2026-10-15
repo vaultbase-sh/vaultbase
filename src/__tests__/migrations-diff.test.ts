@@ -9,7 +9,7 @@ import {
 import { computeSnapshotDiff } from "../api/migrations.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   _resetCollectionCache();
   await runMigrations();
 });

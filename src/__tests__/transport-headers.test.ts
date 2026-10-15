@@ -27,7 +27,7 @@ let base: string;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-transport-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: await Bun.password.hash("admin-pass-12345"), password_reset_at: 0, created_at: 0 });
   const app = createServer({ port: 0, dataDir: dir, dbPath: ":memory:", uploadDir: join(dir, "u"), logsDir: join(dir, "l"), jwtSecret: SECRET, encryptionKey: undefined });
@@ -36,11 +36,11 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${server.port}`;
 });
 
-afterAll(() => {
+afterAll(async () => {
   server?.stop(true);
   stopScheduler(); stopQueueScheduler(); stopWebhookDispatcher(); stopUpdateCheckScheduler();
   resetRealtime();
-  closeDb();
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

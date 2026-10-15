@@ -41,7 +41,7 @@ async function setup(cascade: "cascade" | "setNull") {
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   alice = await seedAuthUser({ collection: "users", email: "alice@test.local" });
   bob = await seedAuthUser({ collection: "users", email: "bob@test.local" });

@@ -17,7 +17,7 @@ const SECRET = "test-secret-collection-ref";
 const ids: Record<string, string> = {};
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   for (const n of ["alice", "bob", "carol"]) ids[n] = await seedAuthUser({ collection: "users", email: `${n}@test.local` });
   await createCollection({

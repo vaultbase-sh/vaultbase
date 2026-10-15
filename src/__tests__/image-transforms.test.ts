@@ -25,7 +25,7 @@ let token: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-imgx-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setUploadDir(dir);
   invalidateStorageCache();
@@ -34,8 +34,8 @@ beforeEach(async () => {
   token = await signUserJwt(uid, "t@test.local", "users", SECRET);
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

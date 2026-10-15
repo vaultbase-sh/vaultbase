@@ -15,16 +15,16 @@ const F = (fields: object[]) => JSON.stringify(fields);
 let colId: string;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   colId = (await createCollection({ name: "items", fields: F([{ name: "title", type: "text" }]) })).id;
   await createRecord("items", { title: "a" });
   await createRecord("items", { title: "b" });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("unique fields on existing collections", () => {

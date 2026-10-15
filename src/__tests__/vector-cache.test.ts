@@ -37,14 +37,14 @@ async function search(query: number[], limit = 5): Promise<Array<{ id: string; _
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetVectorCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("vector search with parsed-vector cache", () => {

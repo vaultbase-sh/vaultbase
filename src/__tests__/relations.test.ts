@@ -12,7 +12,7 @@ import { ValidationError, validateRecord } from "../core/validate.ts";
 import type { Collection } from "../db/schema.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

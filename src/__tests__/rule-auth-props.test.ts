@@ -43,7 +43,7 @@ async function access(token: string): Promise<[number, number]> {
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

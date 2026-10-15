@@ -18,7 +18,7 @@ let jwt: string;
 let original: string;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const col = await ensureAuthCollection("users");
   userId = crypto.randomUUID();

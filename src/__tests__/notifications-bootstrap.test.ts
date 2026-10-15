@@ -18,15 +18,15 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-notify-bs-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   // Module-level collection cache survives across tests — must reset.
   _resetCollectionCache();
   // Auth collection is required because bootstrap creates relations targeting "users".
   await createCollection({ name: "users", type: "auth", fields: JSON.stringify([]) });
 });
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

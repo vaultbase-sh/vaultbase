@@ -254,8 +254,8 @@ describe("fs", () => {
 });
 
 describe("db", () => {
-  beforeAll(() => { initDb(":memory:"); });
-  afterAll(() => { closeDb(); });
+  beforeAll(async () => { await initDb(":memory:"); });
+  afterAll(async () => { await closeDb(); });
 
   it("execMulti + query + exec round-trip", () => {
     h.db.execMulti(`
@@ -277,8 +277,8 @@ describe("db", () => {
 });
 
 describe("sql", () => {
-  beforeAll(() => { initDb(":memory:"); });
-  afterAll(() => { closeDb(); });
+  beforeAll(async () => { await initDb(":memory:"); });
+  afterAll(async () => { await closeDb(); });
 
   it("query, queryOne, exec and a transaction that rolls back on a throw", async () => {
     await h.sql.exec(`CREATE TABLE s (id INTEGER PRIMARY KEY, name TEXT)`);

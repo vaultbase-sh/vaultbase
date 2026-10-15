@@ -17,12 +17,12 @@ let dbPath: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-list-"));
   dbPath = join(dir, "data.db");
-  initDb(`file:${dbPath}`);
+  await initDb(`file:${dbPath}`);
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* Windows: cached statements hold the file */ }
 });
 

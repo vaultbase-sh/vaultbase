@@ -10,7 +10,7 @@ import {
 } from "../core/record-history.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

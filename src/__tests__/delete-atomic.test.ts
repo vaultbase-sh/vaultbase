@@ -14,7 +14,7 @@ import { createPublicCollection } from "./_helpers.ts";
 // cascade that failed part-way left the earlier children deleted.
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
   await createPublicCollection({
@@ -33,9 +33,9 @@ beforeEach(async () => {
   invalidateHookCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   invalidateHookCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("delete: hook order and atomicity", () => {

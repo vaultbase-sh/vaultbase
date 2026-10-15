@@ -12,7 +12,7 @@ import { eq } from "drizzle-orm";
 const SECRET = "test-secret-mfa-recovery";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

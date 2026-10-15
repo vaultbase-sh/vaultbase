@@ -16,7 +16,7 @@ const SECRET = "test-secret-view-private";
 
 beforeEach(async () => {
   _resetCollectionCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await seedAuthUser({ collection: "users", email: "a@test.local", passwordHash: "$argon2id$secret-hash" });
 });

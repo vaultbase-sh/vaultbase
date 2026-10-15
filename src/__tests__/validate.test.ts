@@ -6,7 +6,7 @@ import type { Collection } from "../db/schema.ts";
 import type { FieldDef } from "../core/collections.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

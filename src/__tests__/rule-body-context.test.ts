@@ -28,7 +28,7 @@ let userToken: string;
 const USER_ID = "u-owner";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
   await getDb().insert(admin).values({

@@ -31,12 +31,12 @@ beforeEach(async () => {
   setLogsDir(tmpDir);
   setUploadDir(tmpDir);
   invalidateStorageCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

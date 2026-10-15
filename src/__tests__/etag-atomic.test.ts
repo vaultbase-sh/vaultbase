@@ -14,7 +14,7 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-etag-atomic";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
 });

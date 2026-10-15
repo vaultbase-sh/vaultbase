@@ -16,7 +16,7 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-vector";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

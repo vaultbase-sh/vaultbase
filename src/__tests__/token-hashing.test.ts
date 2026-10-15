@@ -26,15 +26,15 @@ let userId: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-tokhash-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   smtp = startSmtpSink();
   userId = await seedAuthUser({ collection: "users", email: "u@test.local", passwordHash: await Bun.password.hash("old-password-123"), emailVerified: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
   smtp.stop();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

@@ -46,7 +46,7 @@ describe("number literals", () => {
 
 describe("geoDistance", () => {
   beforeEach(async () => {
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     await createPublicCollection({
       name: "places",
@@ -55,9 +55,9 @@ describe("geoDistance", () => {
     await createRecord("places", { name: "near", point: { lng: -73.98, lat: 40.75 } });
     await createRecord("places", { name: "far", point: { lng: 13.4, lat: 52.5 } });
   });
-  afterEach(() => {
+  afterEach(async () => {
     _resetCollectionCache();
-    closeDb();
+    await closeDb();
   });
 
   it("binds every placeholder", () => {

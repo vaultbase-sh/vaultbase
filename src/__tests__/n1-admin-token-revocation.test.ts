@@ -23,7 +23,7 @@ import { eq } from "drizzle-orm";
 const SECRET = "test-secret-n1";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

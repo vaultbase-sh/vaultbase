@@ -16,14 +16,14 @@ import {
 } from "../core/oauth2.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _clearAppleSecretCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _setAppleKeysForTests(null);
-  closeDb();
+  await closeDb();
 });
 
 // ── Apple id_token verification ─────────────────────────────────────────────

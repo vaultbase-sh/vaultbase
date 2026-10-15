@@ -27,7 +27,7 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-backups-"));
   setLogsDir(tmpDir);
   dbPath = join(tmpDir, "data.db");
-  initDb(`file:${dbPath}`);
+  await initDb(`file:${dbPath}`);
   await runMigrations();
   await getDb().insert(admin).values({
     id: "a1", email: "ops@test.local", password_hash: "x", password_reset_at: 0, created_at: 0,
@@ -35,8 +35,8 @@ beforeEach(async () => {
   setBackupsDir(join(tmpDir, "backups"));
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   // Windows keeps the mmap'd DB locked until GC; leave the tmp dir behind there.
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* EBUSY on Windows */ }
 });

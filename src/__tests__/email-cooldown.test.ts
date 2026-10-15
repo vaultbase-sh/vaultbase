@@ -28,16 +28,16 @@ let userId: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-cooldown-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("auth.otp.enabled", "1");
   smtp = startSmtpSink();
   userId = await seedAuthUser({ collection: "users", email: EMAIL, passwordHash: await Bun.password.hash("pw-1234567890"), emailVerified: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
   smtp.stop();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

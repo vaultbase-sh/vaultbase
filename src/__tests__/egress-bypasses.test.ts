@@ -34,11 +34,11 @@ beforeAll(() => {
 afterAll(() => stub.stop(true));
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   invalidateEgressCache();
 });
-afterEach(() => { invalidateEgressCache(); closeDb(); });
+afterEach(async () => { invalidateEgressCache(); await closeDb(); });
 
 const blocked = (url: string) => expect(assertEgressAllowed(url)).rejects.toBeInstanceOf(EgressBlockedError);
 

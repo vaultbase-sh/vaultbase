@@ -11,7 +11,7 @@ import { makeAuthPlugin } from "../api/auth.ts";
 const JWT_SECRET = "test-secret-for-unlink";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

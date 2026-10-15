@@ -21,13 +21,13 @@ import {
 import { makeExtraHelpers } from "../core/hook-helpers-extra.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   invalidateEgressCache();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   invalidateEgressCache();
 });
 

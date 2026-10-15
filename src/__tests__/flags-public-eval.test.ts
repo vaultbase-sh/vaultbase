@@ -20,7 +20,7 @@ let vip: string;
 
 beforeEach(async () => {
   _resetCollectionCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   vip = await seedAuthUser({ collection: "users", email: "vip@test.local" });
   await upsertFlag({

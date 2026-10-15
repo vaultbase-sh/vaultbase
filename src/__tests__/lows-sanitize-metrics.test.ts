@@ -25,7 +25,7 @@ describe("sanitizeHtml", () => {
 });
 
 describe("/metrics", () => {
-  beforeEach(async () => { initDb(":memory:"); await runMigrations(); setSetting("metrics.enabled", "1"); });
+  beforeEach(async () => { await initDb(":memory:"); await runMigrations(); setSetting("metrics.enabled", "1"); });
   afterEach(() => closeDb());
   const get = (bearer?: string) => makeMetricsPlugin(SECRET).handle(new Request("http://localhost/metrics", { headers: bearer ? { authorization: `Bearer ${bearer}` } : {} }));
 

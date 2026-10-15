@@ -20,7 +20,7 @@ import { generateCode, generateSecret } from "../core/totp.ts";
 const SECRET = "test-secret-magic-link-mfa";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("auth.otp.enabled", "1");
 });

@@ -18,14 +18,14 @@ const fields = JSON.stringify([
 ]);
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "posts", fields });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("autodate", () => {

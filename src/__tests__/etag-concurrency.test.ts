@@ -9,7 +9,7 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-etag-concurrency";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

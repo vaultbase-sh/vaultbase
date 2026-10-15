@@ -8,7 +8,7 @@ import { extractAuth } from "../api/logs.ts";
 const SECRET = "test-secret-register-validate";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

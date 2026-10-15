@@ -13,7 +13,7 @@ import {
 } from "../core/collections.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

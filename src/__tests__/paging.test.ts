@@ -13,7 +13,7 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-paging";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "items", fields: JSON.stringify([{ name: "n", type: "number" }]) });
   for (let i = 0; i < 40; i++) await createRecord("items", { n: i });

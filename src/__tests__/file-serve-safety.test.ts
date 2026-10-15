@@ -29,7 +29,7 @@ let recordId: string;
 let collectionId: string;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
   dir = mkdtempSync(join(tmpdir(), "vb-files-"));
@@ -53,8 +53,8 @@ beforeEach(async () => {
   recordId = rec["id"] as string;
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

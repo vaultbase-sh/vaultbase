@@ -14,13 +14,13 @@ import { seedAuthUser } from "./_helpers.ts";
 // "no such table" and the collection was unusable.
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("collection rename", () => {

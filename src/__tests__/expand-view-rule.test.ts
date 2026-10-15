@@ -26,7 +26,7 @@ let ownerAuth: AuthContext;
 const adminAuth: AuthContext = { id: "admin-1", type: "admin", email: "a@test.local" };
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
   await getDb().insert(admin).values({

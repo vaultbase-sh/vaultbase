@@ -38,12 +38,12 @@ async function seedAdmin(): Promise<{ id: string; email: string }> {
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-api-tokens-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

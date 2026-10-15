@@ -23,15 +23,15 @@ async function setHook(code: string, updatedAt: number) {
 
 beforeEach(async () => {
   g.__hookTag = undefined;
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
   invalidateHookCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   invalidateHookCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("hook lookup cache", () => {

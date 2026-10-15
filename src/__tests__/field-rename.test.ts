@@ -11,7 +11,7 @@ import { createRecord, getRecord, listRecords } from "../core/records.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({
     name: "posts",
@@ -23,9 +23,9 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("field rename", () => {

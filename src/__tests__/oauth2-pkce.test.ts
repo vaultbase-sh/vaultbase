@@ -115,7 +115,7 @@ describe("verifyChallenge round-trip", () => {
 
 describe("buildAuthorizeUrl with PKCE params", () => {
   beforeEach(async () => {
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     setSetting("oauth2.google.enabled", "1");
     setSetting("oauth2.google.client_id", "client123");

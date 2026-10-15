@@ -14,7 +14,7 @@ const PROVIDER = "google";
 const PROVIDER_USER_ID = "google-uid-42";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

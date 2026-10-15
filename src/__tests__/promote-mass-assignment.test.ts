@@ -17,7 +17,7 @@ import { verifyAuthToken } from "../core/sec.ts";
 const SECRET = "test-secret-promote-mass";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("auth.anonymous.enabled", "1");
   await createCollection({

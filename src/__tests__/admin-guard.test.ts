@@ -34,16 +34,16 @@ let app: ReturnType<typeof createServer>;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-admin-guard-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await getDb().insert(adminTable).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
   app = createServer({ port: 0, dataDir: dir, dbPath: ":memory:", uploadDir: join(dir, "u"), logsDir: join(dir, "l"), jwtSecret: SECRET, encryptionKey: undefined });
 });
 
-afterAll(() => {
+afterAll(async () => {
   stopScheduler(); stopQueueScheduler(); stopWebhookDispatcher(); stopUpdateCheckScheduler();
   resetRealtime();
-  closeDb();
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

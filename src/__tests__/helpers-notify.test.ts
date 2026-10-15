@@ -13,14 +13,14 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-helpers-notify-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("notifications.providers.onesignal.enabled", "1");
   setSetting("notifications.providers.onesignal.app_id", "app-1");
   setSetting("notifications.providers.onesignal.api_key", "key-1");
 });
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

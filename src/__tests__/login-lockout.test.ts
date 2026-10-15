@@ -19,7 +19,7 @@ const SECRET = "test-secret-login-lockout";
 const PASSWORD = "correct-horse-battery-1";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const hash = await Bun.password.hash(PASSWORD);
   await seedAuthUser({ collection: "users", email: "alice@test.local", passwordHash: hash });

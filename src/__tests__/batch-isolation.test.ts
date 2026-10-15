@@ -20,7 +20,7 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-batch-isolation";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "slow", fields: JSON.stringify([{ name: "v", type: "text" }]) });
   await createPublicCollection({
@@ -36,9 +36,9 @@ beforeEach(async () => {
   resetRealtime();
 });
 
-afterEach(() => {
+afterEach(async () => {
   invalidateHookCache();
-  closeDb();
+  await closeDb();
 });
 
 function batch(requests: Array<{ method: string; url: string; body?: unknown }>) {

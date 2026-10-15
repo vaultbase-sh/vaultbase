@@ -12,15 +12,15 @@ import { parseFilter } from "../core/filter.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "authors", fields: JSON.stringify([{ name: "name", type: "text" }]) });
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }, { name: "author", type: "relation", collection: "authors" }]) });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("_via_ cap", () => {

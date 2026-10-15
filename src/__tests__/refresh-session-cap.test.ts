@@ -21,7 +21,7 @@ const SECRET = "test-secret-refresh-cap";
 const DAY = 24 * 60 * 60;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "admin@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
 });

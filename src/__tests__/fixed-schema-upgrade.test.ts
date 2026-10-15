@@ -12,8 +12,8 @@ import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 
-beforeEach(() => { initDb(":memory:"); });
-afterEach(() => { _resetCollectionCache(); closeDb(); });
+beforeEach(async () => { await initDb(":memory:"); });
+afterEach(async () => { _resetCollectionCache(); await closeDb(); });
 
 const columnsOf = (table: string) =>
   (getRawClient().prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((c) => c.name);
@@ -65,8 +65,8 @@ describe("fixed schema", () => {
     expect(runs).toBe(1);
     const keys = (getRawClient().prepare(`SELECT key FROM vaultbase_migrations ORDER BY key`).all() as Array<{ key: string }>).map((r) => r.key);
     expect(keys).toEqual(["test_step"]);
-    closeDb();
-    initDb(":memory:");
+    await closeDb();
+    await initDb(":memory:");
     await runMigrations();
     await runOnce("test_step", () => { runs++; });
     expect(runs).toBe(2);

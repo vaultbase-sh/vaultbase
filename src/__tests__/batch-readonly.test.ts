@@ -16,12 +16,12 @@ import { createPublicCollection } from "./_helpers.ts";
 const SECRET = "test-secret-batch-readonly";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
 });
 
-afterEach(() => { invalidateHookCache(); closeDb(); });
+afterEach(async () => { invalidateHookCache(); await closeDb(); });
 
 const batch = (requests: unknown[]) => makeBatchPlugin(SECRET).handle(new Request("http://localhost/batch", {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requests }),

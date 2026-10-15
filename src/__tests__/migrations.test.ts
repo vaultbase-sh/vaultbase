@@ -12,7 +12,7 @@ import {
 import { createRecord } from "../core/records.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   _resetCollectionCache();
   await runMigrations();
 });

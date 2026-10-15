@@ -28,7 +28,7 @@ beforeEach(async () => {
   setLogsDir(tmpDir);
   setUploadDir(tmpDir);
   invalidateStorageCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   me = await seedAuthUser({ collection: "users", email: "me@test.local" });
   jwt = await signUserJwt(me, "me@test.local", "users", SECRET);
@@ -40,8 +40,8 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

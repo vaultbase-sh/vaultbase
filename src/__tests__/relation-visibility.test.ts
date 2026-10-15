@@ -22,7 +22,7 @@ let theirs: string;
 
 beforeEach(async () => {
   _resetCollectionCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   alice = await seedAuthUser({ collection: "users", email: "alice@test.local" });
   jwt = await signUserJwt(alice, "alice@test.local", "users", SECRET);

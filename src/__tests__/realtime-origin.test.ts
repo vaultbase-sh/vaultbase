@@ -29,7 +29,7 @@ let base: string;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-origin-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("security.allowed_origins", ALLOWED);
   const app = createServer({
@@ -46,16 +46,16 @@ beforeAll(async () => {
   base = `127.0.0.1:${server.port}`;
 });
 
-afterAll(() => {
+afterAll(async () => {
   server?.stop(true);
   // createServer starts background tickers; left running they fire after
-  // closeDb() and throw into whichever test file runs next.
+  // await closeDb() and throw into whichever test file runs next.
   stopScheduler();
   stopQueueScheduler();
   stopWebhookDispatcher();
   stopUpdateCheckScheduler();
   resetRealtime();
-  closeDb();
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

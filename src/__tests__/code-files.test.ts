@@ -55,15 +55,15 @@ beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), "vaultbase-code-files-"));
   dir = join(tmp, "vb_hooks");
   setLogsDir(tmp);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCodeFiles();
   invalidateHookCache();
-  closeDb();
+  await closeDb();
   rmSync(tmp, { recursive: true, force: true });
 });
 

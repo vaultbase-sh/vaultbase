@@ -14,7 +14,7 @@ import { ValidationError } from "../core/validate.ts";
 const offs: Array<() => void> = [];
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   // Whole cents, written as "12.50" or 12.5, stored as an integer.
   offs.push(registerFieldType({
@@ -28,9 +28,9 @@ beforeEach(async () => {
   offs.push(registerFieldType({ type: "point3", json: true }));
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const off of offs.splice(0)) off();
-  closeDb();
+  await closeDb();
 });
 
 describe("custom field types", () => {

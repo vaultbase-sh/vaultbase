@@ -9,7 +9,7 @@ const SECRET = "test-setup-status";
 
 beforeEach(async () => {
   configureSetupKey(null);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

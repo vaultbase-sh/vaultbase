@@ -25,7 +25,7 @@ beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), "vaultbase-code-files-api-"));
   dir = join(tmp, "vb_hooks");
   setLogsDir(tmp);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const id = crypto.randomUUID();
   await getDb().insert(adminTable).values({
@@ -39,9 +39,9 @@ beforeEach(async () => {
   await startCodeFiles(dir, { pollMs: 0 });
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCodeFiles();
-  closeDb();
+  await closeDb();
   rmSync(tmp, { recursive: true, force: true });
 });
 

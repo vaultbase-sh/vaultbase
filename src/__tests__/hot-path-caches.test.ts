@@ -14,15 +14,15 @@ import { listRecords, createRecord } from "../core/records.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetSettingsCache();
   invalidateUserTableColumnCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
 });
 
 describe("settings cache", () => {
@@ -58,8 +58,8 @@ describe("settings cache", () => {
   it("a reopened database never answers from the old connection's cache", async () => {
     setSetting("app.name", "old-db");
     expect(getSetting("app.name", "")).toBe("old-db");
-    closeDb();
-    initDb(":memory:");
+    await closeDb();
+    await initDb(":memory:");
     await runMigrations();
     expect(getSetting("app.name", "fresh")).toBe("fresh");
   });

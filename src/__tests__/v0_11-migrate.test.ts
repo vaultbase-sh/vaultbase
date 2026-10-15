@@ -29,12 +29,12 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-v011-"));
   setLogsDir(tmpDir);
   dbPath = join(tmpDir, "data.db");
-  initDb(dbPath);
+  await initDb(dbPath);
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
   catch { /* swallow */ }
 });
@@ -222,9 +222,9 @@ describe("v0.11 — /register writes to vb_<col>", () => {
 
 describe("vaultbase doctor — pre-migration checks", () => {
   it("reports clean on a fresh install with no auth collections", async () => {
-    closeDb();
+    await closeDb();
     const r = runDoctor(dbPath);
-    initDb(dbPath); // restore for afterEach
+    await initDb(dbPath); // restore for afterEach
     expect(r.ok).toBe(true);
     expect(r.blockers).toHaveLength(0);
   });
@@ -256,9 +256,9 @@ describe("vaultbase doctor — pre-migration checks", () => {
        VALUES ('u2', ?, 'dup@x.com', 'h', '{}', ?, ?)`,
     ).run(col.id, now, now);
 
-    closeDb();
+    await closeDb();
     const r = runDoctor(dbPath);
-    initDb(dbPath);
+    await initDb(dbPath);
     expect(r.ok).toBe(false);
     expect(r.blockers.some((b) => b.message.includes("duplicate email"))).toBe(true);
   });
@@ -274,9 +274,9 @@ describe("vaultbase doctor — pre-migration checks", () => {
        VALUES ('c1', 'members', 'auth', ?, ?, ?)`,
     ).run(JSON.stringify([{ name: "password_hash", type: "text" }]), now, now);
 
-    closeDb();
+    await closeDb();
     const r = runDoctor(dbPath);
-    initDb(dbPath);
+    await initDb(dbPath);
     expect(r.ok).toBe(false);
     expect(r.blockers.some((b) => b.message.includes("password_hash") && b.message.includes("collides"))).toBe(true);
   });
@@ -303,9 +303,9 @@ describe("vaultbase doctor — pre-migration checks", () => {
        VALUES ('u1', ?, 'x@x.com', 'h', ?, ?, ?)`,
     ).run(col.id, JSON.stringify({ display_name: "X", legacy_blob: "ignored" }), now, now);
 
-    closeDb();
+    await closeDb();
     const r = runDoctor(dbPath);
-    initDb(dbPath);
+    await initDb(dbPath);
     // Warning, not blocker.
     expect(r.warnings.some((w) => w.message.includes("legacy_blob"))).toBe(true);
   });

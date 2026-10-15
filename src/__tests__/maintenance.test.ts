@@ -15,7 +15,7 @@ const count = (table: string) =>
   (getRawClient().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

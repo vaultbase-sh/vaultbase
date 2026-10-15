@@ -24,18 +24,18 @@ const offs: Array<() => void> = [];
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-code-reg-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   invalidateHookCache();
   invalidateRoutesCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const off of offs.splice(0)) off();
   setSystemTime();
   invalidateHookCache();
   invalidateRoutesCache();
-  closeDb();
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

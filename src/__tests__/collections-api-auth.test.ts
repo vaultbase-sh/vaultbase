@@ -16,7 +16,7 @@ import { seedAuthUser, signUserJwt } from "./_helpers.ts";
 const SECRET = "test-secret-collections-api";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createCollection({ name: "secrets", type: "base", fields: JSON.stringify([{ name: "x", type: "text" }]), list_rule: "owner = @request.auth.id" });
   await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });

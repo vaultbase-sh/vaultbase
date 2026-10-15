@@ -30,14 +30,14 @@ let originalKey: string | undefined;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-settings-crypto-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   originalKey = process.env["VAULTBASE_ENCRYPTION_KEY"];
   _resetSettingsCryptoWarnings();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
   if (originalKey === undefined) delete process.env["VAULTBASE_ENCRYPTION_KEY"];
   else process.env["VAULTBASE_ENCRYPTION_KEY"] = originalKey;

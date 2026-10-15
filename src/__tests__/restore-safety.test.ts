@@ -26,15 +26,15 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-restore-"));
   setLogsDir(tmpDir);
   dbPath = join(tmpDir, "data.db");
-  initDb(`file:${dbPath}`);
+  await initDb(`file:${dbPath}`);
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "ops@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
   setBackupsDir(join(tmpDir, "backups"));
 });
 
-afterEach(() => {
+afterEach(async () => {
   delete process.env["VAULTBASE_WORKER_ID"];
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

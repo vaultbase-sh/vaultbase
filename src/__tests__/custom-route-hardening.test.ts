@@ -25,14 +25,14 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vb-croute-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   invalidateRoutesCache();
   invalidateRateLimitCache();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   invalidateRateLimitCache();
   rmSync(tmpDir, { recursive: true, force: true });
 });

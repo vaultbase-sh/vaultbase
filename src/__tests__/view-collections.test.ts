@@ -13,7 +13,7 @@ import {
 import { createRecord, deleteRecord, listRecords, ReadOnlyCollectionError, updateRecord } from "../core/records.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

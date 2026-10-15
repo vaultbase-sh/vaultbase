@@ -14,7 +14,7 @@ const g = globalThis as unknown as { __cronHits?: number };
 
 beforeEach(async () => {
   g.__cronHits = 0;
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const now = Math.floor(Date.now() / 1000);
   await getDb().insert(jobs).values({

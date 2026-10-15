@@ -38,7 +38,7 @@ async function adminToken(): Promise<string> {
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
   await getDb().insert(admin).values({

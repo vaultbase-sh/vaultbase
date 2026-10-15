@@ -14,7 +14,7 @@ import { signAuthToken } from "../core/sec.ts";
 const SECRET = "test-secret-ratelimit";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("rate_limit.enabled", "1");
   setSetting("rate_limit.rules", JSON.stringify([
@@ -24,7 +24,7 @@ beforeEach(async () => {
   invalidateRateLimitCache();
 });
 
-afterEach(() => { invalidateRateLimitCache(); closeDb(); });
+afterEach(async () => { invalidateRateLimitCache(); await closeDb(); });
 
 const app = () => new Elysia().use(makeRateLimitPlugin(SECRET)).get("/api/thing", () => "ok");
 const hit = (auth?: string) => app().handle(new Request("http://localhost/api/thing", { headers: auth ? { authorization: auth } : {} }));

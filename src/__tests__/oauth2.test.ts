@@ -11,7 +11,7 @@ import {
 } from "../core/oauth2.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

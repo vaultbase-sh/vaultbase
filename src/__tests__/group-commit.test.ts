@@ -10,15 +10,15 @@ import { groupCommitOpen } from "../core/group-commit.ts";
 let dir = "";
 let file = "";
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-gc-"));
   file = join(dir, "data.db");
-  initDb(file);
+  await initDb(file);
   getRawClient().exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT UNIQUE)");
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

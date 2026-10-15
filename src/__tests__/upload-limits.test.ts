@@ -23,7 +23,7 @@ let recordId: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-upload-"));
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setUploadDir(dir);
   invalidateStorageCache();
@@ -40,8 +40,8 @@ beforeEach(async () => {
   token = await signUserJwt(uid, "u@test.local", "users", SECRET);
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(dir, { recursive: true, force: true });
 });
 

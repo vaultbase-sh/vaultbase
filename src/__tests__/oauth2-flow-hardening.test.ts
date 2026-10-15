@@ -56,7 +56,7 @@ afterAll(() => stub.stop(true));
 
 beforeEach(async () => {
   _resetCollectionCache();
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   const base = `http://127.0.0.1:${stub.port}`;
   setSetting("app.url", APP);

@@ -37,7 +37,7 @@ let mainDenied = 0;
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-read-pool-"));
   const dbPath = join(dir, "data.db");
-  initDb(`file:${dbPath}`);
+  await initDb(`file:${dbPath}`);
   await runMigrations();
   await createPublicCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }, { name: "tags", type: "json" }]) });
   await createCollection({ name: "secrets", fields: JSON.stringify([{ name: "note", type: "text" }]) });
@@ -51,7 +51,7 @@ afterAll(async () => {
   stopScheduler(); stopQueueScheduler(); stopWebhookDispatcher(); stopUpdateCheckScheduler();
   resetRealtime();
   _resetCollectionCache();
-  closeDb();
+  await closeDb();
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 

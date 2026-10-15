@@ -23,14 +23,14 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-mcpsql-"));
   setLogsDir(tmpDir);
-  initDb(join(tmpDir, "data.db"));
+  await initDb(join(tmpDir, "data.db"));
   await runMigrations();
   getRawClient().exec("CREATE TABLE t (x INTEGER)");
   getRawClient().exec("INSERT INTO t VALUES (1)");
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

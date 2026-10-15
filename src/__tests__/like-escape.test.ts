@@ -17,7 +17,7 @@ import { makeRecordsPlugin } from "../api/records.ts";
 const SECRET = "test-secret-like-escape";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await createCollection({
     name: "docs",

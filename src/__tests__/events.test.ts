@@ -19,13 +19,13 @@ function listen<E extends keyof VaultbaseEvents>(event: E): Array<VaultbaseEvent
 }
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const off of offs.splice(0)) off();
-  closeDb();
+  await closeDb();
 });
 
 describe("event bus", () => {

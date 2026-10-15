@@ -5,7 +5,7 @@ import { createCollection, previewViewRows } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

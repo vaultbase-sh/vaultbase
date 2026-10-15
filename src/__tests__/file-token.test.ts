@@ -21,12 +21,12 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-file-token-"));
   setLogsDir(tmpDir);
   setUploadDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

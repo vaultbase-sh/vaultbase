@@ -26,7 +26,7 @@ const USER: AuthContext = { id: "u1", type: "user", email: "u@test.local" };
 const ADMIN: AuthContext = { id: "admin-1", type: "admin", email: "a@test.local" };
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   _resetCollectionCache();
   await getDb().insert(admin).values({

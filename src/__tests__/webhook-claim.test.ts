@@ -25,7 +25,7 @@ beforeEach(async () => {
       return new Response("ok");
     },
   });
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   setSetting("hooks.http.allow", "127.0.0.1/32");
   invalidateEgressCache();
@@ -38,9 +38,9 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   receiver.stop(true);
-  closeDb();
+  await closeDb();
   invalidateEgressCache();
 });
 

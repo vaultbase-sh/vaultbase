@@ -44,7 +44,7 @@ describe("encryption key file", () => {
   });
 
   it("plaintext secret settings are encrypted at startup and still read back", async () => {
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     try {
       getRawClient().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`).run("smtp.pass", "plain-pw");
@@ -56,7 +56,7 @@ describe("encryption key file", () => {
       expect(getSetting("smtp.pass", "")).toBe("plain-pw");
       expect(getSetting("smtp.host", "")).toBe("mail.example.com");
     } finally {
-      closeDb();
+      await closeDb();
     }
   });
 });
@@ -70,7 +70,7 @@ describe("key mismatches (review 17 F-5)", () => {
 
   it("a different key is detected before secrets are read as empty", async () => {
     const { encryptionKeyMatchesData } = await import("../api/settings.ts");
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     try {
       loadEncryptionKey(dir);
@@ -80,7 +80,7 @@ describe("key mismatches (review 17 F-5)", () => {
       process.env["VAULTBASE_ENCRYPTION_KEY"] = Buffer.alloc(32, 9).toString("base64");
       expect(await encryptionKeyMatchesData()).toBe(false);
     } finally {
-      closeDb();
+      await closeDb();
     }
   });
 });
@@ -88,7 +88,7 @@ describe("key mismatches (review 17 F-5)", () => {
 describe("key check tolerates foreign values (review 18 F-3)", () => {
   it("one undecryptable value among good ones doesn't fail the check", async () => {
     const { encryptionKeyMatchesData, setSetting } = await import("../api/settings.ts");
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     try {
       loadEncryptionKey(dir);
@@ -99,7 +99,7 @@ describe("key check tolerates foreign values (review 18 F-3)", () => {
       setSetting("smtp.pass", "secret");
       expect(await encryptionKeyMatchesData()).toBe(true);
     } finally {
-      closeDb();
+      await closeDb();
     }
   });
 });

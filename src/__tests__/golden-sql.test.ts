@@ -259,12 +259,12 @@ function compile(c: Case, caller: "public" | "user" | "admin"): unknown {
 
 describe("golden SQL", () => {
   beforeEach(async () => {
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
   });
-  afterEach(() => {
+  afterEach(async () => {
     _resetCollectionCache();
-    closeDb();
+    await closeDb();
   });
 
   it("fixed schema", async () => {
@@ -309,14 +309,14 @@ describe("golden SQL: operations", () => {
   const CASCADE_GOLD = GOLD_FIELDS.map((f) => (f.name === "author" ? { ...f, options: { cascade: "cascade" } } : f));
 
   beforeEach(async () => {
-    initDb(":memory:");
+    await initDb(":memory:");
     await runMigrations();
     await createPublicCollection({ name: "gold_people", fields: JSON.stringify(CASCADE_PEOPLE) });
     await createPublicCollection({ name: "gold", fields: JSON.stringify(CASCADE_GOLD) });
   });
-  afterEach(() => {
+  afterEach(async () => {
     _resetCollectionCache();
-    closeDb();
+    await closeDb();
   });
 
   async function sequence(): Promise<void> {

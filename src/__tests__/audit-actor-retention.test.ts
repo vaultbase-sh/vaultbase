@@ -17,7 +17,7 @@ const SECRET = "test-secret-audit-actor";
 let token: string;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "a1@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
   token = (await signAuthToken({ payload: { id: "a1", email: "a1@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET })).token;

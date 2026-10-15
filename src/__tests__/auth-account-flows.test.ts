@@ -26,15 +26,15 @@ let smtp: SmtpSink;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-acct-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: await Bun.password.hash("admin-pass-123"), password_reset_at: 0, created_at: 0 });
   smtp = startSmtpSink();
 });
 
-afterEach(() => {
+afterEach(async () => {
   smtp.stop();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

@@ -40,12 +40,12 @@ function mkApp(): Elysia {
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-mcp-http-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

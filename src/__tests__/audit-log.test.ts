@@ -20,7 +20,7 @@ import { makeAuditLogPlugin } from "../api/audit-log.ts";
 const SECRET = "test-secret-audit-log";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

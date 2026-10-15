@@ -25,15 +25,15 @@ let origFetch: typeof fetch;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-notify-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   origFetch = globalThis.fetch;
   _resetFcmTokenCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   globalThis.fetch = origFetch;
-  closeDb();
+  await closeDb();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

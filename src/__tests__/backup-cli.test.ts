@@ -75,7 +75,7 @@ describe("end-to-end: local snapshot", () => {
   beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "vb-backup-"));
     dbPath = join(tmpDir, "vaultbase.db");
-    initDb(dbPath);
+    await initDb(dbPath);
     await runMigrations();
     await getDb().insert(admin).values({
       id: "a1",
@@ -86,15 +86,15 @@ describe("end-to-end: local snapshot", () => {
     });
   });
 
-  afterEach(() => {
-    try { closeDb(); } catch { /* ignore */ }
+  afterEach(async () => {
+    try { await closeDb(); } catch { /* ignore */ }
     // Windows can hold the file lock briefly after close — best-effort rm.
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   it("writes a valid SQLite file the original DB's data is in", async () => {
     const dest = join(tmpDir, "snap.db");
-    closeDb();   // VACUUM INTO opens its own readonly handle; close ours first
+    await closeDb();   // VACUUM INTO opens its own readonly handle; close ours first
     await runBackup(dbPath, ["--to", dest, "--quiet"]);
     expect(existsSync(dest)).toBe(true);
     // Verify by opening the snapshot and reading back the seeded row.
@@ -108,7 +108,7 @@ describe("end-to-end: local snapshot", () => {
 
   it("gzips when --gzip is passed", async () => {
     const dest = join(tmpDir, "snap.db");
-    closeDb();
+    await closeDb();
     await runBackup(dbPath, ["--to", dest, "--gzip", "--quiet"]);
     // The runner appends .gz when not already there.
     expect(existsSync(`${dest}.gz`)).toBe(true);
@@ -120,13 +120,13 @@ describe("end-to-end: local snapshot", () => {
 
   it("creates the destination directory if missing", async () => {
     const dest = join(tmpDir, "deep/nested/dir/snap.db");
-    closeDb();
+    await closeDb();
     await runBackup(dbPath, ["--to", dest, "--quiet"]);
     expect(existsSync(dest)).toBe(true);
   });
 
   it("errors clearly when source DB does not exist", async () => {
-    closeDb();
+    await closeDb();
     // Use an explicitly nonexistent path — sidesteps Windows file-lock
     // races where rm() fails to remove the live DB file.
     const ghostPath = join(tmpDir, "definitely-not-here.db");

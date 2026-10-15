@@ -16,7 +16,7 @@ import { seedAuthUser, signUserJwt } from "./_helpers.ts";
 const SECRET = "test-secret-history-rule";
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
 });
 

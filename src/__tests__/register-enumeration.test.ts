@@ -24,16 +24,16 @@ let smtp: SmtpSink;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-enum-"));
   setLogsDir(tmpDir);
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   smtp = startSmtpSink();
   await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([{ name: "age", type: "number", options: { min: 0 } }]) });
   await seedAuthUser({ collection: "users", email: "taken@test.local", passwordHash: await Bun.password.hash("pw-123456789012") });
 });
 
-afterEach(() => {
+afterEach(async () => {
   smtp.stop();
-  closeDb();
+  await closeDb();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows */ }
 });
 

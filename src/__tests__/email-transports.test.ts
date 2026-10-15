@@ -18,7 +18,7 @@ const sent: EmailMessage[] = [];
 let off: () => void;
 
 beforeEach(async () => {
-  initDb(":memory:");
+  await initDb(":memory:");
   await runMigrations();
   sent.length = 0;
   off = registerEmailTransport({
@@ -30,9 +30,9 @@ beforeEach(async () => {
   invalidateEmailCache();
 });
 
-afterEach(() => {
+afterEach(async () => {
   off();
-  closeDb();
+  await closeDb();
 });
 
 function useOutbox(): void {
