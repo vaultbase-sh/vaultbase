@@ -19,6 +19,7 @@ import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
+import { noteTableWrite, tableVersion, takeReportedChanges, trackWrite } from "./table-writes.ts";
 
 /**
  * Build a lookup the rule SQL compiler uses for joined-collection view_rule
@@ -60,10 +61,11 @@ function preparedGet(client: Database, sql: string, params: unknown[]): unknown 
   }).get(...params);
 }
 
-function preparedRun(client: Database, sql: string, params: unknown[]): void {
-  (getCachedStmt(client, sql) as unknown as {
-    run: (...args: unknown[]) => unknown;
-  }).run(...params);
+/** Runs a cached statement; returns the rows it changed. */
+function preparedRun(client: Database, sql: string, params: unknown[]): number {
+  return ((getCachedStmt(client, sql) as unknown as {
+    run: (...args: unknown[]) => { changes: number };
+  }).run(...params)).changes;
 }
 
 /** Drop the cache when collection schema changes. */
@@ -77,26 +79,43 @@ export function invalidatePreparedStatements(): void {
  * entry (a third of a 100k-row table costs ~0.5 ms, eight times the page
  * itself), and read-heavy apps ask the same totals over and over.
  *
- * An entry is only valid while the database is unchanged: `total_changes()`
- * moves on this connection's writes, `data_version` on commits from any other
- * connection (cluster workers, the CLI), `schema_version` on DDL. Any move
- * empties the whole cache.
+ * An entry is only valid while its table is unchanged. `data_version` moves
+ * on commits from any other connection (cluster workers, the CLI) and
+ * `schema_version` on DDL: either empties the whole cache. `total_changes()`
+ * moves on this connection's writes: when the rows it added up are exactly
+ * the rows the write paths reported (table-writes.ts), only the reported
+ * tables' entries are stale and the rest stay; a write nobody reported (raw
+ * SQL from a hook or the SQL page) empties everything, as before.
  *
- * Never read or filled inside a transaction: shared commits hold one open,
- * and a rolled-back write leaves `total_changes()` advanced with its rows
- * gone, so a total taken mid-transaction could outlive them.
+ * Inside a transaction (a shared commit holds one open for most of a busy
+ * turn) the cache answers but is not filled: the sync above still runs, so
+ * a write the transaction made is already reflected (reported, or everything
+ * emptied), and a total counted mid-transaction is not kept, since a
+ * rollback would leave it wrong with `total_changes()` already advanced.
  */
-const COUNT_CACHE = new Map<string, number>();
+const COUNT_CACHE = new Map<string, { c: number; tv: number }>();
 const COUNT_CACHE_MAX = 512;
-let countCacheVersion = "";
+let countCacheSeen: { t: number; d: number; s: number } | null = null;
 let versionProbe: { client: Database; stmt: ReturnType<Database["prepare"]> } | null = null;
+const countCacheStats = { hits: 0, misses: 0 };
 
-function dbVersion(client: Database): string {
+/** Test hook: how often the totals cache answered. */
+export function _countCacheStats(): { hits: number; misses: number } {
+  return { ...countCacheStats };
+}
+
+/**
+ * Bring the cache up to date with the database: empty it when another
+ * connection committed, the schema changed, or this connection wrote rows
+ * nobody reported; otherwise the per-table versions decide.
+ */
+function syncCountCache(client: Database): void {
   if (versionProbe?.client !== client) {
     // A reopened database (restore) starts its counters over, so its
     // versions can repeat the old connection's.
     COUNT_CACHE.clear();
-    countCacheVersion = "";
+    countCacheSeen = null;
+    takeReportedChanges();
     versionProbe = {
       client,
       stmt: client.prepare(
@@ -105,7 +124,12 @@ function dbVersion(client: Database): string {
     };
   }
   const v = versionProbe.stmt.get() as { t: number; d: number; s: number };
-  return `${v.t}:${v.d}:${v.s}`;
+  const reported = takeReportedChanges();
+  const seen = countCacheSeen;
+  if (!seen || seen.d !== v.d || seen.s !== v.s || (v.t !== seen.t && v.t - seen.t !== reported)) {
+    COUNT_CACHE.clear();
+  }
+  countCacheSeen = v;
 }
 
 function countKey(sql: string, params: unknown[]): string {
@@ -117,23 +141,22 @@ function countKey(sql: string, params: unknown[]): string {
   return key;
 }
 
-function cachedCount(client: Database, sql: string, params: unknown[]): number {
+function cachedCount(client: Database, sql: string, params: unknown[], table: string): number {
   const count = () => (preparedGet(client, sql, params) as { c: number } | undefined)?.c ?? 0;
-  if (client.inTransaction) return count();
-  const version = dbVersion(client);
-  if (version !== countCacheVersion) {
-    COUNT_CACHE.clear();
-    countCacheVersion = version;
-  }
+  const inTransaction = client.inTransaction;
+  syncCountCache(client);
+  const tv = tableVersion(table);
   const key = countKey(sql, params);
   const hit = COUNT_CACHE.get(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined && hit.tv === tv) { countCacheStats.hits++; return hit.c; }
+  countCacheStats.misses++;
   const c = count();
-  if (COUNT_CACHE.size >= COUNT_CACHE_MAX) {
+  if (inTransaction) return c;
+  if (hit === undefined && COUNT_CACHE.size >= COUNT_CACHE_MAX) {
     const oldest = COUNT_CACHE.keys().next().value;
     if (oldest !== undefined) COUNT_CACHE.delete(oldest);
   }
-  COUNT_CACHE.set(key, c);
+  COUNT_CACHE.set(key, { c, tv });
   return c;
 }
 
@@ -674,7 +697,7 @@ export async function listRecords(
       // answer without any write, so those are always counted fresh.
       totalItems = col.type === "view" || /strftime\(/i.test(whereSql)
         ? (preparedGet(client, countSql, whereParams) as { c: number } | undefined)?.c ?? 0
-        : cachedCount(client, countSql, whereParams);
+        : cachedCount(client, countSql, whereParams, tname);
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {
@@ -799,7 +822,7 @@ async function createRecordImpl(
   // Cached statements: compiling these two on every write was ~a fifth of
   // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
   // AFTER triggers an admin may have added through the SQL page.)
-  preparedRun(client, `INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals);
+  trackWrite(client, userTableName(col.name), () => preparedRun(client, `INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals));
 
   const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown>;
   const result = await rowToMetaAsync(row, col, fields);
@@ -889,7 +912,7 @@ async function updateRecordImpl(
   const client = rawClient();
 
   if (setCols.length > 1) {
-    preparedRun(client, `UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id]);
+    trackWrite(client, userTableName(col.name), () => preparedRun(client, `UPDATE ${tableRef} SET ${setCols.join(", ")} WHERE "id" = ?`, [...setVals, id]));
   }
   // updated_at has 1 s resolution; drop the cached vector so a same-second
   // re-search sees the new value.
@@ -1165,9 +1188,9 @@ async function applyCascades(
       const now = Math.floor(Date.now() / 1000);
       for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
       const fullRef = refCol ?? await getCollection(ref.collection.name);
-      client
+      trackWrite(client, userTableName(ref.collection.name), () => client
         .prepare(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`)
-        .run(now, id);
+        .run(now, id));
       // Realtime gets the full records; hooks and webhooks skip cascades (see
       // event-listeners.ts).
       for (const r of affected) {
@@ -1244,7 +1267,7 @@ async function deleteRecordInternal(
 
   await applyCascades(col.name, id, auth, visited, guard);
 
-  preparedRun(rawClient(), `DELETE FROM ${tableRef} WHERE "id" = ?`, [id]);
+  trackWrite(rawClient(), userTableName(col.name), () => preparedRun(rawClient(), `DELETE FROM ${tableRef} WHERE "id" = ?`, [id]));
   invalidateRecordVectors(col.id, id);
   await maybeRecordHistory(col, id, {
     op: "delete",

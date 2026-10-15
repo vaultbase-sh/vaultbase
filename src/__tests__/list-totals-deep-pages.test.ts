@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { createRecord, deleteRecord, listRecords } from "../core/records.ts";
+import { createRecord, deleteRecord, listRecords , _countCacheStats } from "../core/records.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 // Deep pages fetch rowids first; totals come from a cache keyed on the
@@ -108,6 +108,34 @@ describe("list totals cache", () => {
     other.exec(`DELETE FROM vb_items WHERE n = 0`);
     other.close();
     expect(await total()).toBe(30 - Math.ceil(30 / 7));
+  });
+
+  it("a write to another collection keeps this collection's totals cached", async () => {
+    await createPublicCollection({ name: "other", fields });
+    expect(await total("status='published'")).toBe(10);
+    let before = _countCacheStats();
+    expect(await total("status='published'")).toBe(10);
+    expect(_countCacheStats().hits).toBe(before.hits + 1);
+    await createRecord("other", { n: 1, status: "published" });
+    before = _countCacheStats();
+    expect(await total("status='published'")).toBe(10);
+    expect(_countCacheStats()).toEqual({ hits: before.hits + 1, misses: before.misses });
+    // The written collection itself is recounted.
+    await createRecord("items", { n: 1, status: "published" });
+    before = _countCacheStats();
+    expect(await total("status='published'")).toBe(11);
+    expect(_countCacheStats().misses).toBe(before.misses + 1);
+  });
+
+  it("a write nobody reported (raw SQL) empties every collection's totals", async () => {
+    await createPublicCollection({ name: "other", fields });
+    expect(await total()).toBe(30);
+    expect((await listRecords("other", { perPage: 1 })).totalItems).toBe(0);
+    getRawClient().exec(`INSERT INTO vb_other ("id", "n", "status") VALUES ('x', 1, 'draft')`);
+    const before = _countCacheStats();
+    expect(await total()).toBe(30);
+    expect((await listRecords("other", { perPage: 1 })).totalItems).toBe(1);
+    expect(_countCacheStats().misses).toBe(before.misses + 2);
   });
 
   it("does not keep a total seen inside a transaction that rolls back", async () => {
