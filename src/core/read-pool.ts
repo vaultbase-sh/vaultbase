@@ -73,10 +73,14 @@ export const MAX_DEFAULT_READ_WORKERS = 8;
 
 /**
  * How many read workers to start: `VAULTBASE_READ_WORKERS` when set (`0`
- * keeps everything on one thread), otherwise one fewer than the cores, at
- * most {@link MAX_DEFAULT_READ_WORKERS}. Always 0 under `vaultbase cluster`
- * (its worker processes already use every core) and for an in-memory
- * database (nothing to share).
+ * keeps everything on one thread), otherwise two fewer than the cores, at
+ * least 1 on two cores or more and at most {@link MAX_DEFAULT_READ_WORKERS}.
+ * Two are kept free: one for the main thread, which still parses every
+ * request and writes every reply, and one for the reverse proxy and the
+ * rest of the box; on a 4-vCPU host three workers measured worse than two.
+ * Always 0 on a single core, under `vaultbase cluster` (its worker
+ * processes already use every core) and for an in-memory database (nothing
+ * to share).
  */
 export function readWorkerCount(env: Record<string, string | undefined>, cores: number, dbPath: string): number {
   if (env["VAULTBASE_WORKER_ID"]) return 0;
@@ -86,7 +90,8 @@ export function readWorkerCount(env: Record<string, string | undefined>, cores: 
     const n = parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 0;
   }
-  return Math.max(0, Math.min(MAX_DEFAULT_READ_WORKERS, cores - 1));
+  if (cores < 2) return 0;
+  return Math.max(1, Math.min(MAX_DEFAULT_READ_WORKERS, cores - 2));
 }
 
 /**

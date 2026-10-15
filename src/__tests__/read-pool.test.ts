@@ -56,13 +56,16 @@ afterAll(async () => {
 });
 
 describe("readWorkerCount", () => {
-  it("defaults to one fewer than the cores, at most 8, and honours the variable", () => {
-    expect(readWorkerCount({}, 4, "/d/data.db")).toBe(3);
+  it("defaults to two fewer than the cores (at least 1, at most 8) and honours the variable", () => {
+    expect(readWorkerCount({}, 4, "/d/data.db")).toBe(2);
+    expect(readWorkerCount({}, 3, "/d/data.db")).toBe(1);
+    expect(readWorkerCount({}, 2, "/d/data.db")).toBe(1);
     expect(readWorkerCount({}, 1, "/d/data.db")).toBe(0);
+    expect(readWorkerCount({}, 10, "/d/data.db")).toBe(8);
     expect(readWorkerCount({}, 32, "/d/data.db")).toBe(8);
     expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "2" }, 16, "/d/data.db")).toBe(2);
     expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "0" }, 16, "/d/data.db")).toBe(0);
-    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "" }, 4, "/d/data.db")).toBe(3);
+    expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "" }, 4, "/d/data.db")).toBe(2);
     expect(readWorkerCount({ VAULTBASE_READ_WORKERS: "nope" }, 4, "/d/data.db")).toBe(0);
   });
 

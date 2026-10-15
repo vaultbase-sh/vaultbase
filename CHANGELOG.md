@@ -9,6 +9,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Changed
+
+- **Fewer read workers by default: cores minus two.** 0.22.0 started one read worker
+  per spare core (cores minus one). On a 4-vCPU host that left the main thread, which
+  still parses every request and writes every reply, and the reverse proxy sharing the
+  last core with a third worker, and the box answered fewer requests than it did with
+  two. The default is now cores minus two, at least one on two cores or more, none on a
+  single core, at most 8. `VAULTBASE_READ_WORKERS` still sets the count outright.
+
 ### Fixed
 
 - **`autodate` fields are stored.** They were computed on create and update and then

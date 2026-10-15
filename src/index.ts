@@ -422,9 +422,9 @@ async function main() {
   await startCheckpointer(getRawClient(), config.dbPath, JOURNAL_SIZE_LIMIT);
 
   const server = createServer(config);
-  // Read worker threads (src/core/read-pool.ts): record reads on one thread
-  // per spare core by default; VAULTBASE_READ_WORKERS sets the count (0 keeps
-  // one thread). Never under `vaultbase cluster`, whose processes already
+  // Read worker threads (src/core/read-pool.ts): record reads on cores minus
+  // two threads by default (at least one on two cores or more, at most 8);
+  // VAULTBASE_READ_WORKERS sets the count (0 keeps one thread). Never under `vaultbase cluster`, whose processes already
   // use every core, and never for an in-memory database.
   {
     const { readWorkerCount, startReadPool } = await import("./core/read-pool.ts");
