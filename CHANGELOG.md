@@ -7,6 +7,22 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **List queries on the Monitoring page.** Every record list is recorded by its SQL shape
+  (collection, filter, sort, deep page, search) with call count, mean, max and total time.
+  The new panel lists shapes by total time with SQLite's query plan, flags the ones that
+  read a whole table without an index or sort in memory, and for those on a table of 1,000+
+  rows names the index that would serve them: the equality-filter fields first, then the
+  sort field. One click creates it. `GET /api/v1/_/metrics/queries` returns the same
+  report; `POST /api/v1/_/metrics/reset` clears it with the other metrics.
+- **Composite indexes.** `POST /api/v1/admin/collections/<name>/indexes` takes
+  `fields: [...]` (up to 4, in index order) alongside the existing `field`; the list
+  endpoint returns `fields` for every index. The collection's Indexes tab in the admin UI
+  builds multi-field indexes and offers `created_at` / `updated_at` as trailing fields.
+
 ## [0.20.1] — 2026-10-15
 
 ### Changed

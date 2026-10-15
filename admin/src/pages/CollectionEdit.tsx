@@ -1463,7 +1463,11 @@ function RuleCard({
 }
 
 // ── Indexes section ─────────────────────────────────────────────────────────
-interface IndexInfo { name: string; field: string; unique: boolean }
+interface IndexInfo { name: string; field: string; fields?: string[]; unique: boolean }
+
+/** Columns an index may cover besides the collection's own fields. */
+const BUILT_IN_INDEXABLE = ["created_at", "updated_at"];
+const MAX_INDEX_FIELDS = 4;
 
 function IndexesSection({
   collectionName,
@@ -1475,7 +1479,7 @@ function IndexesSection({
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
-  const [newField, setNewField] = useState<string | null>(null);
+  const [newFields, setNewFields] = useState<string[]>([]);
   const [newUnique, setNewUnique] = useState(false);
 
   async function load() {
@@ -1487,14 +1491,14 @@ function IndexesSection({
   useEffect(() => { load(); }, [collectionName]);
 
   async function handleAdd() {
-    if (!newField) return;
+    if (newFields.length === 0) return;
     const res = await api.post<ApiResponse<IndexInfo>>(
       `/api/v1/admin/collections/${collectionName}/indexes`,
-      { field: newField, unique: newUnique }
+      { fields: newFields, unique: newUnique }
     );
     if (res.error) { toast(res.error, "info"); return; }
     toast("Index created");
-    setAdding(false); setNewField(null); setNewUnique(false);
+    setAdding(false); setNewFields([]); setNewUnique(false);
     load();
   }
 
@@ -1514,15 +1518,18 @@ function IndexesSection({
     load();
   }
 
-  const indexable = fields.filter(
-    (f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "json" && f.type !== "file"
-  );
+  const indexable = [
+    ...fields
+      .filter((f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "json" && f.type !== "file")
+      .map((f) => f.name),
+    ...BUILT_IN_INDEXABLE,
+  ].filter((name) => !newFields.includes(name));
 
   return (
     <div className="indexes-table">
       <div className="indexes-table-head">
         <span>Name</span>
-        <span>Field</span>
+        <span>Fields</span>
         <span>Type</span>
         <span>Unique</span>
         <span />
@@ -1532,7 +1539,8 @@ function IndexesSection({
         <div className="empty-narrow">Loading…</div>
       ) : indexes.length === 0 ? (
         <div className="empty-narrow">
-          No indexes yet. Add one to speed up filter/sort queries on a field.
+          No indexes yet. Add one to speed up filter/sort queries on a field. Put the fields you
+          filter by first, then the one you sort by.
         </div>
       ) : (
         indexes.map((idx) => (
@@ -1558,21 +1566,31 @@ function IndexesSection({
 
       {adding ? (
         <div style={{ padding: 12, borderTop: "0.5px solid var(--border-default)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "rgba(255,255,255,0.01)" }}>
-          <Dropdown
-            value={newField}
-            options={indexable.map((f) => ({ label: f.name, value: f.name }))}
-            onChange={(e) => setNewField(e.value)}
-            placeholder="Field"
-            style={{ height: 32, minWidth: 160 }}
-          />
+          {newFields.map((name, i) => (
+            <span key={name} className="vb-type-badge mono" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 6px 2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "0.5px solid var(--border-default)", fontSize: 11, color: "var(--text-secondary)" }}>
+              {i + 1}. {name}
+              <button type="button" className="btn-icon" title="Remove field" onClick={() => setNewFields(newFields.filter((f) => f !== name))} style={{ padding: 0 }}>
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ))}
+          {newFields.length < MAX_INDEX_FIELDS && (
+            <Dropdown
+              value={null}
+              options={indexable.map((name) => ({ label: name, value: name }))}
+              onChange={(e) => { if (e.value) setNewFields([...newFields, e.value as string]); }}
+              placeholder={newFields.length ? "Then by…" : "Field"}
+              style={{ height: 32, minWidth: 160 }}
+            />
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
             <Toggle on={newUnique} onChange={setNewUnique} />
             <span>Unique</span>
           </label>
-          <button className="btn btn-primary" disabled={!newField} onClick={handleAdd}>
+          <button className="btn btn-primary" disabled={newFields.length === 0} onClick={handleAdd}>
             <Icon name="check" size={12} /> Create
           </button>
-          <button className="btn btn-ghost" onClick={() => { setAdding(false); setNewField(null); setNewUnique(false); }}>
+          <button className="btn btn-ghost" onClick={() => { setAdding(false); setNewFields([]); setNewUnique(false); }}>
             Cancel
           </button>
         </div>

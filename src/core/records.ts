@@ -16,6 +16,7 @@ import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
+import { recordListQuery } from "./query-stats.ts";
 
 /**
  * Build a lookup the rule SQL compiler uses for joined-collection view_rule
@@ -584,6 +585,7 @@ export async function listRecords(
   const sortPrivate = privateFieldNames(col);
   const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses: string[] = [];
+  const sortCols: string[] = [];
   for (const s of sortSpec.split(",").map((x) => x.trim()).filter(Boolean)) {
     const desc = s.startsWith("-");
     const field = desc ? s.slice(1) : s;
@@ -601,6 +603,7 @@ export async function listRecords(
     // is the view-collection-fallback safety net.
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(colName)) continue;
     orderClauses.push(`${tableRef}.${quoteIdent(colName)} ${desc ? "DESC" : "ASC"}`);
+    sortCols.push(colName);
   }
   // Break ties on the rowid so rows sharing a sort value (created_at has
   // one-second resolution) keep one order across pages. Indexes carry the
@@ -627,6 +630,7 @@ export async function listRecords(
   let rows: Record<string, unknown>[];
   let totalItems = -1;
   let totalPages = -1;
+  const queryStart = performance.now();
   try {
     // Execute SELECT — prepared statement cached by SQL string shape.
     rows = preparedAll(client, selectSql, selectParams) as Record<string, unknown>[];
@@ -645,6 +649,18 @@ export async function listRecords(
     if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
     throw e;
   }
+  recordListQuery({
+    collection: col.name,
+    table: tname,
+    view: col.type === "view",
+    selectSql,
+    whereSql: match && rankedWhere ? rankedWhere.whereSql : whereSql,
+    sortCols,
+    filter: opts.filter,
+    sort: opts.sort,
+    search: !!match,
+    us: (performance.now() - queryStart) * 1000,
+  });
 
   let items = await rowsToMeta(rows, col, fields);
 

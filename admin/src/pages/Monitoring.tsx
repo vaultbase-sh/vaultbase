@@ -6,6 +6,7 @@
  *   - CPU / event-loop lag / memory, kept client-side as the poll history
  *   - per-step latency histograms, read vs write split, status classes
  *   - SQLite file + WAL sizes, realtime connection count
+ *   - list queries by total time, with the index that would serve a scan
  *
  * Numbers are per process. Under cluster mode each poll lands on whichever
  * worker the kernel picks, so the page shows that worker's view (the worker
@@ -17,6 +18,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import { confirm } from "../components/Confirm.tsx";
+import { toast } from "../stores/toast.ts";
 import "../styles/dashboard-next.css";
 import "../styles/monitoring.css";
 
@@ -76,6 +78,26 @@ interface Snapshot {
       max_restart_ms: number;
     } | null;
   } | null;
+}
+
+/** One list-query shape from `/_/metrics/queries`. */
+interface QueryRow {
+  id: string;
+  collection: string;
+  filter: string | null;
+  sort: string | null;
+  search: boolean;
+  deep: boolean;
+  count: number;
+  mean_us: number;
+  max_us: number;
+  total_us: number;
+  last_seen: number;
+  rows: number;
+  plan: string[];
+  scan: boolean;
+  temp_sort: boolean;
+  suggestion: { fields: string[]; name: string } | null;
 }
 
 /** One poll's process gauges, kept client-side for the resource charts. */
@@ -154,6 +176,8 @@ export default function Monitoring() {
   const [paused, setPaused] = useState(false);
   const [down, setDown] = useState(false);
   const [lastAt, setLastAt] = useState<number | null>(null);
+  const [queries, setQueries] = useState<QueryRow[]>([]);
+  const [creating, setCreating] = useState<string | null>(null);
 
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
@@ -167,6 +191,9 @@ export default function Monitoring() {
       setSnap(s);
       setDown(false);
       setLastAt(Date.now());
+      void api.get<ApiResponse<QueryRow[]>>("/api/v1/_/metrics/queries").then((q) => {
+        if (alive.current && q?.data) setQueries(q.data);
+      }).catch(() => { /* keep the last list */ });
       setProc((prev) => {
         const next = prev.concat({
           t: Math.floor(Date.now() / 1000),
@@ -203,7 +230,24 @@ export default function Monitoring() {
     if (!ok) return;
     await api.post("/api/v1/_/metrics/reset", {});
     setProc([]);
+    setQueries([]);
     void poll();
+  };
+
+  const createIndex = async (q: QueryRow) => {
+    if (!q.suggestion) return;
+    setCreating(q.id);
+    try {
+      const res = await api.post<ApiResponse<{ name: string }>>(
+        `/api/v1/admin/collections/${q.collection}/indexes`,
+        { fields: q.suggestion.fields },
+      );
+      if (res.error) { toast(res.error, "info"); return; }
+      toast(`Index ${res.data?.name ?? q.suggestion.name} created`);
+      void poll();
+    } finally {
+      setCreating(null);
+    }
   };
 
   // ── Derived values ─────────────────────────────────────────────────────────
@@ -368,6 +412,27 @@ export default function Monitoring() {
           )}
         </section>
 
+        {/* ── List queries ─────────────────────────────────────────────── */}
+        <section className="vb-dash__panel vb-mon__wide">
+          <PanelHead
+            title="List queries"
+            meta={queries.length ? `${nf.format(queries.length)} shapes by total time` : "by total time"}
+          />
+          <div className="vb-dash__th vb-mon__t--queries">
+            {["COLLECTION", "QUERY", "CALLS", "MEAN", "MAX", "TOTAL", "SUGGESTED INDEX"].map((h, i) => (
+              <span key={h} className={i >= 2 && i <= 5 ? "vb-dash__num" : ""}>{h}</span>
+            ))}
+          </div>
+          {queries.length === 0 ? (
+            <div className="vb-mon__note">
+              No list requests since the last reset. Shapes that scan a table of {nf.format(1000)}+ rows
+              or sort in memory get an index suggestion here.
+            </div>
+          ) : (
+            queries.map((q) => <QueryRowView key={q.id} q={q} busy={creating === q.id} onCreate={() => void createIndex(q)} />)
+          )}
+        </section>
+
         {/* ── Traffic mix ──────────────────────────────────────────────── */}
         <section className="vb-dash__panel">
           <PanelHead title="Traffic mix" meta={`${nf.format(statusTotal)} classified`} />
@@ -444,6 +509,43 @@ function HistRow({ label, h, strong, dim }: { label: string; h: Hist; strong?: b
       <span className="vb-dash__num">{dur(h.p99_9_us)}</span>
       <span className="vb-dash__num vb-dash__dim">{dur(h.max_us)}</span>
       <span className="vb-dash__num vb-dash__dim">{dur(h.mean_us)}</span>
+    </div>
+  );
+}
+
+function QueryRowView({ q, busy, onCreate }: { q: QueryRow; busy: boolean; onCreate: () => void }) {
+  const flags: string[] = [];
+  if (q.search) flags.push("search");
+  if (q.deep) flags.push("deep page");
+  if (q.scan) flags.push("scan");
+  if (q.temp_sort) flags.push("temp sort");
+  return (
+    <div className="vb-dash__row vb-mon__t--queries" title={q.plan.join("\n")}>
+      <span className="vb-dash__key">{q.collection}</span>
+      <span className="vb-mon__query">
+        <code>{q.filter ?? "*"}{q.sort ? ` · sort ${q.sort}` : ""}</code>
+        {flags.length > 0 && (
+          <span className="vb-mon__flags">
+            {flags.map((f) => <i key={f} className={f === "scan" || f === "temp sort" ? "vb-mon__flag vb-mon__flag--warn" : "vb-mon__flag"}>{f}</i>)}
+          </span>
+        )}
+      </span>
+      <span className="vb-dash__num">{nf.format(q.count)}</span>
+      <span className="vb-dash__num">{dur(q.mean_us)}</span>
+      <span className="vb-dash__num vb-dash__dim">{dur(q.max_us)}</span>
+      <span className="vb-dash__num">{dur(q.total_us)}</span>
+      <span className="vb-mon__suggest">
+        {q.suggestion ? (
+          <>
+            <code>({q.suggestion.fields.join(", ")})</code>
+            <button type="button" className="vb-mon__btn" disabled={busy} onClick={onCreate}>
+              {busy ? "creating…" : "Create index"}
+            </button>
+          </>
+        ) : (
+          <span className="vb-dash__dim">—</span>
+        )}
+      </span>
     </div>
   );
 }

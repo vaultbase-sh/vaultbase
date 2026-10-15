@@ -7,6 +7,7 @@ import { getSetting } from "./settings.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
 import { connectionCount } from "../realtime/manager.ts";
 import { checkpointStats, type CheckpointStats } from "../db/checkpointer.ts";
+import { queryStatsReport, resetQueryStats } from "../core/query-stats.ts";
 
 interface SqliteSnapshot {
   page_count: number;
@@ -116,7 +117,17 @@ export function makeMetricsPlugin(jwtSecret: string) {
     }, { requireAdmin: true })
     .post("/_/metrics/reset", async () => {
       globalMetrics.reset();
+      resetQueryStats();
       return { data: { reset: true } };
+    }, { requireAdmin: true })
+    // List-query shapes by total time, with SQLite's plan and the index that
+    // would serve a scan or an in-memory sort. See core/query-stats.ts.
+    .get("/_/metrics/queries", async () => {
+      try {
+        return { data: queryStatsReport(getRawClient()) };
+      } catch {
+        return { data: [] };
+      }
     }, { requireAdmin: true })
     // Prometheus exposition. Off by default; enable via `metrics.enabled`.
     // Scrapers authenticate with `metrics.token` (Bearer).

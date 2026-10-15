@@ -2,12 +2,22 @@ import type { Database } from "bun:sqlite";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
+import type { Collection } from "../db/schema.ts";
 import { adminGuard } from "./_admin.ts";
 
-interface IndexInfo {
+export interface IndexInfo {
   name: string;
+  /** The indexed columns, comma-separated in index order. */
   field: string;
+  fields: string[];
   unique: boolean;
+}
+
+/** Most columns one index may cover. */
+export const MAX_INDEX_FIELDS = 4;
+
+export class IndexError extends Error {
+  constructor(message: string, public readonly status: 422 = 422) { super(message); }
 }
 
 function rawClient(): Database {
@@ -37,18 +47,50 @@ function listIndexes(tableName: string): IndexInfo[] {
       name: string;
     }>;
     if (cols.length === 0) continue;
+    const names = cols.sort((a, b) => a.seqno - b.seqno).map((c) => c.name);
     result.push({
       name: r.name,
-      field: cols.map((c) => c.name).join(","),
+      field: names.join(","),
+      fields: names,
       unique: r.unique === 1,
     });
   }
   return result;
 }
 
-function indexName(collectionName: string, field: string, unique: boolean): string {
+function indexName(collectionName: string, fields: string[], unique: boolean): string {
   const prefix = unique ? "uniq" : "idx";
-  return `${prefix}_${collectionName}_${field}`;
+  return `${prefix}_${collectionName}_${fields.join("_")}`;
+}
+
+/**
+ * Create an index over one or more of the collection's fields, in the given
+ * order (a composite index serves an equality filter on its leading fields
+ * plus a sort on the next one). Throws {@link IndexError} on bad input.
+ */
+export function createCollectionIndex(col: Collection, fieldNames: string[], unique = false): IndexInfo {
+  if (fieldNames.length === 0) throw new IndexError("At least one field is required");
+  if (fieldNames.length > MAX_INDEX_FIELDS) throw new IndexError(`An index covers at most ${MAX_INDEX_FIELDS} fields`);
+  if (new Set(fieldNames).size !== fieldNames.length) throw new IndexError("A field may appear only once in an index");
+  const fields = parseFields(col.fields);
+  const builtIn = ["id", "created_at", "updated_at"];
+  for (const fieldName of fieldNames) {
+    if (!/^[a-z0-9_]+$/.test(fieldName)) throw new IndexError("Field name must match [a-z0-9_]+");
+    const existsInSchema =
+      builtIn.includes(fieldName) ||
+      fields.some((f) => f.name === fieldName && !f.system && f.type !== "autodate");
+    if (!existsInSchema) throw new IndexError(`Field '${fieldName}' not found on '${col.name}'`);
+  }
+  const name = indexName(col.name, fieldNames, unique);
+  const tableRef = `"${userTableName(col.name)}"`;
+  const cols = fieldNames.map((f) => `"${f}"`).join(", ");
+  const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS "${name}" ON ${tableRef} (${cols})`;
+  try {
+    rawClient().exec(sql);
+  } catch (e) {
+    throw new IndexError(e instanceof Error ? e.message : String(e));
+  }
+  return { name, field: fieldNames.join(","), fields: fieldNames, unique };
 }
 
 export function makeIndexesPlugin(jwtSecret: string) {
@@ -73,35 +115,23 @@ export function makeIndexesPlugin(jwtSecret: string) {
       async ({ params, body, set }) => {
         const col = await getCollection(params.name);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
-
-        const fields = parseFields(col.fields);
-        const fieldName = body.field;
-        if (!/^[a-z0-9_]+$/.test(fieldName)) {
-          set.status = 422;
-          return { error: "Field name must match [a-z0-9_]+", code: 422 };
-        }
-        const builtIn = ["id", "created_at", "updated_at"];
-        const existsInSchema =
-          builtIn.includes(fieldName) ||
-          fields.some((f) => f.name === fieldName && !f.system && f.type !== "autodate");
-        if (!existsInSchema) {
-          set.status = 422;
-          return { error: `Field '${fieldName}' not found on '${col.name}'`, code: 422 };
-        }
-
-        const isUnique = !!body.unique;
-        const name = indexName(col.name, fieldName, isUnique);
-        const tableRef = `"${userTableName(col.name)}"`;
-        const sql = `CREATE ${isUnique ? "UNIQUE " : ""}INDEX IF NOT EXISTS "${name}" ON ${tableRef} ("${fieldName}")`;
+        // `fields` (in index order) or the older single `field`.
+        const fieldNames = body.fields ?? (body.field ? [body.field] : []);
         try {
-          rawClient().exec(sql);
-          return { data: { name, field: fieldName, unique: isUnique } };
+          return { data: createCollectionIndex(col, fieldNames, !!body.unique) };
         } catch (e) {
-          set.status = 422;
-          return { error: e instanceof Error ? e.message : String(e), code: 422 };
+          set.status = e instanceof IndexError ? e.status : 500;
+          return { error: e instanceof Error ? e.message : String(e), code: set.status };
         }
       },
-      { requireAdmin: true, body: t.Object({ field: t.String(), unique: t.Optional(t.Boolean()) }) }
+      {
+        requireAdmin: true,
+        body: t.Object({
+          field: t.Optional(t.String()),
+          fields: t.Optional(t.Array(t.String(), { maxItems: 16 })),
+          unique: t.Optional(t.Boolean()),
+        }),
+      }
     )
 
     // Drop index

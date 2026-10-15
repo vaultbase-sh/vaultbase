@@ -70,5 +70,32 @@
 .vb-mon__t--steps { grid-template-columns: minmax(0, 1.4fr) repeat(7, minmax(0, 1fr)); }
 .vb-mon__t--kv    { grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1.4fr); }
 .vb-mon__t--kv2   { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.vb-mon__t--queries {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2.6fr) repeat(4, minmax(0, 0.7fr)) minmax(0, 1.8fr);
+}
+.vb-mon__query { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vb-mon__query code,
+.vb-mon__suggest code {
+  font-family: var(--vb-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  color: var(--vb-fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-mon__flags { display: flex; gap: 4px; flex-wrap: wrap; }
+.vb-mon__flag {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 0.5px solid var(--vb-border, rgba(255,255,255,0.12));
+  color: var(--vb-fg-4);
+}
+.vb-mon__flag--warn { color: var(--vb-accent); border-color: currentColor; }
+.vb-mon__suggest { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vb-mon__suggest .vb-mon__btn { flex: none; }
+.vb-mon__note { padding: 14px 16px; font-size: 12px; color: var(--vb-fg-4); }
 .vb-mon__row--strong { background: var(--vb-surface-highlight); }
 .vb-mon__share { grid-template-columns: minmax(0, 1fr) 56px; }
