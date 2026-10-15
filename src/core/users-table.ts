@@ -84,22 +84,31 @@ export function findUserByEmail(col: Collection, email: string): AuthUserRow | n
 }
 
 /**
- * Pull the canonical column list for an auth-collection table.
- * Recomputed each call — PRAGMA table_info is cheap and caching across
- * test-suite DB resets caused stale-table errors. Only the compiled
- * statement is reused (`query`), never the result: it runs on every list
- * request (filterableColumns), and re-compiling it showed in profiles.
+ * The column list of a collection's table. It runs on every list request
+ * (filterableColumns), so the answer is kept per connection and
+ * `schema_version`: any DDL, from this process or another, moves the
+ * version and refreshes it, and a reopened database (tests, restore) never
+ * sees the previous connection's columns. Callers only read the array.
  */
+const columnsCache = new Map<string, { client: Database; schema: number; cols: string[] }>();
+
 export function tableColumns(collectionName: string): string[] {
-  const rows = rawClient().query(
+  const client = rawClient();
+  const schema = (client.query("PRAGMA schema_version").get() as { schema_version: number }).schema_version;
+  const hit = columnsCache.get(collectionName);
+  if (hit && hit.client === client && hit.schema === schema) return hit.cols;
+  const rows = client.query(
     `PRAGMA table_info(${quoteIdent(userTableName(collectionName))})`,
   ).all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const cols = rows.map((r) => r.name);
+  columnsCache.set(collectionName, { client, schema, cols });
+  return cols;
 }
 
-/** No-op kept for callers that referenced it before caching was dropped. */
-export function invalidateUserTableColumnCache(_collectionName?: string): void {
-  /* cache removed in v0.11 — function kept for compatibility */
+/** Forget cached columns; closeDb calls it, tests may too. */
+export function invalidateUserTableColumnCache(collectionName?: string): void {
+  if (collectionName === undefined) columnsCache.clear();
+  else columnsCache.delete(collectionName);
 }
 
 interface InsertInput {

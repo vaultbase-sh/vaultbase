@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { getRawClient } from "../db/client.ts";
-import { getSetting, setSetting } from "../api/settings.ts";
+import { getSetting, setSetting, invalidateSetting } from "../api/settings.ts";
 import { nextRunFromCron, validateCron } from "./jobs.ts";
 
 export const DEFAULT_BACKUP_CRON = "0 3 * * *";
@@ -241,6 +241,8 @@ export async function backupTick(nowSec = Math.floor(Date.now() / 1000)): Promis
   const claimed = getRawClient()
     .prepare(`UPDATE vaultbase_settings SET value = ?, updated_at = unixepoch() WHERE key = 'backups.next_run' AND value = ?`)
     .run(`${cron}|${nextRunFromCron(cron, nowSec)}`, raw).changes;
+  // The claim bypassed setSetting, so drop the cached value either way.
+  invalidateSetting("backups.next_run");
   if (claimed !== 1) return null;
   return runBackup();
 }

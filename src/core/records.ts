@@ -9,11 +9,13 @@ import {
   getSchemaVersion,
   listCollections,
   parseFields,
+  cachedFields,
   userTableName,
   type CascadeMode,
   type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
+import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { ftsTableName, hasFts, toFtsQuery } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
@@ -185,7 +187,7 @@ function makeCollectionLookup(): CollectionLookup {
     if (!col) return null;
     let fieldNames: Set<string>;
     try {
-      const parsed = parseFields(col.fields);
+      const parsed = cachedFields(col.fields);
       fieldNames = new Set(parsed.map((f) => f.name));
     } catch {
       fieldNames = new Set();
@@ -292,7 +294,8 @@ function buildRecord(
     created: Number(row["created_at"] ?? 0),
     updated: Number(row["updated_at"] ?? 0),
   };
-  for (const [k, v] of Object.entries(row)) {
+  for (const k in row) {
+    const v = row[k];
     if (k === "id" || k === "created_at" || k === "updated_at") continue;
     // Auth-system columns are private — never emit on the wire. In a view,
     // also password fields, and duplicates SQLite renames to `name:1`.
@@ -306,18 +309,32 @@ function buildRecord(
   return out;
 }
 
+/** Per field-list lookups, built once for a cached field array. */
+const fieldIndex = new WeakMap<FieldDef[], { byName: Map<string, FieldDef>; encrypted: string[] }>();
+
+function indexFields(fields: FieldDef[]): { byName: Map<string, FieldDef>; encrypted: string[] } {
+  let idx = fieldIndex.get(fields);
+  if (!idx) {
+    idx = {
+      byName: new Map(fields.map((f) => [f.name, f])),
+      encrypted: fields.filter((f) => f.options?.encrypted).map((f) => f.name),
+    };
+    fieldIndex.set(fields, idx);
+  }
+  return idx;
+}
+
 /**
- * Stored rows → API records. The field map is built once per call, and the
- * conversion is synchronous unless the collection has encrypted fields, in
- * which case only those values are decrypted (async) before decoding.
+ * Stored rows → API records. The field map is built once per field list, and
+ * the conversion is synchronous unless the collection has encrypted fields,
+ * in which case only those values are decrypted (async) before decoding.
  */
 async function rowsToMeta(
   rows: Array<Record<string, unknown>>,
   col: Collection,
   fields: FieldDef[],
 ): Promise<RecordWithMeta[]> {
-  const fieldByName = new Map(fields.map((f) => [f.name, f]));
-  const encrypted = fields.filter((f) => f.options?.encrypted).map((f) => f.name);
+  const { byName: fieldByName, encrypted } = indexFields(fields);
   if (encrypted.length === 0) return rows.map((r) => buildRecord(r, col, fieldByName));
   return Promise.all(rows.map(async (r) => {
     const plain: Record<string, unknown> = { ...r };
@@ -434,18 +451,35 @@ function encodeValue(val: unknown, field: FieldDef): unknown {
   return val;
 }
 
+/**
+ * The decoder for a field, chosen once per field object (null = the stored
+ * value is the API value). Field objects from `cachedFields` are stable, so
+ * this replaces a registry lookup and a type switch per value. Dropped when
+ * a field type is registered or removed.
+ */
+let decoders = new WeakMap<FieldDef, ((v: unknown) => unknown) | null>();
+let decodersVersion = fieldTypesVersion();
+
+function decoderFor(field: FieldDef): ((v: unknown) => unknown) | null {
+  const version = fieldTypesVersion();
+  if (version !== decodersVersion) { decoders = new WeakMap(); decodersVersion = version; }
+  const hit = decoders.get(field);
+  if (hit !== undefined) return hit;
+  const custom = customFieldType(field.type);
+  let d: ((v: unknown) => unknown) | null;
+  if (custom?.decode) { const decode = custom.decode; d = (v) => decode(v, field); }
+  else if (field.type === "bool") d = (v) => v === 1 || v === true || v === "1" || v === "true";
+  else if (isJsonField(field)) d = (v) => { if (typeof v !== "string") return v; try { return JSON.parse(v); } catch { return v; } };
+  else d = null;
+  decoders.set(field, d);
+  return d;
+}
+
 /** Decode a DB value back to the JS shape the API returns. */
 function decodeValue(val: unknown, field: FieldDef): unknown {
   if (val === null || val === undefined) return null;
-  const custom = customFieldType(field.type);
-  if (custom?.decode) return custom.decode(val, field);
-  if (field.type === "bool") return val === 1 || val === true || val === "1" || val === "true";
-  if (isJsonField(field)) {
-    if (typeof val === "string") {
-      try { return JSON.parse(val); } catch { return val; }
-    }
-  }
-  return val;
+  const d = decoderFor(field);
+  return d ? d(val) : val;
 }
 
 // ── List ─────────────────────────────────────────────────────────────────────
@@ -544,7 +578,7 @@ export async function listRecords(
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
 
-  const fields = parseFields(col.fields);
+  const fields = cachedFields(col.fields);
   const tname = userTableName(col.name);
   const tableRef = quoteIdent(tname);
   const client = rawClient();
@@ -696,7 +730,7 @@ export async function getRecord(
 ): Promise<RecordWithMeta | null> {
   const col = await getCollection(collectionName);
   if (!col) return null;
-  const fields = parseFields(col.fields);
+  const fields = cachedFields(col.fields);
   const tableRef = quoteIdent(userTableName(col.name));
   const client = rawClient();
   const row = preparedGet(client, `SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]) as Record<string, unknown> | undefined;

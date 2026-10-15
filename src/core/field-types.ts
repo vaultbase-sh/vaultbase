@@ -57,6 +57,12 @@ const registry = new Map<string, RegisteredFieldType>(
 
 const TYPE_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 
+/** Bumped whenever a type is added or removed, so decoders built from the registry can be dropped. */
+let registryVersion = 0;
+export function fieldTypesVersion(): number {
+  return registryVersion;
+}
+
 /**
  * Add a field type. Throws if the name is malformed or already taken; a
  * built-in type can't be replaced.
@@ -68,8 +74,9 @@ export function registerFieldType(def: FieldTypeDef): () => void {
   if (registry.has(def.type)) throw new Error(`field type '${def.type}' is already registered`);
   const entry: RegisteredFieldType = { ...def, builtin: false };
   registry.set(def.type, entry);
+  registryVersion++;
   return () => {
-    if (registry.get(def.type) === entry) registry.delete(def.type);
+    if (registry.get(def.type) === entry) { registry.delete(def.type); registryVersion++; }
   };
 }
 

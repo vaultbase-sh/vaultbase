@@ -141,19 +141,43 @@ export function encryptPlaintextSecretSettings(): number {
   return n;
 }
 
+/**
+ * Settings read on the request path (trusted proxies, rate limits, CORS) are
+ * kept for a moment: the lookup ran on every request and showed in
+ * profiles. Writes through `setSetting` drop the key at once; a change made
+ * by another process (a cluster worker, the CLI) shows up within the TTL.
+ * Entries are tied to the connection, so a reopened database starts fresh.
+ */
+const SETTING_TTL_MS = 2_000;
+const settingCache = new Map<string, { client: Database; at: number; value: string | null }>();
+
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
-  // `query` reuses the compiled statement; this runs on every request
-  // (trusted-proxy lookup), and compiling it each time showed in profiles.
-  const row = rawClient()
+  const client = rawClient();
+  const now = Date.now();
+  const hit = settingCache.get(key);
+  if (hit && hit.client === client && now - hit.at < SETTING_TTL_MS) return hit.value ?? defaultVal;
+  const row = client
     .query(`SELECT value FROM vaultbase_settings WHERE key = ?`)
     .get(key) as { value: string } | undefined | null;
   // bun:sqlite returns null (not undefined) on no-match — must catch both.
-  if (row == null) return defaultVal;
-  return maybeDecrypt(key, row.value);
+  const value = row == null ? null : maybeDecrypt(key, row.value);
+  settingCache.set(key, { client, at: now, value });
+  return value ?? defaultVal;
+}
+
+/** Forget one cached setting: for code that writes the table directly. */
+export function invalidateSetting(key: string): void {
+  settingCache.delete(key);
+}
+
+/** Forget every cached setting (tests). */
+export function _resetSettingsCache(): void {
+  settingCache.clear();
 }
 
 export function setSetting(key: string, value: string): void {
+  settingCache.delete(key);
   const stored = maybeEncrypt(key, value);
   rawClient()
     .prepare(

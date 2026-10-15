@@ -199,6 +199,33 @@ export function parseFields(raw: string): FieldDef[] {
   }
 }
 
+/**
+ * `parseFields` for read paths: the same `fields` JSON gives the same array
+ * back, parsed once. Every list and get parsed it three times over. The
+ * result is frozen (array, fields and their options), so a caller that
+ * modifies it throws instead of corrupting the shared copy; writers keep
+ * using `parseFields`.
+ */
+const FIELDS_CACHE_MAX = 256;
+const fieldsCache = new Map<string, FieldDef[]>();
+
+export function cachedFields(raw: string): FieldDef[] {
+  const hit = fieldsCache.get(raw);
+  if (hit) return hit;
+  const fields = parseFields(raw);
+  for (const f of fields) {
+    if (f.options && typeof f.options === "object") Object.freeze(f.options);
+    Object.freeze(f);
+  }
+  Object.freeze(fields);
+  if (fieldsCache.size >= FIELDS_CACHE_MAX) {
+    const oldest = fieldsCache.keys().next().value;
+    if (oldest !== undefined) fieldsCache.delete(oldest);
+  }
+  fieldsCache.set(raw, fields);
+  return fields;
+}
+
 // ── Table naming ────────────────────────────────────────────────────────────
 /** User collections live in tables named `vb_<name>` to avoid colliding with internal `vaultbase_*` tables. */
 /**
@@ -221,7 +248,16 @@ export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
  * auth secrets above, plus any user-declared `password` field on any
  * collection type.
  */
+const PRIVATE_CACHE_MAX = 256;
+const privateCache = new Map<string, ReadonlySet<string>>();
+
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
+  // Views depend on sensitiveSchema(), which has its own short cache.
+  const cacheKey = col.type === "view" ? null : `${col.type}\u0000${col.fields}`;
+  if (cacheKey !== null) {
+    const hit = privateCache.get(cacheKey);
+    if (hit) return hit;
+  }
   const out = new Set<string>();
   // Views too: a view over an auth table (`SELECT * FROM vb_users`) carries
   // the same columns under the same names, and `SELECT *` over a collection
@@ -229,11 +265,18 @@ export function privateFieldNames(col: Pick<Collection, "type" | "fields">): Rea
   if (col.type === "auth" || col.type === "view") for (const c of AUTH_PRIVATE_COLUMNS) out.add(c);
   if (col.type === "view") for (const f of sensitiveSchema().passwordFields) out.add(f);
   try {
-    for (const f of parseFields(col.fields)) {
+    for (const f of cachedFields(col.fields)) {
       if (f.type === "password") out.add(f.name);
     }
   } catch {
     // Unparseable schema — the auth secrets above still apply.
+  }
+  if (cacheKey !== null) {
+    if (privateCache.size >= PRIVATE_CACHE_MAX) {
+      const oldest = privateCache.keys().next().value;
+      if (oldest !== undefined) privateCache.delete(oldest);
+    }
+    privateCache.set(cacheKey, out);
   }
   return out;
 }
