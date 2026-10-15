@@ -1,6 +1,6 @@
 import { broadcast } from "./thread-bus.ts";
 import { eq, or } from "drizzle-orm";
-import { flushGroupCommit } from "./group-commit.ts";
+import { gateMode, withExclusiveWrite } from "./write-gate.ts";
 import { getDb, onCloseDb } from "../db/client.ts";
 import { db, getDriver, type DbDriver } from "../db/index.ts";
 import { scanSql } from "./sql-scan.ts";
@@ -372,7 +372,7 @@ function colDefSql(field: FieldDef): string {
 }
 
 /** Create the per-collection user table. */
-export function createUserTable(collectionName: string, fields: FieldDef[]): void {
+export async function createUserTable(collectionName: string, fields: FieldDef[]): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   for (const f of fields) if (!f.system) assertSqlIdent(f.name, "field");
   assertFieldOptions(fields, []);
@@ -386,8 +386,8 @@ export function createUserTable(collectionName: string, fields: FieldDef[]): voi
     `"created_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
     `"updated_at" INTEGER NOT NULL DEFAULT (unixepoch())`,
   ];
-  db.sync.exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
-  ensureTimestampIndexes(collectionName);
+  await db.exec(`CREATE TABLE IF NOT EXISTS ${tname} (\n  ${cols.join(",\n  ")}\n)`);
+  await ensureTimestampIndexes(collectionName);
   syncFts(collectionName, fields);
 }
 
@@ -421,21 +421,21 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
  * is -created_at; without them every page is a full scan + temp B-tree.
  * Idempotent; also run at boot for tables created before this existed.
  */
-export function ensureTimestampIndexes(collectionName: string): void {
+export async function ensureTimestampIndexes(collectionName: string): Promise<void> {
   const table = userTableName(collectionName);
   for (const col of ["created_at", "updated_at"]) {
-    db.sync.exec(
+    await db.exec(
       `CREATE INDEX IF NOT EXISTS ${quoteIdent(`idx_${table}_${col}`)} ON ${quoteIdent(table)}(${quoteIdent(col)})`,
     );
   }
 }
 
 /** Drop the per-collection user table. */
-export function dropUserTable(collectionName: string): void {
+export async function dropUserTable(collectionName: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
   dropFts(collectionName);
-  db.sync.exec(`DROP TABLE IF EXISTS ${tname}`);
+  await db.exec(`DROP TABLE IF EXISTS ${tname}`);
 }
 
 /**
@@ -464,18 +464,18 @@ export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<{ name: string; sql: string }> =
  * Called from createCollection (for fresh auth collections) and from the
  * boot migration (for upgraded installs). Symmetric on both paths.
  */
-export function ensureAuthColumns(collectionName: string): void {
+export async function ensureAuthColumns(collectionName: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
   for (const c of AUTH_SYSTEM_COLUMNS) {
     try {
-      db.sync.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
+      await db.exec(`ALTER TABLE ${tname} ADD COLUMN ${quoteIdent(c.name)} ${c.sql}`);
     } catch { /* column exists — idempotent */ }
   }
   // Unique email index — anonymous users get a synthetic uniqe email so the
   // unconditional UNIQUE works without a partial-index workaround.
   try {
-    db.sync.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
+    await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS "idx_${userTableName(collectionName)}_email" ON ${tname}(email)`);
   } catch { /* may already exist or fail on duplicates pre-migration */ }
 }
 
@@ -512,7 +512,6 @@ export function validateViewQuery(query: string): void {
   // Auth secrets and password-type fields can't be selected by name (or
   // renamed with AS). `SELECT *` keeps their names, and those are stripped
   // from view rows and filters.
-  invalidateSensitiveSchema(); // judge against the schema as it is right now
   const sensitive = sensitiveSchema();
   if (names.some((w) => AUTH_PRIVATE_COLUMNS.has(w.toLowerCase()) || sensitive.passwordFields.has(w.toLowerCase()))) {
     throw new Error("View query may not read password hashes, TOTP secrets, password_reset_at or password fields");
@@ -615,10 +614,10 @@ export function baseColumnName(name: string): string {
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */
-export function inferViewColumns(query: string): string[] {
+export async function inferViewColumns(query: string): Promise<string[]> {
   const body = query.trim().replace(/;\s*$/, "");
   const wrapped = `SELECT * FROM (${body}) LIMIT 0`;
-  return db.sync.describe(wrapped);
+  return await db.describe(wrapped);
 }
 
 /**
@@ -627,13 +626,13 @@ export function inferViewColumns(query: string): string[] {
  * (their own clamps stack with ours). Rows are returned as plain objects keyed
  * by column name — useful for the admin UI's "preview rows" button.
  */
-export function previewViewRows(query: string, limit = 5): { columns: string[]; rows: Array<Record<string, unknown>> } {
+export async function previewViewRows(query: string, limit = 5): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }> {
   validateViewQuery(query);
   const body = query.trim().replace(/;\s*$/, "");
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
   const wrapped = `SELECT * FROM (${body}) LIMIT ${safeLimit}`;
-  const columns = db.sync.describe(wrapped);
-  const rows = db.sync.all<Record<string, unknown>>(wrapped);
+  const columns = await db.describe(wrapped);
+  const rows = await db.all<Record<string, unknown>>(wrapped);
   return { columns, rows };
 }
 
@@ -705,16 +704,17 @@ function classifyValue(value: unknown, columnName: string): FieldType {
  * column's first observed value. Columns with no sample (or all-null) fall
  * back to "text".
  */
-export function inferViewFields(query: string): FieldDef[] {
+export async function inferViewFields(query: string): Promise<FieldDef[]> {
+  await loadSensitiveSchema();
   validateViewQuery(query);
-  const columns = inferViewColumns(query);
+  const columns = await inferViewColumns(query);
   const userColumns = columns.filter((c) => !VIEW_META_COLUMNS.has(c));
   if (userColumns.length === 0) return [];
 
   // One sample row is enough — algorithm spec uses the first non-null per column.
   let sample: Record<string, unknown> | undefined;
   try {
-    const { rows } = previewViewRows(query, 1);
+    const { rows } = await previewViewRows(query, 1);
     sample = rows[0];
   } catch {
     // If the query fails at execution time, fall back to text-typed fields.
@@ -729,31 +729,32 @@ export function inferViewFields(query: string): FieldDef[] {
 }
 
 /** Create the SQLite VIEW backing a view collection. */
-export function createUserView(collectionName: string, query: string): void {
+export async function createUserView(collectionName: string, query: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
   const body = query.trim().replace(/;\s*$/, "");
-  db.sync.exec(`CREATE VIEW IF NOT EXISTS ${tname} AS ${body}`);
+  await db.exec(`CREATE VIEW IF NOT EXISTS ${tname} AS ${body}`);
 }
 
 /** Drop the SQLite VIEW backing a view collection. */
-export function dropUserView(collectionName: string): void {
+export async function dropUserView(collectionName: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
-  db.sync.exec(`DROP VIEW IF EXISTS ${tname}`);
+  await db.exec(`DROP VIEW IF EXISTS ${tname}`);
 }
 
 /** Diff old vs new fields and emit ALTER TABLE statements. Throws on type-change attempts. */
-export function alterUserTable(
+export async function alterUserTable(
   collectionName: string,
   oldFields: FieldDef[],
   newFields: FieldDef[]
-): void {
+): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
   assertFieldOptions(newFields, oldFields);
   const tname = quoteIdent(userTableName(collectionName));
+  await schemaChange(async () => {
 
   const oldByName = new Map(oldFields.filter((f) => !f.system).map((f) => [f.name, f]));
   const newByName = new Map(newFields.filter((f) => !f.system).map((f) => [f.name, f]));
@@ -763,11 +764,11 @@ export function alterUserTable(
   // (SQLite can't ADD COLUMN ... UNIQUE). Columns created as UNIQUE with the
   // table use SQLite's inline constraint instead, which can't be dropped.
   const uniqueIndex = (field: string) => quoteIdent(`uq_${table}_${field}`);
-  const hasUniqueIndex = (field: string) =>
-    !!db.sync.get(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`, [`uq_${table}_${field}`]);
-  const addUniqueIndex = (field: string) => {
+  const hasUniqueIndex = async (field: string) =>
+    !!(await db.get(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`, [`uq_${table}_${field}`]));
+  const addUniqueIndex = async (field: string) => {
     try {
-      db.sync.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
+      await db.exec(`CREATE UNIQUE INDEX ${uniqueIndex(field)} ON ${tname}(${quoteIdent(field)})`);
     } catch (e) {
       if (e instanceof Error && /UNIQUE constraint failed/i.test(e.message)) {
         throw new CollectionValidationError({
@@ -798,10 +799,10 @@ export function alterUserTable(
   if (indexed.some((c) => !newByName.has(c))) dropFts(collectionName);
 
   for (const [from, to] of renamed) {
-    const hadUnique = hasUniqueIndex(from);
-    if (hadUnique) db.sync.exec(`DROP INDEX ${uniqueIndex(from)}`);
-    db.sync.exec(`ALTER TABLE ${tname} RENAME COLUMN ${quoteIdent(from)} TO ${quoteIdent(to)}`);
-    if (hadUnique) addUniqueIndex(to);
+    const hadUnique = await hasUniqueIndex(from);
+    if (hadUnique) await db.exec(`DROP INDEX ${uniqueIndex(from)}`);
+    await db.exec(`ALTER TABLE ${tname} RENAME COLUMN ${quoteIdent(from)} TO ${quoteIdent(to)}`);
+    if (hadUnique) await addUniqueIndex(to);
     oldByName.set(to, { ...oldByName.get(from)!, name: to });
     oldByName.delete(from);
   }
@@ -810,8 +811,8 @@ export function alterUserTable(
   for (const oldName of oldByName.keys()) {
     if (!newByName.has(oldName)) {
       // SQLite refuses to drop an indexed column.
-      if (hasUniqueIndex(oldName)) db.sync.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
-      db.sync.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
+      if (await hasUniqueIndex(oldName)) await db.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
+      await db.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
     }
   }
 
@@ -823,8 +824,8 @@ export function alterUserTable(
       // table, and rejects UNIQUE outright. Strip both: required is enforced
       // at app level, unique by an index.
       const safeDef = def.replace(/ NOT NULL/, "").replace(/ UNIQUE/, "");
-      db.sync.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
-      if (newField.options?.unique) addUniqueIndex(newName);
+      await db.exec(`ALTER TABLE ${tname} ADD COLUMN ${safeDef}`);
+      if (newField.options?.unique) await addUniqueIndex(newName);
     }
   }
 
@@ -834,10 +835,10 @@ export function alterUserTable(
     if (!oldField || oldField.type !== newField.type) continue;
     const was = !!oldField.options?.unique;
     const now = !!newField.options?.unique;
-    if (now && !was && !hasUniqueIndex(name)) addUniqueIndex(name);
+    if (now && !was && !(await hasUniqueIndex(name))) await addUniqueIndex(name);
     if (!now && was) {
-      if (hasUniqueIndex(name)) {
-        db.sync.exec(`DROP INDEX ${uniqueIndex(name)}`);
+      if (await hasUniqueIndex(name)) {
+        await db.exec(`DROP INDEX ${uniqueIndex(name)}`);
       } else {
         throw new CollectionValidationError({
           [name]: `'${name}' was created as unique; drop and re-add the field to remove the constraint`,
@@ -858,6 +859,27 @@ export function alterUserTable(
   }
 
   syncFts(collectionName, newFields);
+  });
+}
+
+/**
+ * A schema change that awaits between its statements runs in one
+ * transaction with the write gate held, so no record write can join it
+ * and be lost with its rollback. Inside an already gated call (a batch, a
+ * hook) the transaction alone is enough: the caller holds the gate.
+ */
+async function schemaChange<T>(fn: () => Promise<T>): Promise<T> {
+  if (gateMode() !== null) return db.transaction(fn, { immediate: false });
+  return withExclusiveWrite(async (tx) => {
+    try {
+      const out = await db.transaction(fn, { immediate: false });
+      tx.commit();
+      return out;
+    } catch (e) {
+      tx.rollback();
+      throw e;
+    }
+  });
 }
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
@@ -925,10 +947,11 @@ export async function createCollection(
   let fields: FieldDef[];
   if (type === "view") {
     if (!data.view_query) throw new Error("View collections require a view_query");
+    await loadSensitiveSchema();
     validateViewQuery(data.view_query);
     const incoming = parseFields(data.fields ?? "[]");
     // If caller didn't pre-populate fields, infer column names + types from the query.
-    fields = incoming.length > 0 ? incoming : inferViewFields(data.view_query);
+    fields = incoming.length > 0 ? incoming : await inferViewFields(data.view_query);
   } else {
     const incoming = parseFields(data.fields ?? "[]");
     assertValidFieldsForType(type, incoming);
@@ -958,15 +981,15 @@ export async function createCollection(
   await db.insert(collections).values(row);
 
   if (type === "view") {
-    createUserView(row.name, data.view_query!);
+    await createUserView(row.name, data.view_query!);
   } else {
     // Per-collection real table excludes implicit fields — those live on vaultbase_users.
-    createUserTable(row.name, fields.filter((f) => !f.implicit));
+    await createUserTable(row.name, fields.filter((f) => !f.implicit));
     if (type === "auth") {
       // v0.11+: auth columns (email/password_hash/...) live on `vb_<name>`
       // alongside the per-collection custom fields. Existing v0.10 installs
       // get the same shape via the boot migration in db/migrate.ts.
-      ensureAuthColumns(row.name);
+      await ensureAuthColumns(row.name);
     }
   }
 
@@ -1012,32 +1035,30 @@ async function renameCollectionStorage(
 
   const oldTable = userTableName(oldName);
   const newTable = userTableName(newName);
-  // Commit open record writes first; this schema change runs on its own.
-  flushGroupCommit();
-  db.sync.transaction(() => {
+  await schemaChange(async () => {
     if (type === "view") {
       if (!viewQuery) throw new Error("View collections require a view_query");
-      dropUserView(oldName);
-      createUserView(newName, viewQuery);
+      await dropUserView(oldName);
+      await createUserView(newName, viewQuery);
     } else {
       // The search index is named after the collection; rebuilt below.
       dropFts(oldName);
-      db.sync.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
+      await db.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
       // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
       // SQLite moves them with the table but keeps their names; recreate each
       // under the new name from its stored definition.
-      const indexes = db.sync.all<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, [newTable]);
+      const indexes = await db.all<{ name: string; sql: string }>(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`, [newTable]);
       for (const { name, sql } of indexes) {
         if (!name.includes(oldTable)) continue;
         const renamed = name.replace(oldTable, newTable);
-        db.sync.exec(`DROP INDEX ${quoteIdent(name)}`);
-        db.sync.exec(sql.replace(name, renamed));
+        await db.exec(`DROP INDEX ${quoteIdent(name)}`);
+        await db.exec(sql.replace(name, renamed));
       }
     }
-    for (const u of relationUpdates) db.sync.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);
-    db.sync.run(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`, [newName, oldName]);
-    db.sync.run(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`, [newName, oldName]);
-  }, { immediate: false });
+    for (const u of relationUpdates) await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);
+    await db.run(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`, [newName, oldName]);
+    await db.run(`UPDATE vaultbase_record_history SET collection = ? WHERE collection = ?`, [newName, oldName]);
+  });
   if (type !== "view") syncFts(newName, parseFields(before.fields).filter((f) => !f.implicit));
 
   for (const u of relationUpdates) { cache.delete(u.id); cache.delete(u.name); }
@@ -1056,7 +1077,7 @@ async function renameCollectionStorage(
 async function renameInHookFiles(newName: string): Promise<void> {
   const { codeFilesDir, updateCodeFile } = await import("./code-files.ts");
   if (!codeFilesDir()) return;
-  const rows = db.sync.all<Record<string, unknown> & { id: string; file_path: string | null }>(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`, [newName]);
+  const rows = await db.all<Record<string, unknown> & { id: string; file_path: string | null }>(`SELECT * FROM vaultbase_hooks WHERE origin = 'file' AND collection_name = ?`, [newName]);
   for (const row of rows) {
     try {
       await updateCodeFile("hook", row, { collection_name: newName }, undefined);
@@ -1096,12 +1117,13 @@ export async function updateCollection(
     if (!newQuery) throw new Error("View collections require a view_query");
     const queryChanged = data.view_query !== undefined && data.view_query !== before.view_query;
     if (queryChanged) {
+      await loadSensitiveSchema();
       validateViewQuery(newQuery);
-      dropUserView(currentName);
-      createUserView(currentName, newQuery);
+      await dropUserView(currentName);
+      await createUserView(currentName, newQuery);
       // Re-infer fields if the caller didn't supply explicit field defs.
       if (data.fields === undefined) {
-        const inferred = inferViewFields(newQuery);
+        const inferred = await inferViewFields(newQuery);
         data = { ...data, fields: JSON.stringify(inferred) };
       }
     }
@@ -1115,7 +1137,7 @@ export async function updateCollection(
     const carryOver = oldFields.filter((f) => f.implicit && !present.has(f.name));
     const newFields = ensureImplicitFields(effectiveType, [...carryOver, ...incoming]);
     // Real table only sees non-implicit fields.
-    alterUserTable(
+    await alterUserTable(
       currentName,
       oldFields.filter((f) => !f.implicit),
       newFields.filter((f) => !f.implicit)
@@ -1143,8 +1165,8 @@ export async function deleteCollection(id: string): Promise<void> {
   const db = getDb();
   const col = await getCollection(id);
   if (col) {
-    if (col.type === "view") dropUserView(col.name);
-    else dropUserTable(col.name);
+    if (col.type === "view") await dropUserView(col.name);
+    else await dropUserTable(col.name);
     cache.delete(col.id);
     cache.delete(col.name);
     broadcast({ type: "bus", kind: "collections" });

@@ -29,7 +29,7 @@ async function seedPosts(): Promise<void> {
 describe("previewViewRows", () => {
   it("returns up to N rows from a SELECT", async () => {
     await seedPosts();
-    const r = previewViewRows(`SELECT title, score FROM vb_posts ORDER BY score`, 5);
+    const r = await previewViewRows(`SELECT title, score FROM vb_posts ORDER BY score`, 5);
     expect(r.rows).toHaveLength(5);
     expect(r.columns).toEqual(["title", "score"]);
     expect(r.rows[0]).toEqual({ title: "post-1", score: 10 });
@@ -37,29 +37,29 @@ describe("previewViewRows", () => {
 
   it("default limit = 5", async () => {
     await seedPosts();
-    const r = previewViewRows(`SELECT title FROM vb_posts`);
+    const r = await previewViewRows(`SELECT title FROM vb_posts`);
     expect(r.rows).toHaveLength(5);
   });
 
   it("clamps limit to [1, 100]", async () => {
     await seedPosts();
-    const r0 = previewViewRows(`SELECT title FROM vb_posts`, 0);
+    const r0 = await previewViewRows(`SELECT title FROM vb_posts`, 0);
     expect(r0.rows.length).toBeGreaterThanOrEqual(1);
-    const rBig = previewViewRows(`SELECT title FROM vb_posts`, 1_000_000);
+    const rBig = await previewViewRows(`SELECT title FROM vb_posts`, 1_000_000);
     expect(rBig.rows.length).toBeLessThanOrEqual(100);
   });
 
   it("returns empty rows when the SELECT matches nothing", async () => {
     await seedPosts();
-    const r = previewViewRows(`SELECT title FROM vb_posts WHERE score > 9999`);
+    const r = await previewViewRows(`SELECT title FROM vb_posts WHERE score > 9999`);
     expect(r.rows).toHaveLength(0);
     expect(r.columns).toEqual(["title"]);
   });
 
   it("rejects DML / DDL", async () => {
     await seedPosts();
-    expect(() => previewViewRows(`DELETE FROM vb_posts`)).toThrow();
-    expect(() => previewViewRows(`UPDATE vb_posts SET title = 'x'`)).toThrow();
-    expect(() => previewViewRows(`SELECT 1; DROP TABLE vb_posts`)).toThrow();
+    await expect(previewViewRows(`DELETE FROM vb_posts`)).rejects.toThrow();
+    await expect(previewViewRows(`UPDATE vb_posts SET title = 'x'`)).rejects.toThrow();
+    await expect(previewViewRows(`SELECT 1; DROP TABLE vb_posts`)).rejects.toThrow();
   });
 });

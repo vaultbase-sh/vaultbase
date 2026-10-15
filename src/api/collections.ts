@@ -11,6 +11,7 @@ import {
   updateCollection,
   userTableName,
   validateViewQuery,
+  loadSensitiveSchema,
 } from "../core/collections.ts";
 import { db } from "../db/index.ts";
 import { adminGuard } from "./_admin.ts";
@@ -154,8 +155,9 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       "/admin/collections/preview-view",
       async ({ body, set }) => {
         try {
+          await loadSensitiveSchema();
           validateViewQuery(body.view_query);
-          const columns = inferViewColumns(body.view_query);
+          const columns = await inferViewColumns(body.view_query);
           const fields = inferViewFields(body.view_query);
           return { data: { columns, fields } };
         } catch (e) {
@@ -172,7 +174,8 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       async ({ body, set }) => {
         try {
           const limit = typeof body.limit === "number" ? body.limit : 5;
-          const result = previewViewRows(body.view_query, limit);
+          await loadSensitiveSchema();
+          const result = await previewViewRows(body.view_query, limit);
           return { data: result };
         } catch (e) {
           set.status = 422;

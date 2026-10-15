@@ -160,7 +160,7 @@ describe("view collections are read-only via the records API", () => {
 describe("inferViewColumns + fieldsFromViewColumns", () => {
   it("returns column names for a SELECT", async () => {
     await createCollection({ name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
-    const cols = inferViewColumns("SELECT id, title FROM vb_posts");
+    const cols = await inferViewColumns("SELECT id, title FROM vb_posts");
     expect(cols).toContain("id");
     expect(cols).toContain("title");
   });

@@ -141,7 +141,7 @@ export async function insertUser(col: Collection, input: InsertInput): Promise<v
     }
   }
 
-  db.sync.run(`INSERT INTO ${tname} (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`, values, { table: userTableName(col.name) });
+  await db.run(`INSERT INTO ${tname} (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`, values, { table: userTableName(col.name) });
 }
 
 /**
@@ -165,14 +165,14 @@ export async function updateUserById(
     }
   }
   if (sets.length > 0) {
-    db.sync.run(`UPDATE ${tname} SET ${sets.join(", ")} WHERE id = ?`, [...vals, id], { table: userTableName(col.name) });
+    await db.run(`UPDATE ${tname} SET ${sets.join(", ")} WHERE id = ?`, [...vals, id], { table: userTableName(col.name) });
   }
 }
 
 /** Delete a user from `vb_<name>` by id. */
-export function deleteUserById(col: Collection, id: string): void {
+export async function deleteUserById(col: Collection, id: string): Promise<void> {
   const tname = quoteIdent(userTableName(col.name));
   try {
-    db.sync.run(`DELETE FROM ${tname} WHERE id = ?`, [id], { table: userTableName(col.name) });
+    await db.run(`DELETE FROM ${tname} WHERE id = ?`, [id], { table: userTableName(col.name) });
   } catch { /* table missing or row absent */ }
 }

@@ -59,7 +59,7 @@ function seedSource(): void {
 describe("inferViewFields()", () => {
   it("classifies number, url, email, json, date, and text from a sample row", async () => {
     seedSource();
-    const fields = inferViewFields(
+    const fields = await inferViewFields(
       `SELECT id, title, score, link, contact, body, published_at, iso_when FROM src`
     );
     const byName = new Map(fields.map((f) => [f.name, f.type]));
@@ -74,22 +74,22 @@ describe("inferViewFields()", () => {
     expect(byName.get("iso_when")).toBe("date"); // ISO-8601 string
   });
 
-  it("falls back to text when the sample row is all-null for a column", () => {
+  it("falls back to text when the sample row is all-null for a column", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT empty_col FROM src`);
+    const fields = await inferViewFields(`SELECT empty_col FROM src`);
     expect(fields).toHaveLength(1);
     expect(fields[0]).toMatchObject({ name: "empty_col", type: "text" });
   });
 
-  it("falls back to text when the query returns no rows", () => {
+  it("falls back to text when the query returns no rows", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT title, score FROM src WHERE 1 = 0`);
+    const fields = await inferViewFields(`SELECT title, score FROM src WHERE 1 = 0`);
     expect(fields.map((f) => f.type)).toEqual(["text", "text"]);
   });
 
-  it("treats integer 0/1 as bool when column name hints (is_*), as number otherwise", () => {
+  it("treats integer 0/1 as bool when column name hints (is_*), as number otherwise", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT is_admin, flag_count, active FROM src`);
+    const fields = await inferViewFields(`SELECT is_admin, flag_count, active FROM src`);
     const byName = new Map(fields.map((f) => [f.name, f.type]));
     expect(byName.get("is_admin")).toBe("bool");
     // 'active' has no is_/has_/_enabled hint → number, not bool
@@ -97,60 +97,60 @@ describe("inferViewFields()", () => {
     expect(byName.get("flag_count")).toBe("number");
   });
 
-  it("recognizes literal boolean values as bool", () => {
+  it("recognizes literal boolean values as bool", async () => {
     // Bun's sqlite driver returns INTEGER as number, so to test a pure JS
     // boolean we exercise classifyValue indirectly by selecting a JSON object
     // through json_extract — but easier: just verify the algorithm via a SELECT
     // that returns boolean-ish numbers under a `*_enabled` name.
     seedSource();
-    const fields = inferViewFields(`SELECT is_admin AS feature_enabled FROM src`);
+    const fields = await inferViewFields(`SELECT is_admin AS feature_enabled FROM src`);
     expect(fields[0]).toMatchObject({ name: "feature_enabled", type: "bool" });
   });
 
-  it("recognizes ISO-8601 date strings as date", () => {
+  it("recognizes ISO-8601 date strings as date", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT iso_when FROM src`);
+    const fields = await inferViewFields(`SELECT iso_when FROM src`);
     expect(fields[0]).toMatchObject({ name: "iso_when", type: "date" });
   });
 
-  it("recognizes 10-digit unix timestamps in *_at columns as date", () => {
+  it("recognizes 10-digit unix timestamps in *_at columns as date", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT published_at FROM src`);
+    const fields = await inferViewFields(`SELECT published_at FROM src`);
     expect(fields[0]).toMatchObject({ name: "published_at", type: "date" });
     // Same number, different name → number
-    const numbery = inferViewFields(`SELECT published_at AS score FROM src`);
+    const numbery = await inferViewFields(`SELECT published_at AS score FROM src`);
     expect(numbery[0]).toMatchObject({ name: "score", type: "number" });
   });
 
-  it("recognizes JSON-shaped strings as json (object and array)", () => {
+  it("recognizes JSON-shaped strings as json (object and array)", async () => {
     const client = rawClient();
     client.exec(`CREATE TABLE jsrc (a TEXT, b TEXT)`);
     client.prepare(`INSERT INTO jsrc VALUES (?, ?)`).run(`{"k":1}`, `[1,2,3]`);
-    const fields = inferViewFields(`SELECT a, b FROM jsrc`);
+    const fields = await inferViewFields(`SELECT a, b FROM jsrc`);
     expect(fields.map((f) => f.type)).toEqual(["json", "json"]);
   });
 
-  it("recognizes URL and email strings", () => {
+  it("recognizes URL and email strings", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT link, contact FROM src`);
+    const fields = await inferViewFields(`SELECT link, contact FROM src`);
     const byName = new Map(fields.map((f) => [f.name, f.type]));
     expect(byName.get("link")).toBe("url");
     expect(byName.get("contact")).toBe("email");
   });
 
-  it("classifies plain strings as text", () => {
+  it("classifies plain strings as text", async () => {
     seedSource();
-    const fields = inferViewFields(`SELECT title FROM src`);
+    const fields = await inferViewFields(`SELECT title FROM src`);
     expect(fields[0]).toMatchObject({ name: "title", type: "text" });
   });
 
-  it("filters meta columns (id, created, created_at, updated, updated_at)", () => {
+  it("filters meta columns (id, created, created_at, updated, updated_at)", async () => {
     const client = rawClient();
     client.exec(`
       CREATE TABLE m (id TEXT, created INTEGER, created_at INTEGER, updated INTEGER, updated_at INTEGER, payload TEXT)
     `);
     client.prepare(`INSERT INTO m VALUES (?, ?, ?, ?, ?, ?)`).run("1", 1, 1, 1, 1, "x");
-    const fields = inferViewFields(`SELECT id, created, created_at, updated, updated_at, payload FROM m`);
+    const fields = await inferViewFields(`SELECT id, created, created_at, updated, updated_at, payload FROM m`);
     expect(fields.map((f) => f.name)).toEqual(["payload"]);
   });
 });

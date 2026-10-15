@@ -453,7 +453,7 @@ export async function runMigrations() {
     .prepare(`SELECT name FROM vaultbase_collections WHERE type != 'view'`)
     .all() as Array<{ name: string }>;
   for (const { name } of tables) {
-    try { ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
+    try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
 
   // ── v0.15: full-text index for `searchable` fields ──
