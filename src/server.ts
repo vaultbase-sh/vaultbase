@@ -2,7 +2,7 @@ import Elysia, { t } from "elysia";
 import { runsSingletonDuties } from "./core/cluster-role.ts";
 import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
-import * as jose from "jose";
+import { verifyHs256 } from "./core/jwt-hs256.ts";
 import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
@@ -279,15 +279,12 @@ export function createServer(config: Config) {
       // Verify the signature before recording: an unsigned look at the jti
       // let a forged token overwrite a real token's last-used IP / UA.
       // Off the response path; failures are ignored.
-      const jwt = m[1] ?? "";
+      // The auth step verified this same token, so this is a cache hit.
+      const payload = verifyHs256(m[1] ?? "", config.jwtSecret, { issuer: "vaultbase", audience: "api" });
+      if (!payload || typeof payload["jti"] !== "string") return;
       const peerIp = (server as { requestIP?: (r: Request) => { address: string } | null } | null)
         ?.requestIP?.(request)?.address ?? null;
-      void jose.jwtVerify(jwt, new TextEncoder().encode(config.jwtSecret), { issuer: "vaultbase", audience: "api" })
-        .then(({ payload }) => {
-          if (typeof payload.jti !== "string") return;
-          recordApiTokenUsage(payload.jti, trustedClientIp(request, peerIp), request.headers.get("user-agent"));
-        })
-        .catch(() => { /* invalid token — nothing to record */ });
+      recordApiTokenUsage(payload["jti"], trustedClientIp(request, peerIp), request.headers.get("user-agent"));
     })
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the

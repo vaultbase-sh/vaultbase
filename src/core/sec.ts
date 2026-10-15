@@ -1,7 +1,8 @@
 import * as jose from "jose";
 import { eq } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
-import { admin, apiTokens, tokenRevocations } from "../db/schema.ts";
+import { getDb, getRawClient } from "../db/client.ts";
+import { admin, tokenRevocations } from "../db/schema.ts";
+import { verifyHs256 } from "./jwt-hs256.ts";
 import type { AuthContext } from "./rules.ts";
 import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
 import { getTrustedProxiesRaw } from "./security.ts";
@@ -64,15 +65,31 @@ function getSecret(jwtSecret: string): Uint8Array {
   return new TextEncoder().encode(jwtSecret);
 }
 
-/** True if `jti` was revoked. Cheap synchronous lookup. */
-async function isRevoked(jti: string): Promise<boolean> {
-  const db = getDb();
-  const rows = await db
-    .select()
-    .from(tokenRevocations)
-    .where(eq(tokenRevocations.jti, jti))
-    .limit(1);
-  return rows.length > 0;
+// The per-request lookups below use bun:sqlite's `query`, which keeps the
+// compiled statement; a drizzle select re-prepared its SQL on every call.
+
+/** True if `jti` was revoked. */
+function isRevoked(jti: string): boolean {
+  return getRawClient().query(`SELECT 1 FROM vaultbase_token_revocations WHERE jti = ? LIMIT 1`).get(jti) != null;
+}
+
+interface ApiTokenRow {
+  name: string;
+  scopes: string;
+  created_by: string;
+  created_by_email: string;
+  revoked_at: number | null;
+}
+
+function apiTokenById(jti: string): ApiTokenRow | null {
+  return getRawClient()
+    .query(`SELECT name, scopes, created_by, created_by_email, revoked_at FROM vaultbase_api_tokens WHERE id = ? LIMIT 1`)
+    .get(jti) as ApiTokenRow | null;
+}
+
+function adminResetAt(id: string): number | null {
+  const row = getRawClient().query(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`).get(id) as { password_reset_at: number } | null;
+  return row ? row.password_reset_at : null;
 }
 
 interface VerifyOpts {
@@ -88,26 +105,24 @@ export async function verifyAuthToken(
 ): Promise<VerifiedAuth | null> {
   const recheck = opts.recheckPrincipal ?? true;
   try {
-    const verifyOpts: jose.JWTVerifyOptions = { issuer: ISSUER };
-    if (opts.audience) verifyOpts.audience = opts.audience;
-    const { payload } = await jose.jwtVerify(token, getSecret(jwtSecret), verifyOpts);
+    const payload = verifyHs256(token, jwtSecret, { issuer: ISSUER, ...(opts.audience ? { audience: opts.audience } : {}) });
+    if (!payload) return null;
 
-    const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+    const aud = Array.isArray(payload["aud"]) ? payload["aud"][0] : payload["aud"];
     if (aud !== "user" && aud !== "admin" && aud !== "file" && aud !== "api") return null;
     if (opts.audience && aud !== opts.audience) return null;
     // File tokens are download grants, not sessions: only a caller that asks
     // for them explicitly gets one back.
     if (!opts.audience && aud === "file") return null;
 
-    if (typeof payload.jti === "string" && (await isRevoked(payload.jti))) return null;
+    if (typeof payload["jti"] === "string" && isRevoked(payload["jti"])) return null;
 
     if (aud === "api") {
       // API tokens map to the admin who minted them. Scopes are pulled
       // from the DB row so a token's effective permissions can be tightened
       // post-mint without re-issuing — the JWT's claims are advisory.
-      if (typeof payload.jti !== "string") return null;
-      const rows = await getDb().select().from(apiTokens).where(eq(apiTokens.id, payload.jti)).limit(1);
-      const tok = rows[0];
+      if (typeof payload["jti"] !== "string") return null;
+      const tok = apiTokenById(payload["jti"]);
       if (!tok || tok.revoked_at != null) return null;
       let scopes: string[] = [];
       try {
@@ -121,21 +136,20 @@ export async function verifyAuthToken(
         id: tok.created_by,
         type: "admin",
         email: tok.created_by_email,
-        jti: payload.jti,
+        jti: payload["jti"],
         scopes,
         tokenName: tok.name,
         viaApiToken: true,
       };
-      if (typeof payload.exp === "number") ctx.exp = payload.exp;
-      if (typeof payload.iat === "number") ctx.iat = payload.iat;
+      if (typeof payload["exp"] === "number") ctx.exp = payload["exp"];
+      if (typeof payload["iat"] === "number") ctx.iat = payload["iat"];
       // recheckPrincipal still verifies the admin row exists / wasn't force-
       // logged-out before mint — a leaked token still goes invalid when the
       // minting admin's password is reset.
       if (recheck) {
-        const aRows = await getDb().select().from(admin).where(eq(admin.id, tok.created_by)).limit(1);
-        const a = aRows[0];
-        if (!a) return null;
-        if (typeof ctx.iat === "number" && a.password_reset_at > ctx.iat) return null;
+        const resetAt = adminResetAt(tok.created_by);
+        if (resetAt === null) return null;
+        if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
       }
       return ctx;
     }
@@ -145,9 +159,9 @@ export async function verifyAuthToken(
       return {
         id: "",
         type: "user",
-        ...(typeof payload.jti === "string" ? { jti: payload.jti } : {}),
-        ...(typeof payload.exp === "number" ? { exp: payload.exp } : {}),
-        ...(typeof payload.iat === "number" ? { iat: payload.iat } : {}),
+        ...(typeof payload["jti"] === "string" ? { jti: payload["jti"] } : {}),
+        ...(typeof payload["exp"] === "number" ? { exp: payload["exp"] } : {}),
+        ...(typeof payload["iat"] === "number" ? { iat: payload["iat"] } : {}),
       };
     }
 
@@ -155,21 +169,19 @@ export async function verifyAuthToken(
     if (!id) return null;
     const ctx: VerifiedAuth = { id, type: aud as "user" | "admin" };
     if (typeof payload["email"] === "string") ctx.email = payload["email"];
-    if (typeof payload.jti === "string") ctx.jti = payload.jti;
-    if (typeof payload.exp === "number") ctx.exp = payload.exp;
-    if (typeof payload.iat === "number") ctx.iat = payload.iat;
+    if (typeof payload["jti"] === "string") ctx.jti = payload["jti"];
+    if (typeof payload["exp"] === "number") ctx.exp = payload["exp"];
+    if (typeof payload["iat"] === "number") ctx.iat = payload["iat"];
     if (aud === "user") {
       if (typeof payload["collection"] === "string") ctx.collection = payload["collection"];
       if (payload["anonymous"] === true) ctx.anonymous = true;
     }
 
     if (recheck) {
-      const db = getDb();
       if (aud === "admin") {
-        const rows = await db.select().from(admin).where(eq(admin.id, id)).limit(1);
-        const a = rows[0];
-        if (!a) return null;
-        if (typeof ctx.iat === "number" && a.password_reset_at > ctx.iat) return null;
+        const resetAt = adminResetAt(id);
+        if (resetAt === null) return null;
+        if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
       } else {
         // v0.11: user-token recheck routes to `vb_<col>` via the JWT
         // `collection` claim. Tokens minted before v0.11 lack the claim

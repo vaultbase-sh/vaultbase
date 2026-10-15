@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import Elysia from "elysia";
 import { getDb } from "../db/client.ts";
-import * as jose from "jose";
+import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { isIPv6 } from "node:net";
 import { trustedClientIp } from "../core/sec.ts";
 import { embeddedIPv4 } from "../core/hook-egress.ts";
@@ -180,12 +180,7 @@ async function hasValidToken(request: Request, jwtSecret: string | undefined): P
   if (!jwtSecret) return false;
   const raw = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!raw) return false;
-  try {
-    await jose.jwtVerify(raw.startsWith("vbat_") ? raw.slice(5) : raw, new TextEncoder().encode(jwtSecret), { issuer: "vaultbase" });
-    return true;
-  } catch {
-    return false;
-  }
+  return verifyHs256(raw.startsWith("vbat_") ? raw.slice(5) : raw, jwtSecret, { issuer: "vaultbase" }) !== null;
 }
 
 function detectAction(method: string, rawPath: string): RuleAction | null {

@@ -2219,36 +2219,51 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         ttl = Math.min(ttl, remaining);
       }
-      // Revoke the token being replaced, so refreshing doesn't leave two live
-      // sessions. The insert is conditional: two requests racing the same
-      // token can't both get a fresh one.
+      let reissue: { jti: string; iat: number } | undefined;
       if (ctx.jti) {
+        // Remember how to re-mint the replacement for REFRESH_REPEAT_SECONDS
+        // (claims only, never the token), and do it before revoking the old
+        // token: a refresh that runs into the revocation then always finds
+        // the row. Written first, the row also decides a race: every refresh
+        // of one token mints the same replacement from it, so two tabs can't
+        // end up with two sessions. Token verification is synchronous now,
+        // so concurrent refreshes no longer wait on each other by accident.
+        const rowId = `refresh_rotation:${ctx.jti}`;
+        await getDb().insert(authTokens).values({
+          id: rowId,
+          user_id: ctx.id,
+          collection_id: "",
+          purpose: "refresh_rotation",
+          payload: JSON.stringify({ claims, audience: ctx.type, ttl, jti: crypto.randomUUID(), iat: now }),
+          expires_at: now + REFRESH_REPEAT_SECONDS,
+        }).onConflictDoNothing();
+        // Revoke the token being replaced, so refreshing doesn't leave two
+        // live sessions. The insert is conditional: the loser of a race gets
+        // the winner's replacement instead of a 401 that signs every tab out.
         const revoked = await getDb().insert(tokenRevocations)
           .values({ jti: ctx.jti, expires_at: ctx.exp ?? now + ttl, revoked_at: now })
           .onConflictDoNothing()
           .returning({ jti: tokenRevocations.jti });
-        if (revoked.length === 0) { set.status = 401; return { error: "Token expired or invalid", code: 401 }; }
+        if (revoked.length === 0) {
+          const again = await repeatRefresh(token, jwtSecret);
+          if (again) return { data: { token: again } };
+          set.status = 401; return { error: "Token expired or invalid", code: 401 };
+        }
+        const row = (await getDb().select().from(authTokens).where(eq(authTokens.id, rowId)).limit(1))[0];
+        if (row?.payload && row.expires_at >= now) {
+          const r = JSON.parse(row.payload) as { jti: string; iat: number };
+          reissue = { jti: r.jti, iat: r.iat };
+        }
       }
       const { token: newToken, jti, exp, iat } = await signAuthToken({
         payload: claims,
         audience: ctx.type,
         expiresInSeconds: ttl,
         jwtSecret,
+        ...(reissue ? { reissue } : {}),
       });
       if (ctx.type === "admin") {
         await recordAdminSession({ jti, admin_id: ctx.id, admin_email: ctx.email ?? "", issued_at: iat, expires_at: exp, request });
-      }
-      if (ctx.jti) {
-        // Remember how to re-mint this replacement for REFRESH_REPEAT_SECONDS.
-        // Only its claims are kept, never the token itself.
-        await getDb().insert(authTokens).values({
-          id: `refresh_rotation:${ctx.jti}`,
-          user_id: ctx.id,
-          collection_id: "",
-          purpose: "refresh_rotation",
-          payload: JSON.stringify({ claims, audience: ctx.type, ttl, jti, iat }),
-          expires_at: now + REFRESH_REPEAT_SECONDS,
-        }).onConflictDoNothing();
       }
       return { data: { token: newToken } };
     });
