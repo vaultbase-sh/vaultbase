@@ -9,6 +9,20 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Added
+
+- **`helpers.sql` in hooks, routes, jobs and workers.** Asynchronous SQL with `?`
+  placeholders and an array of parameters: `query`, `queryOne`, `exec` and
+  `transaction(fn)`. `helpers.db` stays as it is but is deprecated: it is synchronous and
+  tied to SQLite.
+
+### Changed
+
+- **A schema change is one transaction.** Adding, renaming or dropping fields and
+  renaming a collection run inside a single transaction while record writes wait, so a
+  failure (a unique index over existing duplicates, for instance) leaves the table as it
+  was instead of half-changed.
+
 ### Fixed
 
 - **Decimal and negative numbers in filters and rules.** `price >= 10.5` was read as a

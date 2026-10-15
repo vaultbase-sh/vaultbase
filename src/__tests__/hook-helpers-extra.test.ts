@@ -275,3 +275,26 @@ describe("db", () => {
     expect(h.db.queryOne("SELECT id FROM t WHERE id = ?", 99)).toBeNull();
   });
 });
+
+describe("sql", () => {
+  beforeAll(() => { initDb(":memory:"); });
+  afterAll(() => { closeDb(); });
+
+  it("query, queryOne, exec and a transaction that rolls back on a throw", async () => {
+    await h.sql.exec(`CREATE TABLE s (id INTEGER PRIMARY KEY, name TEXT)`);
+    expect(await h.sql.exec("INSERT INTO s (name) VALUES (?), (?)", ["a", "b"])).toEqual({ changes: 2 });
+    expect(await h.sql.query<{ name: string }>("SELECT name FROM s ORDER BY id")).toEqual([{ name: "a" }, { name: "b" }]);
+    expect(await h.sql.queryOne<{ name: string }>("SELECT name FROM s WHERE id = ?", [2])).toEqual({ name: "b" });
+    expect(await h.sql.queryOne("SELECT name FROM s WHERE id = ?", [99])).toBeNull();
+    const out = await h.sql.transaction(async () => {
+      await h.sql.exec("UPDATE s SET name = ? WHERE id = ?", ["A", 1]);
+      return "done";
+    });
+    expect(out).toBe("done");
+    await expect(h.sql.transaction(async () => {
+      await h.sql.exec("DELETE FROM s");
+      throw new Error("undo");
+    })).rejects.toThrow("undo");
+    expect(await h.sql.query<{ name: string }>("SELECT name FROM s ORDER BY id")).toEqual([{ name: "A" }, { name: "b" }]);
+  });
+});

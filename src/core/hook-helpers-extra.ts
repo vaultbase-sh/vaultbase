@@ -460,6 +460,40 @@ function makeUtil(): UtilHelpers {
  * compatibility. It runs on the driver's synchronous surface
  * (`db.sync`, see `db/driver.ts`), which only the SQLite driver honours.
  */
+/**
+ * `helpers.sql`: SQL with `?` placeholders and an array of parameters,
+ * asynchronous, the same on every database driver. Prefer it over
+ * `helpers.db` in new hooks.
+ */
+export interface SqlHelpers {
+  /** Run a SELECT and return its rows. */
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  /** The first row of a SELECT, or `null`. */
+  queryOne<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | null>;
+  /** Run INSERT / UPDATE / DELETE; returns the rows changed. */
+  exec(sql: string, params?: unknown[]): Promise<{ changes: number }>;
+  /**
+   * Run `fn` in a transaction: committed when it resolves, rolled back when
+   * it throws. Inside a record write or a batch it becomes a savepoint, so a
+   * failure undoes only `fn`.
+   */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+function makeSql(): SqlHelpers {
+  return {
+    query: (sql, params = []) => Promise.resolve(db.all(sql, params)),
+    queryOne: (sql, params = []) => Promise.resolve(db.get(sql, params)),
+    exec: async (sql, params = []) => ({ changes: (await db.run(sql, params)).changes }),
+    transaction: (fn) => db.transaction(fn),
+  };
+}
+
+/**
+ * @deprecated `helpers.db` is synchronous and SQLite-only: it runs on the
+ * driver's synchronous surface, which no other database can provide. Kept
+ * for existing hooks; use {@link SqlHelpers} (`helpers.sql`) in new code.
+ */
 export interface DbHelpers {
   /**
    * Run a SELECT and return rows. `params` are bound positionally as `?` or
@@ -847,6 +881,8 @@ export interface ExtraHookHelpers {
   template: TemplateHelpers;
   http: HttpHelpers;
   util: UtilHelpers;
+  sql: SqlHelpers;
+  /** @deprecated see {@link DbHelpers}; use `sql`. */
   db: DbHelpers;
   fs: FsHelpers;
   os: OsHelpers;
@@ -876,6 +912,7 @@ export function makeExtraHelpers(): ExtraHookHelpers {
     template: makeTemplate(),
     http: makeHttp(),
     util: makeUtil(),
+    sql: makeSql(),
     db: makeDb(),
     fs: makeFs(),
     os: makeOs(),
