@@ -87,7 +87,7 @@ describe.if(onPg)("Postgres driver", () => {
     await db.exec(`CREATE TABLE t2 ("id" text)`);
     expect(db.schemaToken()).toBe(t0 + 1);
     expect(() => db.sync.all(`SELECT 1`)).toThrow(/not available on Postgres/);
-    expect(getDriver().capabilities.fts).toBe("none");
+    expect(getDriver().capabilities.fts).toBe("tsvector");
   });
 
   it("the dialect renders the fixed-table DDL for Postgres", () => {

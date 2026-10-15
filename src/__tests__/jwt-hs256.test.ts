@@ -43,7 +43,9 @@ describe("verifyHs256", () => {
     expect(verifyHs256(token, SECRET + "x", { issuer: "vaultbase" })).toBeNull();
     const [h, , s] = token.split(".") as [string, string, string];
     expect(verifyHs256(`${h}.${b64({ iss: "vaultbase", exp: now + 60, id: "admin" })}.${s}`, SECRET)).toBeNull();
-    const flipped = s.slice(0, -1) + (s.endsWith("A") ? "B" : "A");
+    // The first character: the last one of a 32-byte signature carries two
+    // padding bits, so changing it can decode to the very same signature.
+    const flipped = (s.startsWith("A") ? "B" : "A") + s.slice(1);
     expect(verifyHs256(`${h}.${token.split(".")[1]}.${flipped}`, SECRET)).toBeNull();
   });
 
