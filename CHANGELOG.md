@@ -7,16 +7,36 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.22.0] — 2026-10-15
 
 ### Changed
 
-- **Read worker threads (experimental) follow changes on the main thread.** A collection
-  or settings change now reaches the workers at once instead of after a restart, and a
-  write no longer empties the workers' list-totals cache for every collection: the main
-  thread tells them which tables a commit touched. The Monitoring page now shows the
-  workers' per-step latencies and their query shapes alongside the main thread's, and
-  `GET /api/v1/_/metrics` gains `read_workers` (count, forwarded, in flight, dropped).
+- **Record reads run on worker threads by default.** The server starts one read worker per
+  spare core (`VAULTBASE_READ_WORKERS`, default: cores minus one, at most 8); each has its
+  own database connection and serves record list and get-one requests, while writes, auth,
+  admin, files, realtime and user code stay on the main thread. A collection or settings
+  change on the main thread reaches the workers at once, a write tells them which tables it
+  touched so their list-totals cache keeps the rest, the Monitoring page shows their
+  per-step latencies and query shapes alongside the main thread's, and
+  `GET /api/v1/_/metrics` gains `read_workers` (count, forwarded, in flight, dropped). A
+  worker that dies is dropped and its in-flight requests fail; a forwarded request with no
+  reply within 30 s fails with 503.
+
+### Deprecated
+
+- **`vaultbase cluster`.** Read worker threads use every core from one process, with one
+  set of rate limits and realtime connections and cache invalidation that reaches every
+  thread, which cluster mode never had. It still works and prints a deprecation line at
+  start; a later release removes it.
+
+## Upgrade notes
+
+- Each read worker costs roughly 50–100 MB (its own JavaScript heap and SQLite page
+  cache). Set `VAULTBASE_READ_WORKERS=0` to keep everything on one thread, or a number to
+  size the pool. In-memory databases and cluster workers never start read workers.
+- The first read of a collection after start, and the first after a collection change,
+  is served on the main thread while it refills its collection cache; later ones go to a
+  worker. Nothing to do, just an explanation for anyone reading the Monitoring page.
 
 ## [0.21.3] — 2026-10-15
 
