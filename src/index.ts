@@ -363,6 +363,8 @@ async function main() {
 
   initDb(`file:${config.dbPath}`);
   await runMigrations();
+  const { loadSettings } = await import("./api/settings.ts");
+  await loadSettings();
 
   // CLI sub-command — bootstrap an admin from a script + exit. Skips
   // server boot entirely so headless deploys can configure without ever

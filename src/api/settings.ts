@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
-import { db, getDriver, type DbDriver } from "../db/index.ts";
+import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
+import { onCloseDb } from "../db/client.ts";
 import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
@@ -134,54 +135,102 @@ export function encryptPlaintextSecretSettings(): number {
 }
 
 /**
- * Settings read on the request path (trusted proxies, rate limits, CORS) are
- * kept for a moment: the lookup ran on every request and showed in
- * profiles. Writes through `setSetting` drop the key at once; a change made
- * by another process (a cluster worker, the CLI) shows up within the TTL.
- * Entries are tied to the connection, so a reopened database starts fresh.
+ * The settings store. Every setting lives in memory as stored (secrets stay
+ * encrypted until read), so reads on the request path (trusted proxies, rate limits, CORS, upload limits) never
+ * touch the database. It is filled from the table at boot
+ * ({@link loadSettings}) and, on SQLite, on first use after the database
+ * opens; refreshed in the background every {@link RELOAD_MS} so a change made
+ * by another process (the CLI, a cluster worker) shows up within that; kept
+ * exact by `setSetting` (writes through) and by the thread bus, which tells
+ * the read workers which key changed. Code that writes the table directly
+ * calls {@link invalidateSetting} for the key. A reopened database (restore,
+ * tests) gets a new driver and so a fresh store.
  */
-const SETTING_TTL_MS = 2_000;
-const settingCache = new Map<string, { client: DbDriver; at: number; value: string | null }>();
+const RELOAD_MS = 2_000;
+let store: { driver: DbDriver; values: Map<string, string> } | null = null;
+let reloadTimer: ReturnType<typeof setInterval> | null = null;
+
+function decodeRows(rows: Array<{ key: string; value: string }>): Map<string, string> {
+  return new Map(rows.map((r) => [r.key, r.value]));
+}
+
+function install(driver: DbDriver, values: Map<string, string>): Map<string, string> {
+  store = { driver, values };
+  if (reloadTimer === null) {
+    reloadTimer = setInterval(() => { void _reloadSettings(); }, RELOAD_MS);
+    reloadTimer.unref?.();
+  }
+  return values;
+}
+
+/** Load the store from the database. Boot calls it once the schema is ready. */
+export async function loadSettings(): Promise<void> {
+  const driver = getDriver();
+  const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
+  install(driver, decodeRows(rows));
+}
+
+/** The background refresh: a no-op when the database is closed or was reopened since the store was filled. */
+export async function _reloadSettings(): Promise<void> {
+  if (!driverOpen() || !store || store.driver !== getDriver()) return;
+  const driver = getDriver();
+  try {
+    const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
+    if (store?.driver === driver) store.values = decodeRows(rows);
+  } catch { /* closing, or the table is gone: the next load sorts it out */ }
+}
+
+/**
+ * The store for the open database. Filled synchronously on first use when it
+ * is missing: tests open a database and read settings without a boot
+ * sequence, and the SQLite driver answers synchronously. A driver that
+ * cannot is loaded at boot and never reaches this path.
+ */
+function values(): Map<string, string> {
+  const driver = getDriver();
+  if (store && store.driver === driver) return store.values;
+  return install(driver, decodeRows(db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`)));
+}
 
 /** Read a single setting; returns the default when missing. */
 export function getSetting(key: string, defaultVal: string): string {
-  // The open driver identifies the connection: a reopened database gets a
-  // new one, so entries cached against the old connection are skipped.
-  const client = getDriver();
-  const now = Date.now();
-  const hit = settingCache.get(key);
-  if (hit && hit.client === client && now - hit.at < SETTING_TTL_MS) return hit.value ?? defaultVal;
-  const row = db.sync.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
-  const value = row == null ? null : maybeDecrypt(key, row.value);
-  settingCache.set(key, { client, at: now, value });
-  return value ?? defaultVal;
+  const raw = values().get(key);
+  return raw === undefined ? defaultVal : maybeDecrypt(key, raw);
 }
 
-/** Forget one cached setting: for code that writes the table directly. */
+/**
+ * Re-read one setting from the table: for code that writes the table
+ * directly (the backup scheduler's claim), and for the read workers when the
+ * bus says the key changed on the main thread.
+ */
 export function invalidateSetting(key: string): void {
-  settingCache.delete(key);
+  if (!driverOpen()) return;
+  const v = values();
+  const row = db.sync.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
+  if (row == null) v.delete(key);
+  else v.set(key, row.value);
 }
 
-/** Forget every cached setting (tests). */
+/** Drop the store so the next read loads it again (tests). */
 export function _resetSettingsCache(): void {
-  settingCache.clear();
+  store = null;
 }
+onCloseDb(_resetSettingsCache);
 
 export function setSetting(key: string, value: string): void {
-  settingCache.delete(key);
-  broadcast({ type: "bus", kind: "settings", key });
   const stored = maybeEncrypt(key, value);
   db.sync.run(
     `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, unixepoch())
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()`,
     [key, stored],
   );
+  values().set(key, stored);
+  broadcast({ type: "bus", kind: "settings", key });
 }
 
 export function getAllSettings(): Record<string, string> {
-  const rows = db.sync.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
   const out: Record<string, string> = {};
-  for (const r of rows) out[r.key] = maybeDecrypt(r.key, r.value);
+  for (const [k, raw] of values()) out[k] = maybeDecrypt(k, raw);
   return out;
 }
 

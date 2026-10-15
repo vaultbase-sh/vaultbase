@@ -13,7 +13,7 @@ import type { ForwardRequest, ForwardReply } from "./core/read-pool.ts";
 import type { BusMessage } from "./core/thread-bus.ts";
 import { applyTableReport } from "./core/table-writes.ts";
 import { _resetCollectionCache } from "./core/collections.ts";
-import { invalidateSetting } from "./api/settings.ts";
+import { invalidateSetting, loadSettings } from "./api/settings.ts";
 import { invalidateRateLimitCache } from "./api/ratelimit.ts";
 import { invalidateCorsCache } from "./core/cors.ts";
 import { invalidateEgressCache } from "./core/hook-egress.ts";
@@ -69,6 +69,7 @@ let app: { handle: (req: Request) => Promise<Response> } | null = null;
 
 async function start(config: Config): Promise<void> {
   initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
+  await loadSettings();
   const { createServer } = await import("./server.ts");
   app = createServer(config, { role: "reader" }) as unknown as { handle: (req: Request) => Promise<Response> };
   const timer = setInterval(postStats, 1_000);

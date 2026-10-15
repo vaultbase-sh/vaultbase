@@ -7,7 +7,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, cachedFields, getCollection, privateFieldNames } from "../core/collections.ts";
-import { getSetting, setSetting, _resetSettingsCache } from "../api/settings.ts";
+import { getSetting, setSetting, _resetSettingsCache, _reloadSettings, loadSettings, invalidateSetting, getAllSettings } from "../api/settings.ts";
 import { tableColumns, invalidateUserTableColumnCache } from "../core/users-table.ts";
 import { registerFieldType } from "../core/field-types.ts";
 import { listRecords, createRecord } from "../core/records.ts";
@@ -34,6 +34,25 @@ describe("settings cache", () => {
     expect(getSetting("app.name", "dflt")).toBe("one");
     _resetSettingsCache();
     expect(getSetting("app.name", "dflt")).toBe("two");
+  });
+
+  it("the background reload and invalidateSetting pick up a direct write; loadSettings fills the store at boot", async () => {
+    setSetting("app.name", "one");
+    getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`).run();
+    expect(getSetting("app.name", "dflt")).toBe("one");
+    await _reloadSettings();
+    expect(getSetting("app.name", "dflt")).toBe("two");
+    getRawClient().prepare(`UPDATE vaultbase_settings SET value = 'three' WHERE key = 'app.name'`).run();
+    invalidateSetting("app.name");
+    expect(getSetting("app.name", "dflt")).toBe("three");
+    getRawClient().prepare(`DELETE FROM vaultbase_settings WHERE key = 'app.name'`).run();
+    invalidateSetting("app.name");
+    expect(getSetting("app.name", "dflt")).toBe("dflt");
+    setSetting("app.name", "four");
+    _resetSettingsCache();
+    await loadSettings();
+    expect(getSetting("app.name", "dflt")).toBe("four");
+    expect(getAllSettings()["app.name"]).toBe("four");
   });
 
   it("a reopened database never answers from the old connection's cache", async () => {
