@@ -47,3 +47,19 @@ describe.skipIf(onSqlite)("query stats on Postgres", () => {
     expect(after.suggestion).toBeNull();
   });
 });
+
+describe.skipIf(onSqlite)("indexes end with the tie-break on Postgres", () => {
+  beforeEach(async () => { await initDb(":memory:"); await runMigrations(); });
+  afterEach(async () => { _resetCollectionCache(); await closeDb(); });
+
+  it("so a tie-broken sort and a deep page are served from the index", async () => {
+    await createPublicCollection({ name: "items", fields: JSON.stringify([{ name: "status", type: "text" }, { name: "code", type: "text" }]) });
+    const defs = async () => Object.fromEntries((await db.all<{ name: string; sql: string }>(db.dialect.listIndexesSql(), ["vb_items"])).map((r) => [r.name, r.sql]));
+    expect((await defs())["idx_vb_items_created_at"]).toContain("(created_at, id)");
+    const made = await createCollectionIndex((await getCollection("items"))!, ["status"]);
+    expect(made.fields).toEqual(["status"]);
+    expect((await defs())[made.name]).toContain("(status, id)");
+    const unique = await createCollectionIndex((await getCollection("items"))!, ["code"], true);
+    expect((await defs())[unique.name]).toContain("(code)");
+  });
+});

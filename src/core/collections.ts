@@ -425,7 +425,7 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
 export async function ensureTimestampIndexes(collectionName: string): Promise<void> {
   const table = userTableName(collectionName);
   for (const col of ["created_at", "updated_at"]) {
-    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${col}`), table: quoteIdent(table), columns: [quoteIdent(col)] }));
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${col}`), table: quoteIdent(table), columns: [quoteIdent(col), ...db.dialect.indexTail] }));
   }
 }
 

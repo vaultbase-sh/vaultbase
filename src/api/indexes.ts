@@ -36,7 +36,10 @@ async function listIndexes(tableName: string): Promise<IndexInfo[]> {
   for (const r of rows) {
     if (!r.sql) continue;
     if (!r.name.startsWith("idx_") && !r.name.startsWith("uniq_")) continue;
-    const names = indexColumnsFromSql(r.sql);
+    // The tie-break tail is the database's business, not one of the fields.
+    const tail = new Set(db.dialect.indexTail.map((c) => c.replace(/"/g, "")));
+    let names = indexColumnsFromSql(r.sql);
+    while (names.length > 1 && tail.has(names[names.length - 1]!)) names = names.slice(0, -1);
     if (names.length === 0) continue;
     result.push({
       name: r.name,
@@ -74,7 +77,10 @@ export async function createCollectionIndex(col: Collection, fieldNames: string[
   const name = indexName(col.name, fieldNames, unique);
   const tableRef = `"${userTableName(col.name)}"`;
   const cols = fieldNames.map((f) => `"${f}"`).join(", ");
-  const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS "${name}" ON ${tableRef} (${cols})`;
+  // A non-unique index ends with the tie-break where the database needs it
+  // (see Dialect.indexTail), so it serves the list's tie-broken sort.
+  const tail = unique ? [] : db.dialect.indexTail.filter((c) => !fieldNames.includes(c.replace(/"/g, "")));
+  const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS "${name}" ON ${tableRef} (${[cols, ...tail].join(", ")})`;
   try {
     await db.exec(sql);
   } catch (e) {

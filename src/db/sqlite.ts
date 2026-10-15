@@ -48,6 +48,7 @@ export const SQLITE_DIALECT: Dialect = {
   always: "1",
   never: "1=0",
   tieBreak: "rowid",
+  indexTail: [],
   jsonCompareAsText: false,
   columnType(fieldType) {
     switch (fieldType) {

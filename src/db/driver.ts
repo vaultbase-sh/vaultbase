@@ -63,6 +63,13 @@ export interface Dialect {
   /** The column that orders rows physically and breaks ties on a sort. */
   readonly tieBreak: string;
   /**
+   * Columns to append to a non-unique index so it serves a sort that ends
+   * with the tie-break, and a deep page from the index alone. Empty on
+   * SQLite, whose indexes carry the rowid already; the primary key on
+   * databases that don't.
+   */
+  readonly indexTail: string[];
+  /**
    * Whether a value extracted from a JSON path compares as text, so the
    * other side of the comparison must be bound as text too (Postgres
    * `#>>`); SQLite's json_extract keeps the JSON type.

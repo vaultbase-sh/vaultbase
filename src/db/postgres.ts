@@ -60,6 +60,7 @@ export const POSTGRES_DIALECT: Dialect = {
   always: "TRUE",
   never: "FALSE",
   tieBreak: `"id"`,
+  indexTail: [`"id"`],
   jsonCompareAsText: true,
   columnType(fieldType) {
     switch (fieldType) {
