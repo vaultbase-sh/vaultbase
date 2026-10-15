@@ -81,28 +81,22 @@ export function onBeforeCloseDb(fn: () => void): void {
   beforeClose.push(fn);
 }
 
+/**
+ * Run right after the connection closes, synchronously: modules that cache
+ * prepared statements or anything else bound to the connection register
+ * here at load time, so nothing can see a reopened database through
+ * objects that belong to the old one. This used to go through a lazy
+ * import, which cleared the caches a few ticks after the close.
+ */
+const afterClose: Array<() => void> = [];
+export function onCloseDb(fn: () => void): void {
+  afterClose.push(fn);
+}
+
 export function closeDb(): void {
   if (_client) for (const fn of beforeClose) { try { fn(); } catch { /* closing anyway */ } }
   _client?.close();
   _client = null;
   _db = null;
-  // Drop module-level prepared-statement cache; otherwise the next initDb
-  // reuses statements bound to a closed DB (test isolation, schema swap).
-  void clearAllStmtCachesOnClose();
-}
-
-/** Lazy-imported invalidator — module dep ordering keeps this lazy. */
-async function clearAllStmtCachesOnClose(): Promise<void> {
-  try {
-    const mod = await import("../core/records.ts");
-    mod.invalidatePreparedStatements?.();
-  } catch { /* records module not loaded — nothing to clear */ }
-  try {
-    const mod = await import("../core/users-table.ts");
-    mod.invalidateUserTableColumnCache?.();
-  } catch { /* not loaded */ }
-  try {
-    const mod = await import("../core/collections.ts");
-    mod._resetCollectionCache?.();
-  } catch { /* not loaded */ }
+  for (const fn of afterClose) { try { fn(); } catch { /* best effort */ } }
 }

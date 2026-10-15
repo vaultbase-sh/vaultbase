@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import type { Collection } from "../db/schema.ts";
 import type { RequestContextLike } from "./filter.ts";
 import {
@@ -69,11 +69,17 @@ function preparedRun(client: Database, sql: string, params: unknown[]): number {
   }).run(...params)).changes;
 }
 
+/** Test hook: statements held right now. */
+export function _preparedStatementCount(): number {
+  return STMT_CACHE.size;
+}
+
 /** Drop the cache when collection schema changes. */
 export function invalidatePreparedStatements(): void {
   STMT_CACHE.clear();
   COUNT_CACHE.clear();
 }
+onCloseDb(invalidatePreparedStatements);
 
 /**
  * List totals cache. `COUNT(*)` under a filter walks every matching index

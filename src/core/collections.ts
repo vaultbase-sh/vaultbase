@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { broadcast } from "./thread-bus.ts";
 import { eq, or } from "drizzle-orm";
 import { flushGroupCommit } from "./group-commit.ts";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts } from "./fts.ts";
@@ -183,6 +183,7 @@ export function _resetCollectionCache(): void {
   // / column names that may have changed).
   void clearPreparedStatementsOnSchemaChange();
 }
+onCloseDb(_resetCollectionCache);
 
 /**
  * Parse a collection's `fields` column. Defensive: every records-API request

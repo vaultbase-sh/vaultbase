@@ -18,7 +18,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { getRawClient } from "../db/client.ts";
+import { getRawClient, onCloseDb } from "../db/client.ts";
 import { userTableName } from "./collections.ts";
 import { trackWrite } from "./table-writes.ts";
 import type { Collection } from "../db/schema.ts";
@@ -111,6 +111,7 @@ export function invalidateUserTableColumnCache(collectionName?: string): void {
   if (collectionName === undefined) columnsCache.clear();
   else columnsCache.delete(collectionName);
 }
+onCloseDb(() => invalidateUserTableColumnCache());
 
 interface InsertInput {
   id: string;
