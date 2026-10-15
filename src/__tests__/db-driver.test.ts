@@ -177,12 +177,16 @@ describe.skipIf(!onSqlite)("SQLite driver", () => {
     expect(seen).toEqual(["SELECT 1", "SELECT 2", "UPDATE t SET n = 3", "UPDATE t SET n = 4", "SELECT 5 AS five"]);
   });
 
-  it("the schema token moves on DDL from any connection and not on data", () => {
+  it("the schema token moves on DDL from any connection (seen next turn) and not on data", async () => {
     const t0 = db.schemaToken();
     db.run(`INSERT INTO t (name) VALUES (?)`, ["a"]);
     expect(db.schemaToken()).toBe(t0);
     getRawClient().exec(`ALTER TABLE t ADD COLUMN extra TEXT`);
+    await new Promise((r) => setImmediate(r)); // another connection's DDL: read once per turn
     expect(db.schemaToken()).not.toBe(t0);
+    const t1 = db.schemaToken();
+    db.exec(`ALTER TABLE t ADD COLUMN more TEXT`); // this connection's DDL: seen at once
+    expect(db.schemaToken()).not.toBe(t1);
   });
 
   it("shares the connection with the raw client", () => {

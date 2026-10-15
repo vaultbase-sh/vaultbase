@@ -105,6 +105,9 @@ export const SQLITE_CAPABILITIES: Capabilities = {
 
 type AnyStatement = Statement<unknown, SQLQueryBindings[]>;
 
+/** Statements that change the schema, after which the token memo must not be reused. */
+const DDL_RE = /^\s*(CREATE|ALTER|DROP)\b/i;
+
 export class SqliteDriver implements DbDriver {
   readonly name = "sqlite" as const;
   readonly dialect = SQLITE_DIALECT;
@@ -118,6 +121,8 @@ export class SqliteDriver implements DbDriver {
   private readonly schemaProbe: AnyStatement;
   private traceFn: ((sql: string) => void) | null = null;
   private savepointSeq = 0;
+  /** The schema token read this event-loop turn; see schemaToken(). */
+  private tokenThisTurn: number | null = null;
 
   /**
    * `path` is a file path or `:memory:`. The pragmas are the ones the
@@ -222,6 +227,7 @@ export class SqliteDriver implements DbDriver {
   exec(sql: string): void {
     this.traceFn?.(sql);
     this.raw.exec(sql);
+    if (DDL_RE.test(sql)) this.tokenThisTurn = null;
   }
 
   describe(sql: string): string[] {
@@ -229,9 +235,19 @@ export class SqliteDriver implements DbDriver {
     return [...this.prepare(sql).columnNames];
   }
 
+  /**
+   * `schema_version`, read once per event-loop turn: the caches keyed on it
+   * ask several times per request, and a change made by another connection
+   * is seen on the next turn, which is soon enough. This connection's own
+   * DDL clears the memo at once (see exec).
+   */
   schemaToken(): number {
+    if (this.tokenThisTurn !== null) return this.tokenThisTurn;
     this.traceFn?.("PRAGMA schema_version");
-    return (this.schemaProbe.get() as { schema_version: number }).schema_version;
+    const token = (this.schemaProbe.get() as { schema_version: number }).schema_version;
+    this.tokenThisTurn = token;
+    setImmediate(() => { this.tokenThisTurn = null; });
+    return token;
   }
 
   private totalChanges(): number {
