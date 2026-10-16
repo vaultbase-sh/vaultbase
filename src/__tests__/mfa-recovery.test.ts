@@ -202,11 +202,14 @@ describe("totp/disable wipes recovery codes", () => {
   it("removes all rows for the user when MFA is disabled", async () => {
     const { id, token, totpSecret } = await setupUserWithTotp();
     const app = makeAuthPlugin(SECRET);
-    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, regenCode(totpSecret)));
+    // Both codes from one instant, a step apart: a step boundary between the
+    // two requests can't make the second a replay of the first.
+    const now = Math.floor(Date.now() / 1000);
+    await app.handle(authReq("POST", "/auth/users/totp/recovery/regenerate", token, { code: generateCode(totpSecret, now - 30) }));
     const before = await getDb().select().from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.user_id, id));
     expect(before.length).toBe(10);
 
-    const totp = generateCode(totpSecret, Math.floor(Date.now() / 1000));
+    const totp = generateCode(totpSecret, now);
     const res = await app.handle(authReq("POST", "/auth/users/totp/disable", token, { code: totp }));
     expect(res.status).toBe(200);
 
