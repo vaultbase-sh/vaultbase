@@ -7,6 +7,19 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **The setup wizard shows the database.** Its first step says whether the server runs on
+  SQLite or Postgres, and how to switch before the first admin is created. The setup status
+  reports it until then, and no longer once an admin exists.
+
+### Fixed
+
+- **The setup and sign-in pages on narrow screens.** The card kept its 640-pixel width
+  below that and was cut off on phones.
+
 ## [0.23.0] — 2026-10-16
 
 ### Added

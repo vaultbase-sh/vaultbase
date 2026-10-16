@@ -7,7 +7,7 @@
  * password group and error line follow the login board, which is where those
  * two patterns are drawn — the setup board predates them.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type ApiResponse } from "../api.ts";
 import Icon from "../components/Icon.tsx";
 import AuthBackdrop from "../components/AuthBackdrop.tsx";
@@ -16,6 +16,11 @@ import { useVersion } from "../stores/version.ts";
 import "../styles/auth.css";
 
 type Step = "welcome" | "admin" | "done";
+
+/** Which database this install runs on (`/admin/setup/status`, before the first admin). */
+type Database = "sqlite" | "postgres";
+
+const DATABASES_DOC = "https://docs.vaultbase.dev/concepts/databases/";
 
 const STEPS: { id: Step; label: string }[] = [
   { id: "welcome", label: "WELCOME" },
@@ -34,7 +39,16 @@ const PW_MIN = 12;
 export default function Setup() {
   const [step, setStep] = useState<Step>("welcome");
   const [adminEmail, setAdminEmail] = useState("");
+  const [database, setDatabase] = useState<Database | null>(null);
   const version = useVersion();
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<ApiResponse<{ database?: Database }>>("/api/v1/admin/setup/status")
+      .then((res) => { if (!cancelled && res.data?.database) setDatabase(res.data.database); })
+      .catch(() => { /* the welcome step just leaves the database out */ });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="vb-auth">
@@ -47,7 +61,7 @@ export default function Setup() {
 
         <Stepper step={step} />
 
-        {step === "welcome" && <WelcomeStep onNext={() => setStep("admin")} />}
+        {step === "welcome" && <WelcomeStep database={database} onNext={() => setStep("admin")} />}
         {step === "admin" && (
           <AdminStep
             onBack={() => setStep("welcome")}
@@ -134,7 +148,7 @@ const FEATURES: { text: string; path: React.ReactNode }[] = [
     path: <path d="M12 16V3M6 9l6-6 6 6M3 15v6h18v-6" />,
   },
   {
-    text: "Single binary, SQLite, zero deps",
+    text: "Single binary, zero deps",
     path: (
       <>
         <rect x="3" y="3" width="18" height="8" />
@@ -145,7 +159,36 @@ const FEATURES: { text: string; path: React.ReactNode }[] = [
   },
 ];
 
-function WelcomeStep({ onNext }: { onNext: () => void }) {
+/**
+ * The database is chosen by the environment before the server starts, never
+ * here: this says which one is in use and how to switch while switching is
+ * free (nothing has been written that would need moving).
+ */
+function DatabaseNote({ database }: { database: Database }) {
+  const sqlite = database === "sqlite";
+  return (
+    <div className="vb-auth__db">
+      <div className="vb-auth__urls">
+        <div className="vb-auth__url">
+          <span className="vb-auth__urlkey">DATABASE</span>
+          <span className="vb-auth__urlval"><span>{sqlite ? "SQLite" : "Postgres (beta)"}</span></span>
+        </div>
+      </div>
+      <p className="vb-auth__note">
+        {sqlite ? (
+          <>A file in the data directory; nothing to set up. To use Postgres instead, stop the server, set{" "}
+          <span className="mono">VAULTBASE_DATABASE_URL</span> and start it again, before creating the admin.</>
+        ) : (
+          <>From <span className="mono">VAULTBASE_DATABASE_URL</span>. To use SQLite instead, stop the server,
+          remove the variable and start it again, before creating the admin.</>
+        )}{" "}
+        <a href={DATABASES_DOC} target="_blank" rel="noreferrer">Choosing a database</a>
+      </p>
+    </div>
+  );
+}
+
+function WelcomeStep({ database, onNext }: { database: Database | null; onNext: () => void }) {
   return (
     <div className="vb-auth__body">
       <div className="vb-auth__intro">
@@ -173,6 +216,8 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
           </div>
         ))}
       </div>
+
+      {database && <DatabaseNote database={database} />}
 
       <div className="vb-auth__actions">
         <button type="button" className="vb-auth__btn" onClick={onNext}>

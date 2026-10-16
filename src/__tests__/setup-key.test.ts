@@ -15,6 +15,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { admin } from "../db/schema.ts";
 import { configureSetupKey, requiredSetupKey } from "../core/setup-key.ts";
+import { db } from "../db/index.ts";
 
 const SECRET = "test-setup-key";
 let dir: string;
@@ -91,8 +92,8 @@ describe("first-admin setup needs a key", () => {
 
   it("status tells the setup page a key is required", async () => {
     const res = await makeAuthPlugin(SECRET).handle(new Request("http://localhost/admin/setup/status"));
-    const body = await res.json() as { data: { has_admin: boolean; key_required: boolean } };
-    expect(body.data).toEqual({ has_admin: false, key_required: true });
+    const body = await res.json() as { data: { has_admin: boolean; key_required: boolean; database: string } };
+    expect(body.data).toEqual({ has_admin: false, key_required: true, database: db.name });
   });
 });
 

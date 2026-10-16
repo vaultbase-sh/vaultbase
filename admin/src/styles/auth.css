@@ -57,6 +57,9 @@
   inset: 0;
   overflow: auto;
   display: grid;
+  /* One column no wider than the page: an auto column took the card's
+     640px, so its max-width: 100% never bit and narrow screens cut it off. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 24px 20px;
   background: var(--vb-surface);
@@ -269,6 +272,19 @@
   background: var(--vb-accent);
   transform: translateY(-1px);
 }
+
+/* ── Database note (setup step 1) ─────────────────────────────────────────── */
+.vb-auth__db { display: flex; flex-direction: column; gap: 10px; }
+.vb-auth__note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--vb-fg-4);
+  text-wrap: pretty;
+}
+.vb-auth__note .mono { font-family: var(--vb-font-mono); color: var(--vb-fg-3); }
+.vb-auth__note a { color: var(--vb-fg-3); text-decoration: underline; text-underline-offset: 2px; }
+.vb-auth__note a:hover { color: var(--vb-fg); }
 
 /* ── URL table (setup step 3) ─────────────────────────────────────────────── */
 .vb-auth__urls {

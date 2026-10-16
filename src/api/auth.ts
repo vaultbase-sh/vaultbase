@@ -3,7 +3,7 @@ import { clearSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { getDb } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
@@ -637,7 +637,10 @@ export function makeAuthPlugin(jwtSecret: string) {
       const db = getDb();
       const existing = await db.select().from(admin).limit(1);
       // Setup always needs a key now; the flag tells the setup page to ask.
-      return { data: { has_admin: existing.length > 0, key_required: existing.length === 0 } };
+      // Before the first admin exists, which database this install runs on
+      // (the kind only), so the setup page can say so while switching is free.
+      if (existing.length > 0) return { data: { has_admin: true, key_required: false } };
+      return { data: { has_admin: false, key_required: true, database: getDriver().name } };
     })
     .post(
       "/admin/setup",

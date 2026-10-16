@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb, getDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { admin } from "../db/schema.ts";
@@ -15,11 +16,11 @@ beforeEach(async () => {
 
 afterEach(() => closeDb());
 
-async function getStatus(): Promise<{ has_admin: boolean }> {
+async function getStatus(): Promise<{ has_admin: boolean; database?: string }> {
   const app = makeAuthPlugin(SECRET);
   const res = await app.handle(new Request("http://localhost/admin/setup/status"));
   expect(res.status).toBe(200);
-  const body = await res.json() as { data: { has_admin: boolean } };
+  const body = await res.json() as { data: { has_admin: boolean; database?: string } };
   return body.data;
 }
 
@@ -51,6 +52,16 @@ describe("setup status", () => {
 
     const after = await getStatus();
     expect(after.has_admin).toBe(true);
+  });
+
+  it("names the database while no admin exists, and stops once one does", async () => {
+    // The setup page says which database this install uses while switching
+    // is free; afterwards the unauthenticated status says nothing about it.
+    const before = await getStatus();
+    expect(before.database).toBe(db.name);
+    expect(["sqlite", "postgres"]).toContain(before.database!);
+    await postSetup("admin@example.com", "super-strong-password");
+    expect((await getStatus()).database).toBeUndefined();
   });
 
   it("setup endpoint refuses a second call once an admin exists", async () => {
