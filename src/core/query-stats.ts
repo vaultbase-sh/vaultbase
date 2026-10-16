@@ -12,6 +12,7 @@
  * schema changes (an index was created or dropped).
  */
 import { db } from "../db/index.ts";
+import { toPositional } from "../db/placeholders.ts";
 
 export interface ListQuerySample {
   collection: string;
@@ -199,7 +200,9 @@ async function explain(e: Shape, schema: number): Promise<PlanRow[]> {
     if (db.capabilities.explain === "pg") {
       // GENERIC_PLAN (Postgres 16+) plans the statement with its parameters
       // unbound, as SQLite does for an unbound `?`.
-      const out = await db.all<{ "QUERY PLAN": Array<{ Plan: PgPlanNode }> }>(`EXPLAIN (GENERIC_PLAN, FORMAT JSON) ${e.selectSql}`);
+      // Its placeholders stay unbound, so they are numbered here: a
+      // statement run without parameters keeps its `?` as written.
+      const out = await db.all<{ "QUERY PLAN": Array<{ Plan: PgPlanNode }> }>(`EXPLAIN (GENERIC_PLAN, FORMAT JSON) ${toPositional(e.selectSql)}`);
       rows = pgPlanRows(out[0]!["QUERY PLAN"][0]!.Plan);
     } else if (db.capabilities.explain === "sqlite") {
       // Unbound parameters are NULL; the plan doesn't depend on them.

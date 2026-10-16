@@ -262,7 +262,7 @@ export class PostgresDriver implements DbDriver {
 
   async all<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T[]> {
     this.traceFn?.(sql);
-    const rows = await this.query(toPositional(sql), params as unknown[], false);
+    const rows = await this.query(toPositional(sql, params.length > 0), params as unknown[], false);
     return plainRows<T>(rows as Rows);
   }
 
@@ -273,7 +273,7 @@ export class PostgresDriver implements DbDriver {
 
   async run(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): Promise<RunResult> {
     this.traceFn?.(sql);
-    const rows = (await this.query(toPositional(sql), params as unknown[], false)) as Rows;
+    const rows = (await this.query(toPositional(sql, params.length > 0), params as unknown[], false)) as Rows;
     const changes = rows.count ?? 0;
     if (opts?.table) {
       noteTableWrite(opts.table, changes);

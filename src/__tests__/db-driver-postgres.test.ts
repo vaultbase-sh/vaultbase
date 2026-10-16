@@ -23,6 +23,15 @@ describe("placeholders", () => {
     expect(toPositional(`SELECT 'it''s ?', ?`)).toBe(`SELECT 'it''s ?', $1`);
     expect(toPositional(`SELECT $$ ? $$, ?`)).toBe(`SELECT $$ ? $$, $1`);
   });
+
+  it("leaves jsonb's operators, E'' strings and tagged dollar quotes alone", () => {
+    expect(toPositional(`SELECT d ?| ARRAY['a'], d ?& ARRAY['b'], ?`)).toBe(`SELECT d ?| ARRAY['a'], d ?& ARRAY['b'], $1`);
+    expect(toPositional(`SELECT d ?? 'k', ?`)).toBe(`SELECT d ? 'k', $1`);
+    expect(toPositional(`SELECT ?||'x'`)).toBe(`SELECT $1||'x'`);
+    expect(toPositional(`SELECT E'it\\'s ?', ?`)).toBe(`SELECT E'it\\'s ?', $1`);
+    expect(toPositional(`SELECT $fn$ ? $fn$, ?`)).toBe(`SELECT $fn$ ? $fn$, $1`);
+    expect(toPositional(`SELECT name ? 'x' FROM t`, false)).toBe(`SELECT name ? 'x' FROM t`);
+  });
 });
 
 describe.if(onPg)("Postgres driver", () => {
@@ -103,6 +112,18 @@ describe.if(onPg)("Postgres driver", () => {
     expect(d.jsonExtract(`"t"."meta"`, "$.a")).toBe(`("t"."meta"::jsonb #>> '{a}')`);
     // A path is one `#>>`, so a step through a string reads as missing instead of failing to parse it.
     expect(d.jsonExtract(d.jsonExtract(`"t"."meta"`, "$.a"), "$.b")).toBe(`("t"."meta"::jsonb #>> '{a,b}')`);
+  });
+});
+
+describe.if(onPg)("jsonb operators on Postgres", () => {
+  beforeEach(async () => { await initDb(":memory:"); await runMigrations(); });
+  afterEach(async () => { await closeDb(); });
+
+  it("run as written without parameters, and as ?? with them", async () => {
+    expect((await db.get<{ r: boolean }>(`SELECT '{"a":1}'::jsonb ? 'a' AS r`))!.r).toBe(true);
+    expect((await db.get<{ r: boolean }>(`SELECT '{"a":1}'::jsonb ?| ARRAY['a','b'] AS r`))!.r).toBe(true);
+    const row = (await db.get<{ r: boolean; n: number }>(`SELECT '{"a":1}'::jsonb ?? 'b' AS r, ?::integer AS n`, [5]))!;
+    expect(row).toEqual({ r: false, n: 5 });
   });
 });
 
