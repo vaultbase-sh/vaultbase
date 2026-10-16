@@ -80,7 +80,7 @@ async function openPostgres(url: string, teardown: (() => Promise<void>) | null 
   const driver = new PostgresDriver(url);
   await driver.open();
   _teardown = teardown;
-  return install(driver, drizzlePg(driver.raw, { schema: pgSchema }) as unknown as DB, null);
+  return install(driver, drizzlePg(driver.drizzleClient, { schema: pgSchema }) as unknown as DB, null);
 }
 
 async function openTestSchema(base: string): Promise<DB> {

@@ -164,7 +164,6 @@ export function compileToSql(
     throw new Error(`invalid table identifier: ${tableName}`);
   }
   const ctx: CompileCtx = {
-    bindText: false,
     tableName,
     auth: opts.auth ?? null,
     request: opts.request ?? null,
@@ -186,8 +185,6 @@ export function compileToSql(
 }
 
 interface CompileCtx {
-  /** Set while compiling the value side of a comparison with a JSON path (see bindValue). */
-  bindText: boolean;
   tableName: string;
   auth: AuthContext | null;
   request: RequestContextLike | null;
@@ -346,17 +343,65 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return likeSql(left, op, ast.right, ctx);
   }
 
-  const leftJson = isJsonPath(ast.left);
-  const rightJson = isJsonPath(ast.right);
-  const left = rightJson ? withBindText(ctx, () => compileOperand(ast.left, ctx)) : compileOperand(ast.left, ctx);
-  const right = leftJson ? withBindText(ctx, () => compileOperand(ast.right, ctx)) : compileOperand(ast.right, ctx);
-  return `${left} ${sqlOpFor(op)} ${right}`;
+  return typedCmp(compiled(ast.left, ctx), sqlOpFor(op), compiled(ast.right, ctx), ctx);
 }
 
-function withBindText<T>(ctx: CompileCtx, fn: () => T): T {
-  const prev = ctx.bindText;
-  ctx.bindText = true;
-  try { return fn(); } finally { ctx.bindText = prev; }
+/** An operand compiled on its own: its SQL and the values it binds. */
+interface Compiled { sql: string; params: unknown[] }
+
+function compiled(op: Operand, ctx: CompileCtx): Compiled {
+  const saved = ctx.params;
+  const params: unknown[] = [];
+  ctx.params = params;
+  try {
+    return { sql: compileOperand(op, ctx), params };
+  } finally {
+    ctx.params = saved;
+  }
+}
+
+/**
+ * `a op b`, binding a's values then b's. On Postgres (Dialect.typedCompare)
+ * a single bound value is lined up with the expression it meets, so the
+ * answer is SQLite's:
+ * - against a JSON path, the JSON value compares by the bound value's type
+ *   (a number numerically, true/false as 1/0, a string as text), and a JSON
+ *   value of another type matches nothing; `#>>` alone compared text, so
+ *   `meta.level < 5` held for 10 and `meta.banned != true` for a banned user;
+ * - against anything else (a column, a modifier, a function), a number is
+ *   bound untyped, as text, so the server casts it to that expression's type,
+ *   as SQLite's affinity does: `sku = 123` on a text field matches "123"
+ *   instead of failing with `text = integer`.
+ */
+function typedCmp(a: Compiled, op: string, b: Compiled, ctx: CompileCtx): string {
+  const t = dialect().typedCompare;
+  if (t) [a, b] = [lineUp(a, b, t), lineUp(b, a, t)];
+  ctx.params.push(...a.params, ...b.params);
+  return `${a.sql} ${op} ${b.sql}`;
+}
+
+const isBound = (c: Compiled): boolean => c.sql === "?" && c.params.length === 1;
+
+/** `side` adjusted for being compared with `other` (see typedCmp). */
+function lineUp(side: Compiled, other: Compiled, t: NonNullable<Dialect["typedCompare"]>): Compiled {
+  if (isBound(side)) {
+    // Untyped against an expression the server types; a JSON path is typed
+    // from this value instead (the other branch), and two bound values keep
+    // their own types.
+    const v = side.params[0];
+    if (other.sql === "?" || t.jsonb(other.sql) || (typeof v !== "number" && typeof v !== "boolean")) return side;
+    return { sql: "?", params: [String(Number(v))] };
+  }
+  if (!isBound(other)) return side;
+  const kind = boundKind(other.params[0]);
+  const j = kind ? t.jsonb(side.sql) : null;
+  return j && kind ? { sql: t.as(j, kind), params: side.params } : side;
+}
+
+function boundKind(v: unknown): "number" | "text" | null {
+  if (typeof v === "number" || typeof v === "boolean") return "number";
+  if (typeof v === "string") return "text";
+  return null;
 }
 
 function sqlOpFor(op: AnyCmpOp): string {
@@ -384,14 +429,14 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
 
   const arraySql = compileOperand(stripped, ctx);
   let cmp: string;
+  let from = dialect().jsonEach(arraySql);
   if (op === "~" || op === "!~") {
     cmp = likeSql("value", op, scalarOperand, ctx);
   } else {
-    const right = compileOperand(scalarOperand, ctx);
-    cmp = `value ${sqlOpFor(op)} ${right}`;
+    ({ cmp, from } = elementCmp(arraySql, op, scalarOperand, ctx));
   }
   const d = dialect();
-  return `(${d.jsonArrayLength(arraySql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${d.jsonEach(arraySql)} WHERE NOT (${cmp})))`;
+  return `(${d.jsonArrayLength(arraySql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${from} WHERE NOT (${cmp})))`;
 }
 
 /** `column ARRAY-OP value` — wraps in `EXISTS (... json_each ...)`. */
@@ -416,23 +461,40 @@ function compileArrayCmp(
   const inner: unknown[] = [];
   const innerCtx: CompileCtx = { ...ctx, params: inner };
   let cmp: string;
+  let from = dialect().jsonEach(arraySql);
   if (scalarOp === "~" || scalarOp === "!~") {
     cmp = likeSql("value", scalarOp, scalarOperand, innerCtx);
   } else {
-    const right = compileOperand(scalarOperand, innerCtx);
-    cmp = `value ${sqlOpFor(scalarOp)} ${right}`;
+    ({ cmp, from } = elementCmp(arraySql, scalarOp, scalarOperand, innerCtx));
   }
   // Splice inner params into outer in the right position.
   ctx.params.push(...inner);
-  return `EXISTS (SELECT 1 FROM ${dialect().jsonEach(arraySql)} WHERE ${cmp})`;
+  return `EXISTS (SELECT 1 FROM ${from} WHERE ${cmp})`;
 }
 
-/** A bound comparison value; text when the other side is a JSON path the dialect reads as text. */
-function bindValue(ctx: CompileCtx, v: unknown): unknown {
-  return ctx.bindText && v !== null && v !== undefined && typeof v !== "string" && dialect().jsonCompareAsText ? String(v) : v;
+/**
+ * `value op scalar` over the elements of `arraySql`, and the row source to
+ * read them from. On Postgres a bound value picks how the elements compare,
+ * as in typedCmp: the elements are read as jsonb and taken as numbers or as
+ * text (elements of another type match nothing); otherwise as text, with a
+ * bound number untyped so it is read as text too.
+ */
+function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: CompileCtx): { cmp: string; from: string } {
+  const d = dialect();
+  const right = compiled(scalar, ctx);
+  const t = d.typedCompare;
+  if (t && isBound(right)) {
+    const kind = boundKind(right.params[0]);
+    if (kind) {
+      const v = right.params[0];
+      ctx.params.push(typeof v === "boolean" ? Number(v) : v);
+      return { cmp: `${t.as("value", kind)} ${sqlOpFor(op)} ?`, from: t.eachJsonb(arraySql) };
+    }
+  }
+  return { cmp: typedCmp({ sql: "value", params: [] }, sqlOpFor(op), right, ctx), from: d.jsonEach(arraySql) };
 }
 
-/** Whether comparing against this operand reads a JSON path. */
+/** Whether this operand reads a JSON path. */
 function isJsonPath(op: Operand): boolean {
   return (op.kind === "field" || op.kind === "collection") && op.path.length > (op.kind === "field" ? 0 : 1);
 }
@@ -440,27 +502,27 @@ function isJsonPath(op: Operand): boolean {
 function compileOperand(op: Operand, ctx: CompileCtx): string {
   switch (op.kind) {
     case "literal": {
-      ctx.params.push(bindValue(ctx, coerceLiteral(op.value)));
+      ctx.params.push(coerceLiteral(op.value));
       return "?";
     }
     case "auth": {
-      ctx.params.push(bindValue(ctx, authValue(ctx.auth, op.prop)));
+      ctx.params.push(authValue(ctx.auth, op.prop));
       return "?";
     }
     case "request": {
       const v = ctx.request?.[op.prop] ?? null;
-      ctx.params.push(bindValue(ctx, v));
+      ctx.params.push(v);
       return "?";
     }
     case "requestMap": {
       const map = ctx.request?.[op.mapKind];
       const raw = requestMapValue(map, op.mapKind, op.key);
       const v = applyModifierToValue(raw, op.modifier);
-      ctx.params.push(bindValue(ctx, v));
+      ctx.params.push(v);
       return "?";
     }
     case "macro": {
-      ctx.params.push(bindValue(ctx, macroValue(op.name)));
+      ctx.params.push(macroValue(op.name));
       return "?";
     }
     case "func": {

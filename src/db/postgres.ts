@@ -12,9 +12,9 @@
  * statement aborts the whole transaction (callers that need per-statement
  * atomicity wrap each statement in a savepoint; see `statementAtomicity`).
  *
- * Integer columns are `integer` (32-bit): `bigint` comes back from the
- * client as a string, which the rest of the server would have to convert
- * everywhere. Epoch seconds fit until 2038; revisit before then.
+ * Integer columns are `bigint`, so epoch seconds past 2038 (and the
+ * millisecond epochs clients sometimes send to date fields) fit; the client
+ * returns them as BigInt and the row mapper turns them into numbers.
  */
 import { SQL } from "bun";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -37,7 +37,8 @@ function sqlLiteral(v: string): string {
 }
 
 function columnDef(c: ColumnSpec): string {
-  const type = c.type === "real" ? "double precision" : c.type === "blob" ? "bytea" : c.type;
+  // integer → bigint: epoch columns (created_at, expires_at, …) outlive 2038.
+  const type = c.type === "real" ? "double precision" : c.type === "blob" ? "bytea" : c.type === "integer" ? "bigint" : c.type;
   let out = `${c.name} ${type}`;
   if (c.primaryKey) out += " PRIMARY KEY";
   else if (c.notNull) out += " NOT NULL";
@@ -54,26 +55,44 @@ function jsonPathArray(path: string): string {
   return `'{${seg.replace(/'/g, "''")}}'`;
 }
 
+/** An expression jsonExtract made: `(<expr>::jsonb #>> '{a,b}')`. */
+const JSON_TEXT_RE = /^\((.+)::jsonb #>> ('\{[^']*\}')\)$/s;
+
 export const POSTGRES_DIALECT: Dialect = {
   name: "postgres",
-  epochNow: "(extract(epoch from now())::integer)",
+  epochNow: "(extract(epoch from now())::bigint)",
   always: "TRUE",
   never: "FALSE",
   tieBreak: `"id"`,
   indexTail: [`"id"`],
-  jsonCompareAsText: true,
+  typedCompare: {
+    jsonb: (expr) => {
+      const m = JSON_TEXT_RE.exec(expr);
+      return m ? `(${m[1]}::jsonb #> ${m[2]})` : null;
+    },
+    as: (j, kind) => kind === "number"
+      ? `(CASE jsonb_typeof(${j}) WHEN 'number' THEN (${j})::numeric WHEN 'boolean' THEN (CASE WHEN (${j})::boolean THEN 1 ELSE 0 END) END)`
+      : `(CASE WHEN jsonb_typeof(${j}) = 'string' THEN ${j} #>> '{}' END)`,
+    eachJsonb: (expr) => `jsonb_array_elements(${expr}::jsonb)`,
+  },
   columnType(fieldType) {
     switch (fieldType) {
       case "number": return "double precision";
       case "bool": return "integer";
       case "date":
-      case "autodate": return "integer";
+      case "autodate": return "bigint";
       default: return "text";
     }
   },
   quoteIdent,
   like: (left, pattern) => `COALESCE(${left} ILIKE ${pattern}, FALSE)`,
-  jsonExtract: (expr, path) => `(${expr}::jsonb #>> ${jsonPathArray(path)})`,
+  // One `#>>` over the whole path: `a.b.c` reads through objects only, as
+  // json_extract does, instead of re-parsing each step's text as JSON.
+  jsonExtract: (expr, path) => {
+    const m = JSON_TEXT_RE.exec(expr);
+    const seg = jsonPathArray(path).slice(2, -2);
+    return m ? `(${m[1]}::jsonb #>> '{${m[2]!.slice(2, -2)},${seg}}')` : `(${expr}::jsonb #>> '{${seg}}')`;
+  },
   // NULL for anything that is not a JSON array, as SQLite answers, instead of a cast error.
   jsonArrayLength: (expr) => `(CASE WHEN (${expr})::text LIKE '[%' THEN jsonb_array_length((${expr})::text::jsonb) END)`,
   jsonEach: (expr) => `jsonb_array_elements_text(${expr}::jsonb)`,
@@ -137,7 +156,13 @@ function plainRows<T>(rows: Rows): T[] {
     }
     out[i] = (copy ?? r) as T;
   }
+  if (rows.count !== undefined) (out as Rows).count = rows.count;
   return out;
+}
+
+/** One row in array form (drizzle's `.values()`), BigInt as numbers. */
+function plainValues(row: unknown[]): unknown[] {
+  return row.some((v) => typeof v === "bigint") ? row.map((v) => (typeof v === "bigint" ? Number(v) : v)) : row;
 }
 
 export class PostgresDriver implements DbDriver {
@@ -161,9 +186,35 @@ export class PostgresDriver implements DbDriver {
     this.pool = new Client(url, { max: opts.max ?? 8, bigint: true });
   }
 
-  /** The pool, for the drizzle handle. */
+  /** The pool. Drizzle gets `drizzleClient` instead. */
   get raw(): SQL {
     return this.pool;
+  }
+
+  /**
+   * The client the drizzle handle runs on. Each query goes to the current
+   * transaction's connection when there is one (a drizzle write inside a
+   * batch used to commit on its own pooled connection: kept after a
+   * rollback, and a second connection held per transaction), and its rows
+   * come back with BigInt turned into numbers, as the driver's own queries
+   * do: drizzle maps rows through the SQLite table definitions, which pass
+   * BigInt through. Drizzle uses `unsafe` (awaited, or `.values()`) only;
+   * the server never opens a drizzle transaction.
+   */
+  get drizzleClient(): SQL {
+    const self = this;
+    const client = {
+      unsafe(query: string, params?: unknown[]) {
+        const q = self.conn().unsafe(query, params);
+        return {
+          then<A, B>(ok?: ((rows: unknown[]) => A) | null, fail?: ((e: unknown) => B) | null) {
+            return (q as unknown as Promise<Rows>).then((rows) => plainRows(rows), undefined).then(ok, fail);
+          },
+          values: () => (q.values() as Promise<unknown[][]>).then((rows) => rows.map(plainValues)),
+        };
+      },
+    };
+    return client as unknown as SQL;
   }
 
   get sync(): SyncDb {

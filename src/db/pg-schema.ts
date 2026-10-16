@@ -9,16 +9,16 @@
 import { sql } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm";
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
-import { doublePrecision, integer, pgTable, text, type PgColumnBuilderBase } from "drizzle-orm/pg-core";
+import { bigint, doublePrecision, pgTable, text, type PgColumnBuilderBase } from "drizzle-orm/pg-core";
 import * as sqliteSchema from "./schema.ts";
 import { EPOCH_MS_NOW, EPOCH_NOW } from "./schema.ts";
 
-const PG_EPOCH_NOW = sql`(extract(epoch from now())::integer)`;
+const PG_EPOCH_NOW = sql`(extract(epoch from now())::bigint)`;
 const PG_EPOCH_MS_NOW = sql`(extract(epoch from clock_timestamp()) * 1000)`;
 
 function pgColumn(name: string, c: { getSQLType(): string; primary: boolean; notNull: boolean; isUnique: boolean; default: unknown }): PgColumnBuilderBase {
   const t = c.getSQLType().toLowerCase();
-  let b = t === "integer" ? integer(name) : t === "real" ? doublePrecision(name) : text(name);
+  let b = t === "integer" ? bigint(name, { mode: "number" }) : t === "real" ? doublePrecision(name) : text(name);
   if (c.primary) b = b.primaryKey() as typeof b;
   else if (c.notNull) b = b.notNull() as typeof b;
   if (c.isUnique) b = b.unique() as typeof b;

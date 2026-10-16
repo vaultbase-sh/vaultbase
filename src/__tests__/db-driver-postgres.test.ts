@@ -5,7 +5,8 @@
  * one checks the driver's own contract.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { closeDb, initDb } from "../db/client.ts";
+import { closeDb, getDb, initDb } from "../db/client.ts";
+import { admin } from "../db/schema.ts";
 import { db, getDriver } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { PostgresDriver } from "../db/postgres.ts";
@@ -97,9 +98,36 @@ describe.if(onPg)("Postgres driver", () => {
       { name: "at", type: "integer", primaryKey: false, notNull: true, unique: false, default: { kind: "epochNow" } },
       { name: "kind", type: "text", primaryKey: false, notNull: true, unique: false, default: { kind: "literal", value: "a'b" } },
       { name: "score", type: "real", primaryKey: false, notNull: false, unique: false },
-    ])).toBe(`CREATE TABLE IF NOT EXISTS x (\n  id text PRIMARY KEY,\n  at integer NOT NULL DEFAULT (extract(epoch from now())::integer),\n  kind text NOT NULL DEFAULT 'a''b',\n  score double precision\n)`);
+    ])).toBe(`CREATE TABLE IF NOT EXISTS x (\n  id text PRIMARY KEY,\n  at bigint NOT NULL DEFAULT (extract(epoch from now())::bigint),\n  kind text NOT NULL DEFAULT 'a''b',\n  score double precision\n)`);
     expect(d.createIndex({ name: "i", table: "x", columns: ["kind", "at DESC"], unique: true, where: "at > 0" })).toBe(`CREATE UNIQUE INDEX IF NOT EXISTS i ON x(kind, at DESC) WHERE at > 0`);
     expect(d.jsonExtract(`"t"."meta"`, "$.a")).toBe(`("t"."meta"::jsonb #>> '{a}')`);
+    // A path is one `#>>`, so a step through a string reads as missing instead of failing to parse it.
+    expect(d.jsonExtract(d.jsonExtract(`"t"."meta"`, "$.a"), "$.b")).toBe(`("t"."meta"::jsonb #>> '{a,b}')`);
+  });
+});
+
+describe.if(onPg)("drizzle on Postgres", () => {
+  beforeEach(async () => { await initDb(":memory:"); await runMigrations(); });
+  afterEach(async () => { await closeDb(); });
+
+  // Drizzle ran on the bare pool: a write inside a transaction committed on
+  // another connection and outlived the rollback (history rows of a failed
+  // batch, revocations), and bigint columns came back as BigInt.
+  it("writes inside the current transaction, and rolls back with it", async () => {
+    await expect(db.transaction(async () => {
+      await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+      expect((await db.get<{ n: number }>(`SELECT count(*) AS n FROM vaultbase_admin`))!.n).toBe(1);
+      throw new Error("undo");
+    })).rejects.toThrow("undo");
+    expect(await getDb().select().from(admin)).toEqual([]);
+  });
+
+  it("returns bigint columns as numbers", async () => {
+    const later = Date.UTC(2040, 0, 1) / 1000;
+    await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: later, created_at: 0 });
+    const [row] = await getDb().select().from(admin);
+    expect(row!.password_reset_at).toBe(later);
+    expect(JSON.stringify(row)).toContain(String(later));
   });
 });
 

@@ -70,11 +70,20 @@ export interface Dialect {
    */
   readonly indexTail: string[];
   /**
-   * Whether a value extracted from a JSON path compares as text, so the
-   * other side of the comparison must be bound as text too (Postgres
-   * `#>>`); SQLite's json_extract keeps the JSON type.
+   * Postgres only: how the filter compiler lines up a bound value with the
+   * expression it is compared with, so comparisons answer as on SQLite.
+   * Bound numbers are typed parameters there, and `#>>` reads JSON as text;
+   * SQLite compares a column by its affinity and json_extract keeps the JSON
+   * type. Undefined on SQLite, which needs none of it.
    */
-  readonly jsonCompareAsText: boolean;
+  readonly typedCompare?: {
+    /** The jsonb form (`#>`) of an expression made by jsonExtract, or null when `expr` is not one. */
+    jsonb(expr: string): string | null;
+    /** A jsonb expression as a number (booleans as 1/0) or as text; NULL when the JSON value is another type. */
+    as(jsonb: string, kind: "number" | "text"): string;
+    /** Like jsonEach, with `value` as jsonb. */
+    eachJsonb(expr: string): string;
+  };
   /** Storage type for a built-in field type (`TEXT`, `INTEGER`, `REAL`). */
   columnType(fieldType: string): string;
   quoteIdent(name: string): string;
