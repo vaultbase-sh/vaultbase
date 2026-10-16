@@ -62,13 +62,14 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 
 ## Features
 
-- **Collections + REST** — real SQLite tables per collection (`vb_<name>`), 15 field types, base / auth / view collections. Filter, sort, expand, field projection, batch, ETag concurrency
+- **Collections + REST** — a real table per collection (`vb_<name>`), 16 field types, base / auth / view collections. Filter, sort, expand, field projection, batch, ETag concurrency
 - **Auth** — email + password, OAuth2 with PKCE (Google, GitHub, Apple, Microsoft, Discord, GitLab and more, plus generic OIDC), OTP / magic links, MFA / TOTP, anonymous users, admin impersonation
-- **Realtime** — WebSocket + SSE; subscribe to a collection, a record, its children or `*`, checked against your API rules
+- **Realtime** — WebSocket + SSE; subscribe to a collection, a record, one kind of event (`posts.create`) or `*`, checked against your API rules
 - **Files** — local disk, S3 or R2; thumbnails, MIME / size validation, protected files with one-time tokens
 - **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete, or kept as TypeScript files in a `vb_hooks/` folder (with imports and npm packages) that the admin UI edits too
 - **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every call audited
-- **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), backups, Prometheus metrics
+- **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), scheduled backups (a file copy on SQLite, `pg_dump` on Postgres), Prometheus metrics
+- **Database** — SQLite by default: one file, read worker threads on spare cores. Postgres in beta (`VAULTBASE_DATABASE_URL`), including several servers on one database. See [Databases](https://docs.vaultbase.dev/concepts/databases/)
 - **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks
 - **One binary** — no native deps, admin UI embedded; releases are cosign-signed with CycloneDX SBOMs
 
@@ -76,7 +77,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 
 - **Runtime**: Bun
 - **Framework**: Elysia
-- **DB**: SQLite (`bun:sqlite`)
+- **DB**: SQLite (`bun:sqlite`), or Postgres (`Bun.sql`, beta)
 - **ORM**: Drizzle
 - **Admin UI**: React 19 + Vite + React Router v7 + Zustand + PrimeReact + Monaco + Quill
 
@@ -86,13 +87,15 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 |---|---|---|
 | `VAULTBASE_PORT` | `8091` | Listen port |
 | `VAULTBASE_DATA_DIR` | `./vaultbase_data` | DB, uploads, logs, secrets |
+| `VAULTBASE_DATABASE_URL` | none | A `postgres://…` URL to run on Postgres (beta) instead of the SQLite file |
+| `VAULTBASE_READ_WORKERS` | cores − 2 | Read worker threads for list and get-one requests on SQLite (at least 1 on two cores or more, at most 8; `0` keeps one thread) |
 | `VAULTBASE_JWT_SECRET` | auto-generated | Persisted in `<dataDir>/.secret` |
-| `VAULTBASE_ENCRYPTION_KEY` | none | Required for encrypted fields. Base64 / hex / 32-char string (32 bytes) |
+| `VAULTBASE_ENCRYPTION_KEY` | auto-generated | Persisted in `<dataDir>/.encryption-key`. Encrypts secret settings and encrypted fields. Base64 / hex / 32-char string (32 bytes) |
 | `VAULTBASE_RATE_*` | rule-based | See Settings → Rate limiting |
 
 ## Production deployment
 
-Vaultbase is single-process, single-threaded, and **does not terminate TLS or
+Vaultbase is one process (with read worker threads on SQLite) and **does not terminate TLS or
 compress responses in-process**. Both responsibilities belong to a reverse
 proxy in front of the binary — nginx, Caddy, or Cloudflare. In-process
 compression was tried and removed: it blocked the event loop on
@@ -197,6 +200,10 @@ or by replacing the running DB file while the service is stopped.
 
 ## Cluster mode (multi-process)
 
+Read worker threads (on by default) now spread SQLite reads over spare cores in one
+process, and several servers can share one Postgres database (beta); prefer those. Cluster
+mode remains for existing setups.
+
 A single Bun process is single-threaded — caps at one CPU core. For higher
 throughput on multi-core hosts, use the cluster orchestrator:
 
@@ -244,13 +251,16 @@ before adopting the dedicated-writer-process pattern.
 
 - Run Vaultbase under a process supervisor (systemd, runit, pm2). It does
   not daemonize itself.
-- Back up `<dataDir>/` periodically. The single-file SQLite DB is the
-  source of truth — nothing else lives outside.
+- Back up `<dataDir>/` periodically. On SQLite the single-file DB is the
+  source of truth — nothing else lives outside. On Postgres, back up the
+  database with `pg_dump` (scheduled backups do this when it's installed) and
+  keep `<dataDir>/` for uploads and the keys.
 - Set `VAULTBASE_JWT_SECRET` explicitly in production. The auto-generated
   fallback is per-host and will rotate if `<dataDir>/.secret` is wiped,
   invalidating every issued token.
-- Set `VAULTBASE_ENCRYPTION_KEY` if you use encrypted fields. Loss of the
-  key permanently corrupts those columns.
+- Keep `VAULTBASE_ENCRYPTION_KEY` (or `<dataDir>/.encryption-key`) with your
+  backups: encrypted values can't be read without it. Several servers on one
+  Postgres database need the same JWT secret and encryption key.
 
 ## Cross-compile
 
