@@ -47,9 +47,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   with full-text search left a statement open, and a backup taken in the next moments
   failed with "SQL statements in progress".
 - **Writes made while a batch was running.** A batch runs one transaction on the shared
-  connection and awaits its hooks inside it; a setting saved, a session revoked or a
-  record written by another request in the meantime joined that transaction and was
-  undone if the batch failed. They now wait for the batch to finish.
+  connection and awaits its hooks inside it; a setting saved or a session revoked by
+  another request in the meantime joined that transaction and was undone if the batch
+  failed. They now wait for the batch to finish.
 
 ## [0.22.1] — 2026-10-15
 
