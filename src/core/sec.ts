@@ -1,8 +1,6 @@
 import * as jose from "jose";
 import { eq } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
-import { admin, tokenRevocations } from "../db/schema.ts";
 import { verifyHs256 } from "./jwt-hs256.ts";
 import type { AuthContext } from "./rules.ts";
 import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
@@ -267,15 +265,13 @@ export async function signAuthToken(opts: {
 
 /** Add `jti` to the revocation list (idempotent). */
 export async function revokeToken(jti: string, expiresAt: number): Promise<void> {
-  try {
-    await getDb().insert(tokenRevocations).values({
-      jti,
-      expires_at: expiresAt,
-      revoked_at: Math.floor(Date.now() / 1000),
-    });
-  } catch {
-    /* already revoked */
-  }
+  // Through the driver, not drizzle: a sign-out made while another request's
+  // transaction is open waits for it instead of landing inside it, where a
+  // rollback would undo it.
+  await db.run(
+    `INSERT INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?) ON CONFLICT(jti) DO NOTHING`,
+    [jti, expiresAt, Math.floor(Date.now() / 1000)],
+  );
 }
 
 /**

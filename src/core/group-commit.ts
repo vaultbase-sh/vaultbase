@@ -29,6 +29,7 @@
 import { onBeforeCloseDb } from "../db/client.ts";
 import { db, driverOpen, getDriver } from "../db/index.ts";
 import { discardTableReports, flushTableReports } from "./table-writes.ts";
+import type { SqliteDriver } from "../db/sqlite.ts";
 
 // The group spans event-loop turns, so it opens and commits with plain
 // statements rather than db.transaction(), whose scope is a callback.
@@ -86,10 +87,23 @@ export function deferUntilGroupCommit(effect: () => void): boolean {
   return true;
 }
 
-/** Commit the open group now, if any. Synchronous; safe to call anywhere. */
+/**
+ * Commit the open group now, if any. Synchronous; safe to call anywhere.
+ * While a hook's transaction is a savepoint inside the group, the commit
+ * waits for it to end (SqliteDriver.holdsWriteGroup), so the group never
+ * commits half of it; the driver calls back here when it does.
+ */
 export function flushGroupCommit(): void {
   const g = open;
   if (!g) return;
+  const driver = getDriver() as Partial<SqliteDriver>;
+  if (driver.holdsWriteGroup) {
+    driver.onGroupReleased = () => {
+      driver.onGroupReleased = null;
+      flushGroupCommit();
+    };
+    return;
+  }
   open = null;
   let failure: unknown = null;
   try {

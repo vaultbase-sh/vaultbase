@@ -12,6 +12,7 @@
  * are what keep that orderly.
  */
 import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
@@ -171,8 +172,8 @@ export class SqliteDriver implements DbDriver {
     this.sync = {
       all: (sql, params) => self.all(sql, params),
       get: (sql, params) => self.get(sql, params),
-      run: (sql, params, opts) => self.run(sql, params, opts),
-      exec: (sql) => self.exec(sql),
+      run: (sql, params, opts) => self.runNow(sql, params, opts),
+      exec: (sql) => self.execNow(sql),
       describe: (sql) => self.describe(sql),
       get inTransaction() { return self.raw.inTransaction; },
       transaction: (fn, opts) => self.transactionSync(fn, opts),
@@ -221,7 +222,20 @@ export class SqliteDriver implements DbDriver {
    * the statement, trigger rows included) only when `opts.table` asks for
    * the write to be reported; otherwise it equals `changes`.
    */
-  run(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): RunResult {
+  /**
+   * Writes wait while another async context's transaction is open (see
+   * `own`), then run synchronously; with no transaction open elsewhere they
+   * run at once.
+   */
+  run(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): RunResult | Promise<RunResult> {
+    return this.foreignTx() ? this.afterForeignTx(() => this.runNow(sql, params, opts)) : this.runNow(sql, params, opts);
+  }
+
+  exec(sql: string): void | Promise<void> {
+    return this.foreignTx() ? this.afterForeignTx(() => this.execNow(sql)) : this.execNow(sql);
+  }
+
+  private runNow(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): RunResult {
     this.traceFn?.(sql);
     const table = opts?.table;
     const before = table ? this.totalChanges() : 0;
@@ -236,7 +250,7 @@ export class SqliteDriver implements DbDriver {
     return { changes: r.changes, lastInsertRowid: r.lastInsertRowid, trackedChanges: tracked };
   }
 
-  exec(sql: string): void {
+  private execNow(sql: string): void {
     this.traceFn?.(sql);
     this.raw.exec(sql);
     if (DDL_RE.test(sql)) this.tokenThisTurn = null;
@@ -266,56 +280,105 @@ export class SqliteDriver implements DbDriver {
     return (this.changesProbe.get() as { t: number }).t;
   }
 
+  /**
+   * The one connection is shared by every request, and `fn` awaits between
+   * its statements; while it runs, this context owns the connection's
+   * transaction and writes from other contexts wait for it (`own`), so none
+   * lands inside it to be lost with its rollback, or committed by it.
+   * Nested in the owner's own context: a savepoint. Inside the open write
+   * group (a hook of a record write): a savepoint that keeps the group from
+   * committing until it ends.
+   */
   async transaction<T>(fn: () => Promise<T>, opts?: TransactionOptions): Promise<T> {
-    if (this.raw.inTransaction) return this.savepoint(fn);
-    this.exec(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
+    if (this.owner && this.ownerAls.getStore() === this.owner.id) return this.savepoint(fn);
+    while (this.foreignTx()) await this.owner!.done;
+    if (this.raw.inTransaction) return this.own(() => this.savepoint(fn), true);
+    return this.own(async () => {
+      this.execNow(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
+      try {
+        const out = await fn();
+        this.execNow("COMMIT");
+        return out;
+      } catch (e) {
+        // A statement that failed because the connection was closed, or a
+        // COMMIT that failed, may have ended the transaction already.
+        if (this.raw.inTransaction) { try { this.execNow("ROLLBACK"); } catch { /* closed */ } }
+        throw e;
+      }
+    }, false);
+  }
+
+  /** Whether a savepoint owns the open write group, which must not commit under it. */
+  get holdsWriteGroup(): boolean {
+    return this.owner?.inGroup === true;
+  }
+
+  /** Called when a savepoint that held the write group ends (group-commit flushes then). */
+  onGroupReleased: (() => void) | null = null;
+
+  private owner: { id: object; done: Promise<void>; inGroup: boolean } | null = null;
+  private readonly ownerAls = new AsyncLocalStorage<object>();
+
+  /** Whether another async context's transaction is open. */
+  private foreignTx(): boolean {
+    return this.owner !== null && this.ownerAls.getStore() !== this.owner.id;
+  }
+
+  private async afterForeignTx<T>(fn: () => T): Promise<T> {
+    while (this.foreignTx()) await this.owner!.done;
+    return fn();
+  }
+
+  private async own<T>(body: () => Promise<T>, inGroup: boolean): Promise<T> {
+    let release!: () => void;
+    const id = {};
+    this.owner = { id, done: new Promise<void>((r) => { release = r; }), inGroup };
     try {
-      const out = await fn();
-      this.exec("COMMIT");
-      return out;
-    } catch (e) {
-      // A statement that failed because the connection was closed, or a
-      // COMMIT that failed, may have ended the transaction already.
-      if (this.raw.inTransaction) { try { this.exec("ROLLBACK"); } catch { /* closed */ } }
-      throw e;
+      return await this.ownerAls.run(id, body);
+    } finally {
+      this.owner = null;
+      // Commit a group that wanted to commit while held, before any waiter
+      // resumes and finds it still open.
+      if (inGroup) this.onGroupReleased?.();
+      release();
     }
   }
 
   private transactionSync<T>(fn: () => T, opts?: TransactionOptions): T {
     if (this.raw.inTransaction) {
       const name = `vb_sp_${++this.savepointSeq}`;
-      this.exec(`SAVEPOINT ${name}`);
+      this.execNow(`SAVEPOINT ${name}`);
       try {
         const out = fn();
-        this.exec(`RELEASE ${name}`);
+        this.execNow(`RELEASE ${name}`);
         return out;
       } catch (e) {
-        this.exec(`ROLLBACK TO ${name}`);
-        this.exec(`RELEASE ${name}`);
+        this.execNow(`ROLLBACK TO ${name}`);
+        this.execNow(`RELEASE ${name}`);
         throw e;
       }
     }
-    this.exec(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
+    this.execNow(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
     try {
       const out = fn();
-      this.exec("COMMIT");
+      this.execNow("COMMIT");
       return out;
     } catch (e) {
-      if (this.raw.inTransaction) { try { this.exec("ROLLBACK"); } catch { /* closed */ } }
+      if (this.raw.inTransaction) { try { this.execNow("ROLLBACK"); } catch { /* closed */ } }
       throw e;
     }
   }
 
   async savepoint<T>(fn: () => Promise<T>): Promise<T> {
     const name = `vb_sp_${++this.savepointSeq}`;
-    this.exec(`SAVEPOINT ${name}`);
+    this.execNow(`SAVEPOINT ${name}`);
     try {
       const out = await fn();
-      this.exec(`RELEASE ${name}`);
+      this.execNow(`RELEASE ${name}`);
       return out;
     } catch (e) {
-      this.exec(`ROLLBACK TO ${name}`);
-      this.exec(`RELEASE ${name}`);
+      this.execNow(`ROLLBACK TO ${name}`);
+      this.execNow(`RELEASE ${name}`);
       throw e;
     }
   }
