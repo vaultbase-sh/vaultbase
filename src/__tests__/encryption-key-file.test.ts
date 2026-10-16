@@ -77,7 +77,7 @@ describe("key mismatches (review 17 F-5)", () => {
     try {
       loadEncryptionKey(dir);
       const { setSetting } = await import("../api/settings.ts");
-      setSetting("smtp.pass", "secret");
+      await setSetting("smtp.pass", "secret");
       expect(await encryptionKeyMatchesData()).toBe(true);
       process.env["VAULTBASE_ENCRYPTION_KEY"] = Buffer.alloc(32, 9).toString("base64");
       expect(await encryptionKeyMatchesData()).toBe(false);
@@ -98,7 +98,7 @@ describe("key check tolerates foreign values (review 18 F-3)", () => {
       // prefix — stored first, so a check that samples one row hits them.
       await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["app.name", "vbenc:1:not-really"]);
       await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0)`, ["oauth2.x.client_secret", "vbenc:1:AAAA:BBBB"]);
-      setSetting("smtp.pass", "secret");
+      await setSetting("smtp.pass", "secret");
       expect(await encryptionKeyMatchesData()).toBe(true);
     } finally {
       await closeDb();

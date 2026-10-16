@@ -62,7 +62,7 @@ describe.skipIf(onSqlite)("restore on Postgres", () => {
   it("answers 501 with pg_restore guidance, for a stored backup and an upload", async () => {
     const SECRET = "test-secret-pg-restore";
     const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
-    const plugin = makeBackupPlugin(SECRET, "unused.db");
+    const plugin = makeBackupPlugin(SECRET, join(tmpdir(), `vb-pg-restore-${Date.now()}.db`));
     const form = new FormData();
     form.append("file", new File(["SQLite format 3\0"], "data.db"));
     for (const req of [
