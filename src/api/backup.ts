@@ -245,6 +245,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
 
     // Restore from uploaded SQLite file
     .post("/admin/restore", async ({ request, set }) => {
+      { const r = noRestore(set); if (r) return r; }
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
       const formData = await request.formData();
