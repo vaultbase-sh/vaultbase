@@ -40,6 +40,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   in `?filter=` and in rules alike.
 - **`geoDistance()` with literal coordinates.** The compiled SQL used each latitude twice
   but bound it once, so the documented radius search failed with a parameter-count error.
+- **Backups right after the index-suggestions report.** Opening the report on a collection
+  with full-text search left a statement open, and a backup taken in the next moments
+  failed with "SQL statements in progress".
 
 ## [0.22.1] — 2026-10-15
 
