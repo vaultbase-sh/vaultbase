@@ -18,7 +18,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   hooks and realtime work the same. Index suggestions read Postgres plans, the
   Monitoring page shows the database size and connections, `strftime()` in filters covers
   the common codes, and backups (scheduled, S3, download) run `pg_dump` when it is
-  installed. Not on Postgres yet, each answering with a clear error: restore from the
+  installed. Several servers can share one database: what one changes (collections, rules,
+  hooks, settings, …) takes effect on the others within milliseconds, realtime subscribers
+  on every server hear of every write, and servers starting together take turns upgrading
+  the schema. Not on Postgres yet, each answering with a clear error: restore from the
   backups page (use `pg_restore`), the SQL sandbox (read-only queries work) and read worker
   threads. The test suite runs against Postgres in CI. See the Databases page.
 - **`helpers.sql` in hooks, routes, jobs and workers.** Asynchronous SQL with `?`
@@ -43,6 +46,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Backups right after the index-suggestions report.** Opening the report on a collection
   with full-text search left a statement open, and a backup taken in the next moments
   failed with "SQL statements in progress".
+- **Writes made while a batch was running.** A batch runs one transaction on the shared
+  connection and awaits its hooks inside it; a setting saved, a session revoked or a
+  record written by another request in the meantime joined that transaction and was
+  undone if the batch failed. They now wait for the batch to finish.
 
 ## [0.22.1] — 2026-10-15
 
