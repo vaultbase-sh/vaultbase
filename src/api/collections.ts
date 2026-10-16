@@ -158,7 +158,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           await loadSensitiveSchema();
           validateViewQuery(body.view_query);
           const columns = await inferViewColumns(body.view_query);
-          const fields = inferViewFields(body.view_query);
+          const fields = await inferViewFields(body.view_query);
           return { data: { columns, fields } };
         } catch (e) {
           set.status = 422;

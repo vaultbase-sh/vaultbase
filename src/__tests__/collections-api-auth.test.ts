@@ -51,3 +51,18 @@ describe("collections API", () => {
     expect((await get("/collections/secrets", token)).status).toBe(200);
   });
 });
+
+describe("view preview", () => {
+  it("returns the inferred fields with the columns", async () => {
+    const { token } = await signAuthToken({ payload: { id: "a1", email: "a@test.local" }, audience: "admin", expiresInSeconds: 600, jwtSecret: SECRET });
+    const res = await makeCollectionsPlugin(SECRET).handle(new Request("http://localhost/admin/collections/preview-view", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ view_query: "SELECT id, x FROM vb_secrets" }),
+    }));
+    expect(res.status).toBe(200);
+    const { data } = (await res.json()) as { data: { columns: string[]; fields: Array<{ name: string }> } };
+    expect(Array.isArray(data.fields)).toBe(true);
+    expect(data.fields.map((f) => f.name)).toContain("x");
+  });
+});
