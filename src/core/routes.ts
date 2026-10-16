@@ -8,6 +8,7 @@ import { appendHookLog } from "./file-logger.ts";
 import { insertLog } from "../api/logs.ts";
 import type { AuthContext } from "./rules.ts";
 import { compileCode } from "./code-loader.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 async function extractAuth(request: Request, jwtSecret: string): Promise<AuthContext | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
@@ -144,7 +145,9 @@ export function listRegisteredRoutes(): Array<{ name: string; method: string; pa
 export function invalidateRoutesCache(): void {
   cache.clear();
   cacheLoaded = false;
+  announceInvalidation("routes");
 }
+onPeerInvalidation("routes", invalidateRoutesCache);
 
 async function loadRoutes(): Promise<CompiledRoute[]> {
   if (cacheLoaded) return [...cache.values()];

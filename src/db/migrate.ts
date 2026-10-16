@@ -15,7 +15,8 @@
  */
 import type { Database } from "bun:sqlite";
 import { getRawClient } from "./client.ts";
-import { db } from "./index.ts";
+import { db, getDriver } from "./index.ts";
+import { PostgresDriver } from "./postgres.ts";
 import { ensureFixedSchema } from "./ddl.ts";
 
 /**
@@ -43,6 +44,15 @@ export async function runOnce(key: string, fn: () => Promise<void> | void): Prom
 }
 
 export async function runMigrations() {
+  // Several servers starting together on one Postgres database would race
+  // each other's CREATE / ALTER ("tuple concurrently updated"): one at a
+  // time, the rest find the work done.
+  const driver = getDriver();
+  if (driver instanceof PostgresDriver) return driver.withMigrationLock(runMigrationsNow);
+  return runMigrationsNow();
+}
+
+async function runMigrationsNow() {
   await ensureFixedSchema();
   // The text function the Postgres search index is built on (core/fts.ts).
   await (await import("../core/fts.ts")).ensureSearchFunction();

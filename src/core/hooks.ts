@@ -11,6 +11,7 @@ import type { AuthContext } from "./rules.ts";
 import { makeExtraHelpers, type ExtraHookHelpers } from "./hook-helpers-extra.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { compileCode } from "./code-loader.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 /**
  * Per-async-context store carrying the active HTTP Request through
@@ -204,7 +205,9 @@ export function listRegisteredHooks(): Array<{ name: string; collection: string;
 export function invalidateHookCache(): void {
   compiledCache.clear();
   enabledHookRows.invalidate();
+  announceInvalidation("hooks");
 }
+onPeerInvalidation("hooks", invalidateHookCache);
 
 async function lookupEnabledHooks(
   collectionName: string,

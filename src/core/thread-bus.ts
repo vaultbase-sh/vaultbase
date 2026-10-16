@@ -20,6 +20,8 @@ export interface WorkerStats {
   queries: unknown[];
 }
 
+import { sendToPeers } from "./peers.ts";
+
 let sender: ((m: BusMessage) => void) | null = null;
 
 /** The pool installs the function that posts to every worker. */
@@ -29,6 +31,8 @@ export function setBusSender(fn: ((m: BusMessage) => void) | null): void {
 
 export function broadcast(m: BusMessage): void {
   sender?.(m);
+  // Other servers on the same Postgres database (core/peers.ts); metrics are per server.
+  if (m.kind !== "metrics-reset") sendToPeers({ k: "bus", m });
 }
 
 /** True on a read worker thread. */

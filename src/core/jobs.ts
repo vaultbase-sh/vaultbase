@@ -6,6 +6,7 @@ import { ValidationError } from "./validate.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { compileCode } from "./code-loader.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 /**
  * Cron-style scheduled jobs.
@@ -44,7 +45,9 @@ const compiledCache = new Map<string, (ctx: JobContext) => Promise<unknown>>();
 
 export function invalidateJobsCache(): void {
   compiledCache.clear();
+  announceInvalidation("jobs");
 }
+onPeerInvalidation("jobs", invalidateJobsCache);
 
 function compile(row: JobRow): ((ctx: JobContext) => Promise<unknown>) | null {
   const cached = compiledCache.get(row.id);

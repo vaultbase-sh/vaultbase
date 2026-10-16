@@ -7,6 +7,7 @@ import { broadcast } from "../realtime/manager.ts";
 import { on } from "./events.ts";
 import { makeHookHelpers, runAfterHook } from "./hooks.ts";
 import { dispatchEvent } from "./webhooks.ts";
+import { sendToPeers, withSlim } from "./peers.ts";
 
 let registered = false;
 
@@ -33,6 +34,17 @@ export function registerBuiltinListeners(): void {
       viewRule: col.view_rule, listRule: col.list_rule, record: existing,
     });
   }, "realtime");
+
+  // Other servers on the same Postgres database: their realtime subscribers
+  // and vector caches (core/peer-handlers.ts). Every source: vectors go
+  // stale for auth-created users too.
+  const toPeers = (t: string, c: string, id: string, r: Record<string, unknown> | undefined, src: string) => {
+    const slim = { k: "rec", t, c, id, src };
+    sendToPeers(withSlim({ ...slim, ...(r ? { r } : {}) }, slim));
+  };
+  on("record.created", ({ collection, record, source }) => toPeers("create", collection.name, String(record["id"]), record, source), "peers");
+  on("record.updated", ({ collection, record, source }) => toPeers("update", collection.name, String(record["id"]), record, source), "peers");
+  on("record.deleted", ({ collection, id, existing, source }) => toPeers("delete", collection.name, id, existing, source), "peers");
 
   // Outbound webhooks: `<collection>.create|update|delete`. Not for cascades
   // or auth-created users.

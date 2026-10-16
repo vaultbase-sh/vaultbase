@@ -165,6 +165,12 @@ function plainValues(row: unknown[]): unknown[] {
   return row.some((v) => typeof v === "bigint") ? row.map((v) => (typeof v === "bigint" ? Number(v) : v)) : row;
 }
 
+/** Postgres refused a prepared statement whose result columns changed under it. */
+function isStalePlan(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { errno?: unknown }).errno === "0A000" &&
+    /cached plan must not change result type/.test(String((e as { message?: unknown }).message));
+}
+
 export class PostgresDriver implements DbDriver {
   readonly name = "postgres" as const;
   readonly dialect = POSTGRES_DIALECT;
@@ -205,16 +211,40 @@ export class PostgresDriver implements DbDriver {
     const self = this;
     const client = {
       unsafe(query: string, params?: unknown[]) {
-        const q = self.conn().unsafe(query, params);
         return {
           then<A, B>(ok?: ((rows: unknown[]) => A) | null, fail?: ((e: unknown) => B) | null) {
-            return (q as unknown as Promise<Rows>).then((rows) => plainRows(rows), undefined).then(ok, fail);
+            return self.query(query, params ?? [], false).then((rows) => plainRows(rows as Rows), undefined).then(ok, fail);
           },
-          values: () => (q.values() as Promise<unknown[][]>).then((rows) => rows.map(plainValues)),
+          values: () => self.query(query, params ?? [], true).then((rows) => (rows as unknown[][]).map(plainValues)),
         };
       },
     };
     return client as unknown as SQL;
+  }
+
+  /**
+   * Run one statement. Its text ends with the schema token: Bun.sql keeps a
+   * prepared statement per text on each pooled connection, and Postgres
+   * refuses one whose result columns changed ("cached plan must not change
+   * result type", on every later run), so adding a field broke every list
+   * of that table on every connection that had run one. A new token is a
+   * new text, prepared afresh. A change made elsewhere (another server, or
+   * psql) shows as that error before its notice arrives; it moves the token
+   * and the statement runs once more, unless a transaction is open, which
+   * the error has already aborted.
+   */
+  private async query(text: string, params: unknown[], values: boolean): Promise<unknown[]> {
+    const run = () => {
+      const q = this.conn().unsafe(`${text}\n/* vb:${this.token} */`, params);
+      return (values ? q.values() : q) as Promise<unknown[]>;
+    };
+    try {
+      return await run();
+    } catch (e) {
+      if (!isStalePlan(e) || this.als.getStore()) throw e;
+      this.token++;
+      return await run();
+    }
   }
 
   get sync(): SyncDb {
@@ -232,7 +262,7 @@ export class PostgresDriver implements DbDriver {
 
   async all<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T[]> {
     this.traceFn?.(sql);
-    const rows = await this.conn().unsafe(toPositional(sql), params as unknown[]);
+    const rows = await this.query(toPositional(sql), params as unknown[], false);
     return plainRows<T>(rows as Rows);
   }
 
@@ -243,7 +273,7 @@ export class PostgresDriver implements DbDriver {
 
   async run(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): Promise<RunResult> {
     this.traceFn?.(sql);
-    const rows = (await this.conn().unsafe(toPositional(sql), params as unknown[])) as Rows;
+    const rows = (await this.query(toPositional(sql), params as unknown[], false)) as Rows;
     const changes = rows.count ?? 0;
     if (opts?.table) {
       noteTableWrite(opts.table, changes);
@@ -293,10 +323,50 @@ export class PostgresDriver implements DbDriver {
     if (this.als.getStore()) return this.savepoint(fn);
     this.traceFn?.("BEGIN");
     try {
-      return await this.pool.begin(async (tx) => this.als.run(tx as unknown as SQL, fn)) as T;
+      const out = await this.pool.begin(async (tx) => this.als.run(tx as unknown as SQL, fn)) as T;
+      flushTableReports({ bump: true });
+      return out;
     } finally {
       this.traceFn?.("COMMIT");
     }
+  }
+
+  /**
+   * NOTIFY `channel` on the current connection: inside a transaction it is
+   * delivered at COMMIT, and not at all after a rollback.
+   */
+  notify(channel: string, payload: string): Promise<unknown> {
+    return this.conn().notify(channel, payload) as unknown as Promise<unknown>;
+  }
+
+  /** LISTEN on `channel` (one dedicated connection, re-subscribed after a reconnect). */
+  listen(channel: string, onNotify: (payload: string) => void, onListen: () => void): Promise<{ unlisten(): Promise<void> }> {
+    return this.pool.listen(channel, onNotify, onListen);
+  }
+
+  /**
+   * Run `fn` holding this schema's migration lock (a session advisory lock
+   * on a connection of its own), so servers booting together migrate one
+   * at a time.
+   */
+  async withMigrationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const lockSql = `hashtext('vaultbase:migrate:' || current_schema())`;
+    const conn = await this.pool.reserve();
+    try {
+      await conn.unsafe(`SELECT pg_advisory_lock(${lockSql})`);
+      try {
+        return await fn();
+      } finally {
+        await conn.unsafe(`SELECT pg_advisory_unlock(${lockSql})`).catch(() => { /* released with the connection */ });
+      }
+    } finally {
+      conn.release();
+    }
+  }
+
+  /** Another server changed the schema: caches keyed on the token rebuild. */
+  noteForeignSchemaChange(): void {
+    this.token++;
   }
 
   async savepoint<T>(fn: () => Promise<T>): Promise<T> {

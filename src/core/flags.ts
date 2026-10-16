@@ -19,6 +19,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { featureFlags, flagSegments } from "../db/schema.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 export type FlagValue = boolean | string | number | Record<string, unknown> | unknown[] | null;
 
@@ -90,7 +91,11 @@ interface CacheEntry {
 let cache: CacheEntry | null = null;
 const CACHE_TTL_MS = 5_000;
 
-export function invalidateFlagCache(): void { cache = null; }
+export function invalidateFlagCache(): void {
+  cache = null;
+  announceInvalidation("flags");
+}
+onPeerInvalidation("flags", invalidateFlagCache);
 
 async function load(): Promise<CacheEntry> {
   const now = Date.now();

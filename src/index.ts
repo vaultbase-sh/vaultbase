@@ -375,6 +375,12 @@ async function main() {
   await runMigrations();
   const { loadSettings } = await import("./api/settings.ts");
   await loadSettings();
+  // Other servers on the same Postgres database (core/peers.ts).
+  if (getDriver().name === "postgres") {
+    await import("./core/peer-handlers.ts");
+    const { startPeers } = await import("./core/peers.ts");
+    await startPeers(getDriver() as unknown as Parameters<typeof startPeers>[0]);
+  }
 
   // CLI sub-command — bootstrap an admin from a script + exit. Skips
   // server boot entirely so headless deploys can configure without ever

@@ -5,6 +5,7 @@ import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { compileCode } from "./code-loader.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 /**
  * In-process job queue + worker engine. Phase 1 of the Redis brainstorm —
@@ -139,7 +140,9 @@ export function _resetBuiltinWorkers(): void {
 export function invalidateWorkerCache(): void {
   compiledCache.clear();
   cacheLoaded = false;
+  announceInvalidation("workers");
 }
+onPeerInvalidation("workers", invalidateWorkerCache);
 
 interface WorkerRow {
   id: string;

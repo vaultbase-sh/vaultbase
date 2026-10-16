@@ -27,6 +27,7 @@ import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
 import { assertEgressAllowed, EgressBlockedError } from "./hook-egress.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
+import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 const TICK_INTERVAL_MS = 2000;
 const CLAIM_LIMIT = 50;
@@ -81,7 +82,9 @@ const enabledWebhooks = dbScopedTtlCache(1000, async () =>
 /** Drop the cached webhook list after creating / editing / deleting one. */
 export function invalidateWebhookCache(): void {
   enabledWebhooks.invalidate();
+  announceInvalidation("webhooks");
 }
+onPeerInvalidation("webhooks", invalidateWebhookCache);
 
 export async function dispatchEvent(opts: DispatchOpts): Promise<{ enqueued: number }> {
   const db = getDb();

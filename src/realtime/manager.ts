@@ -1,5 +1,6 @@
 import type { RecordWithMeta } from "../core/records.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
+import { sendToPeers } from "../core/peers.ts";
 
 export interface WSLike {
   send(data: string): void;
@@ -374,6 +375,7 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
  * collide with a user-defined collection.
  */
 export function broadcastSystem(topic: string, message: object): void {
+  sendToPeers({ k: "sys", topic, message });
   const inner = subs.get(topic);
   if (!inner) return;
   const payload = JSON.stringify(message);

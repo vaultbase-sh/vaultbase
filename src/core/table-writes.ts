@@ -36,10 +36,14 @@ export function noteTableWrite(table: string, changes: number): void {
  * it recounts; a worker that sees the commit first (its `data_version`
  * moved with nothing reported) empties its cache instead, which is safe.
  */
-export function flushTableReports(): void {
+export function flushTableReports(opts?: { bump?: boolean }): void {
   if (pending.size === 0) return;
   const tables = [...pending.entries()];
   pending.clear();
+  // Postgres: other connections could read (and count) between the write
+  // and its COMMIT without seeing it, and cache that under the version the
+  // write had already moved. Moving it again at COMMIT retires those.
+  if (opts?.bump) for (const [t] of tables) versions.set(t, (versions.get(t) ?? 0) + 1);
   broadcast({ type: "bus", kind: "tables", tables });
 }
 
