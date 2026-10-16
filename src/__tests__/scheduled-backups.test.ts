@@ -2,7 +2,9 @@
  * Scheduled backups: snapshot, retention, schedule claim, admin API.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { onSqlite } from "./_helpers.ts";
+import { createPublicCollection, onSqlite } from "./_helpers.ts";
+import { createRecord, listRecords } from "../core/records.ts";
+import { queryStatsReport, resetQueryStats } from "../core/query-stats.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -78,6 +80,20 @@ describe.skipIf(!onSqlite)("runBackup", () => {
     expect(getBackupStatus().last_error).toMatch(/credentials/);
     // The local snapshot still exists.
     expect(listBackups().length).toBe(1);
+  });
+});
+
+describe.skipIf(!onSqlite)("backup after the index-suggestions report", () => {
+  // EXPLAIN QUERY PLAN over an FTS5 MATCH stays "in progress" after its last
+  // row; held in the statement cache it made every VACUUM INTO fail
+  // ("SQL statements in progress") until restart.
+  it("still works once a search query's plan has been read", async () => {
+    resetQueryStats();
+    await createPublicCollection({ name: "notes", fields: JSON.stringify([{ name: "title", type: "text", options: { searchable: true } }]) });
+    await createRecord("notes", { title: "quick brown fox" });
+    await listRecords("notes", { search: "fox" });
+    await queryStatsReport();
+    expect((await runBackup()).size).toBeGreaterThan(0);
   });
 });
 

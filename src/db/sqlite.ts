@@ -25,6 +25,7 @@ export const JOURNAL_SIZE_LIMIT = 67_108_864;
  * unique SQL string, oldest evicted past the cap, all dropped on DDL that
  * changes a table's shape ({@link SqliteDriver.invalidateStatements}).
  */
+const EXPLAIN_RE = /^\s*EXPLAIN\b/i;
 const STMT_CACHE_MAX = 256;
 
 function quoteIdent(name: string): string {
@@ -197,6 +198,17 @@ export class SqliteDriver implements DbDriver {
 
   all<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): T[] {
     this.traceFn?.(sql);
+    if (EXPLAIN_RE.test(sql)) {
+      // EXPLAIN QUERY PLAN over an FTS5 MATCH stays "in progress" after its
+      // last row; cached, it would block VACUUM INTO (backups) until restart.
+      // Plans are rare: prepare one, read it, finalize it.
+      const stmt = this.raw.prepare(sql);
+      try {
+        return stmt.all(...(params as SQLQueryBindings[])) as T[];
+      } finally {
+        stmt.finalize();
+      }
+    }
     return this.prepare(sql).all(...(params as SQLQueryBindings[])) as T[];
   }
 
