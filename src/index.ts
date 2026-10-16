@@ -380,6 +380,12 @@ async function main() {
     await import("./core/peer-handlers.ts");
     const { startPeers } = await import("./core/peers.ts");
     await startPeers(getDriver() as unknown as Parameters<typeof startPeers>[0]);
+    // Without them each server generates its own into its data directory:
+    // tokens signed by one fail on the others, and secret settings written
+    // by one can't be read by them.
+    for (const name of config.secretsFromDataDir ?? []) {
+      console.warn(`[vaultbase] ${name} is not set: every server on this database needs the same value`);
+    }
   }
 
   // CLI sub-command — bootstrap an admin from a script + exit. Skips

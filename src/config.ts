@@ -9,6 +9,8 @@ export interface Config {
   logsDir: string;
   jwtSecret: string;
   encryptionKey: string | undefined;
+  /** Secrets read from (or generated into) the data directory, not the environment. */
+  secretsFromDataDir?: string[];
 }
 
 /**
@@ -94,6 +96,9 @@ export async function loadConfig(): Promise<Config> {
   const logsDir = join(dataDir, "logs");
   if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
 
+  const secretsFromDataDir: string[] = [];
+  if (!process.env["VAULTBASE_JWT_SECRET"]) secretsFromDataDir.push("VAULTBASE_JWT_SECRET");
+  if (!process.env["VAULTBASE_ENCRYPTION_KEY"]) secretsFromDataDir.push("VAULTBASE_ENCRYPTION_KEY");
   const jwtSecret =
     process.env["VAULTBASE_JWT_SECRET"] ?? (await loadJwtSecret(dataDir));
 
@@ -105,6 +110,7 @@ export async function loadConfig(): Promise<Config> {
     logsDir,
     jwtSecret,
     encryptionKey: loadEncryptionKey(dataDir),
+    secretsFromDataDir,
   };
 }
 
