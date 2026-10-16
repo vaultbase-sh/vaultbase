@@ -170,14 +170,32 @@ export async function loadSettings(): Promise<void> {
   install(driver, decodeRows(rows));
 }
 
+/**
+ * Keys `setSetting` changed while a reload's read was in flight: the read
+ * may predate their write, so the reload keeps this thread's values for
+ * them instead of putting the old ones back.
+ */
+const reloadsInFlight = new Set<Set<string>>();
+
 /** The background refresh: a no-op when the database is closed or was reopened since the store was filled. */
 export async function _reloadSettings(): Promise<void> {
+  const written = new Set<string>();
+  reloadsInFlight.add(written);
   try {
     if (!driverOpen() || !store || store.driver !== getDriver()) return;
     const driver = getDriver();
     const rows = await db.all<{ key: string; value: string }>(`SELECT key, value FROM vaultbase_settings`);
-    if (store?.driver === driver) store.values = decodeRows(rows);
-  } catch { /* closing, closed, or the table is gone: the next load sorts it out */ }
+    if (store?.driver !== driver) return;
+    const next = decodeRows(rows);
+    for (const key of written) {
+      const mine = store.values.get(key);
+      if (mine === undefined) next.delete(key);
+      else next.set(key, mine);
+    }
+    store.values = next;
+  } catch { /* closing, closed, or the table is gone: the next load sorts it out */ } finally {
+    reloadsInFlight.delete(written);
+  }
 }
 
 /**
@@ -225,6 +243,7 @@ onCloseDb(_resetSettingsCache);
 export async function setSetting(key: string, value: string): Promise<void> {
   const stored = maybeEncrypt(key, value);
   values().set(key, stored);
+  for (const written of reloadsInFlight) written.add(key);
   await db.run(
     `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, ${db.dialect.epochNow})
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = ${db.dialect.epochNow}`,
