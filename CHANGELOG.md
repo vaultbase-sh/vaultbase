@@ -7,6 +7,18 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Read workers come back after they are dropped.** A read worker that stopped answering
+  was dropped and never replaced, so one overload spike left every read on the main thread
+  until a restart. A dropped worker is now replaced after a second, waiting longer (up to a
+  minute) while replacements keep failing. The Monitoring page shows how many were restarted.
+- **A busy read worker is no longer mistaken for a stuck one.** A request that waits 30 s
+  still fails with a 503, but its worker is dropped only when it has answered nothing at all
+  for that long; one that is behind under load and still answering stays.
+
 ## [0.23.1] — 2026-10-16
 
 ### Changed

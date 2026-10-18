@@ -13,10 +13,13 @@
  * `forwardRead` is never called and nothing here runs.
  *
  * Failure rules: a pool that can't start leaves nothing behind, so reads
- * stay on the main thread; a worker that errors is dropped with its
- * in-flight requests failed; a reply that doesn't arrive in
- * `FORWARD_TIMEOUT_MS` fails that request and drops the worker. When the
- * last worker is gone, `readPoolSize()` is 0 and the main thread serves.
+ * stay on the main thread. A reply that doesn't arrive in
+ * `FORWARD_TIMEOUT_MS` fails that request (503). A worker is dropped, with
+ * its in-flight requests failed, when it errors or when it has answered
+ * nothing at all for a whole timeout: one that is merely behind under load
+ * keeps answering and stays. A dropped worker is replaced after
+ * {@link respawnDelay}; while none is running, `readPoolSize()` is 0 and
+ * the main thread serves.
  */
 import { getCollectionCached } from "./collections.ts";
 import type { Config } from "../config.ts";
@@ -47,7 +50,17 @@ interface Slot {
   served: number;
   /** Spawn time, part of the id its stats are filed under. */
   born: number;
+  /** When it last answered, or went from idle to busy. */
+  progressAt: number;
   statsId?: string;
+}
+
+/** What the pool was started with, so a dropped worker can be replaced. Null when stopped. */
+interface PoolSpec {
+  size: number;
+  env: Record<string, string>;
+  config: Config;
+  workerUrl: URL | string;
 }
 
 const slots: Slot[] = [];
@@ -55,17 +68,47 @@ const pending = new Map<number, { slot: Slot; resolve: (r: ForwardReply) => void
 let seq = 0;
 let forwarded = 0;
 let dropped = 0;
+let restarted = 0;
+let nextWorkerId = 0;
+let spec: PoolSpec | null = null;
+/** Replacements being started. */
+let starting = 0;
+/** Workers in a row that died within {@link YOUNG_MS} of starting, or failed to start. */
+let failures = 0;
+let respawnTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** How long a worker may take to answer one request, or to start. */
 export const FORWARD_TIMEOUT_MS = 30_000;
 const START_TIMEOUT_MS = 30_000;
+/** A worker dropped sooner than this after starting counts as a failed restart. */
+const YOUNG_MS = 60_000;
+const RESPAWN_BASE_MS = 1_000;
+const RESPAWN_MAX_MS = 60_000;
+
+let forwardTimeoutMs = FORWARD_TIMEOUT_MS;
+let respawnBaseMs = RESPAWN_BASE_MS;
+
+/** Shorter timings for tests. */
+export function _setReadPoolTimings(t: { forwardTimeoutMs?: number; respawnBaseMs?: number }): void {
+  forwardTimeoutMs = t.forwardTimeoutMs ?? FORWARD_TIMEOUT_MS;
+  respawnBaseMs = t.respawnBaseMs ?? RESPAWN_BASE_MS;
+}
+
+/**
+ * How long to wait before starting a replacement: the base (1 s) after a
+ * worker that ran for a while, doubling for each one in a row that died
+ * young or failed to start, at most 60 s.
+ */
+export function respawnDelay(failuresInARow: number, baseMs = RESPAWN_BASE_MS): number {
+  return Math.min(RESPAWN_MAX_MS, baseMs * 2 ** Math.min(Math.max(0, failuresInARow - 1), 6));
+}
 
 export function readPoolSize(): number {
   return slots.length;
 }
 
-export function readPoolStats(): { workers: number; forwarded: number; inflight: number; dropped: number } {
-  return { workers: slots.length, forwarded, inflight: slots.reduce((n, s) => n + s.inflight, 0), dropped };
+export function readPoolStats(): { workers: number; forwarded: number; inflight: number; dropped: number; restarted: number } {
+  return { workers: slots.length, forwarded, inflight: slots.reduce((n, s) => n + s.inflight, 0), dropped, restarted };
 }
 
 /** Most read workers started by default; more rarely helps and each costs memory. */
@@ -126,6 +169,7 @@ export async function forwardRead(request: Request, peerIp: string | null): Prom
   const headers: Array<[string, string]> = [];
   request.headers.forEach((v, k) => headers.push([k, v]));
   const msg: ForwardRequest = { type: "request", id, method: request.method, url: request.url, headers, peerIp };
+  if (slot.inflight === 0) slot.progressAt = Date.now();
   slot.inflight++;
   forwarded++;
   try {
@@ -133,9 +177,13 @@ export async function forwardRead(request: Request, peerIp: string | null): Prom
       const timer = setTimeout(() => {
         if (!pending.has(id)) return;
         pending.delete(id);
-        dropWorker(slot, `no reply in ${FORWARD_TIMEOUT_MS} ms`);
         reject(new Error("read worker timed out"));
-      }, FORWARD_TIMEOUT_MS);
+        // Behind is not stuck: a worker that answered anything during the
+        // window stays (10 ms of slack for timer granularity).
+        if (slots.includes(slot) && Date.now() - slot.progressAt + 10 >= forwardTimeoutMs) {
+          dropWorker(slot, `no reply in ${forwardTimeoutMs} ms`);
+        }
+      }, forwardTimeoutMs);
       pending.set(id, { slot, resolve, reject, timer });
       slot.worker.postMessage(msg);
     });
@@ -152,9 +200,11 @@ function onStats(slot: Slot, m: WorkerStats): void {
   slot.statsId = id;
 }
 
-function onReply(e: MessageEvent): void {
+function onReply(slot: Slot, e: MessageEvent): void {
   const m = e.data as ForwardReply | { type: string };
   if (m.type !== "reply") return;
+  // Any reply is progress, including a late one to a request that timed out.
+  slot.progressAt = Date.now();
   const r = m as ForwardReply;
   const p = pending.get(r.id);
   if (!p) return;
@@ -181,6 +231,70 @@ function dropWorker(slot: Slot, reason: string): void {
   failSlot(slot, reason);
   try { slot.worker.terminate(); } catch { /* gone */ }
   process.stderr.write(`vaultbase: read worker dropped (${reason}); ${slots.length} left\n`);
+  if (!spec) return;
+  failures = Date.now() - slot.born < YOUNG_MS ? failures + 1 : 1;
+  armRespawn();
+}
+
+/** Start a replacement after the backoff, unless one is due or the pool is full or stopped. */
+function armRespawn(): void {
+  if (!spec || respawnTimer || slots.length + starting >= spec.size) return;
+  respawnTimer = setTimeout(() => { respawnTimer = null; void respawnOne(); }, respawnDelay(failures, respawnBaseMs));
+  (respawnTimer as { unref?: () => void }).unref?.();
+}
+
+async function respawnOne(): Promise<void> {
+  const s = spec;
+  if (!s || slots.length + starting >= s.size) return;
+  starting++;
+  try {
+    const slot = await spawnSlot(s);
+    if (spec !== s) { try { slot.worker.terminate(); } catch { /* gone */ } return; } // stopped meanwhile
+    slots.push(slot);
+    restarted++;
+    process.stderr.write(`vaultbase: read worker restarted; ${slots.length} running\n`);
+  } catch (e) {
+    failures++;
+    process.stderr.write(`vaultbase: read worker restart failed (${e instanceof Error ? e.message : String(e)}); retrying\n`);
+  } finally {
+    starting--;
+    armRespawn();
+  }
+}
+
+/**
+ * Start one worker and resolve once its database is open and its app built.
+ * Rejects, with the worker terminated, if it fails or takes longer than
+ * `START_TIMEOUT_MS`. Workers never keep the process alive on their own.
+ */
+function spawnSlot(s: PoolSpec): Promise<Slot> {
+  const i = nextWorkerId++;
+  const worker = new Worker(s.workerUrl, { env: { ...s.env, VAULTBASE_READ_WORKER: String(i) } });
+  const born = Date.now();
+  const slot: Slot = { worker, inflight: 0, served: 0, born, progressAt: born };
+  return new Promise<Slot>((resolve, reject) => {
+    const fail = (e: Error) => {
+      clearTimeout(timer);
+      try { worker.terminate(); } catch { /* gone */ }
+      reject(e);
+    };
+    const timer = setTimeout(() => fail(new Error(`read worker ${i} did not start in ${START_TIMEOUT_MS} ms`)), START_TIMEOUT_MS);
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data as { type: string; message?: string };
+      if (m.type === "ready") {
+        clearTimeout(timer);
+        (worker as { unref?: () => void }).unref?.();
+        resolve(slot);
+      } else if (m.type === "error") fail(new Error(m.message ?? "read worker error"));
+      else if (m.type === "stats") onStats(slot, m as unknown as WorkerStats);
+      else onReply(slot, e);
+    };
+    worker.onerror = (e) => {
+      if (slots.includes(slot)) dropWorker(slot, e.message);
+      else fail(new Error(e.message));
+    };
+    worker.postMessage({ type: "start", config: s.config });
+  });
 }
 
 /**
@@ -189,46 +303,28 @@ function dropWorker(slot: Slot, reason: string): void {
  * entry file: `new URL("./read-worker.ts", import.meta.url)` in index.ts).
  * Resolves once every worker has its database open and its app built;
  * rejects, with every worker terminated and no slot kept, if any fails or
- * takes longer than `START_TIMEOUT_MS`.
+ * takes longer than `START_TIMEOUT_MS`. Once running, the pool keeps `n`
+ * workers, replacing any that are dropped.
  */
 export async function startReadPool(n: number, env: Record<string, string>, config: Config, workerUrl: URL | string): Promise<void> {
-  if (slots.length > 0 || n <= 0) return;
-  const ready: Array<Promise<void>> = [];
-  const started: Slot[] = [];
-  for (let i = 0; i < n; i++) {
-    const worker = new Worker(workerUrl, { env: { ...env, VAULTBASE_READ_WORKER: String(i) } });
-    const slot: Slot = { worker, inflight: 0, served: 0, born: Date.now() };
-    started.push(slot);
-    ready.push(new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`read worker ${i} did not start in ${START_TIMEOUT_MS} ms`)), START_TIMEOUT_MS);
-      worker.onmessage = (e: MessageEvent) => {
-        const m = e.data as { type: string; message?: string };
-        if (m.type === "ready") { clearTimeout(timer); resolve(); }
-        else if (m.type === "error") { clearTimeout(timer); reject(new Error(m.message ?? "read worker error")); }
-        else if (m.type === "stats") onStats(slot, m as unknown as WorkerStats);
-        else onReply(e);
-      };
-      worker.onerror = (e) => {
-        clearTimeout(timer);
-        if (slots.includes(slot)) dropWorker(slot, e.message);
-        reject(new Error(e.message));
-      };
-    }));
-    worker.postMessage({ type: "start", config });
+  if (spec || slots.length > 0 || n <= 0) return;
+  const s: PoolSpec = { size: n, env, config, workerUrl };
+  const results = await Promise.allSettled(Array.from({ length: n }, () => spawnSlot(s)));
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  const started = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  if (failed) {
+    for (const slot of started) { try { slot.worker.terminate(); } catch { /* gone */ } }
+    throw failed.reason;
   }
-  try {
-    await Promise.all(ready);
-  } catch (e) {
-    for (const s of started) { try { s.worker.terminate(); } catch { /* gone */ } }
-    throw e;
-  }
+  spec = s;
+  failures = 0;
   slots.push(...started);
-  // Workers must never keep the process alive on their own.
-  for (const s of slots) (s.worker as { unref?: () => void }).unref?.();
   setBusSender((m) => { for (const s of slots) { try { s.worker.postMessage(m); } catch { /* dropped */ } } });
 }
 
 export async function stopReadPool(): Promise<void> {
+  spec = null;
+  if (respawnTimer) { clearTimeout(respawnTimer); respawnTimer = null; }
   setBusSender(null);
   const all = slots.splice(0);
   for (const s of all) {

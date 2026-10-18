@@ -64,7 +64,7 @@ interface Snapshot {
     event_loop_lag_ms: number;
     realtime_connections: number;
   };
-  read_workers?: { workers: number; forwarded: number; inflight: number; dropped: number };
+  read_workers?: { workers: number; forwarded: number; inflight: number; dropped: number; restarted?: number };
   database?: { driver: string; size_bytes: number; connections: { total: number; active: number } | null } | null;
   sqlite: {
     page_count: number;
@@ -483,7 +483,7 @@ export default function Monitoring() {
           <Kv2 k="realtime connections" v={p ? nf.format(p.realtime_connections) : "—"} />
           <Kv2
             k="read workers · forwarded"
-            v={snap?.read_workers ? (snap.read_workers.workers ? `${snap.read_workers.workers} · ${nf.format(snap.read_workers.forwarded)}${snap.read_workers.dropped ? ` · ${snap.read_workers.dropped} dropped` : ""}` : "off") : "—"}
+            v={snap?.read_workers ? (snap.read_workers.workers ? `${snap.read_workers.workers} · ${nf.format(snap.read_workers.forwarded)}${snap.read_workers.dropped ? ` · ${snap.read_workers.dropped} dropped` : ""}${snap.read_workers.restarted ? ` · ${snap.read_workers.restarted} restarted` : ""}` : "off") : "—"}
           />
           <Kv2 k="requests total" v={snap ? nf.format(snap.requests_total) : "—"} />
           <Kv2 k="1-min avg RPS" v={snap ? nf.format(snap.rps_1min) : "—"} />

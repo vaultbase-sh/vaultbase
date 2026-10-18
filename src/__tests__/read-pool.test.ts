@@ -3,7 +3,7 @@
  * forwarded, and that a worker thread answers them the way the main thread
  * would, on the same database file.
  */
-import { describe, expect, it, beforeAll, afterAll } from "bun:test";
+import { describe, expect, it, beforeAll, afterAll, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -16,7 +16,7 @@ import { admin as adminTable } from "../db/schema.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { createRecord } from "../core/records.ts";
 import { createServer } from "../server.ts";
-import { readTarget, startReadPool, stopReadPool, readPoolStats, readWorkerCount } from "../core/read-pool.ts";
+import { readTarget, startReadPool, stopReadPool, readPoolStats, readWorkerCount, forwardRead, respawnDelay, _setReadPoolTimings } from "../core/read-pool.ts";
 import { stopScheduler } from "../core/jobs.ts";
 import { stopQueueScheduler } from "../core/queues.ts";
 import { stopWebhookDispatcher } from "../core/webhooks.ts";
@@ -96,7 +96,7 @@ describe("forwarding", () => {
     const res = await get("/api/v1/posts");
     expect(res.status).toBe(200);
     expect(fromWorker(res)).toBeNull();
-    expect(readPoolStats()).toEqual({ workers: 0, forwarded: 0, inflight: 0, dropped: 0 });
+    expect(readPoolStats()).toEqual({ workers: 0, forwarded: 0, inflight: 0, dropped: 0, restarted: 0 });
     mainDenied = (await get("/api/v1/secrets")).status;
     expect(mainDenied).toBeGreaterThanOrEqual(400);
   });
@@ -219,5 +219,72 @@ describe("forwarding", () => {
     const res = await get("/api/v1/posts?perPage=1");
     expect(res.status).toBe(200);
     expect(fromWorker(res)).toBeNull();
+  });
+});
+
+describe("failures", () => {
+  const STUB_URL = new URL("./_stub-read-worker.ts", import.meta.url);
+  const read = () => forwardRead(new Request("http://localhost/api/v1/posts"), null);
+  const waitFor = async (ok: () => boolean, ms = 3_000) => {
+    for (let t = 0; t < ms && !ok(); t += 20) await Bun.sleep(20);
+    return ok();
+  };
+
+  afterEach(async () => {
+    await stopReadPool();
+    _setReadPoolTimings({});
+  });
+
+  it("backs off 1 s, doubling for each young death in a row, at most 60 s", () => {
+    expect([0, 1, 2, 3, 4].map((n) => respawnDelay(n))).toEqual([1_000, 1_000, 2_000, 4_000, 8_000]);
+    expect(respawnDelay(7)).toBe(60_000);
+    expect(respawnDelay(50)).toBe(60_000);
+  });
+
+  it("a worker that is behind but still answering is not dropped", async () => {
+    _setReadPoolTimings({ forwardTimeoutMs: 500 });
+    await startReadPool(1, { STUB_MODE: "slow", STUB_DELAY_MS: "200" }, config, STUB_URL);
+    const before = readPoolStats().dropped;
+    // Answered at ~200, 400, 600, 800 ms: the last two outlive the timeout.
+    const results = await Promise.allSettled([read(), read(), read(), read()]);
+    expect(results.filter((r) => r.status === "fulfilled").length).toBe(2);
+    expect(results.filter((r) => r.status === "rejected").length).toBe(2);
+    expect(readPoolStats()).toMatchObject({ workers: 1, dropped: before });
+    // Its late replies (~600, ~800 ms) count as progress; once caught up it answers again.
+    await Bun.sleep(400);
+    expect((await read()).status).toBe(200);
+    expect(readPoolStats()).toMatchObject({ workers: 1, dropped: before });
+  });
+
+  it("a worker that answers nothing is dropped and replaced", async () => {
+    _setReadPoolTimings({ forwardTimeoutMs: 200, respawnBaseMs: 50 });
+    await startReadPool(1, { STUB_MODE: "stuck" }, config, STUB_URL);
+    const { dropped, restarted } = readPoolStats();
+    await expect(read()).rejects.toThrow("timed out");
+    expect(readPoolStats()).toMatchObject({ workers: 0, dropped: dropped + 1 });
+    expect(await waitFor(() => readPoolStats().workers === 1)).toBe(true);
+    expect(readPoolStats().restarted).toBe(restarted + 1);
+  });
+
+  it("keeps replacing a worker that keeps dying, backing off each time", async () => {
+    _setReadPoolTimings({ forwardTimeoutMs: 100, respawnBaseMs: 100 });
+    await startReadPool(1, { STUB_MODE: "stuck" }, config, STUB_URL);
+    const { restarted } = readPoolStats();
+    await expect(read()).rejects.toThrow("timed out");
+    expect(await waitFor(() => readPoolStats().workers === 1)).toBe(true); // after ~100 ms
+    const t0 = Date.now();
+    await expect(read()).rejects.toThrow("timed out");
+    expect(await waitFor(() => readPoolStats().workers === 1)).toBe(true); // after ~200 ms: it died young
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(100 + 200 - 20);
+    expect(readPoolStats().restarted).toBe(restarted + 2);
+  });
+
+  it("stopping the pool cancels a pending replacement", async () => {
+    _setReadPoolTimings({ forwardTimeoutMs: 100, respawnBaseMs: 200 });
+    await startReadPool(1, { STUB_MODE: "stuck" }, config, STUB_URL);
+    await expect(read()).rejects.toThrow("timed out");
+    await stopReadPool();
+    await Bun.sleep(400);
+    expect(readPoolStats().workers).toBe(0);
   });
 });
