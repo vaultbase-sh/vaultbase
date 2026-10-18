@@ -40,6 +40,13 @@ const connsByIp = new Map<string, number>();
 const ipOfConn = new Map<string, string>();
 /** Open realtime connections (WS + SSE) per process. */
 export const MAX_REALTIME_CONNECTIONS = 10_000;
+/**
+ * Bytes a WebSocket may have queued and unsent (the client isn't reading, or
+ * can't keep up). Past this it is disconnected, as SSE clients are (sse.ts):
+ * buffering for it grew the server's memory without bound, and one address
+ * may hold MAX_CONNECTIONS_PER_IP sockets.
+ */
+export const MAX_WS_QUEUED_BYTES = 1024 * 1024;
 
 /** Live connection ids, for the connection cap. */
 const liveConns = new Set<string>();
@@ -271,6 +278,36 @@ export function listSubsFor(ws: WSLike): string[] {
 }
 
 /** Leave every topic this connection holds (only its own, not all topics). */
+/** Bytes queued on a WebSocket and not yet sent; 0 when unknown (SSE adapters, test doubles). */
+function queuedBytes(ws: WSLike): number {
+  const w = ws as { getBufferedAmount?: () => number; raw?: { getBufferedAmount?: () => number } };
+  try { return w.raw?.getBufferedAmount?.() ?? w.getBufferedAmount?.() ?? 0; } catch { return 0; }
+}
+
+/**
+ * Cut a connection off right away. A client that stopped reading never reads
+ * a close frame either, so a polite close would keep its buffer until TCP
+ * gives up; `terminate` frees it now. The close handler then cleans up.
+ */
+function dropSlow(ws: WSLike): void {
+  const w = ws as { terminate?: () => void; raw?: { terminate?: () => void } };
+  try {
+    if (w.raw?.terminate) w.raw.terminate();
+    else if (w.terminate) w.terminate();
+    else ws.close?.();
+  } catch { /* already gone */ }
+}
+
+/** Send, unless the connection is too far behind: then drop it. False when it should leave its topics. */
+function deliver(ws: WSLike, payload: string): boolean {
+  if (queuedBytes(ws) > MAX_WS_QUEUED_BYTES) {
+    dropSlow(ws);
+    return false;
+  }
+  ws.send(payload);
+  return true;
+}
+
 function leaveAll(id: string): void {
   for (const t of [...(topicsByConn.get(id) ?? [])]) leaveTopic(id, t);
 }
@@ -357,7 +394,7 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
       if (!shouldSendTo(id, opts, i >= perRecord)) continue;
       sent.add(id);
       try {
-        ws.send(payload);
+        if (!deliver(ws, payload)) dead.push(id);
       } catch {
         dead.push(id);
       }
@@ -381,7 +418,7 @@ export function broadcastSystem(topic: string, message: object): void {
   const payload = JSON.stringify(message);
   const dead: string[] = [];
   for (const [id, ws] of inner) {
-    try { ws.send(payload); }
+    try { if (!deliver(ws, payload)) dead.push(id); }
     catch { dead.push(id); }
   }
   for (const id of dead) leaveAll(id);

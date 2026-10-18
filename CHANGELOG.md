@@ -7,6 +7,15 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.24.1] — 2026-10-18
+
+### Fixed
+
+- **A WebSocket client that stops reading no longer grows the server's memory.** Every
+  realtime event was buffered for it without limit: in a load test, 50 such clients held
+  about 150 MB, and one address may open 100 realtime connections. A socket more than 1 MB
+  behind is now disconnected, as SSE clients already were; the others keep receiving.
+
 ## [0.24.0] — 2026-10-18
 
 Fixes from an external technical review of 0.23.1. Every item below was reproduced first and
