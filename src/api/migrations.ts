@@ -32,7 +32,7 @@ export function makeMigrationsPlugin(jwtSecret: string) {
         collections: cols.map((c): CollectionSnapshot => {
           const out: CollectionSnapshot = {
             name: c.name,
-            type: (c.type ?? "base") as "base" | "auth" | "view",
+            type: (c.type ?? "base") as "base" | "auth" | "view" | "singleton",
             fields: parseFields(c.fields),
           };
           if (c.view_query !== null && c.view_query !== undefined) out.view_query = c.view_query;

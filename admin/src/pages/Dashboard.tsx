@@ -166,6 +166,7 @@ export default function Dashboard() {
 
   const baseCount = colls.filter((c) => c.type === "base").length;
   const authCount = colls.filter((c) => c.type === "auth").length;
+  const singletonCount = colls.filter((c) => c.type === "singleton").length;
 
   const oldestDead = dead.reduce<number | null>((acc, j) => {
     const t = j.finished_at ?? j.enqueued_at;
@@ -226,7 +227,7 @@ export default function Dashboard() {
         <Stat
           label="COLLECTIONS"
           value={nf.format(colls.length)}
-          sub={colls.length ? `${baseCount} base · ${authCount} auth` : "—"}
+          sub={colls.length ? `${baseCount} base · ${authCount} auth${singletonCount ? ` · ${singletonCount} singleton` : ""}` : "—"}
         />
         <Stat
           label="QUEUED"

@@ -6,7 +6,7 @@ import { getRawClient } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { getSetting } from "./settings.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
-import { connectionCount } from "../realtime/manager.ts";
+import { connectionCount, realtimeStats } from "../realtime/manager.ts";
 import { checkpointStats, type CheckpointStats } from "../db/checkpointer.ts";
 import { queryStatsReport, resetQueryStats } from "../core/query-stats.ts";
 import { readPoolStats, readPoolTarget } from "../core/read-pool.ts";
@@ -123,6 +123,10 @@ function processSnapshot() {
     cpu_percent: wallUs > 0 ? Math.round((usedUs / wallUs) * 1000) / 10 : 0,
     event_loop_lag_ms: Math.round(lag * 10) / 10,
     realtime_connections: connectionCount(),
+    // Deliveries waiting in the fan-out queue, and connections shed because
+    // realtime fell too far behind (realtime/manager.ts).
+    realtime_queued_deliveries: realtimeStats().queuedDeliveries,
+    realtime_shed_connections: realtimeStats().shedConnections,
   };
 }
 
@@ -221,6 +225,12 @@ export function makeMetricsPlugin(jwtSecret: string) {
         push("vaultbase_sqlite_page_count", "SQLite database page count.",     "gauge", [["", sql.page_count]]);
         push("vaultbase_sqlite_page_size",  "SQLite database page size (B).",  "gauge", [["", sql.page_size]]);
         push("vaultbase_sqlite_wal_pages",  "SQLite WAL log pages.",           "gauge", [["", sql.wal_pages]]);
+      }
+      {
+        const rt = realtimeStats();
+        push("vaultbase_realtime_connections", "Open realtime connections (WebSocket and SSE).", "gauge", [["", rt.connections]]);
+        push("vaultbase_realtime_queued_deliveries", "Realtime deliveries waiting to be sent.", "gauge", [["", rt.queuedDeliveries]]);
+        push("vaultbase_realtime_shed_connections_total", "Realtime connections disconnected because delivery fell too far behind.", "counter", [["", rt.shedConnections]]);
       }
       push("vaultbase_responses_total", "Finished requests by status class since boot.", "counter",
         (["2xx", "3xx", "4xx", "5xx"] as const).map((c) => [`{class="${c}"}`, snap.status[c]]));

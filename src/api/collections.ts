@@ -35,9 +35,9 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       "/collections",
       async ({ body, set }) => {
         const type = body.type ?? "base";
-        if (type !== "base" && type !== "auth" && type !== "view") {
+        if (type !== "base" && type !== "auth" && type !== "view" && type !== "singleton") {
           set.status = 422;
-          return { error: "type must be 'base', 'auth', or 'view'", code: 422 };
+          return { error: "type must be 'base', 'auth', 'view' or 'singleton'", code: 422 };
         }
         if (type === "view" && !body.view_query) {
           set.status = 422;

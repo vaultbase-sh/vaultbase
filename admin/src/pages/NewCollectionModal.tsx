@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
-import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
+import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type CollectionType, type FieldDef, parseFields } from "../api.ts";
 import { Modal, Toggle } from "../components/UI.tsx";
 import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
@@ -23,10 +23,11 @@ function cleanCollName(raw: string): string {
   return raw.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
 
-const TYPE_DESCRIPTIONS: Record<"base" | "auth" | "view", (name: string) => React.ReactNode> = {
+const TYPE_DESCRIPTIONS: Record<CollectionType, (name: string) => React.ReactNode> = {
   base: (name) => <>Standard records collection. CRUD via <Code>/api/{name || "name"}</Code>.</>,
   auth: (name) => <>Email + password sign-up via <Code>/api/v1/auth/{name || "name"}/register</Code>. Field names <Code>email</Code>, <Code>password</Code>, <Code>verified</Code> are managed by the implicit auth schema and cannot be redefined.</>,
   view: () => <>Read-only collection backed by a SQL <Code>SELECT</Code>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>,
+  singleton: (name) => <>One record, for site settings or app config. Read with <Code>GET /api/v1/{name || "name"}</Code>, update with <Code>PATCH</Code>. The record is created with the collection and can't be deleted.</>,
 };
 
 export default function NewCollectionModal({
@@ -39,7 +40,7 @@ export default function NewCollectionModal({
   onCreate: (name: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<"base" | "auth" | "view">("base");
+  const [type, setType] = useState<CollectionType>("base");
   const [fields, setFields] = useState<FieldDef[]>(SYSTEM_FIELDS);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -242,7 +243,7 @@ export default function NewCollectionModal({
 
         <VbField label="Type" hint={TYPE_DESCRIPTIONS[type](collName)}>
           <div style={{ display: "flex", gap: 8 }}>
-            {(["base", "auth", "view"] as const).map((t) => (
+            {(["base", "auth", "view", "singleton"] as const).map((t) => (
               <button
                 key={t}
                 type="button"

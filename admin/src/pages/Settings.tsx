@@ -7,6 +7,7 @@ import Icon from "../components/Icon.tsx";
 import ProviderLogo from "../components/ProviderLogo.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
+import { DEFAULT_EMAIL_TEMPLATES, type EmailTemplateKind } from "../lib/email-templates.ts";
 import { useAuth } from "../stores/auth.ts";
 import {
   VbBtn,
@@ -72,7 +73,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   ]},
   { group: "Comms", items: [
     { id: "smtp",          label: "SMTP / Email",    subtitle: "outbound email server" },
-    { id: "templates",     label: "Email templates", subtitle: "verify + reset emails" },
+    { id: "templates",     label: "Email templates", subtitle: "verify, reset, email change, invite, sign-in code" },
     { id: "notifications", label: "Notifications",   subtitle: "OneSignal · FCM push providers" },
   ]},
   { group: "Infrastructure", items: [
@@ -2123,50 +2124,88 @@ function SmtpSection() {
 }
 
 // ── Email templates ──────────────────────────────────────────────────────────
-const DEFAULT_VERIFY_SUBJECT = "Verify your email";
-const DEFAULT_VERIFY_BODY =
-  "Hi,\n\n" +
-  "Click the link below to verify your email address for {{appUrl}}:\n\n" +
-  "{{link}}\n\n" +
-  "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n";
-const DEFAULT_RESET_SUBJECT = "Reset your password";
-const DEFAULT_RESET_BODY =
-  "Hi,\n\n" +
-  "We received a request to reset the password for your {{appUrl}} account.\n" +
-  "Click the link below to choose a new password:\n\n" +
-  "{{link}}\n\n" +
-  "This link expires in 1 hour. If you didn't request this, you can ignore this email.\n";
+// An empty setting means the server sends the default (lib/email-templates.ts).
+type TemplateKind = EmailTemplateKind;
+
+interface TemplateSpec {
+  kind: TemplateKind;
+  title: string;
+  /** When it is sent. */
+  sentBy: React.ReactNode;
+  subject: string;
+  body: string;
+  /** Variables beyond the ones every template gets. */
+  extraVars?: string[];
+  /** What {{email}} means here, when it isn't the account's address. */
+  emailIs?: string;
+}
+
+const TEMPLATES: TemplateSpec[] = [
+  {
+    kind: "verify",
+    ...DEFAULT_EMAIL_TEMPLATES.verify,
+    title: "Verification email",
+    sentBy: <>Sent on registration and via <VbCode>POST /api/v1/auth/:collection/request-verify</VbCode>.</>,
+  },
+  {
+    kind: "reset",
+    ...DEFAULT_EMAIL_TEMPLATES.reset,
+    title: "Password reset email",
+    sentBy: <>Sent via <VbCode>POST /api/v1/auth/:collection/request-password-reset</VbCode>.</>,
+  },
+  {
+    kind: "email_change",
+    ...DEFAULT_EMAIL_TEMPLATES.email_change,
+    title: "Email change confirmation",
+    sentBy: <>Sent to the new address via <VbCode>POST /api/v1/auth/:collection/request-email-change</VbCode>.</>,
+    emailIs: "the new address",
+  },
+  {
+    kind: "invite",
+    ...DEFAULT_EMAIL_TEMPLATES.invite,
+    title: "Invitation email",
+    sentBy: <>Sent when an admin invites a user via <VbCode>POST /api/v1/admin/users/:collection/invite</VbCode>.</>,
+    emailIs: "the invited address",
+  },
+  {
+    kind: "otp",
+    ...DEFAULT_EMAIL_TEMPLATES.otp,
+    title: "Sign-in code email",
+    sentBy: <>Sent via <VbCode>POST /api/v1/auth/:collection/otp/request</VbCode> when one-time codes are on.</>,
+    extraVars: ["code"],
+  },
+];
+
+const COMMON_VARS = ["email", "token", "link", "appUrl", "collection"];
 
 function EmailTemplatesSection() {
   const [appUrl, setAppUrl] = useState("");
-  const [verifySubject, setVerifySubject] = useState(DEFAULT_VERIFY_SUBJECT);
-  const [verifyBody, setVerifyBody] = useState(DEFAULT_VERIFY_BODY);
-  const [resetSubject, setResetSubject] = useState(DEFAULT_RESET_SUBJECT);
-  const [resetBody, setResetBody] = useState(DEFAULT_RESET_BODY);
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(TEMPLATES.flatMap((t) => [[`email.${t.kind}.subject`, t.subject], [`email.${t.kind}.body`, t.body]])));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) {
-        setAppUrl(res.data["app.url"] ?? "");
-        setVerifySubject(res.data["email.verify.subject"]?.trim() || DEFAULT_VERIFY_SUBJECT);
-        setVerifyBody(res.data["email.verify.body"]?.trim() || DEFAULT_VERIFY_BODY);
-        setResetSubject(res.data["email.reset.subject"]?.trim() || DEFAULT_RESET_SUBJECT);
-        setResetBody(res.data["email.reset.body"]?.trim() || DEFAULT_RESET_BODY);
+        const d = res.data;
+        setAppUrl(d["app.url"] ?? "");
+        setValues(Object.fromEntries(TEMPLATES.flatMap((t) => [
+          [`email.${t.kind}.subject`, d[`email.${t.kind}.subject`]?.trim() || t.subject],
+          [`email.${t.kind}.body`, d[`email.${t.kind}.body`]?.trim() || t.body],
+        ])));
       }
       setLoading(false);
     });
   }, []);
 
+  const set = (key: string, v: string) => setValues((cur) => ({ ...cur, [key]: v }));
+
   async function handleSave() {
     setSaving(true);
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
       "app.url": appUrl.trim(),
-      "email.verify.subject": verifySubject,
-      "email.verify.body": verifyBody,
-      "email.reset.subject": resetSubject,
-      "email.reset.body": resetBody,
+      ...values,
     });
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
@@ -2190,64 +2229,53 @@ function EmailTemplatesSection() {
         <VbInput mono value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://example.com" disabled={loading} />
       </VbField>
 
-      <div style={{
-        display: "flex", flexDirection: "column", gap: 10,
-        padding: 14, borderRadius: 8,
-        background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
-      }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
-            Verification email
+      {TEMPLATES.map((t) => {
+        const subjectKey = `email.${t.kind}.subject`;
+        const bodyKey = `email.${t.kind}.body`;
+        const isDefault = values[subjectKey] === t.subject && values[bodyKey] === t.body;
+        return (
+          <div key={t.kind} style={{
+            display: "flex", flexDirection: "column", gap: 10,
+            padding: 14, borderRadius: 8,
+            background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
+          }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
+                  {t.title}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+                  {t.sentBy} Variables:{" "}
+                  {[...COMMON_VARS, ...(t.extraVars ?? [])].map((v) => (
+                    <span key={v}><VbCode>{`{{${v}}}`}</VbCode>{" "}</span>
+                  ))}
+                  {t.emailIs && <>(<VbCode>{`{{email}}`}</VbCode> is {t.emailIs})</>}
+                </div>
+              </div>
+              <VbBtn
+                kind="ghost"
+                size="sm"
+                disabled={loading || isDefault}
+                onClick={() => { set(subjectKey, t.subject); set(bodyKey, t.body); }}
+              >
+                Restore default
+              </VbBtn>
+            </div>
+            <VbField label="Subject">
+              <VbInput mono value={values[subjectKey] ?? ""} onChange={(e) => set(subjectKey, e.target.value)} disabled={loading} />
+            </VbField>
+            <VbField label="Body (plain text)">
+              <textarea
+                rows={8}
+                value={values[bodyKey] ?? ""}
+                onChange={(e) => set(bodyKey, e.target.value)}
+                disabled={loading}
+                style={taStyle}
+              />
+            </VbField>
           </div>
-          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
-            Sent on registration and via{" "}
-            <VbCode>POST /api/v1/auth/:collection/request-verify</VbCode>. Variables:{" "}
-            <VbCode>{`{{email}}`}</VbCode> <VbCode>{`{{token}}`}</VbCode>{" "}
-            <VbCode>{`{{link}}`}</VbCode> <VbCode>{`{{appUrl}}`}</VbCode>{" "}
-            <VbCode>{`{{collection}}`}</VbCode>
-          </div>
-        </div>
-        <VbField label="Subject">
-          <VbInput mono value={verifySubject} onChange={(e) => setVerifySubject(e.target.value)} disabled={loading} />
-        </VbField>
-        <VbField label="Body (plain text)">
-          <textarea
-            rows={8}
-            value={verifyBody}
-            onChange={(e) => setVerifyBody(e.target.value)}
-            disabled={loading}
-            style={taStyle}
-          />
-        </VbField>
-      </div>
-
-      <div style={{
-        display: "flex", flexDirection: "column", gap: 10,
-        padding: 14, borderRadius: 8,
-        background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)",
-      }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
-            Password reset email
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
-            Sent via <VbCode>POST /api/v1/auth/:collection/request-password-reset</VbCode>. Same
-            variables as above.
-          </div>
-        </div>
-        <VbField label="Subject">
-          <VbInput mono value={resetSubject} onChange={(e) => setResetSubject(e.target.value)} disabled={loading} />
-        </VbField>
-        <VbField label="Body (plain text)">
-          <textarea
-            rows={8}
-            value={resetBody}
-            onChange={(e) => setResetBody(e.target.value)}
-            disabled={loading}
-            style={taStyle}
-          />
-        </VbField>
-      </div>
+        );
+      })}
 
       <SaveBar saving={saving} dirty={!loading} onSave={handleSave} />
     </SectionShell>

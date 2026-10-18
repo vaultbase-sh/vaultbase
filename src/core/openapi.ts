@@ -90,6 +90,23 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
   const base = `/api/v1/${col.name}`;
   const tags = [col.name];
   const dataOf = (s: Schema) => ({ type: "object", properties: { data: s } });
+  // A singleton is its one record, read and updated at the collection path.
+  if (col.type === "singleton") {
+    return {
+      [base]: {
+        get: {
+          tags, operationId: `get${T}`, summary: `Get the ${col.name} singleton`,
+          responses: { "200": ok(dataOf(ref(T))), ...ERRORS },
+        },
+        patch: {
+          tags, operationId: `update${T}`, summary: `Update the ${col.name} singleton`,
+          parameters: [{ name: "If-Match", in: "header", required: false, description: "ETag for optimistic concurrency", schema: { type: "string" } }],
+          requestBody: { required: true, content: json({ ...ref(`${T}Input`) }) },
+          responses: { "200": ok(dataOf(ref(T))), "412": { description: "ETag mismatch", content: json(ref("Error")) }, ...ERRORS },
+        },
+      },
+    };
+  }
   const paths: Record<string, Schema> = {
     [base]: {
       get: {

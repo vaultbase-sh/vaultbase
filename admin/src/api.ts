@@ -82,10 +82,13 @@ export interface FieldDef {
   renamedFrom?: string;
 }
 
+/** A singleton holds exactly one record, made with the collection. */
+export type CollectionType = "base" | "auth" | "view" | "singleton";
+
 export interface Collection {
   id: string;
   name: string;
-  type: "base" | "auth" | "view";
+  type: CollectionType;
   fields: string;
   view_query: string | null;
   list_rule: string | null;

@@ -66,6 +66,7 @@ import {
   getSSEClient,
   setSSESubscriptions,
   unregisterSSEClient,
+  MAX_WS_QUEUED_BYTES,
   type WSAuth,
 } from "./realtime/manager.ts";
 import { openSSEStream } from "./realtime/sse.ts";
@@ -241,7 +242,9 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   // Client realtime messages are small JSON commands; Bun closes a socket
   // sending anything larger (1009). This is server-wide websocket config —
   // a limit on the .ws() route is ignored.
-  return new Elysia({ websocket: { maxPayloadLength: 64 * 1024 } })
+  // A socket more than MAX_WS_QUEUED_BYTES behind is also closed by Bun
+  // itself, a backstop for the check in realtime/manager.ts.
+  return new Elysia({ websocket: { maxPayloadLength: 64 * 1024, backpressureLimit: MAX_WS_QUEUED_BYTES, closeOnBackpressureLimit: true } })
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
     .onRequest(({ request, server }) => {

@@ -740,6 +740,7 @@ async function createRecordImpl(
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
+  if (col.type === "singleton") throw new SingletonRecordError(col.name, "create");
   if (col.type === "auth") {
     // Auth collections require credential hashing + verification-email
     // semantics + uniqueness checks that records.ts createRecord doesn't
@@ -1078,6 +1079,16 @@ export class ReadOnlyCollectionError extends Error {
   }
 }
 
+/**
+ * A singleton collection holds exactly one record, made with the collection:
+ * it can be read and updated, never created or deleted. Maps to HTTP 405.
+ */
+export class SingletonRecordError extends Error {
+  constructor(collectionName: string, op: "create" | "delete") {
+    super(`Collection '${collectionName}' is a singleton: its one record can't be ${op === "create" ? "created" : "deleted"}. Read it with GET and change it with PATCH on /api/v1/${collectionName}`);
+  }
+}
+
 /** A user-supplied `filter` that does not compile. Maps to HTTP 400. */
 export class FilterError extends Error {
   constructor(reason: string) {
@@ -1230,6 +1241,7 @@ async function deleteRecordInternal(
   const col = await getCollection(collectionName);
   if (!col) throw new Error(`Collection '${collectionName}' not found`);
   if (col.type === "view") throw new ReadOnlyCollectionError(col.name);
+  if (col.type === "singleton") throw new SingletonRecordError(col.name, "delete");
 
   const tableRef = quoteIdent(userTableName(col.name));
   const writeKey = `${col.name}:${id}`;

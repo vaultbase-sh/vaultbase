@@ -329,12 +329,13 @@ export const CollectionAvatar: React.FC<{
   }}>{letter.toUpperCase()}</div>
 );
 
-// ── Collection-type pill (base / auth / view) ───────────────────────────────
+// ── Collection-type pill (base / auth / view / singleton) ─────────────────
 
 const TYPE_PALETTE: Record<string, { bg: string; fg: string }> = {
   base: { bg: "rgba(255,255,255,0.06)", fg: "var(--vb-fg-2)" },
   auth: { bg: "rgba(124,160,255,0.16)", fg: "#9bb6ff" },
   view: { bg: "rgba(168,124,255,0.16)", fg: "#b8a0ff" },
+  singleton: { bg: "rgba(98,204,156,0.16)", fg: "#62cc9c" },
 };
 
 export const TypePill: React.FC<{ type: string }> = ({ type }) => {

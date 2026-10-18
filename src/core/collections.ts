@@ -98,7 +98,7 @@ export interface FieldOptions {
 
 export type CascadeMode = NonNullable<FieldOptions["cascade"]>;
 
-export type CollectionType = "base" | "auth";
+export type CollectionType = "base" | "auth" | "singleton";
 
 /**
  * User-defined fields on `auth` collections cannot use these names — they are
@@ -994,6 +994,11 @@ export async function createCollection(
 
   if (type === "view") {
     await createUserView(row.name, data.view_query!);
+  } else if (type === "singleton") {
+    // A singleton holds exactly one record, made with the collection, its
+    // fields empty: reads never miss and an update always has a target.
+    await createUserTable(row.name, fields.filter((f) => !f.implicit));
+    await ensureSingletonRecord(row.name);
   } else {
     // Per-collection real table excludes implicit fields — those live on vaultbase_users.
     await createUserTable(row.name, fields.filter((f) => !f.implicit));
@@ -1012,6 +1017,22 @@ export async function createCollection(
   cache.set(result.id, result);
   cache.set(result.name, result);
   return result;
+}
+
+/**
+ * The id of a singleton collection's one record, creating it if it's missing
+ * (a row removed with raw SQL, or a table made before the record was). The
+ * record has its fields empty until someone saves it.
+ */
+export async function ensureSingletonRecord(name: string): Promise<string> {
+  assertSqlIdent(name, "collection");
+  const table = quoteIdent(userTableName(name));
+  const row = await db.get<{ id: string }>(`SELECT "id" FROM ${table} ORDER BY "created_at" LIMIT 1`);
+  if (row) return row.id;
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await db.run(`INSERT INTO ${table} ("id", "created_at", "updated_at") VALUES (?, ?, ?)`, [id, now, now], { table: userTableName(name) });
+  return id;
 }
 
 /**
@@ -1110,6 +1131,9 @@ export async function updateCollection(
   const before = existing[0]!;
 
   const effectiveType = data.type ?? before.type;
+  if (data.type !== undefined && data.type !== before.type && (data.type === "singleton" || before.type === "singleton")) {
+    throw new Error("A collection can't be turned into a singleton or out of one: create a new collection and move the data");
+  }
 
   // Rename first so every later step (view rebuild, field DDL) targets the
   // new table.

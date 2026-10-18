@@ -26,7 +26,7 @@ import {
   updateRecord,
   type ListOptions,
 } from "../core/records.ts";
-import { listCollections, parseFields, type FieldDef } from "../core/collections.ts";
+import { ensureSingletonRecord, listCollections, parseFields, type FieldDef } from "../core/collections.ts";
 import { ToolRegistry, asJsonText, asUntrustedJsonText } from "./tools.ts";
 
 const HARD_PER_PAGE_CAP = 100;
@@ -124,6 +124,40 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
   for (const col of cols) {
     const fields = parseFields(col.fields);
     const slug = col.name; // collection name is already SQL-ident-safe
+
+    // A singleton has one record: read and update it, no id, no list,
+    // create or delete.
+    if (col.type === "singleton") {
+      reg.register({
+        requiredScope: "mcp:read",
+        definition: {
+          name: `vaultbase.get_${slug}`,
+          description: `Read the '${slug}' singleton: the collection's one record.`,
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        },
+        handler: async () => asUntrustedJsonText(`${slug} record`, await getRecord(slug, await ensureSingletonRecord(slug))),
+      });
+      reg.register({
+        requiredScope: "mcp:write",
+        definition: {
+          name: `vaultbase.update_${slug}`,
+          description: `Update the '${slug}' singleton (its one record). PATCH semantics — only provided fields are touched. Validation + update_rule apply.`,
+          inputSchema: {
+            type: "object",
+            properties: { data: dataObjectSchema(fields, "update") },
+            required: ["data"],
+            additionalProperties: false,
+          },
+        },
+        handler: async (args, ctx) => {
+          const data = args.data as Record<string, unknown> | undefined;
+          if (!data || typeof data !== "object") throw new Error("data (object) is required");
+          const r = await updateRecord(slug, await ensureSingletonRecord(slug), data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
+          return asJsonText(r);
+        },
+      });
+      continue;
+    }
 
     // ── list ──────────────────────────────────────────────────────────
     reg.register({

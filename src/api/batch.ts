@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -87,6 +87,9 @@ async function dispatchOp(
   // Per-op rule enforcement — same checks the records HTTP layer runs.
   const col = await getCollection(op.collection);
   if (!col) return { status: 404, body: { error: `Collection '${op.collection}' not found`, code: 404 } };
+  if (col.type === "singleton" && (op.kind === "create" || op.kind === "delete")) {
+    throw new SingletonRecordError(col.name, op.kind);
+  }
 
   switch (op.kind) {
     case "create": {
@@ -178,7 +181,7 @@ function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { st
     set.status = 409;
     return { error: `Batch failed at request ${at}: ${e.message}`, code: 409 };
   }
-  if (e instanceof ReadOnlyCollectionError) {
+  if (e instanceof ReadOnlyCollectionError || e instanceof SingletonRecordError) {
     set.status = 405;
     return { error: `Batch failed at request ${at}: ${e.message}`, code: 405 };
   }

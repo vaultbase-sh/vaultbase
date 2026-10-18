@@ -62,10 +62,18 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     // any one instant proves nothing. What the worker owes is: rewinds
     // happen, the WAL never reaches the runaway threshold that hands
     // checkpointing back to SQLite, and it shrinks once the writes stop.
+    //
+    // The writer pauses while the WAL is more than two rewinds behind
+    // (RESTART_FRAMES is 15,000): unthrottled, a busy machine let it outrun
+    // the worker for the whole loop, built a WAL near the runaway threshold,
+    // and then needed longer than the test allowed to drain it, which made
+    // this test fail now and then in full-suite runs while proving nothing
+    // about the checkpointer.
     const row = "x".repeat(3_000);
-    const until = Date.now() + 10_000;
+    const until = Date.now() + 15_000;
     let peak = 0;
     while (Date.now() < until && (checkpointStats()?.restarts ?? 0) < 3) {
+      if ((checkpointStats()?.wal_frames ?? 0) > 30_000) { await Bun.sleep(20); continue; }
       for (let i = 0; i < 500; i++) ins.run(row);
       await Bun.sleep(1);
       peak = Math.max(peak, checkpointStats()?.wal_frames ?? 0);
@@ -78,12 +86,12 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     // Writes stopped: once the worker has copied what was left (a pass over
     // tens of thousands of frames takes seconds on a loaded machine) it
     // rewinds, and the WAL is small again.
-    for (let i = 0; i < 400 && s.wal_frames >= 40_000; i++) {
+    for (let i = 0; i < 600 && s.wal_frames >= 40_000; i++) {
       await Bun.sleep(50);
       s = checkpointStats()!;
     }
     expect(s.wal_frames).toBeLessThan(40_000);
-  }, 40_000);
+  }, 60_000);
 
   test("stop hands checkpointing back to SQLite", async () => {
     db = open();

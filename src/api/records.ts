@@ -2,13 +2,14 @@ import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal, verifyAuthToken } from "../core/sec.ts";
-import { getCollection } from "../core/collections.ts";
+import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
 import {
   createRecord,
   deleteRecord,
   getRecord,
   listRecords,
   ReadOnlyCollectionError,
+  SingletonRecordError,
   FilterError,
   AccessRuleError,
   clientPaging,
@@ -32,7 +33,7 @@ import { searchVectors } from "../core/vector-search.ts";
 import { aggregateRecords, type AggregateOptions } from "../core/aggregate.ts";
 import { timeFor } from "../core/perf-metrics.ts";
 
-function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError) {
+function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError | SingletonRecordError) {
   set.status = 405;
   return { error: err.message, code: 405 };
 }
@@ -169,12 +170,79 @@ async function getAuthContext(
 }
 
 export function makeRecordsPlugin(jwtSecret: string) {
+  /** One record by id, under its view rule, with an ETag and If-None-Match. */
+  async function getOne(collection: string, id: string, request: Request, set: { status?: number | string; headers: Record<string, string | number> }) {
+    const col = await timeFor(request, "collection_load", () => getCollection(collection));
+    if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+    const auth = await getAuthContext(request, jwtSecret);
+    const record = await timeFor(request, "db_exec", () => getRecord(collection, id));
+    if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
+    if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>)) {
+      set.status = 403;
+      return { error: "Forbidden", code: 403 };
+    }
+    const etag = recordEtag(record as unknown as Record<string, unknown>);
+    if (etag) set.headers["ETag"] = etag;
+    // Honor If-None-Match for cheap conditional GETs.
+    const inm = request.headers.get("if-none-match");
+    if (etag && inm && parseIfMatch(inm).some((t) => t === etag || t === "*")) {
+      set.status = 304;
+      return null;
+    }
+    return { data: record };
+  }
+
+  /** Update one record by id, under its update rule, with If-Match. */
+  async function patchOne(collection: string, id: string, body: unknown, request: Request, set: { status?: number | string; headers: Record<string, string | number> }) {
+    const col = await timeFor(request, "collection_load", () => getCollection(collection));
+    if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+    const auth = await getAuthContext(request, jwtSecret);
+    const existing = await timeFor(request, "db_exec", () => getRecord(collection, id));
+    if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
+    if (!timeFor(request, "rule_compile", () => checkUpdateRule(
+      request, col.name, col.update_rule, auth,
+      existing as unknown as Record<string, unknown>,
+      (body ?? {}) as Record<string, unknown>,
+    ))) {
+      set.status = 403;
+      return { error: "Forbidden", code: 403 };
+    }
+    const ifMatch = ifMatchFails(request, existing as unknown as Record<string, unknown>);
+    if (ifMatch) {
+      set.status = 412;
+      set.headers["ETag"] = ifMatch.currentEtag;
+      return { error: "Precondition Failed: record was modified", code: 412 };
+    }
+    try {
+      // With If-Match, the write itself re-checks that the record is
+      // still the one the precondition was checked against.
+      const guard = {
+        ...relationsAs(auth, request),
+        ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
+      };
+      const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
+        updateRecord(collection, id, body as Record<string, unknown>, auth, guard)
+      ));
+      const etag = recordEtag(record as unknown as Record<string, unknown>);
+      if (etag) set.headers["ETag"] = etag;
+      return { data: record };
+    } catch (e) {
+      if (e instanceof ValidationError) return validationResponse(set, e);
+      if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+      if (e instanceof PreconditionFailedError) return await preconditionResponse(set, collection, id);
+      if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
+      throw e;
+    }
+  }
+
   return new Elysia({ name: "records" })
     .get(
       "/:collection",
       async ({ params, query, request, set }) => {
         const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        // A singleton answers its path with its one record, not a list.
+        if (col.type === "singleton") return getOne(col.name, await ensureSingletonRecord(col.name), request, set);
         const auth = await getAuthContext(request, jwtSecret);
 
         // null = public; "" = admin only; expression rule → applied as filter
@@ -355,31 +423,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }),
       }
     )
-    .get("/:collection/:id", async ({ params, request, set }) => {
-      const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
-      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
-      const auth = await getAuthContext(request, jwtSecret);
-      const record = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
-      if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
-      if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>)) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
-      }
-      const etag = recordEtag(record as unknown as Record<string, unknown>);
-      if (etag) set.headers["ETag"] = etag;
-      // Honor If-None-Match for cheap conditional GETs.
-      const inm = request.headers.get("if-none-match");
-      if (etag && inm && parseIfMatch(inm).some((t) => t === etag || t === "*")) {
-        set.status = 304;
-        return null;
-      }
-      return { data: record };
-    })
+    .get("/:collection/:id", async ({ params, request, set }) => getOne(params.collection, params.id, request, set))
     .post(
       "/:collection",
       async ({ params, body, request, set }) => {
         const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+        if (col.type === "singleton") return readOnlyResponse(set, new SingletonRecordError(col.name, "create"));
         const auth = await getAuthContext(request, jwtSecret);
         // For create, rule evaluates against the incoming body
         // The body is what the rule is about on a create — without it
@@ -399,7 +449,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           return { data: record };
         } catch (e) {
           if (e instanceof ValidationError) return validationResponse(set, e);
-          if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+          if (e instanceof ReadOnlyCollectionError || e instanceof SingletonRecordError) return readOnlyResponse(set, e);
           throw e;
         }
       },
@@ -407,52 +457,27 @@ export function makeRecordsPlugin(jwtSecret: string) {
     )
     .patch(
       "/:collection/:id",
+      async ({ params, body, request, set }) => patchOne(params.collection, params.id, body, request, set),
+      { body: t.Any() }
+    )
+    // A singleton's one record: PATCH the collection path itself.
+    .patch(
+      "/:collection",
       async ({ params, body, request, set }) => {
         const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
-        const auth = await getAuthContext(request, jwtSecret);
-        const existing = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
-        if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-        if (!timeFor(request, "rule_compile", () => checkUpdateRule(
-          request, col.name, col.update_rule, auth,
-          existing as unknown as Record<string, unknown>,
-          (body ?? {}) as Record<string, unknown>,
-        ))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
+        if (col.type !== "singleton") {
+          set.status = 405;
+          return { error: `Update a record with PATCH /api/v1/${col.name}/<id>; only a singleton collection is updated at its own path`, code: 405 };
         }
-        const ifMatch = ifMatchFails(request, existing as unknown as Record<string, unknown>);
-        if (ifMatch) {
-          set.status = 412;
-          set.headers["ETag"] = ifMatch.currentEtag;
-          return { error: "Precondition Failed: record was modified", code: 412 };
-        }
-        try {
-          // With If-Match, the write itself re-checks that the record is
-          // still the one the precondition was checked against.
-          const guard = {
-            ...relationsAs(auth, request),
-            ...(ifMatchPinsVersion(request) ? { ifUnchanged: existing as unknown as Record<string, unknown> } : {}),
-          };
-          const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
-            updateRecord(params.collection, params.id, body as Record<string, unknown>, auth, guard)
-          ));
-          const etag = recordEtag(record as unknown as Record<string, unknown>);
-          if (etag) set.headers["ETag"] = etag;
-          return { data: record };
-        } catch (e) {
-          if (e instanceof ValidationError) return validationResponse(set, e);
-          if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
-          if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
-          if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
-          throw e;
-        }
+        return patchOne(col.name, await ensureSingletonRecord(col.name), body, request, set);
       },
       { body: t.Any() }
     )
     .delete("/:collection/:id", async ({ params, request, set }) => {
       const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (col.type === "singleton") return readOnlyResponse(set, new SingletonRecordError(col.name, "delete"));
       const auth = await getAuthContext(request, jwtSecret);
       const existing = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
       if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
@@ -479,7 +504,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         ));
       } catch (e) {
         if (e instanceof ValidationError) return validationResponse(set, e);
-        if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+        if (e instanceof ReadOnlyCollectionError || e instanceof SingletonRecordError) return readOnlyResponse(set, e);
         if (e instanceof PreconditionFailedError) return await preconditionResponse(set, params.collection, params.id);
         if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         // Generic on purpose: naming the child collection would tell the

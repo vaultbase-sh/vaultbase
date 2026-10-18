@@ -16,7 +16,7 @@ import {
  */
 export interface CollectionSnapshot {
   name: string;
-  type: "base" | "auth" | "view";
+  type: "base" | "auth" | "view" | "singleton";
   fields: FieldDef[];
   view_query?: string | null;
   list_rule?: string | null;
@@ -196,9 +196,9 @@ export function validateSnapshotShape(snap: unknown): asserts snap is Snapshot {
     if (typeof c.name !== "string" || !c.name) {
       throw new SnapshotShapeError("snapshot.collections[].name must be a non-empty string");
     }
-    if (c.type !== "base" && c.type !== "auth" && c.type !== "view") {
+    if (c.type !== "base" && c.type !== "auth" && c.type !== "view" && c.type !== "singleton") {
       throw new SnapshotShapeError(
-        `snapshot.collections["${c.name}"].type must be 'base' | 'auth' | 'view'`
+        `snapshot.collections["${c.name}"].type must be 'base' | 'auth' | 'view' | 'singleton'`
       );
     }
     if (!Array.isArray(c.fields)) {

@@ -7,6 +7,55 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.25.0] — 2026-10-18
+
+### Added
+
+- **Singleton collections**, a fourth collection type for things like site settings or app
+  config: exactly one record, created with the collection (fields empty). Read it with
+  `GET /api/v1/<name>` and change it with `PATCH /api/v1/<name>` (ETag, If-None-Match and
+  If-Match as for any record; by id works too). Creating or deleting the record answers
+  405, over HTTP, in batches and through MCP, which gets `get_<name>` and `update_<name>`
+  tools for it. Only the view and update rules apply. A collection can't be turned into or
+  out of a singleton. Snapshots, OpenAPI, realtime and the admin UI (a Singleton type; its
+  records page is one form) know the type. SDK 0.7.0 adds `vb.singleton(name)`.
+
+- **Every email template is editable in the admin.** Settings → Email templates now covers
+  the email-change, invitation and sign-in code emails as well as verification and
+  password reset, each with a Restore default button and its variables listed.
+
+### Changed
+
+- **A large realtime fan-out no longer holds the server.** One event to many subscribers
+  was sent in one synchronous loop with a rule check per subscriber; past roughly 100,000
+  messages a second it took over the main thread, and HTTP requests and writes waited. In
+  a load test with 10,000 subscribers at 30 events a second, the event loop stalled for
+  34 s and requests timed out. Now:
+  - who receives an event is decided once per event where it can be: a public collection
+    needs no per-subscriber check, admin-only only looks at who's an admin, and a rule
+    expression is evaluated once per distinct identity;
+  - fan-outs above 2,000 deliveries go through one ordered queue that sends for a few
+    milliseconds at a time, so requests are served in between, and every connection still
+    gets its events in order;
+  - when the queue is more than 500,000 deliveries behind (a few seconds of sending), the
+    connections still waiting are disconnected so they reconnect and refetch, and their
+    queued events are dropped, instead of latency and memory growing without bound. It is
+    logged and counted (`vaultbase_realtime_shed_connections_total`).
+- New metrics: `vaultbase_realtime_connections`, `vaultbase_realtime_queued_deliveries`,
+  `vaultbase_realtime_shed_connections_total` (and the same in `/api/v1/_/metrics`).
+- Bun itself now also closes a WebSocket more than 1 MB behind, as a backstop for the
+  server's own check.
+- **Upgrades are tested.** Databases made by seven earlier releases, back to 0.10.2, are
+  booted by every build in CI: sign-ins, records, rules, settings, hooks and writes are
+  checked on each.
+
+### Upgrade notes
+
+- Under realtime overload (the server more than a few seconds behind delivering), waiting
+  connections are now disconnected instead of falling further behind. The SDK's realtime
+  client reconnects and re-subscribes on its own; refetch what you show after a reconnect,
+  as after any disconnect.
+
 ## [0.24.1] — 2026-10-18
 
 ### Fixed

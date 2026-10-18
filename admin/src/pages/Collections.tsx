@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, parseFields, type ApiResponse } from "../api.ts";
+import { api, parseFields, type ApiResponse, type CollectionType } from "../api.ts";
 import { confirm } from "../components/Confirm.tsx";
 import Icon from "../components/Icon.tsx";
 import { toast } from "../stores/toast.ts";
@@ -18,7 +18,7 @@ import {
 } from "../components/Vb.tsx";
 import NewCollectionModal from "./NewCollectionModal.tsx";
 
-type Tab = "all" | "auth" | "base" | "view";
+type Tab = "all" | "auth" | "base" | "view" | "singleton";
 
 /** Compact "5m ago" / "3h ago" / "2d ago" formatter for `lastUpdated`. */
 function formatRel(unix: number): string {
@@ -47,7 +47,7 @@ export default function Collections() {
   // renders the collection list immediately and the stats fill in.
   interface CollectionStats {
     name: string;
-    type: "base" | "auth" | "view";
+    type: CollectionType;
     recordCount: number | null;
     recordCountCapped: boolean;
     lastUpdated: number | null;
@@ -99,7 +99,7 @@ export default function Collections() {
     const lastWrite = s?.lastUpdated ? formatRel(s.lastUpdated) : null;
     return {
       ...c,
-      type: (c.type ?? "base") as "base" | "auth" | "view",
+      type: (c.type ?? "base") as CollectionType,
       fieldCount: parseFields(c.fields).length,
       records: recordCount,
       recordsCapped: capped,
@@ -113,6 +113,7 @@ export default function Collections() {
     auth: enriched.filter((c) => c.type === "auth").length,
     base: enriched.filter((c) => c.type === "base").length,
     view: enriched.filter((c) => c.type === "view").length,
+    singleton: enriched.filter((c) => c.type === "singleton").length,
   };
 
   const tabs: VbTab<Tab>[] = [
@@ -120,6 +121,7 @@ export default function Collections() {
     { id: "auth", label: "Auth", count: counts.auth },
     { id: "base", label: "Base", count: counts.base },
     { id: "view", label: "View", count: counts.view },
+    { id: "singleton", label: "Singleton", count: counts.singleton },
   ];
 
   const visible = enriched

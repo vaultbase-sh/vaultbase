@@ -148,9 +148,9 @@ export function getWSAuth(ws: WSLike): WSAuth | undefined {
 }
 
 /** Live auth for `id`: none once the token has expired. */
-function currentAuth(id: string): WSAuth | undefined {
+function currentAuth(id: string, nowSec = Math.floor(Date.now() / 1000)): WSAuth | undefined {
   const auth = wsAuth.get(id);
-  if (auth?.exp !== undefined && auth.exp <= Math.floor(Date.now() / 1000)) {
+  if (auth?.exp !== undefined && auth.exp <= nowSec) {
     wsAuth.delete(id);
     return undefined;
   }
@@ -329,20 +329,12 @@ export function _topicCount(): number {
   return subs.size;
 }
 
-/**
- * Returns true when `ws` should receive this broadcast under the given
- * filtering context. Admin connections always pass. When no `viewRule` is
- * supplied, everyone passes (back-compat). When supplied, behavior matches
- * the records HTTP `view_rule` semantics.
- */
-function shouldSendTo(id: string, opts: BroadcastOpts | undefined, collectionWide: boolean): boolean {
-  if (!opts || opts.viewRule === undefined) return true;
-  const auth = currentAuth(id);
-  if (auth?.type === "admin") return true;
+/** The AuthContext a rule sees for a realtime connection's auth. */
+function ruleContext(auth: WSAuth | undefined): AuthContext | null {
   // Everything rules can see, not just id/type/email: without collection /
   // anonymous / verified, a rule excluding guests or another auth collection
   // passed over realtime while HTTP refused.
-  const ctx: AuthContext | null = auth
+  return auth
     ? {
         id: auth.id, type: auth.type,
         ...(auth.email ? { email: auth.email } : {}),
@@ -351,10 +343,161 @@ function shouldSendTo(id: string, opts: BroadcastOpts | undefined, collectionWid
         ...(auth.verified ? { verified: true } : {}),
       }
     : null;
-  const passes = (rule: string | null) =>
-    rule === null ? true : rule === "" ? false : evaluateRule(rule, ctx, opts.record ?? null);
-  if (!passes(opts.viewRule)) return false;
-  return collectionWide && opts.listRule !== undefined ? passes(opts.listRule) : true;
+}
+
+/** Everything about an auth a rule can read, as one key: equal keys decide alike. */
+function authKey(auth: WSAuth | undefined): string {
+  if (!auth) return "";
+  return `${auth.type}|${auth.id}|${auth.collection ?? ""}|${auth.email ?? ""}|${auth.anonymous ? 1 : 0}|${auth.verified ? 1 : 0}`;
+}
+
+/**
+ * Who receives one event on one kind of topic (per-record, or collection-wide),
+ * decided once per event where it doesn't depend on the subscriber. Admin
+ * connections always pass. No `viewRule` (undefined) passes everyone
+ * (back-compat), as does a public rule; admin-only (`""`) needs no rule
+ * evaluation; an expression is evaluated once per distinct auth, so a
+ * thousand anonymous subscribers cost one evaluation, not a thousand.
+ * Matches the records HTTP `view_rule` semantics.
+ */
+function audience(opts: BroadcastOpts | undefined, collectionWide: boolean, nowSec: number): ((id: string) => boolean) | null {
+  if (!opts || opts.viewRule === undefined) return null; // everyone
+  const rules: Array<string | null> = [opts.viewRule];
+  if (collectionWide && opts.listRule !== undefined) rules.push(opts.listRule);
+  if (rules.every((r) => r === null)) return null; // public: everyone
+  const adminOnly = rules.some((r) => r === "");
+  const exprs = rules.filter((r): r is string => typeof r === "string" && r !== "");
+  const memo = new Map<string, boolean>();
+  return (id) => {
+    const auth = currentAuth(id, nowSec);
+    if (auth?.type === "admin") return true;
+    if (adminOnly) return false;
+    const key = authKey(auth);
+    let ok = memo.get(key);
+    if (ok === undefined) {
+      const ctx = ruleContext(auth);
+      ok = exprs.every((r) => evaluateRule(r, ctx, opts.record ?? null));
+      memo.set(key, ok);
+    }
+    return ok;
+  };
+}
+
+// ── Delivery ─────────────────────────────────────────────────────────────────
+//
+// A fan-out to many subscribers used to run in one synchronous loop. Past
+// ~100k messages a second it held the main thread: HTTP requests and writes
+// waited behind it (a 10,000-subscriber load test stalled the event loop for
+// 30 s). Small fan-outs still go out at once; a large one, or anything sent
+// while one is in progress, joins one ordered queue that sends for
+// FANOUT_SLICE_MS per turn, so other work runs in between, and every
+// connection still gets its events in order. A queue past FANOUT_MAX_BACKLOG
+// deliveries means realtime can't keep up at all: the connections still
+// waiting are disconnected (they reconnect and refetch, as after any
+// disconnect) and their queued events dropped, instead of memory and latency
+// growing without bound.
+//
+// Bun's native `server.publish` was tried for events every subscriber
+// receives: it delivered no faster (the limit is one socket write per
+// subscriber, not the JavaScript around it) and, being one uninterruptible
+// call, it held the thread for the whole fan-out with no slicing or shedding.
+
+/** Deliveries sent at once, without queueing, when nothing is queued. */
+export const FANOUT_INLINE_MAX = 2_000;
+/** Time the queue may hold the thread per turn. */
+const FANOUT_SLICE_MS = 4;
+/**
+ * Queued deliveries past which the waiting connections are shed: a few
+ * seconds of sending (one main thread delivers on the order of 100k–150k
+ * messages a second; each is a socket write), so latency stays bounded.
+ */
+export let FANOUT_MAX_BACKLOG = 500_000;
+
+interface Fanout { payload: string; to: string[]; ws: WSLike[]; next: number }
+const fanoutQueue: Fanout[] = [];
+let queuedDeliveries = 0;
+let pumping = false;
+let shedTotal = 0;
+let shedReportedAt = 0;
+
+/** Realtime delivery counters for metrics. */
+export function realtimeStats(): { connections: number; queuedDeliveries: number; shedConnections: number } {
+  return { connections: liveConns.size, queuedDeliveries, shedConnections: shedTotal };
+}
+
+/** Tests: a smaller backlog cap. */
+export function _setFanoutMaxBacklog(n: number | null): void {
+  FANOUT_MAX_BACKLOG = n ?? 500_000;
+}
+
+/** Still connected and subscribed (it may have left while its delivery waited). */
+function stillHere(id: string): boolean {
+  return topicsByConn.has(id) || sseClients.has(id);
+}
+
+/** Send to `to[k]` through `ws[k]` now. Returns the ids that are gone. */
+function sendNow(payload: string, to: string[], ws: WSLike[]): string[] {
+  const dead: string[] = [];
+  for (let k = 0; k < to.length; k++) {
+    try { if (!deliver(ws[k]!, payload)) dead.push(to[k]!); } catch { dead.push(to[k]!); }
+  }
+  return dead;
+}
+
+function enqueue(payload: string, to: string[], ws: WSLike[]): void {
+  if (to.length === 0) return;
+  if (queuedDeliveries + to.length > FANOUT_MAX_BACKLOG) shedBacklog();
+  fanoutQueue.push({ payload, to, ws, next: 0 });
+  queuedDeliveries += to.length;
+  if (!pumping) { pumping = true; setImmediate(pump); }
+}
+
+function pump(): void {
+  const until = performance.now() + FANOUT_SLICE_MS;
+  const dead: string[] = [];
+  while (fanoutQueue.length > 0) {
+    const f = fanoutQueue[0]!;
+    while (f.next < f.to.length) {
+      const k = f.next++;
+      const id = f.to[k]!;
+      queuedDeliveries--;
+      if (stillHere(id)) { try { if (!deliver(f.ws[k]!, f.payload)) dead.push(id); } catch { dead.push(id); } }
+      if ((f.next & 63) === 0 && performance.now() >= until) break;
+    }
+    if (f.next >= f.to.length) fanoutQueue.shift();
+    if (performance.now() >= until) break;
+  }
+  for (const id of dead) leaveAll(id);
+  if (fanoutQueue.length > 0) setImmediate(pump);
+  else pumping = false;
+}
+
+/** Disconnect every connection still waiting on the queue, and drop the queue. */
+function shedBacklog(): void {
+  const waiting = new Map<string, WSLike>();
+  for (const f of fanoutQueue) for (let k = f.next; k < f.to.length; k++) waiting.set(f.to[k]!, f.ws[k]!);
+  fanoutQueue.length = 0;
+  queuedDeliveries = 0;
+  for (const [id, ws] of waiting) {
+    if (stillHere(id)) dropSlow(ws);
+    leaveAll(id);
+  }
+  shedTotal += waiting.size;
+  const now = Date.now();
+  if (now - shedReportedAt >= 60_000) {
+    shedReportedAt = now;
+    process.stderr.write(`vaultbase: realtime fell more than ${FANOUT_MAX_BACKLOG} deliveries behind; disconnected ${waiting.size} connection(s) so they reconnect and refetch (${shedTotal} so far)\n`);
+  }
+}
+
+/** Send `payload` to `to[k]` via `ws[k]`: at once when small and nothing is queued, else in order through the queue. */
+function fanOut(payload: string, to: string[], ws: WSLike[]): void {
+  if (to.length === 0) return;
+  if (fanoutQueue.length === 0 && to.length <= FANOUT_INLINE_MAX) {
+    for (const id of sendNow(payload, to, ws)) leaveAll(id);
+    return;
+  }
+  enqueue(payload, to, ws);
 }
 
 /**
@@ -367,7 +510,7 @@ function shouldSendTo(id: string, opts: BroadcastOpts | undefined, collectionWid
 export function broadcast(collection: string, event: RealtimeEvent, opts?: BroadcastOpts): void {
   // Per-record topic first, so a connection subscribed both ways is judged
   // by the view rule alone (it asked for this record by id).
-  const targets: (string | undefined)[] = [];
+  const targets: string[] = [];
   if (event.type === "create" || event.type === "update") {
     targets.push(`${collection}/${event.record.id}`);
   } else if (event.type === "delete") {
@@ -380,28 +523,31 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
     `${collection}.${event.type}`,       // event-typed per collection
     `${WILDCARD}.${event.type}`,         // event-typed global
   );
-  const payload = JSON.stringify(event);
-  // Dedup: a connection subscribed to both "posts" and "*" should still receive
-  // the event once.
-  const sent = new Set<string>();
-  const dead: string[] = [];
-  for (const [i, topic] of targets.entries()) {
-    if (!topic) continue;
-    const inner = subs.get(topic);
-    if (!inner) continue;
+  const maps = targets.map((t) => subs.get(t));
+  const used = maps.filter((m) => m && m.size > 0).length;
+  if (used === 0) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const recordWho = perRecord ? audience(opts, false, nowSec) : null;
+  const wideWho = audience(opts, true, nowSec);
+  const to: string[] = [];
+  const sockets: WSLike[] = [];
+  // Dedup: a connection subscribed to both "posts" and "*" should still
+  // receive the event once. Only needed when more than one topic has
+  // subscribers.
+  const seen = used > 1 ? new Set<string>() : null;
+  for (let i = 0; i < maps.length; i++) {
+    const inner = maps[i];
+    if (!inner || inner.size === 0) continue;
+    const who = i < perRecord ? recordWho : wideWho;
     for (const [id, ws] of inner) {
-      if (sent.has(id)) continue;
-      if (!shouldSendTo(id, opts, i >= perRecord)) continue;
-      sent.add(id);
-      try {
-        if (!deliver(ws, payload)) dead.push(id);
-      } catch {
-        dead.push(id);
-      }
+      if (seen?.has(id)) continue;
+      if (who && !who(id)) continue;
+      seen?.add(id);
+      to.push(id);
+      sockets.push(ws);
     }
   }
-  // A socket that can't be written to is gone: drop it from every topic.
-  for (const id of dead) leaveAll(id);
+  fanOut(JSON.stringify(event), to, sockets);
 }
 
 /**
@@ -414,14 +560,8 @@ export function broadcast(collection: string, event: RealtimeEvent, opts?: Broad
 export function broadcastSystem(topic: string, message: object): void {
   sendToPeers({ k: "sys", topic, message });
   const inner = subs.get(topic);
-  if (!inner) return;
-  const payload = JSON.stringify(message);
-  const dead: string[] = [];
-  for (const [id, ws] of inner) {
-    try { if (!deliver(ws, payload)) dead.push(id); }
-    catch { dead.push(id); }
-  }
-  for (const id of dead) leaveAll(id);
+  if (!inner || inner.size === 0) return;
+  fanOut(JSON.stringify(message), [...inner.keys()], [...inner.values()]);
 }
 
 // ── SSE client registry ─────────────────────────────────────────────────────
@@ -486,6 +626,9 @@ export function setSSESubscriptions(clientId: string, topics: string[]): boolean
 }
 
 export function _reset(): void {
+  fanoutQueue.length = 0;
+  queuedDeliveries = 0;
+  shedTotal = 0;
   subs.clear();
   topicsByConn.clear();
   sseClients.clear();

@@ -22,6 +22,8 @@ index.js.map
 vaultbase_data/
 vaultbase_data_test/
 *.db
+# Upgrade-path fixtures: real old-release databases the test opens.
+!src/__tests__/fixtures/upgrade/*.db
 *.db-shm
 *.db-wal
 .secret

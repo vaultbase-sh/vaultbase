@@ -115,6 +115,7 @@ export default function CollectionEdit() {
   const [tab, setTab] = useState<Tab>("fields");
   const [expandedRule, setExpandedRule] = useState<RuleOpId | null>(null);
   const isView = collection?.type === "view";
+  const isSingleton = collection?.type === "singleton";
 
   const sqlSchema: SqlSchema = useMemo(() => ({
     tables: allCollections
@@ -290,7 +291,11 @@ export default function CollectionEdit() {
 
   if (!collection) return <div className="empty">Loading…</div>;
 
-  const visibleOps: RuleOpId[] = isView ? ["list", "view"] : ["list", "view", "create", "update", "delete"];
+  // A singleton's one record is made with the collection and can't be
+  // deleted, so only reading and updating it are gated by rules.
+  const visibleOps: RuleOpId[] = isView ? ["list", "view"]
+    : isSingleton ? ["view", "update"]
+    : ["list", "view", "create", "update", "delete"];
   const showIndexesTab = !isView;
 
   const subTabs: VbTab<"fields" | "rules" | "indexes">[] = [
@@ -430,6 +435,16 @@ export default function CollectionEdit() {
                   );
                 })}
               </div>
+
+              {isSingleton && (
+                <div style={{
+                  marginTop: 10, fontSize: 11.5, color: "var(--vb-fg-3)",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <Icon name="info" size={12} />
+                  <span>A singleton has one record, made with the collection. List, create and delete rules don't apply.</span>
+                </div>
+              )}
 
               <div style={{
                 marginTop: 16, padding: "12px 14px",

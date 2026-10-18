@@ -56,7 +56,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         type: "object",
         properties: {
           name:        { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,62}$", description: "SQL-safe identifier; will form `vb_<name>` table" },
-          type:        { type: "string", enum: ["base", "auth", "view"] },
+          type:        { type: "string", enum: ["base", "auth", "view", "singleton"] },
           fields:      { type: "array", items: { type: "object" }, description: "FieldDef[]; see /reference/field-types" },
           view_query:  { type: "string", description: "Required + only allowed for type='view' — SELECT statement" },
           list_rule:   { type: ["string", "null"], description: "null = public; \"\" = admin only; expression otherwise" },
@@ -75,7 +75,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if (!Array.isArray(fields)) throw new Error("fields must be a FieldDef array");
       const input: Parameters<typeof createCollection>[0] = {
         name: String(args.name ?? ""),
-        type: (args.type ?? "base") as "base" | "auth" | "view",
+        type: (args.type ?? "base") as "base" | "auth" | "view" | "singleton",
         fields: JSON.stringify(fields),
       };
       if (typeof args.view_query  === "string") input.view_query  = args.view_query;

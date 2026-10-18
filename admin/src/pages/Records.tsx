@@ -899,6 +899,22 @@ export default function Records() {
   async function loadRecords(p = 1, f = appliedFilter) {
     if (!collection) return;
     setLoading(true);
+    if (collection.type === "singleton") {
+      // A singleton answers its own path with its one record, not a list.
+      const res = await api.get<ApiResponse<RecordRow>>(`/api/v1/${encodeURIComponent(collection.name)}`);
+      setLoading(false);
+      if (res.data) {
+        setRecords([res.data]);
+        setTotal(1);
+        openRecord(res.data);
+        return;
+      }
+      setRecords([]);
+      setTotal(0);
+      setOpenRec(null);
+      toast(res.error ? `Couldn't load the record: ${res.error}` : "Couldn't load the record — server returned no data.", "info");
+      return;
+    }
     const params = new URLSearchParams({ page: String(p), perPage: "30" });
     params.set("sort", sort);
     if (f) params.set("filter", f);
@@ -922,7 +938,7 @@ export default function Records() {
     toast(msg, "info");
   }
 
-  useEffect(() => { loadCollection(); }, [collId]);
+  useEffect(() => { setOpenRec(null); loadCollection(); }, [collId]);
   useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort]);
   // Clear selection on navigation events; row references would otherwise be stale.
   useEffect(() => { setSelected([]); }, [collId, page, appliedFilter, sort]);
@@ -975,14 +991,23 @@ export default function Records() {
       if (passwordNames.has(k) && (v === "" || v === null || v === undefined)) continue;
       payload[k] = v;
     }
+    // A singleton is updated at its own path; it stays open after a save.
+    const isSingleton = collection.type === "singleton";
     const res = await api.patch<ApiResponse<RecordRow>>(
-      `/api/v1/${collection.name}/${String(openRec.id)}`,
+      isSingleton
+        ? `/api/v1/${encodeURIComponent(collection.name)}`
+        : `/api/v1/${collection.name}/${String(openRec.id)}`,
       payload
     );
     setSaving(false);
     if (res.code === 422 && res.details) { setEditErrors(res.details); toast("Validation failed", "info"); return; }
     if (res.error) { toast(res.error, "info"); return; }
     toast("Record saved");
+    if (isSingleton) {
+      if (res.data) { setRecords([res.data]); openRecord(res.data); }
+      else loadRecords();
+      return;
+    }
     setOpenRec(null);
     loadRecords(page);
   }
@@ -1193,7 +1218,58 @@ export default function Records() {
     }
   };
 
-  const recordCount = collection ? `${total.toLocaleString()} records` : "—";
+  const isSingleton = collection?.type === "singleton";
+  // The record form, shared by the edit drawer and a singleton's inline editor.
+  function renderRecordForm(rec: RecordRow) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* System read-only fields */}
+        {(["id", "created", "updated"] as const).map((key) => {
+          const raw = rec[key];
+          const display = key === "id"
+            ? String(raw)
+            : new Date((raw as number) * 1000).toISOString();
+          return (
+            <DrawerFieldRow key={key} name={key} type={key === "id" ? "text" : "autodate"}>
+              <VbInput mono value={display} readOnly />
+            </DrawerFieldRow>
+          );
+        })}
+        <div style={{ borderTop: "1px solid var(--vb-border)", margin: "4px 0" }} />
+        {/* User fields */}
+        {userFields.map((f) => (
+          <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
+            <FieldInput
+              field={f}
+              value={editData[f.name]}
+              onChange={(v) => {
+                setEditData((prev) => ({ ...prev, [f.name]: v }));
+                setEditErrors((prev) => { const { [f.name]: _, ...rest } = prev; return rest; });
+              }}
+              relationCache={editRelationCache}
+              readOnly={collection?.type === "view"}
+              collectionName={collection?.name}
+              recordId={String(rec.id)}
+            />
+            {editErrors[f.name] && (
+              <div style={{
+                fontSize: 11,
+                color: "var(--vb-status-danger)",
+                marginTop: 4,
+                fontFamily: "var(--font-mono)",
+              }}>
+                {editErrors[f.name]}
+              </div>
+            )}
+          </DrawerFieldRow>
+        ))}
+      </div>
+    );
+  }
+
+  const recordCount = !collection ? "—"
+    : isSingleton ? "one record"
+    : `${total.toLocaleString()} records`;
   const newBtnLabel = collection?.type === "auth" ? "Invite user"
     : collection?.type === "view" ? "Read-only"
     : "New record";
@@ -1242,17 +1318,21 @@ export default function Records() {
                 />
               </>
             )}
-            <span style={{ width: 1, height: 20, background: "var(--vb-border)", margin: "0 4px" }} />
-            <VbBtn
-              kind="primary"
-              size="sm"
-              icon="plus"
-              onClick={() => (collection?.type === "auth" ? setShowInvite(true) : setShowNew(true))}
-              disabled={!collection || collection.type === "view"}
-              title={newBtnTitle}
-            >
-              {newBtnLabel}
-            </VbBtn>
+            {!isSingleton && (
+              <>
+                <span style={{ width: 1, height: 20, background: "var(--vb-border)", margin: "0 4px" }} />
+                <VbBtn
+                  kind="primary"
+                  size="sm"
+                  icon="plus"
+                  onClick={() => (collection?.type === "auth" ? setShowInvite(true) : setShowNew(true))}
+                  disabled={!collection || collection.type === "view"}
+                  title={newBtnTitle}
+                >
+                  {newBtnLabel}
+                </VbBtn>
+              </>
+            )}
           </>
         }
       />
@@ -1263,6 +1343,49 @@ export default function Records() {
         onChange={onSubTab}
       />
 
+      {isSingleton ? (
+        <div className="app-body" style={{ padding: "16px 28px 28px" }}>
+          <div style={{
+            maxWidth: 720,
+            border: "1px solid var(--vb-border)",
+            borderRadius: 8,
+            background: "var(--vb-bg-2)",
+          }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--vb-border)",
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>Edit record</span>
+              <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
+                A singleton has one record. Read it with <code>GET /api/v1/{collection?.name}</code>, update it with <code>PATCH</code>.
+              </span>
+            </div>
+            <div style={{ padding: 16 }}>
+              {openRec ? renderRecordForm(openRec) : (
+                <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
+                  {loading ? "Loading…" : "Couldn't load the record."}
+                </div>
+              )}
+            </div>
+            {openRec && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "12px 16px",
+                borderTop: "1px solid var(--vb-border)",
+              }}>
+                <span style={{ flex: 1 }} />
+                <VbBtn kind="ghost" size="sm" onClick={() => loadRecords()} disabled={saving}>
+                  Reset
+                </VbBtn>
+                <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
+                  {saving ? "Saving…" : "Save"}
+                </VbBtn>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="app-body" style={{ padding: "16px 28px 28px" }}>
         {/* Filter bar */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
@@ -1428,10 +1551,11 @@ export default function Records() {
           }
         />
       </div>
+      )}
 
-      {/* Edit drawer */}
+      {/* Edit drawer (a singleton edits its record inline instead) */}
       <Drawer
-        open={!!openRec}
+        open={!!openRec && !isSingleton}
         onClose={() => setOpenRec(null)}
         title={collection?.type === "view" ? "View record (read-only)" : "Edit record"}
         idLabel={openRec ? String(openRec.id).slice(0, 16) : undefined}
@@ -1485,50 +1609,7 @@ export default function Records() {
           )
         }
       >
-        {openRec && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* System read-only fields */}
-            {(["id", "created", "updated"] as const).map((key) => {
-              const raw = openRec[key];
-              const display = key === "id"
-                ? String(raw)
-                : new Date((raw as number) * 1000).toISOString();
-              return (
-                <DrawerFieldRow key={key} name={key} type={key === "id" ? "text" : "autodate"}>
-                  <VbInput mono value={display} readOnly />
-                </DrawerFieldRow>
-              );
-            })}
-            <div style={{ borderTop: "1px solid var(--vb-border)", margin: "4px 0" }} />
-            {/* User fields */}
-            {userFields.map((f) => (
-              <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
-                <FieldInput
-                  field={f}
-                  value={editData[f.name]}
-                  onChange={(v) => {
-                    setEditData((prev) => ({ ...prev, [f.name]: v }));
-                    setEditErrors((prev) => { const { [f.name]: _, ...rest } = prev; return rest; });
-                  }}
-                  relationCache={editRelationCache}
-                  readOnly={collection?.type === "view"}
-                  collectionName={collection?.name}
-                  recordId={String(openRec.id)}
-                />
-                {editErrors[f.name] && (
-                  <div style={{
-                    fontSize: 11,
-                    color: "var(--vb-status-danger)",
-                    marginTop: 4,
-                    fontFamily: "var(--font-mono)",
-                  }}>
-                    {editErrors[f.name]}
-                  </div>
-                )}
-              </DrawerFieldRow>
-            ))}
-          </div>
-        )}
+        {openRec && renderRecordForm(openRec)}
       </Drawer>
 
       {collection?.type === "auth" && (
