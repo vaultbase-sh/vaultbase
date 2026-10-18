@@ -15,14 +15,16 @@ afterEach(async () => { await closeDb(); });
 
 describe("email template settings", () => {
   for (const kind of Object.keys(DEFAULT_TEMPLATES) as TemplateKind[]) {
-    it(`${kind}: uses its own settings, and the default when empty`, () => {
+    // Awaited: the row is written after the in-memory value, and on Postgres
+    // an unawaited write can land after the test's schema is dropped.
+    it(`${kind}: uses its own settings, and the default when empty`, async () => {
       expect(getTemplate(kind)).toEqual({ ...DEFAULT_TEMPLATES[kind] });
-      setSetting(`email.${kind}.subject`, `Custom ${kind}`);
-      setSetting(`email.${kind}.body`, `Body for {{email}} at {{link}}`);
+      await setSetting(`email.${kind}.subject`, `Custom ${kind}`);
+      await setSetting(`email.${kind}.body`, `Body for {{email}} at {{link}}`);
       const t = getTemplate(kind);
       expect(t.subject).toBe(`Custom ${kind}`);
       expect(renderTemplate(t.body, { email: "a@x", link: "https://l" })).toBe("Body for a@x at https://l");
-      setSetting(`email.${kind}.subject`, "   ");
+      await setSetting(`email.${kind}.subject`, "   ");
       expect(getTemplate(kind).subject).toBe(DEFAULT_TEMPLATES[kind].subject);
     });
   }

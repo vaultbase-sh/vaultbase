@@ -113,20 +113,43 @@ export function onCloseDb(fn: () => void): void {
 }
 
 /**
+ * Writes that callers may not await (`setSetting` updates its value in memory
+ * at once and writes the row after). On Postgres, closing waits for them
+ * before the pool closes and a test schema is dropped: a write landing after
+ * the drop failed with `relation ... does not exist` and, unawaited, surfaced
+ * as an unhandled error in whatever ran next.
+ */
+const pendingWrites = new Set<Promise<unknown>>();
+export function trackPendingWrite<T>(p: Promise<T>): Promise<T> {
+  pendingWrites.add(p);
+  const done = () => { pendingWrites.delete(p); };
+  p.then(done, done);
+  return p;
+}
+
+/**
  * Close the database. Synchronous on SQLite. On Postgres the pool closes in
- * the background and the returned promise resolves once a test schema, if
- * any, is dropped; callers that do not await it may open the next database
- * at once.
+ * the background, after any tracked writes settle, and the returned promise
+ * resolves once a test schema, if any, is dropped; callers that do not await
+ * it may open the next database at once.
  */
 export function closeDb(): MaybePromise<void> {
   if (_driver) for (const fn of beforeClose) { try { fn(); } catch { /* closing anyway */ } }
   const driver = _driver;
   const teardown = _teardown;
+  const waits = [...pendingWrites];
   _driver = null;
   _sqlite = null;
   _db = null;
   _teardown = null;
   _setDriver(null);
+  if (waits.length > 0 && driver && driver.name !== "sqlite") {
+    for (const fn of afterClose) { try { fn(); } catch { /* best effort */ } }
+    return Promise.allSettled(waits).then(() => {
+      driver.close();
+      if (teardown) return teardown();
+    });
+  }
   driver?.close();
   for (const fn of afterClose) { try { fn(); } catch { /* best effort */ } }
   if (teardown) return teardown();

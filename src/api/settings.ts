@@ -1,6 +1,6 @@
 import Elysia, { t } from "elysia";
 import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
-import { onCloseDb } from "../db/client.ts";
+import { onCloseDb, trackPendingWrite } from "../db/client.ts";
 import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
@@ -244,11 +244,12 @@ export async function setSetting(key: string, value: string): Promise<void> {
   const stored = maybeEncrypt(key, value);
   values().set(key, stored);
   for (const written of reloadsInFlight) written.add(key);
-  await db.run(
+  // Tracked: callers may not await, and closing must not drop the table under it.
+  await trackPendingWrite(Promise.resolve(db.run(
     `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, ${db.dialect.epochNow})
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = ${db.dialect.epochNow}`,
     [key, stored],
-  );
+  )));
   broadcast({ type: "bus", kind: "settings", key });
 }
 
