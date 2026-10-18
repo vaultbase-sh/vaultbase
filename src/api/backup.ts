@@ -22,6 +22,9 @@ import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { backupEngine, backupFormat, backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
 import { adminGuard } from "./_admin.ts";
+import { Database } from "bun:sqlite";
+import { suspendCheckpointer } from "../db/checkpointer.ts";
+import { suspendReadPool } from "../core/read-pool.ts";
 
 // SQLite magic header — used to verify uploads
 const SQLITE_MAGIC = "SQLite format 3\0";
@@ -71,6 +74,50 @@ async function swapInDb(dbPath: string, staging: string): Promise<string | null>
  */
 async function restoreDatabase(dbPath: string, staging: string): Promise<string | null> {
   return withExclusiveWrite(async () => {
+    // Every other connection to the file goes first: read workers and the
+    // checkpointer each hold one, and would keep using the replaced file
+    // (every worker read failing with "disk I/O error" until a restart; on
+    // Windows the rename fails). They start again on whichever file is in
+    // place afterwards, the restored one or, if the swap failed, the old one.
+    const resumeReads = await suspendReadPool();
+    const resumeCheckpoints = await suspendCheckpointer();
+    try {
+      return await swapAndCarryOver(dbPath, staging);
+    } finally {
+      if (resumeCheckpoints) {
+        try { await resumeCheckpoints(getRawClient()); } catch (e) { process.stderr.write(`[restore] checkpointer not restarted: ${e instanceof Error ? e.message : e}\n`); }
+      }
+      if (resumeReads) {
+        try { await resumeReads(); } catch (e) { process.stderr.write(`[restore] read workers not restarted, reads stay on the main thread: ${e instanceof Error ? e.message : e}\n`); }
+      }
+    }
+  });
+}
+
+/**
+ * Why a staged file can't be restored (not a database, damaged, not a
+ * Vaultbase database), or null. Checked before anything is stopped or moved.
+ */
+function stagedDatabaseError(staging: string): string | null {
+  let d: Database | null = null;
+  try {
+    d = new Database(staging, { readonly: true });
+    const check = d.prepare("PRAGMA quick_check").all() as Array<Record<string, string>>;
+    const first = check[0] ? Object.values(check[0])[0] : "no result";
+    if (first !== "ok") return `the database fails its integrity check: ${first}`;
+    const t = d.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vaultbase_collections'`).get();
+    if (!t) return "it isn't a Vaultbase database (no vaultbase_collections table)";
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  } finally {
+    try { d?.close(); } catch { /* ignore */ }
+  }
+}
+
+/** The swap itself, keeping revocations and resets made since the backup, and dropping caches. */
+async function swapAndCarryOver(dbPath: string, staging: string): Promise<string | null> {
+  {
     const now = Math.floor(Date.now() / 1000);
     const revoked = getRawClient()
       .prepare(`SELECT jti, expires_at, revoked_at FROM vaultbase_token_revocations WHERE expires_at > ?`)
@@ -96,7 +143,7 @@ async function restoreDatabase(dbPath: string, staging: string): Promise<string 
       try { reset(); } catch { /* a cache that isn't loaded */ }
     }
     return null;
-  });
+  }
 }
 
 type ResetStamps = Array<{ table: string; rows: Array<{ id: string; password_reset_at: number }> }>;
@@ -235,6 +282,12 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       }
       const staging = `${dbPath}.restore`;
       copyFileSync(p, staging);
+      const bad = stagedDatabaseError(staging);
+      if (bad) {
+        try { rmSync(staging, { force: true }); } catch { /* ignore */ }
+        set.status = 422;
+        return { error: `Can't restore this file: ${bad}`, code: 422 };
+      }
       const err = await restoreDatabase(dbPath, staging);
       if (err) {
         set.status = 500;
@@ -266,6 +319,12 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       // Write to a staging path next to the live DB
       const staging = `${dbPath}.restore`;
       await Bun.write(staging, file);
+      const bad = stagedDatabaseError(staging);
+      if (bad) {
+        try { rmSync(staging, { force: true }); } catch { /* ignore */ }
+        set.status = 422;
+        return { error: `Can't restore this file: ${bad}`, code: 422 };
+      }
       const err = await restoreDatabase(dbPath, staging);
       if (err) {
         set.status = 500;

@@ -67,7 +67,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 - **Realtime** — WebSocket + SSE; subscribe to a collection, a record, one kind of event (`posts.create`) or `*`, checked against your API rules
 - **Files** — local disk, S3 or R2; thumbnails, MIME / size validation, protected files with one-time tokens
 - **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete, or kept as TypeScript files in a `vb_hooks/` folder (with imports and npm packages) that the admin UI edits too
-- **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every call audited
+- **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every tool call written to the audit log
 - **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), scheduled backups (a file copy on SQLite, `pg_dump` on Postgres), Prometheus metrics
 - **Database** — SQLite by default: one file, read worker threads on spare cores. Postgres in beta (`VAULTBASE_DATABASE_URL`), including several servers on one database. See [Databases](https://docs.vaultbase.dev/concepts/databases/)
 - **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks
@@ -196,13 +196,19 @@ serialised but not blocked, and the resulting `.db` file is self-contained
 ```
 
 Restore via `POST /api/admin/restore` with the snapshot bytes (admin only)
-or by replacing the running DB file while the service is stopped.
+or by replacing the DB file while the service is stopped. An online restore
+checks the file first, stops the read workers and the checkpointer while it
+swaps it, and starts them again; it is refused under cluster mode. A database
+backup is the records, schema and settings: uploaded files, the hooks folder,
+`.secret` / `.encryption-key` and your environment are separate, so back up
+`<dataDir>/` as a whole.
 
-## Cluster mode (multi-process)
+## Cluster mode (multi-process, deprecated)
 
-Read worker threads (on by default) now spread SQLite reads over spare cores in one
-process, and several servers can share one Postgres database (beta); prefer those. Cluster
-mode remains for existing setups.
+Cluster mode is deprecated. Read worker threads (on by default) spread SQLite reads over
+spare cores in one process, and several servers can share one Postgres database (beta);
+use those. Cluster mode remains for existing setups, without online restore and with
+If-Match checked per process.
 
 A single Bun process is single-threaded — caps at one CPU core. For higher
 throughput on multi-core hosts, use the cluster orchestrator:
@@ -224,7 +230,9 @@ connections across workers. Workers run identical code; SQLite WAL handles
 concurrent readers natively.
 
 **Health check:** `GET /_/health` returns the responding worker's id + pid +
-uptime — useful to verify load balancing.
+uptime — useful to verify load balancing. It only says the process is up; point
+readiness probes at `GET /_/ready`, which checks the database, storage, read
+workers, queues and log writes and answers 503 when the server can't serve.
 
 **Graceful shutdown:** `SIGTERM` / `SIGINT` to the parent broadcasts to
 workers; each drains its log buffer and closes its DB handle. 30s timeout,
@@ -251,8 +259,8 @@ before adopting the dedicated-writer-process pattern.
 
 - Run Vaultbase under a process supervisor (systemd, runit, pm2). It does
   not daemonize itself.
-- Back up `<dataDir>/` periodically. On SQLite the single-file DB is the
-  source of truth — nothing else lives outside. On Postgres, back up the
+- Back up `<dataDir>/` periodically: on SQLite it holds the database, uploads
+  (local storage), the hooks folder and the keys. On Postgres, back up the
   database with `pg_dump` (scheduled backups do this when it's installed) and
   keep `<dataDir>/` for uploads and the keys.
 - Set `VAULTBASE_JWT_SECRET` explicitly in production. The auto-generated
@@ -277,8 +285,9 @@ Output: `releases/vaultbase-<target>[.exe]`
 ## Development
 
 ```bash
+bun install && (cd admin && bun install)   # the admin has its own dependencies
 bun run dev         # backend on :8091
-bun run dev:admin   # admin on :5173 (proxies /api → :8090)
+bun run dev:admin   # admin on :5173 (proxies /api → :8091)
 
 bun test            # backend tests
 bun run typecheck

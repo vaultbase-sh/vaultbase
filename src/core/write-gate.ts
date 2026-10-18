@@ -114,6 +114,24 @@ export async function withExclusiveWrite<T>(
   }
 }
 
+/**
+ * Run `fn` (inside a shared write) with its `afterCommit` effects held until
+ * it returns, and dropped if it throws: for a write wrapped in its own
+ * transaction, so realtime and webhooks never announce a rolled-back write.
+ * Inside a batch the batch already holds them.
+ */
+export async function withHeldEffects<T>(fn: () => Promise<T>): Promise<T> {
+  const outer = als.getStore();
+  if (outer?.exclusive) return fn();
+  const ctx: GateContext = { exclusive: true, deferred: [] };
+  const result = await als.run(ctx, fn);
+  ctx.exclusive = false;
+  for (const f of ctx.deferred.splice(0)) {
+    if (!deferUntilGroupCommit(f)) { try { f(); } catch { /* side effects never fail the write */ } }
+  }
+  return result;
+}
+
 /** Which gate the current async context holds, if any. */
 export function gateMode(): "exclusive" | "shared" | null {
   const ctx = als.getStore();

@@ -55,6 +55,11 @@ export const FIXED_INDEXES: IndexSpec[] = [
     ix(`idx_${t}_file_path`, t, ["file_path"], { unique: true, where: "file_path IS NOT NULL" })),
   ix("idx_vaultbase_jobs_log_status", "vaultbase_jobs_log", ["queue", "status", "scheduled_at"]),
   ix("idx_vaultbase_jobs_log_unique", "vaultbase_jobs_log", ["unique_key", "status"]),
+  // One queued-or-running job per unique key (queues.ts enqueue). Existing
+  // duplicates are cleared first (ddl.ts ensureFixedSchema).
+  ix("idx_vaultbase_jobs_log_unique_active", "vaultbase_jobs_log", ["unique_key"], {
+    unique: true, where: "unique_key IS NOT NULL AND status IN ('queued', 'running')",
+  }),
   ix("idx_vaultbase_record_history_lookup", "vaultbase_record_history", ["collection", "record_id", "at"]),
   ix("idx_vaultbase_record_history_at", "vaultbase_record_history", ["at"]),
   ix("idx_vaultbase_audit_log_actor", "vaultbase_audit_log", ["actor_id", "at"]),

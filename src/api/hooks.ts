@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { hooks } from "../db/schema.ts";
@@ -24,6 +25,10 @@ export function makeHooksPlugin(jwtSecret: string) {
           name: body.name ?? "", collection_name: body.collection_name ?? "", event: body.event, enabled: body.enabled === false ? 0 : 1,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(hooks).values({
@@ -73,6 +78,10 @@ export function makeHooksPlugin(jwtSecret: string) {
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "hook", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         await getDb().update(hooks).set(update).where(eq(hooks.id, params.id));
         invalidateHookCache();
         const row = await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1);

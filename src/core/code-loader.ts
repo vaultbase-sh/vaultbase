@@ -36,6 +36,20 @@ export function registerCodeLoader(origin: string, loader: CodeLoader): () => vo
   };
 }
 
+/**
+ * Why inline code (an async function body with `ctx` in scope) doesn't
+ * compile, or null when it does. Checked when inline code is saved, so a
+ * hook, route, job or worker can't be stored in a state it can't run in.
+ */
+export function inlineCompileError(code: string): string | null {
+  try {
+    new AsyncFunction("ctx", code);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 /** Compile a row's code. Throws when it doesn't compile or its origin has no loader. */
 export function compileCode<C>(row: CodeRow): CompiledCode<C> {
   const origin = row.origin || "inline";

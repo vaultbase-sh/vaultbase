@@ -233,14 +233,22 @@ describe("file oneTimeToken", () => {
     });
     const app = makeFilesPlugin(tmpDir, SECRET);
     const mint = await app.handle(tokenReq(null, rec.id, filename));
-    const body = await mint.json() as { data: { token: string } };
+    const body = await mint.json() as { data: { token: string; one_time: boolean } };
     const tok = body.data.token;
+    // Says so, so a client doesn't cache it (the SDK did, and got a 410).
+    expect(body.data.one_time).toBe(true);
 
     const a = await app.handle(getReq(filename, { token: tok }));
     expect(a.status).toBe(200);
 
     const b = await app.handle(getReq(filename, { token: tok }));
     expect(b.status).toBe(410);
+  });
+
+  it("a reusable token says one_time: false", async () => {
+    const { rec, filename } = await setupFile({ collectionViewRule: null, fieldOptions: {}, owner: "u1" });
+    const mint = await makeFilesPlugin(tmpDir, SECRET).handle(tokenReq(null, rec.id, filename));
+    expect(((await mint.json()) as { data: { one_time: boolean } }).data.one_time).toBe(false);
   });
 });
 

@@ -535,7 +535,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
           expiresInSeconds: tokenWindowSeconds("file"),
           jwtSecret,
         });
-        return { data: { token, expires_at: exp } };
+        // `one_time` tells a client not to cache the token: it works once.
+        return { data: { token, expires_at: exp, one_time: opts.oneTimeToken === true } };
       }
     )
     .get("/files/:filename", async ({ params, query, request, server, set }) => {

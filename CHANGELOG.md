@@ -7,6 +7,89 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.24.0] — 2026-10-18
+
+Fixes from an external technical review of 0.23.1. Every item below was reproduced first and
+has a regression test that fails on 0.23.2.
+
+### Fixed
+
+- **Schema snapshots no longer change permissions.** Syncing a snapshot that omits rules
+  turned an admin-only collection fully public, and exports left public rules out, so an
+  import made them admin-only. Exports now write all five rules, public (`null`) included.
+  A rule a snapshot leaves out keeps the collection's current rule on sync, and is
+  admin-only when the snapshot creates the collection.
+- **Date rules decide the same for a list and a single record.** The single-record checker
+  (get, update, delete, files, realtime) treated `strftime(...)` as empty, so `!=`, `<` and
+  `<=` rules passed there while the list denied. It now evaluates `strftime` like SQL for
+  `%Y %m %d %H %M %S %j` with a stored date and `'unixepoch'`, `'now'` or a literal
+  timestamp; anything it can't evaluate makes the comparison false.
+- **A broken inline hook no longer turns itself off.** Hook, route, job and worker code that
+  doesn't compile is refused when saved (422, admin API and MCP tools). An enabled
+  `before*` hook that can't compile blocks the write instead of being skipped.
+- **Write batches are all or nothing for every failure.** An op that hit a missing record
+  or collection came back as a 404 entry while the ops before it committed. The batch now
+  rolls back and answers that op's status (`Batch failed at request N: …`). Read-only
+  batches still report each op.
+- **`uniqueKey` holds under concurrency.** Ten enqueues at once with one key made ten jobs.
+  A partial unique index now allows one queued-or-running job per key (keys are global
+  across queues); retrying a dead job while another with its key is active answers 409.
+- **Online restore with read workers.** After a restore every read the workers served
+  failed with `disk I/O error` until a restart: they and the checkpointer kept their
+  connections to the replaced file. Restore now stops them, swaps the file and starts them
+  again, and checks the file (integrity, a Vaultbase database) before touching anything,
+  answering 422 for a bad one.
+- **Several servers on one Postgres (beta):**
+  - Running jobs are leased (60 s, renewed every 15 s). A server starting up re-queued
+    jobs another server was still running; now only an expired lease is recovered, and
+    only the attempt holding the lease records its result.
+  - If-Match holds across servers: a guarded write holds the record's row lock from its
+    check to its commit, so two servers can't both accept one ETag.
+  - Peer messages are measured in UTF-8 bytes. A record of about 3,000 Chinese characters
+    passed the old character count, was refused by `NOTIFY`, and took a rule change sent
+    with it down too. Record events now never share a `NOTIFY` with an invalidation,
+    failed ones are retried, and a polled sequence makes a server that missed another's
+    invalidation reset its caches within 10 s.
+- **Every MCP tool call is audited**, over HTTP/SSE and stdio: the token's admin, the tool,
+  its target (never the payload), the status and the error. Only `run_sql` was before.
+- **The release workflow builds the tag it publishes.** A manual run built the default
+  branch and published it under the typed tag; it now checks out the tag and fails if the
+  commit doesn't match. SBOMs listed zero components; they now list the installed
+  dependencies and the workflow fails on an empty one.
+- **Failed log writes are counted** (`/metrics`, readiness) and reported on stderr at most
+  once a minute, instead of swallowed.
+- The file token response says whether the token is one-time (`one_time`), so clients
+  don't cache it.
+- The admin dev server proxies to port 8091, the server's default.
+
+### Added
+
+- **`GET /_/ready`**: the database, storage, read workers, queues and log writes. 503 when
+  the server can't serve, 200 with `ready` or `degraded` and each check otherwise.
+  `/_/health` stays the cheap liveness probe.
+- **Prometheus series**: `vaultbase_responses_total{class}`, `vaultbase_jobs{status}`,
+  `vaultbase_jobs_oldest_due_seconds`, `vaultbase_webhook_deliveries{status}`,
+  `vaultbase_read_workers{state}`, `vaultbase_read_workers_dropped_total`,
+  `vaultbase_read_workers_restarted_total`, `vaultbase_log_write_failures_total`,
+  `vaultbase_log_lines_lost_total`.
+
+### Upgrade notes
+
+- **Batches with a failed op now fail.** A write batch that used to return 200 with a 404
+  entry (and keep the other ops) now returns 404 and changes nothing. Check
+  every op exists, or send the ops that may miss outside the batch.
+- **Broken hook code now blocks writes.** An enabled `before*` hook whose code doesn't
+  compile was skipped silently; its writes now fail with a 422 naming the hook. Before
+  upgrading, open the Hooks page: a hook that fails to compile has logged
+  `[hooks] Failed to compile hook` at every start. Fix or disable it.
+- **Rules using `strftime` with formats or forms outside the list above** now deny on
+  single-record checks, as the list query does.
+- **Duplicate active jobs with one `uniqueKey`** are cleaned up at the first start: one
+  keeps the key (a running one first, then the oldest), the others keep running without
+  it.
+- Snapshots exported from 0.24 carry all five rules. Applying an older snapshot no longer
+  changes rules it doesn't mention.
+
 ## [0.23.2] — 2026-10-18
 
 ### Fixed

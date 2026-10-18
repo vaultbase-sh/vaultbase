@@ -1,4 +1,5 @@
 import { checkRateLimit } from "./ratelimit.ts";
+import { inlineCompileError } from "../core/code-loader.ts";
 import { applyCorsHeaders } from "../core/cors.ts";
 import { rememberedPeer, securityHeaders } from "../core/sec.ts";
 import { eq } from "drizzle-orm";
@@ -65,6 +66,10 @@ export function makeRoutesPlugin(jwtSecret: string) {
           require_auth: body.require_auth === true ? 1 : 0,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(routes).values({
@@ -122,6 +127,10 @@ export function makeRoutesPlugin(jwtSecret: string) {
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "route", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         await getDb().update(routes).set(update).where(eq(routes.id, params.id));
         invalidateRoutesCache();
         const row = await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1);

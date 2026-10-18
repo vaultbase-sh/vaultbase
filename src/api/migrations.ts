@@ -36,11 +36,14 @@ export function makeMigrationsPlugin(jwtSecret: string) {
             fields: parseFields(c.fields),
           };
           if (c.view_query !== null && c.view_query !== undefined) out.view_query = c.view_query;
-          if (c.list_rule !== null   && c.list_rule !== undefined)   out.list_rule   = c.list_rule;
-          if (c.view_rule !== null   && c.view_rule !== undefined)   out.view_rule   = c.view_rule;
-          if (c.create_rule !== null && c.create_rule !== undefined) out.create_rule = c.create_rule;
-          if (c.update_rule !== null && c.update_rule !== undefined) out.update_rule = c.update_rule;
-          if (c.delete_rule !== null && c.delete_rule !== undefined) out.delete_rule = c.delete_rule;
+          // All five, public (null) included: a rule left out means "keep as
+          // is" when applied to an existing collection, and admin-only when
+          // it creates one, so leaving null out would change it either way.
+          out.list_rule   = c.list_rule ?? null;
+          out.view_rule   = c.view_rule ?? null;
+          out.create_rule = c.create_rule ?? null;
+          out.update_rule = c.update_rule ?? null;
+          out.delete_rule = c.delete_rule ?? null;
           return out;
         }),
       };

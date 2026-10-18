@@ -73,6 +73,31 @@ function utcDate(d: Date = new Date()): string {
 //   - `appendLogEntry` interface unchanged (sync-callable, fire-and-forget)
 //   - `drainLogBuffer()` exposed for graceful-shutdown flush
 
+
+/**
+ * Log lines that couldn't be written (disk full, permissions, a missing
+ * folder). A failed write never fails the request, but it isn't silent:
+ * counted for /metrics and readiness, and reported on stderr at most once a
+ * minute.
+ */
+const logWrites = { failedWrites: 0, lostLines: 0, lastError: null as string | null, lastAt: 0, reportedAt: 0 };
+
+function noteLogWriteFailure(e: unknown, lines: number): void {
+  logWrites.failedWrites++;
+  logWrites.lostLines += lines;
+  logWrites.lastError = e instanceof Error ? e.message : String(e);
+  logWrites.lastAt = Date.now();
+  if (logWrites.lastAt - logWrites.reportedAt >= 60_000) {
+    logWrites.reportedAt = logWrites.lastAt;
+    process.stderr.write(`vaultbase: log write failed (${logWrites.failedWrites} so far, ${logWrites.lostLines} lines lost): ${logWrites.lastError}\n`);
+  }
+}
+
+export function logWriteFailures(): { failedWrites: number; lostLines: number; lastError: string | null; lastAt: number } {
+  const { reportedAt: _r, ...out } = logWrites;
+  return out;
+}
+
 class BufferedLogWriter {
   /** Per-file buffers — entries split by date so a midnight roll never gets cross-written. */
   private readonly buffers = new Map<string, string[]>();
@@ -118,7 +143,7 @@ class BufferedLogWriter {
       for (const [file, lines] of snapshot) {
         const data = lines.join("");
         writes.push(
-          appendFileAsync(file, data, { encoding: "utf8" }).catch(() => { /* swallow */ }),
+          appendFileAsync(file, data, { encoding: "utf8" }).catch((e) => noteLogWriteFailure(e, lines.length)),
         );
       }
       await Promise.all(writes);
@@ -133,7 +158,7 @@ class BufferedLogWriter {
     this.buffers.clear();
     this.bufferBytes = 0;
     for (const [file, lines] of snapshot) {
-      try { appendFileSync(file, lines.join(""), { encoding: "utf8" }); } catch { /* ignore */ }
+      try { appendFileSync(file, lines.join(""), { encoding: "utf8" }); } catch (e) { noteLogWriteFailure(e, lines.length); }
     }
   }
 }

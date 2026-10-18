@@ -345,6 +345,10 @@ export const jobsLog = sqliteTable("vaultbase_jobs_log", {
   enqueued_at: integer("enqueued_at").notNull().default(EPOCH_NOW),
   started_at: integer("started_at"),
   finished_at: integer("finished_at"),
+  /** The process running the job (queues.ts PROCESS_ID); its result only counts while it holds the lease. */
+  lease_owner: text("lease_owner"),
+  /** Until when the lease holds; the owner renews it while the job runs. An expired lease is recovered. */
+  lease_until: integer("lease_until"),
   /** Per-job retry overrides from enqueue(); null = use the worker defaults. */
   retry_max: integer("retry_max"),
   retry_backoff: text("retry_backoff"),

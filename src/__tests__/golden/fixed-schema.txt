@@ -148,6 +148,8 @@
   enqueued_at INTEGER NOT NULL DEFAULT unixepoch()
   started_at INTEGER
   finished_at INTEGER
+  lease_owner TEXT
+  lease_until INTEGER
   retry_max INTEGER
   retry_backoff TEXT
   retry_delay_ms INTEGER
@@ -325,6 +327,9 @@ CREATE INDEX idx_vaultbase_jobs_log_status ON vaultbase_jobs_log(queue, status, 
 
 -- index idx_vaultbase_jobs_log_unique
 CREATE INDEX idx_vaultbase_jobs_log_unique ON vaultbase_jobs_log(unique_key, status);
+
+-- index idx_vaultbase_jobs_log_unique_active
+CREATE UNIQUE INDEX idx_vaultbase_jobs_log_unique_active ON vaultbase_jobs_log(unique_key) WHERE unique_key IS NOT NULL AND status IN ('queued', 'running');
 
 -- index idx_vaultbase_login_failures_at
 CREATE INDEX idx_vaultbase_login_failures_at ON vaultbase_login_failures(at);

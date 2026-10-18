@@ -119,6 +119,7 @@ export interface CheckpointStats {
 let worker: Worker | null = null;
 let mainClient: Database | null = null;
 let stats: CheckpointStats | null = null;
+let started: { path: string; journalSizeLimit: number } | null = null;
 
 function fallBackToInline(reason: string): void {
   if (stats?.mode === "inline") return;
@@ -134,6 +135,7 @@ function fallBackToInline(reason: string): void {
  */
 export function startCheckpointer(client: Database, path: string, journalSizeLimit: number): Promise<void> {
   if (worker) return Promise.resolve();
+  started = { path, journalSizeLimit };
   mainClient = client;
   stats = { wal_frames: 0, checkpointed_frames: 0, last_pass_ms: 0, max_pass_ms: 0, passes: 0, restarts: 0, last_restart_ms: 0, max_restart_ms: 0, mode: "inline" };
   const url = URL.createObjectURL(new Blob([WORKER_CODE], { type: "application/javascript" }));
@@ -202,4 +204,16 @@ export async function stopCheckpointer(): Promise<void> {
 /** Last pass's numbers, or null when no checkpointer was started (e.g. `:memory:`). */
 export function checkpointStats(): CheckpointStats | null {
   return stats ? { ...stats } : null;
+}
+
+/**
+ * Stop the checkpointer for a database swap (online restore): its own
+ * connection would stay on the replaced file. Returns how to start it again
+ * on the new main connection, or null when none was running.
+ */
+export async function suspendCheckpointer(): Promise<((client: Database) => Promise<void>) | null> {
+  if (!worker || !started) return null;
+  const { path, journalSizeLimit } = started;
+  await stopCheckpointer();
+  return (client) => startCheckpointer(client, path, journalSizeLimit);
 }

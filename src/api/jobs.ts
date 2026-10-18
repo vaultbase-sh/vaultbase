@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
@@ -26,6 +27,10 @@ export function makeJobsPlugin(jwtSecret: string) {
           name: body.name ?? "", cron: body.cron, mode, enabled: body.enabled === false ? 0 : 1,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const next = nextRunFromCron(body.cron, now);
@@ -84,6 +89,10 @@ export function makeJobsPlugin(jwtSecret: string) {
         const { updated_at: _u, code: _c, next_run_at: _n, ...settings } = update;
         const inFiles = updateInFiles(set, "job", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         await getDb().update(jobs).set(update).where(eq(jobs.id, params.id));
         invalidateJobsCache();
         const row = await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1);

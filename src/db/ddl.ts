@@ -82,5 +82,19 @@ export async function ensureFixedSchema(): Promise<void> {
       await db.exec(d.addColumn(name, spec));
     }
   }
+  // Before 0.24 a unique key was checked, then inserted, so concurrent
+  // enqueues could leave several active jobs with one key. Keep one (a
+  // running job over a queued one, then the oldest) and clear the key on the
+  // rest, which still run as before, so the unique index can be created.
+  await db.exec(`UPDATE vaultbase_jobs_log SET unique_key = NULL
+    WHERE unique_key IS NOT NULL AND status IN ('queued', 'running') AND EXISTS (
+      SELECT 1 FROM vaultbase_jobs_log o
+      WHERE o.unique_key = vaultbase_jobs_log.unique_key AND o.id <> vaultbase_jobs_log.id
+        AND o.status IN ('queued', 'running')
+        AND (
+          (o.status = 'running' AND vaultbase_jobs_log.status = 'queued')
+          OR (o.status = vaultbase_jobs_log.status AND (o.enqueued_at < vaultbase_jobs_log.enqueued_at
+            OR (o.enqueued_at = vaultbase_jobs_log.enqueued_at AND o.id < vaultbase_jobs_log.id)))
+        ))`);
   for (const ix of FIXED_INDEXES) await db.exec(d.createIndex(ix));
 }

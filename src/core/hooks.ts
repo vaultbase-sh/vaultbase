@@ -156,13 +156,25 @@ const enabledHookRows = dbScopedTtlCache(HOOK_ROWS_TTL_MS, () =>
   getDb().select().from(hooks).where(eq(hooks.enabled, 1)),
 );
 
-function compileHook(row: HookRow): CompiledHook | null {
+/**
+ * An enabled hook whose code doesn't compile still runs, as a function that
+ * fails: a before-hook then blocks the write instead of being skipped (it
+ * may be the check that guards it), and an after-hook logs the error. The
+ * failure is logged once per version of the hook.
+ */
+function compileHook(row: HookRow): CompiledHook {
   try {
     const fn = compileCode<HookContext>(row);
     return { id: row.id, name: row.name ?? "", fn };
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     console.error(`[hooks] Failed to compile hook ${row.id}:`, e);
-    return null;
+    const label = row.name || row.id;
+    return {
+      id: row.id,
+      name: row.name ?? "",
+      fn: async () => { throw new ValidationError({ _hook: `hook '${label}' does not compile: ${msg}` }); },
+    };
   }
 }
 
@@ -224,10 +236,10 @@ async function lookupEnabledHooks(
     const cached = compiledCache.get(r.id);
     let hook = cached && cached.version === r.updated_at ? cached.hook : undefined;
     if (!hook) {
-      const c = compileHook(r);
-      if (c) { compiledCache.set(r.id, { version: r.updated_at, hook: c }); hook = c; }
+      hook = compileHook(r);
+      compiledCache.set(r.id, { version: r.updated_at, hook });
     }
-    if (hook) compiled.push(hook);
+    compiled.push(hook);
   }
   for (const r of registeredHooks) {
     if (r.event === event && (r.collection === "" || r.collection === collectionName)) compiled.push(r.hook);

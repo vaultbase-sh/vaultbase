@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { workers } from "../db/schema.ts";
@@ -6,6 +7,7 @@ import {
   invalidateWorkerCache,
   listJobsLog,
   retryJob,
+  JobKeyActiveError,
   discardJob,
   queueStats,
   type JobStatus,
@@ -42,6 +44,10 @@ export function makeQueuesPlugin(jwtSecret: string) {
           retry_backoff: backoff, retry_delay_ms: Math.max(50, body.retry_delay_ms ?? 1000),
         }, body.code ?? "");
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         await getDb().insert(workers).values({
@@ -103,6 +109,10 @@ export function makeQueuesPlugin(jwtSecret: string) {
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "worker", current, settings, body.code as string | undefined, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
+        {
+          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
+          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+        }
         await getDb().update(workers).set(update).where(eq(workers.id, params.id));
         invalidateWorkerCache();
         const row = await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1);
@@ -163,7 +173,13 @@ export function makeQueuesPlugin(jwtSecret: string) {
     )
 
     .post("/admin/queues/jobs/:id/retry", async ({ params, set }) => {
-      const ok = await retryJob(params.id);
+      let ok: boolean;
+      try {
+        ok = await retryJob(params.id);
+      } catch (e) {
+        if (e instanceof JobKeyActiveError) { set.status = 409; return { error: e.message, code: 409 }; }
+        throw e;
+      }
       if (!ok) { set.status = 404; return { error: "Job not found or not retryable", code: 404 }; }
       return { data: { ok: true } };
     }, { requireAdmin: true })

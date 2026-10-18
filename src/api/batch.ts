@@ -23,6 +23,13 @@ interface BatchResult {
 
 const MAX_BATCH = 100;
 
+/** An op of a write batch that answered with an error: the whole batch rolls back. */
+class BatchOpError extends Error {
+  constructor(readonly result: BatchResult) {
+    super("batch op failed");
+  }
+}
+
 async function extractAuth(request: Request, jwtSecret: string): Promise<VerifiedAuth | null> {
   const token = request.headers.get("authorization")?.replace("Bearer ", "");
   if (!token) return null;
@@ -142,6 +149,11 @@ async function dispatchOp(
 
 /** Map an error thrown by request `at` of a batch to its response. */
 function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { status?: number | string }): { error: string; code: number; details?: unknown } {
+  if (e instanceof BatchOpError) {
+    set.status = e.result.status;
+    const b = e.result.body as { error?: string } | null;
+    return { error: `Batch failed at request ${at}: ${b?.error ?? "failed"}`, code: e.result.status };
+  }
   if (e instanceof RuleDeniedError) {
     set.status = 403;
     return { error: `Batch failed at request ${at}: forbidden by ${e.ruleName}`, code: 403 };
@@ -234,6 +246,9 @@ export function makeBatchPlugin(jwtSecret: string) {
           await db.transaction(async () => {
             for (let i = 0; i < parsed.length; i++) {
               const result = await dispatchOp(request, parsed[i]!, requests[i]!.body, principalFor(auth, parsed[i]!));
+              // A missing record or collection comes back as a result, not
+              // a throw; it fails the batch all the same.
+              if (result.status >= 400) throw new BatchOpError(result);
               results.push(result);
             }
           }, { immediate: false });

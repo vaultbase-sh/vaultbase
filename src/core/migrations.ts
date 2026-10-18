@@ -51,15 +51,17 @@ export interface ApplyOptions {
 }
 
 /**
- * A rule a snapshot doesn't carry means "not specified", which
- * `createCollection` materialises as admin-only (`""`). Both sides of every
- * comparison have to normalise the same way, or applying a rule-less snapshot
- * would create the collection and then report it as drifted forever.
- * A snapshot that carries an explicit `null` still means public.
+ * A rule a snapshot doesn't carry means "not specified". Creating a
+ * collection from it applies the admin-only default (`""`); applying it to an
+ * existing collection leaves that collection's rule as it is, so a sync can
+ * never open or close access by omission. An explicit `null` still means
+ * public, and exports write all five rules.
  */
-function ruleOf(v: string | null | undefined): string | null {
-  return v === undefined ? "" : v;
+function ruleDiffers(existing: string | null | undefined, snap: string | null | undefined): boolean {
+  return snap !== undefined && (existing ?? null) !== snap;
 }
+
+const RULES = ["list_rule", "view_rule", "create_rule", "update_rule", "delete_rule"] as const;
 
 /** Thrown when the snapshot input is structurally invalid. */
 export class SnapshotShapeError extends Error {
@@ -84,11 +86,7 @@ export function isCollectionInSync(
   if (!existing) return false;
   if (existing.type !== snap.type) return false;
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) return false;
-  if (ruleOf(existing.list_rule) !== ruleOf(snap.list_rule))   return false;
-  if (ruleOf(existing.view_rule) !== ruleOf(snap.view_rule))   return false;
-  if (ruleOf(existing.create_rule) !== ruleOf(snap.create_rule)) return false;
-  if (ruleOf(existing.update_rule) !== ruleOf(snap.update_rule)) return false;
-  if (ruleOf(existing.delete_rule) !== ruleOf(snap.delete_rule)) return false;
+  if (RULES.some((r) => ruleDiffers(existing[r], snap[r]))) return false;
   return fieldsEqual(parseFields(existing.fields), snap.fields);
 }
 
@@ -125,11 +123,7 @@ export function describeCollectionChanges(existing: ExistingCollection, snap: Co
   }
 
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) changes.push("view_query changed");
-  if (ruleOf(existing.list_rule) !== ruleOf(snap.list_rule))   changes.push("list_rule changed");
-  if (ruleOf(existing.view_rule) !== ruleOf(snap.view_rule))   changes.push("view_rule changed");
-  if (ruleOf(existing.create_rule) !== ruleOf(snap.create_rule)) changes.push("create_rule changed");
-  if (ruleOf(existing.update_rule) !== ruleOf(snap.update_rule)) changes.push("update_rule changed");
-  if (ruleOf(existing.delete_rule) !== ruleOf(snap.delete_rule)) changes.push("delete_rule changed");
+  for (const r of RULES) if (ruleDiffers(existing[r], snap[r])) changes.push(`${r} changed`);
 
   return changes;
 }
@@ -297,11 +291,8 @@ export async function applySnapshot(
       await updateCollection(existing.id, {
         fields: JSON.stringify(c.fields ?? []),
         view_query: c.view_query ?? null,
-        list_rule: c.list_rule ?? null,
-        view_rule: c.view_rule ?? null,
-        create_rule: c.create_rule ?? null,
-        update_rule: c.update_rule ?? null,
-        delete_rule: c.delete_rule ?? null,
+        // Only the rules the snapshot carries; the others stay as they are.
+        ...Object.fromEntries(RULES.filter((r) => c[r] !== undefined).map((r) => [r, c[r]])),
       });
       result.updated.push(c.name);
     } catch (e) {

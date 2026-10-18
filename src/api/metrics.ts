@@ -9,7 +9,8 @@ import { adminFromRequest, adminGuard } from "./_admin.ts";
 import { connectionCount } from "../realtime/manager.ts";
 import { checkpointStats, type CheckpointStats } from "../db/checkpointer.ts";
 import { queryStatsReport, resetQueryStats } from "../core/query-stats.ts";
-import { readPoolStats } from "../core/read-pool.ts";
+import { readPoolStats, readPoolTarget } from "../core/read-pool.ts";
+import { logWriteFailures } from "../core/file-logger.ts";
 import { broadcast } from "../core/thread-bus.ts";
 
 interface SqliteSnapshot {
@@ -220,6 +221,34 @@ export function makeMetricsPlugin(jwtSecret: string) {
         push("vaultbase_sqlite_page_count", "SQLite database page count.",     "gauge", [["", sql.page_count]]);
         push("vaultbase_sqlite_page_size",  "SQLite database page size (B).",  "gauge", [["", sql.page_size]]);
         push("vaultbase_sqlite_wal_pages",  "SQLite WAL log pages.",           "gauge", [["", sql.wal_pages]]);
+      }
+      push("vaultbase_responses_total", "Finished requests by status class since boot.", "counter",
+        (["2xx", "3xx", "4xx", "5xx"] as const).map((c) => [`{class="${c}"}`, snap.status[c]]));
+      // Backlogs: what's waiting and what has given up.
+      try {
+        const jobs = await db.all<{ status: string; n: number }>(`SELECT status, COUNT(*) AS n FROM vaultbase_jobs_log WHERE status IN ('queued', 'running', 'dead') GROUP BY status`);
+        const byStatus = Object.fromEntries(jobs.map((r) => [r.status, Number(r.n)]));
+        push("vaultbase_jobs", "Queue jobs by status.", "gauge",
+          ["queued", "running", "dead"].map((st) => [`{status="${st}"}`, byStatus[st] ?? 0]));
+        const now = Math.floor(Date.now() / 1000);
+        const [late] = await db.all<{ age: number | null }>(`SELECT MIN(scheduled_at) AS age FROM vaultbase_jobs_log WHERE status = 'queued' AND scheduled_at <= ?`, [now]);
+        push("vaultbase_jobs_oldest_due_seconds", "How long the oldest due queued job has waited (0 when none).", "gauge",
+          [["", late?.age ? Math.max(0, now - Number(late.age)) : 0]]);
+        const hooks = await db.all<{ status: string; n: number }>(`SELECT status, COUNT(*) AS n FROM vaultbase_webhook_deliveries WHERE status IN ('pending', 'dead') GROUP BY status`);
+        const byHook = Object.fromEntries(hooks.map((r) => [r.status, Number(r.n)]));
+        push("vaultbase_webhook_deliveries", "Webhook deliveries by status.", "gauge",
+          ["pending", "dead"].map((st) => [`{status="${st}"}`, byHook[st] ?? 0]));
+      } catch { /* tables missing on a fresh database: skipped */ }
+      {
+        const pool = readPoolStats();
+        push("vaultbase_read_workers", "Read worker threads.", "gauge", [['{state="running"}', pool.workers], ['{state="configured"}', readPoolTarget()]]);
+        push("vaultbase_read_workers_dropped_total", "Read workers taken out of service since boot.", "counter", [["", pool.dropped]]);
+        push("vaultbase_read_workers_restarted_total", "Read workers started to replace dropped ones.", "counter", [["", pool.restarted]]);
+      }
+      {
+        const logs = logWriteFailures();
+        push("vaultbase_log_write_failures_total", "Log writes that failed (disk full, permissions).", "counter", [["", logs.failedWrites]]);
+        push("vaultbase_log_lines_lost_total", "Log lines lost to failed writes.", "counter", [["", logs.lostLines]]);
       }
       set.headers["content-type"] = "text/plain; version=0.0.4; charset=utf-8";
       return lines.join("\n") + "\n";

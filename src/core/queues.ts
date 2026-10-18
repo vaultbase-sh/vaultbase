@@ -20,7 +20,9 @@ import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
  *   - Dead-letter: jobs that exhaust retries land in status="dead". They
  *     stay in the log table and can be retried via the admin UI.
  *   - Unique-key dedup: `enqueue(queue, payload, { uniqueKey })` skips if
- *     a non-finished (queued|running) job with the same key exists.
+ *     a non-finished (queued|running) job with the same key exists, in any
+ *     queue. A partial unique index enforces it, so concurrent enqueues and
+ *     several servers can't both get in.
  *
  * Phase 2 will swap the in-memory parts for Redis lists + sorted sets,
  * keeping this same API.
@@ -197,22 +199,7 @@ export async function enqueue(
   const now = Math.floor(Date.now() / 1000);
   const scheduled_at = now + Math.max(0, opts.delay ?? 0);
 
-  // Unique-key dedup: skip if a non-finished job with the same key exists.
-  if (opts.uniqueKey) {
-    const existing = await db
-      .select({ id: jobsLog.id })
-      .from(jobsLog)
-      .where(and(
-        eq(jobsLog.unique_key, opts.uniqueKey),
-        or(eq(jobsLog.status, "queued"), eq(jobsLog.status, "running"))!
-      ))
-      .limit(1);
-    if (existing.length > 0) return { jobId: existing[0]!.id, deduped: true };
-  }
-
-  const id = crypto.randomUUID();
-  await db.insert(jobsLog).values({
-    id,
+  const row = {
     queue,
     payload: JSON.stringify(payload ?? null),
     unique_key: opts.uniqueKey ?? null,
@@ -224,8 +211,41 @@ export async function enqueue(
     retry_max: typeof opts.retries === "number" ? Math.max(0, Math.floor(opts.retries)) : null,
     retry_backoff: opts.backoff === "fixed" || opts.backoff === "exponential" ? opts.backoff : null,
     retry_delay_ms: typeof opts.retryDelayMs === "number" ? Math.max(0, Math.floor(opts.retryDelayMs)) : null,
-  });
-  return { jobId: id, deduped: false };
+  };
+  if (!opts.uniqueKey) {
+    const id = crypto.randomUUID();
+    await db.insert(jobsLog).values({ id, ...row });
+    return { jobId: id, deduped: false };
+  }
+
+  // Unique-key dedup is the database's: a partial unique index allows one
+  // queued-or-running job per key (keys are global, not per queue), so
+  // concurrent enqueues can't both get in. The insert that loses finds the
+  // winner; if that finished in between, try again.
+  for (let tries = 0; tries < 5; tries++) {
+    const id = crypto.randomUUID();
+    const inserted = await db.insert(jobsLog).values({ id, ...row }).onConflictDoNothing().returning({ id: jobsLog.id });
+    if (inserted.length > 0) return { jobId: id, deduped: false };
+    const existing = await activeJobWithKey(opts.uniqueKey);
+    if (existing) return { jobId: existing, deduped: true };
+  }
+  throw new Error(`enqueue: could not settle unique key '${opts.uniqueKey}'`);
+}
+
+async function activeJobWithKey(key: string): Promise<string | null> {
+  const r = await getDb()
+    .select({ id: jobsLog.id })
+    .from(jobsLog)
+    .where(and(eq(jobsLog.unique_key, key), or(eq(jobsLog.status, "queued"), eq(jobsLog.status, "running"))!))
+    .limit(1);
+  return r[0]?.id ?? null;
+}
+
+/** A retry that would give a unique key a second queued-or-running job. */
+export class JobKeyActiveError extends Error {
+  constructor(readonly key: string, readonly activeJobId: string) {
+    super(`another job with unique key '${key}' is already queued or running (${activeJobId})`);
+  }
 }
 
 // ── Worker loop ──────────────────────────────────────────────────────────────
@@ -242,20 +262,27 @@ const POLL_INTERVAL_MS = 500;
 export function startQueueScheduler(): void {
   if (schedulerInterval) return;
   // Jobs a previous process left in `running` were never picked up again.
-  // Alone, every running job is ours from before a restart; in a cluster a
-  // sibling may still be working on it, so only re-queue ones running for
-  // longer than STUCK_AFTER_SECONDS.
-  const clustered = !!process.env["VAULTBASE_WORKER_ID"];
-  void recoverInterruptedJobs(clustered ? Math.floor(Date.now() / 1000) - STUCK_AFTER_SECONDS : Math.floor(Date.now() / 1000))
-    .catch(() => { /* retried by the sweep */ });
-  if (clustered) {
-    recoveryInterval = setInterval(() => {
-      void recoverInterruptedJobs(Math.floor(Date.now() / 1000) - STUCK_AFTER_SECONDS).catch(() => { /* next sweep */ });
-    }, 60_000);
-    recoveryInterval.unref?.();
-  }
+  // Leased ones come back when their lease runs out. Unleased ones (from
+  // before 0.24): on a SQLite file only this process uses, every one is ours
+  // from before a restart; where other processes may be running them (a
+  // cluster, a shared Postgres), only ones running for longer than
+  // STUCK_AFTER_SECONDS.
+  const shared = !!process.env["VAULTBASE_WORKER_ID"] || db.name !== "sqlite";
+  const legacyCutoff = () => Math.floor(Date.now() / 1000) - (shared ? STUCK_AFTER_SECONDS : 0);
+  const startedAt = legacyCutoff();
+  void recoverInterruptedJobs(startedAt).catch(() => { /* retried by the sweep */ });
+  recoveryInterval = setInterval(() => {
+    void recoverInterruptedJobs(shared ? legacyCutoff() : startedAt).catch(() => { /* next sweep */ });
+  }, RECOVERY_SWEEP_MS);
+  recoveryInterval.unref?.();
+  leaseInterval = setInterval(() => { void renewLeases().catch(() => { /* next renewal */ }); }, LEASE_RENEW_MS);
+  leaseInterval.unref?.();
   schedulerInterval = setInterval(() => { void tick().catch(() => { /* next tick */ }); }, POLL_INTERVAL_MS);
   void tick();
+}
+
+export function queueSchedulerRunning(): boolean {
+  return schedulerInterval !== null;
 }
 
 export function stopQueueScheduler(): void {
@@ -263,11 +290,47 @@ export function stopQueueScheduler(): void {
   schedulerInterval = null;
   if (recoveryInterval) clearInterval(recoveryInterval);
   recoveryInterval = null;
+  if (leaseInterval) clearInterval(leaseInterval);
+  leaseInterval = null;
 }
 
 let recoveryInterval: ReturnType<typeof setInterval> | null = null;
-/** In cluster mode, a job running this long is assumed to have lost its process. */
+let leaseInterval: ReturnType<typeof setInterval> | null = null;
+/**
+ * A running job without a lease (claimed before 0.24) running this long, on
+ * a database other processes may share, is assumed to have lost its process.
+ */
 const STUCK_AFTER_SECONDS = 60 * 60;
+
+/**
+ * Jobs are leased: claiming one stamps this process and an expiry; the
+ * process renews its leases every LEASE_RENEW_MS while they run, and its
+ * result is only written while it still holds the lease (same owner, same
+ * attempt). A lease that runs out means the process stopped, or stalled for
+ * longer than LEASE_SECONDS; any server then puts the job back on the queue.
+ * So a server starting up, or several sharing one Postgres, never take over
+ * a job another is still running, and a late finish can't overwrite a newer
+ * attempt.
+ */
+export const PROCESS_ID = crypto.randomUUID();
+const LEASE_SECONDS = 60;
+const LEASE_RENEW_MS = 15_000;
+const RECOVERY_SWEEP_MS = 15_000;
+let leaseSeconds = LEASE_SECONDS;
+
+/** Tests: a shorter lease. */
+export function _setLeaseSeconds(s: number | null): void {
+  leaseSeconds = s ?? LEASE_SECONDS;
+}
+
+/** Renew the leases of the jobs this process is running. */
+export async function renewLeases(): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  return (await db.run(
+    `UPDATE vaultbase_jobs_log SET lease_until = ? WHERE status = 'running' AND lease_owner = ?`,
+    [now + leaseSeconds, PROCESS_ID],
+  )).changes;
+}
 
 /**
  * Put jobs stuck in `running` (claimed at or before `startedBefore`) back on
@@ -280,18 +343,24 @@ export async function recoverInterruptedJobs(startedBefore: number): Promise<num
   const now = Math.floor(Date.now() / 1000);
   const maxAttempts = `coalesce(j.retry_max,
       (SELECT max(w.retry_max) FROM vaultbase_workers w WHERE w.queue = j.queue AND w.enabled = 1), 3)`;
+  // A leased job is recovered once its lease ran out; one without a lease
+  // (claimed by an older version) by when it started.
+  const lost = `j.status = 'running' AND (
+      (j.lease_until IS NOT NULL AND j.lease_until < ?) OR (j.lease_until IS NULL AND j.started_at <= ?))`;
   await db.run(
     `UPDATE vaultbase_jobs_log AS j
-        SET status = 'dead', finished_at = ?, error = 'interrupted: the process running this job stopped, and no attempts are left'
-      WHERE j.status = 'running' AND j.started_at <= ? AND j.attempt >= ${maxAttempts}`,
-    [now, startedBefore],
+        SET status = 'dead', finished_at = ?, lease_owner = NULL, lease_until = NULL,
+            error = 'interrupted: the process running this job stopped, and no attempts are left'
+      WHERE ${lost} AND j.attempt >= ${maxAttempts}`,
+    [now, now, startedBefore],
   );
   return (await db.run(
     `UPDATE vaultbase_jobs_log AS j
         SET status = 'queued', attempt = j.attempt + 1, worker_id = NULL, started_at = NULL,
+            lease_owner = NULL, lease_until = NULL,
             scheduled_at = ?, error = 'interrupted: the process running this job stopped'
-      WHERE j.status = 'running' AND j.started_at <= ?`,
-    [now, startedBefore],
+      WHERE ${lost}`,
+    [now, now, startedBefore],
   )).changes;
 }
 
@@ -352,8 +421,8 @@ async function claimAndRun(queue: string, worker: CompiledWorker, slots: number)
     // and we move on.
     const claim = await db
       .update(jobsLog)
-      .set({ status: "running", worker_id: worker.id, started_at: now })
-      .where(and(eq(jobsLog.id, job.id), eq(jobsLog.status, "queued")))
+      .set({ status: "running", worker_id: worker.id, started_at: now, lease_owner: PROCESS_ID, lease_until: now + leaseSeconds })
+      .where(and(eq(jobsLog.id, job.id), eq(jobsLog.status, "queued"), eq(jobsLog.attempt, job.attempt)))
       .returning({ id: jobsLog.id });
     if (claim.length === 0) continue;
 
@@ -379,13 +448,16 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
   };
 
   const finishedAt = (): number => Math.floor(Date.now() / 1000);
+  // Only the attempt that still holds the lease writes its result.
+  const held = and(eq(jobsLog.id, job.id), eq(jobsLog.status, "running"), eq(jobsLog.lease_owner, PROCESS_ID), eq(jobsLog.attempt, job.attempt));
+  const settle = async (set: Partial<typeof jobsLog.$inferInsert>): Promise<boolean> => {
+    const r = await db.update(jobsLog).set({ ...set, lease_owner: null, lease_until: null }).where(held).returning({ id: jobsLog.id });
+    if (r.length === 0) console.error(`[queues] Job ${job.id} attempt ${job.attempt} finished after losing its lease; its result was not recorded`);
+    return r.length > 0;
+  };
   try {
     await worker.fn(ctx);
-    await db.update(jobsLog).set({
-      status: "succeeded",
-      finished_at: finishedAt(),
-      error: null,
-    }).where(eq(jobsLog.id, job.id));
+    await settle({ status: "succeeded", finished_at: finishedAt(), error: null });
   } catch (e) {
     const msg = e instanceof ValidationError
       ? `ValidationError: ${e.message}`
@@ -403,21 +475,9 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
       // Re-queue: bump attempt, set status back to queued with a fresh
       // schedule. Keeping the same row preserves the audit trail; a fresh
       // row would lose the retry chain.
-      await db.update(jobsLog).set({
-        status: "queued",
-        attempt: job.attempt + 1,
-        worker_id: null,
-        started_at: null,
-        scheduled_at: next,
-        error: msg,
-      }).where(eq(jobsLog.id, job.id));
+      await settle({ status: "queued", attempt: job.attempt + 1, worker_id: null, started_at: null, scheduled_at: next, error: msg });
     } else {
-      await db.update(jobsLog).set({
-        status: "dead",
-        finished_at: finishedAt(),
-        error: msg,
-      }).where(eq(jobsLog.id, job.id));
-      console.error(`[queues] Job ${job.id} dead after ${job.attempt} attempts: ${msg}`);
+      if (await settle({ status: "dead", finished_at: finishedAt(), error: msg })) console.error(`[queues] Job ${job.id} dead after ${job.attempt} attempts: ${msg}`);
     }
   }
 }
@@ -428,12 +488,23 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
 export async function retryJob(id: string): Promise<boolean> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
-  const r = await db
-    .update(jobsLog)
-    .set({ status: "queued", attempt: 1, scheduled_at: now, started_at: null, finished_at: null, error: null, worker_id: null })
-    .where(and(eq(jobsLog.id, id), inArray(jobsLog.status, ["failed", "dead", "succeeded"])))
-    .returning({ id: jobsLog.id });
-  return r.length > 0;
+  const job = (await db.select({ unique_key: jobsLog.unique_key }).from(jobsLog).where(eq(jobsLog.id, id)).limit(1))[0];
+  const activeTwin = async () => job?.unique_key ? await activeJobWithKey(job.unique_key) : null;
+  const twin = await activeTwin();
+  if (twin && twin !== id) throw new JobKeyActiveError(job!.unique_key!, twin);
+  try {
+    const r = await db
+      .update(jobsLog)
+      .set({ status: "queued", attempt: 1, scheduled_at: now, started_at: null, finished_at: null, error: null, worker_id: null })
+      .where(and(eq(jobsLog.id, id), inArray(jobsLog.status, ["failed", "dead", "succeeded"])))
+      .returning({ id: jobsLog.id });
+    return r.length > 0;
+  } catch (e) {
+    // Lost a race to an enqueue with the same key: the unique index refused it.
+    const now2 = await activeTwin();
+    if (now2 && now2 !== id) throw new JobKeyActiveError(job!.unique_key!, now2);
+    throw e;
+  }
 }
 
 /** Drop a job (typically a stuck "queued" or noisy "dead"). */

@@ -41,6 +41,7 @@ import { hasScope } from "../core/api-tokens.ts";
 import { recordAuditEvent } from "../core/audit-log.ts";
 import { detectMutation, runSql } from "../core/sql-runner.ts";
 import { codeFilesDir, createCodeFile, deleteCodeFile, updateCodeFile } from "../core/code-files.ts";
+import { inlineCompileError } from "../core/code-loader.ts";
 
 export function registerAdminWriteTools(reg: ToolRegistry): void {
 
@@ -196,6 +197,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         }, String(args.code ?? ""));
         return asJsonText({ created: true, id: row.id, event, file: row.file_path });
       }
+      { const bad = inlineCompileError(String(args.code ?? "")); if (bad) throw new Error(`code does not compile: ${bad}`); }
       await getDb().insert(hooks).values({
         id,
         name: String(args.name ?? ""),
@@ -246,6 +248,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         const row = await updateCodeFile("hook", current, settings, code as string | undefined);
         return asJsonText({ updated: true, id: args.id, file: row.file_path });
       }
+      if (typeof patch.code === "string") { const bad = inlineCompileError(patch.code); if (bad) throw new Error(`code does not compile: ${bad}`); }
       await getDb().update(hooks).set(patch).where(eq(hooks.id, String(args.id)));
       invalidateHookCache();
       return asJsonText({ updated: true, id: args.id });
@@ -324,6 +327,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         }, String(args.code ?? ""));
         return asJsonText({ created: true, id: row.id, method, path, file: row.file_path });
       }
+      { const bad = inlineCompileError(String(args.code ?? "")); if (bad) throw new Error(`code does not compile: ${bad}`); }
       await getDb().insert(routes).values({
         id,
         name:    String(args.name ?? ""),
@@ -406,6 +410,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         }, String(args.code ?? ""));
         return asJsonText({ created: true, id: row.id, file: row.file_path });
       }
+      { const bad = inlineCompileError(String(args.code ?? "")); if (bad) throw new Error(`code does not compile: ${bad}`); }
       await getDb().insert(jobs).values({
         id,
         name:    String(args.name ?? ""),

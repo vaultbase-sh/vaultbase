@@ -256,18 +256,77 @@ function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
   }
 }
 
+/**
+ * A function this engine can't answer the way SQL would (an argument it
+ * can't use, a form it doesn't support) yields UNAUTH_SENTINEL, so every
+ * comparison with it is false: a single-record check never allows what the
+ * list query would deny.
+ */
 function evalFunc(op: Extract<Operand, { kind: "func" }>, ctx: EvalContext): unknown {
+  const args = op.args.map((a) => resolveOperand(a, ctx));
+  if (args.some((a) => a === UNAUTH_SENTINEL)) return UNAUTH_SENTINEL;
   if (op.name === "geoDistance") {
-    const args = op.args.map((a) => Number(resolveOperand(a, ctx)));
-    if (args.some((n) => !Number.isFinite(n))) return null;
-    const [lonA, latA, lonB, latB] = args as [number, number, number, number];
+    if (args.length !== 4 || args.some((a) => a === null || a === undefined || a === "")) return UNAUTH_SENTINEL;
+    const nums = args.map(Number);
+    if (nums.some((n) => !Number.isFinite(n))) return UNAUTH_SENTINEL;
+    const [lonA, latA, lonB, latB] = nums as [number, number, number, number];
     return haversineKm(latA, lonA, latB, lonB);
   }
-  if (op.name === "strftime") {
-    // In-process eval doesn't support full strftime; surface as null so SQL path is preferred.
+  if (op.name === "strftime") return strftimeUtc(args) ?? UNAUTH_SENTINEL;
+  return UNAUTH_SENTINEL;
+}
+
+const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+
+/** The strftime codes this engine and the Postgres compiler both support, in UTC (no `%%`: Postgres refuses it). */
+const STRFTIME_CODES: Readonly<Record<string, (d: Date) => string>> = {
+  Y: (d) => pad(d.getUTCFullYear(), 4),
+  m: (d) => pad(d.getUTCMonth() + 1),
+  d: (d) => pad(d.getUTCDate()),
+  H: (d) => pad(d.getUTCHours()),
+  M: (d) => pad(d.getUTCMinutes()),
+  S: (d) => pad(d.getUTCSeconds()),
+  j: (d) => pad(Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86_400_000) + 1, 3),
+};
+
+/** "YYYY-MM-DD", optionally with " HH:MM[:SS[.fff]]" or "T…" and a "Z": what SQLite reads as UTC. */
+const SQL_TIME = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?Z?$/;
+
+/**
+ * SQLite's `strftime(format, time, mods…)` for the forms the Postgres
+ * compiler also accepts: a format of the codes above, and a time that is
+ * 'now', a literal timestamp, or a stored date (Unix seconds) with the
+ * 'unixepoch' modifier. Anything else, or a missing time, is null here
+ * (SQL answers NULL too, which no comparison matches).
+ */
+function strftimeUtc(args: unknown[]): string | null {
+  const [fmt, time, ...mods] = args;
+  if (typeof fmt !== "string" || mods.length > 1 || (mods.length === 1 && mods[0] !== "unixepoch")) return null;
+  let date: Date;
+  if (mods.length === 1) {
+    if (time === null || time === undefined || time === "" || typeof time === "boolean") return null;
+    const secs = Number(time);
+    if (!Number.isFinite(secs)) return null;
+    date = new Date(secs * 1000);
+  } else if (time === "now") {
+    date = new Date();
+  } else if (typeof time === "string") {
+    const m = SQL_TIME.exec(time);
+    if (!m) return null;
+    date = new Date(`${m[1]}T${m[2] ?? "00:00"}Z`);
+  } else {
     return null;
   }
-  return null;
+  if (Number.isNaN(date.getTime())) return null;
+  let out = "";
+  for (let i = 0; i < fmt.length; i++) {
+    if (fmt[i] !== "%") { out += fmt[i]; continue; }
+    const code = STRFTIME_CODES[fmt[i + 1] ?? ""];
+    if (!code) return null;
+    out += code(date);
+    i++;
+  }
+  return out;
 }
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {

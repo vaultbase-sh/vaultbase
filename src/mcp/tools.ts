@@ -17,6 +17,7 @@
 
 import type { CallToolResult, ContentBlock, ToolDefinition } from "./types.ts";
 import { hasScope } from "../core/api-tokens.ts";
+import { recordAuditEvent } from "../core/audit-log.ts";
 
 export interface ToolContext {
   /** Token id (jti) — used for audit logging. */
@@ -79,34 +80,66 @@ export class ToolRegistry {
    * than thrown — the spec wants tool errors as content, distinct from
    * JSON-RPC protocol errors.
    */
+  /**
+   * Run a tool and write an audit entry for the call, over either transport:
+   * who (the token's admin and the token), which tool, its target, and the
+   * outcome with the error. `run_sql` writes its own, with the query.
+   */
   async call(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
+    const { result, status } = await this.dispatch(name, args, ctx);
+    if (name !== "vaultbase.run_sql") {
+      const failure = result.isError ? result.content.map((c) => ("text" in c ? c.text : "")).join(" ") : "";
+      await recordAuditEvent({
+        actor: { id: ctx.adminId, email: ctx.adminEmail },
+        method: "MCP",
+        path: name,
+        action: "mcp.tool",
+        target: auditTarget(args),
+        status,
+        summary: `token=${ctx.tokenName}${failure ? ` | ${failure}` : ""}`,
+      });
+    }
+    return result;
+  }
+
+  private async dispatch(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<{ result: CallToolResult; status: number }> {
     const t = this.tools.get(name);
     if (!t) {
-      return {
+      return { status: 404, result: {
         content: [{ type: "text", text: `Tool '${name}' not found.` }],
         isError: true,
-      };
+      } };
     }
     if (!hasScope(ctx.scopes, t.requiredScope)) {
-      return {
+      return { status: 403, result: {
         content: [{
           type: "text",
           text: `Permission denied: tool '${name}' requires scope '${t.requiredScope}'. The token has: ${ctx.scopes.join(", ") || "(none)"}.`,
         }],
         isError: true,
-      };
+      } };
     }
     try {
       const content = await t.handler(args, ctx);
-      return { content };
+      return { status: 200, result: { content } };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return {
+      return { status: 400, result: {
         content: [{ type: "text", text: `Tool '${name}' failed: ${msg}` }],
         isError: true,
-      };
+      } };
     }
   }
+}
+
+/** What a call acts on, for the audit entry: the collection, record, or named object, never the payload. */
+function auditTarget(args: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  for (const k of ["collection", "name", "id", "key", "queue"]) {
+    const v = args[k];
+    if (typeof v === "string" || typeof v === "number") parts.push(`${k}=${String(v).slice(0, 200)}`);
+  }
+  return parts.length ? parts.join(" ") : null;
 }
 
 // ── Helpers used by tool handlers ────────────────────────────────────────

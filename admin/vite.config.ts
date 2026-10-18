@@ -34,7 +34,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://localhost:8090",
+      // The server's default port (src/config.ts).
+      "/api": "http://localhost:8091",
     },
   },
 });

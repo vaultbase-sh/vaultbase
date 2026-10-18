@@ -380,6 +380,15 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
         uptime_s: Math.floor(process.uptime()),
       },
     }))
+    // Readiness (core/readiness.ts): the database, storage, read workers,
+    // queues and log writes. 503 when the server can't serve; load
+    // balancers and orchestrators should probe this, not /_/health.
+    .get("/_/ready", async ({ set }) => {
+      const { checkReadiness } = await import("./core/readiness.ts");
+      const report = await checkReadiness({ queues: !reader });
+      if (report.status === "unready") set.status = 503;
+      return { data: report };
+    })
     // SSE fallback for clients that can't open WebSockets. Pairs with
     // `POST /api/v1/realtime` for setting subscriptions.
     .get("/api/v1/realtime", ({ request, server, set }) => {

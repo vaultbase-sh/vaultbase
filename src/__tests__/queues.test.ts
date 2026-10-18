@@ -267,8 +267,9 @@ describe("jobs interrupted by a restart", () => {
   it("are re-queued at startup and run", async () => {
     await insertWorker({ queue: "q-restart", code: "/* done */" });
     const { jobId } = await enqueue("q-restart", { n: 1 });
-    // Simulate a previous process that claimed it and died.
-    await getDb().update(jobsLog).set({ status: "running", started_at: Math.floor(Date.now() / 1000) - 5 }).where(eq(jobsLog.id, jobId));
+    // Simulate a previous process that claimed it and died: its lease ran out.
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().update(jobsLog).set({ status: "running", started_at: now - 5, lease_owner: "gone", lease_until: now - 1 }).where(eq(jobsLog.id, jobId));
     startQueueScheduler();
     await waitForStatus(jobId, "succeeded");
     expect((await getJob(jobId))!.attempt).toBe(2);

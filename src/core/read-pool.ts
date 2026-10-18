@@ -103,6 +103,11 @@ export function respawnDelay(failuresInARow: number, baseMs = RESPAWN_BASE_MS): 
   return Math.min(RESPAWN_MAX_MS, baseMs * 2 ** Math.min(Math.max(0, failuresInARow - 1), 6));
 }
 
+/** Workers the pool is meant to keep running (0 when no pool was started). */
+export function readPoolTarget(): number {
+  return spec?.size ?? 0;
+}
+
 export function readPoolSize(): number {
   return slots.length;
 }
@@ -333,4 +338,22 @@ export async function stopReadPool(): Promise<void> {
     try { s.worker.postMessage({ type: "stop" }); } catch { /* gone */ }
     s.worker.terminate();
   }
+}
+
+/**
+ * Stop every read worker for a database swap (online restore): each holds
+ * its own connection, which would keep reading the replaced file, or fail.
+ * Waits up to `drainMs` for reads in flight to finish first; reads that
+ * arrive meanwhile run on the main thread. Returns how to start the pool
+ * again, or null when none was running.
+ */
+export async function suspendReadPool(drainMs = 5_000): Promise<(() => Promise<void>) | null> {
+  const s = spec;
+  if (!s) return null;
+  spec = null; // no respawns while suspended
+  if (respawnTimer) { clearTimeout(respawnTimer); respawnTimer = null; }
+  const until = Date.now() + drainMs;
+  while (slots.some((x) => x.inflight > 0) && Date.now() < until) await Bun.sleep(10);
+  await stopReadPool();
+  return () => startReadPool(s.size, s.env, s.config, s.workerUrl);
 }

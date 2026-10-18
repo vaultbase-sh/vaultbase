@@ -242,7 +242,7 @@ import type { AuthContext } from "./rules.ts";
 import { emit } from "./events.ts";
 import { customFieldType } from "./field-types.ts";
 import "./event-listeners.ts";
-import { afterCommit, gateMode, withExclusiveWrite, withSharedWrite } from "./write-gate.ts";
+import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { validateRecord, type CanSeeRecord } from "./validate.ts";
@@ -921,6 +921,36 @@ export class PreconditionFailedError extends Error {
 }
 
 /**
+ * A guarded write (`ifUnchanged`, an HTTP If-Match) on Postgres runs in a
+ * transaction that first takes the record's row lock. The per-record lock
+ * (recordLocks) only covers this process: several servers on one database
+ * could each pass their check and both write, losing one update. Holding
+ * the row lock from the check to the write makes another server's write
+ * wait, then fail its own check. The request's own hooks run on the same
+ * pinned connection, so they can still write the record. Side effects wait
+ * for COMMIT. On SQLite one process owns the file and recordLocks suffices.
+ */
+async function withRowLockForGuard<T>(collectionName: string, id: string, guard: WriteGuard, fn: () => Promise<T>): Promise<T> {
+  if (db.name === "sqlite" || !guard.ifUnchanged) return fn();
+  const col = await getCollection(collectionName);
+  if (!col || col.type === "view") return fn();
+  const tableRef = quoteIdent(userTableName(col.name));
+  // This process's lock first, then the row's: in the other order a write of
+  // this process already holding the record lock would wait on our row lock
+  // while we wait on its record lock. `fn` takes the record lock again,
+  // which passes (re-entrant for the same request).
+  const unlock = await lockRecord(`${col.name}:${id}`);
+  try {
+    return await withHeldEffects(() => db.transaction(async () => {
+      await db.get(`SELECT 1 FROM ${tableRef} WHERE "id" = ? FOR UPDATE`, [id]);
+      return fn();
+    }, { immediate: false }));
+  } finally {
+    unlock();
+  }
+}
+
+/**
  * Write preconditions. `ifUnchanged` is the record (as `getRecord` returned
  * it) the caller checked its precondition against; the write goes ahead only
  * if the record is still exactly that.
@@ -1356,7 +1386,8 @@ export function updateRecord(
   auth: AuthContext | null = null,
   guard: WriteGuard = {},
 ): Promise<RecordWithMeta> {
-  return withWriteOwner(() => withSharedWrite(() => updateRecordImpl(collectionName, id, data, auth, guard)));
+  return withWriteOwner(() => withSharedWrite(() =>
+    withRowLockForGuard(collectionName, id, guard, () => updateRecordImpl(collectionName, id, data, auth, guard))));
 }
 
 /**
@@ -1384,7 +1415,7 @@ async function deleteRecordOwned(
   const cascades = col
     ? (await findIncomingRefs(col.name)).some((r) => r.cascade !== "restrict")
     : false;
-  const run = () => deleteRecordImpl(collectionName, id, auth, guard);
+  const run = () => withRowLockForGuard(collectionName, id, guard, () => deleteRecordImpl(collectionName, id, auth, guard));
   if (!cascades) return withSharedWrite(run);
 
   const mode = gateMode();

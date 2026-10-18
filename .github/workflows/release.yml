@@ -30,14 +30,32 @@ jobs:
       tag: ${{ steps.resolve-tag.outputs.tag }}
 
     steps:
+      # Check out the tag being released, not the default branch: a manual
+      # run used to build main's code and publish it under the typed tag.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+          fetch-depth: 0
 
       - id: resolve-tag
         name: Resolve tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          set -eu
+          TAG="$INPUT_TAG"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z)"; exit 1
+          fi
+          git fetch --force --tags origin
+          want="$(git rev-parse "refs/tags/${TAG}^{commit}")" || { echo "::error::tag $TAG does not exist"; exit 1; }
+          have="$(git rev-parse HEAD)"
+          if [ "$want" != "$have" ]; then
+            echo "::error::checked out $have but $TAG points at $want"; exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Building release ${TAG}"
+          echo "sha=${want}" >> "$GITHUB_OUTPUT"
+          echo "Building release ${TAG} at ${want}"
 
       - name: Verify CHANGELOG entry
         # Every release needs a "## [x.y.z]" section in CHANGELOG.md; the docs
@@ -168,17 +186,30 @@ jobs:
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0.20.0
 
+      # A compiled Bun binary carries no package metadata, so scanning the
+      # binary (or, from inside releases/, the binaries folder) found nothing:
+      # every SBOM listed zero components. The dependencies are the installed
+      # packages of the server and the admin it embeds, so each binary's SBOM
+      # is a scan of the checked-out tree with them installed, named after
+      # the binary. The step fails if an SBOM comes out empty.
       - name: Generate SBOMs (CycloneDX JSON per binary)
         run: |
+          set -eu
+          ver="${{ steps.resolve-tag.outputs.tag }}"
+          scan() { syft "dir:${GITHUB_WORKSPACE}" --exclude './releases' --exclude './.git' \
+            --source-name "$1" --source-version "${ver#v}" -o cyclonedx-json; }
           cd releases
           for f in vaultbase-linux-x64 vaultbase-linux-arm64 vaultbase-linux-x64-musl \
                    vaultbase-macos-x64 vaultbase-macos-arm64 vaultbase-windows-x64.exe; do
             echo "→ SBOM for $f"
-            syft "$f" -o cyclonedx-json > "${f}.cdx.json"
+            scan "$f" > "${f}.cdx.json"
           done
-          # One SBOM for the source tree too (NPM dependency graph + lockfile).
-          syft dir:. -o cyclonedx-json > vaultbase-source.cdx.json
-          ls -la *.cdx.json
+          scan vaultbase-source > vaultbase-source.cdx.json
+          for f in *.cdx.json; do
+            n="$(jq '.components | length' "$f")"
+            echo "$f: $n components"
+            if [ "$n" -lt 10 ]; then echo "::error::$f lists only $n components"; exit 1; fi
+          done
 
       # ── Cosign keyless sigs ─────────────────────────────────────────────
       # Uses the GitHub Actions OIDC token via Sigstore Fulcio — no static
