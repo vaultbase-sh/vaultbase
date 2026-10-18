@@ -311,6 +311,14 @@ bun install --force
 
 CI is unaffected (every workflow run installs fresh).
 
+## Community and support
+
+- Questions: [Discussions → Q&A](https://github.com/vaultbase-sh/vaultbase/discussions/categories/q-a)
+- Feature ideas and roadmap: [Discussions → Ideas](https://github.com/vaultbase-sh/vaultbase/discussions/categories/ideas), and the [roadmap](https://docs.vaultbase.dev/roadmap/)
+- Show what you built: [Discussions → Show and tell](https://github.com/vaultbase-sh/vaultbase/discussions/categories/show-and-tell)
+- Bugs: [Issues](https://github.com/vaultbase-sh/vaultbase/issues/new/choose)
+- Security: see [SECURITY.md](SECURITY.md); please don't open a public issue.
+
 ## License
 
 MIT.

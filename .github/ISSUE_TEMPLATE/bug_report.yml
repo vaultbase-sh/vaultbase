@@ -1,0 +1,80 @@
+name: Report a bug
+description: Something in Vaultbase doesn't work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A bug that can be reproduced gets fixed fastest.
+        Questions go to [Q&A](https://github.com/vaultbase-sh/vaultbase/discussions/categories/q-a) and feature requests to [Ideas](https://github.com/vaultbase-sh/vaultbase/discussions/categories/ideas).
+  - type: input
+    id: version
+    attributes:
+      label: Vaultbase version
+      description: "`vaultbase --version`, or the version under the logo in the admin sidebar."
+      placeholder: "0.24.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite
+        - Postgres
+        - Several servers on one Postgres database
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Release binary (install script or download)
+        - Docker
+        - From source (bun)
+        - Embedded in my own code
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and proxy
+      placeholder: "Ubuntu 24.04 behind nginx"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the request, response status and error message where there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows it. A collection schema, rule or hook helps.
+      placeholder: |
+        1. Create a collection with …
+        2. Send …
+        3. See …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server output or entries from the Logs page around the time it happened.
+      render: text
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed tokens, passwords, keys and personal data from everything above.
+          required: true
