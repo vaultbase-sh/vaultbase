@@ -93,6 +93,11 @@ function noteLogWriteFailure(e: unknown, lines: number): void {
   }
 }
 
+/** Tests: forget failures earlier tests caused (the counters are per process). */
+export function _resetLogWriteFailures(): void {
+  Object.assign(logWrites, { failedWrites: 0, lostLines: 0, lastError: null, lastAt: 0, reportedAt: 0 });
+}
+
 export function logWriteFailures(): { failedWrites: number; lostLines: number; lastError: string | null; lastAt: number } {
   const { reportedAt: _r, ...out } = logWrites;
   return out;

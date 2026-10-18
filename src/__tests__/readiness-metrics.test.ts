@@ -11,7 +11,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { setLogsDir, appendLogEntry, drainLogBuffer, logWriteFailures } from "../core/file-logger.ts";
+import { setLogsDir, appendLogEntry, drainLogBuffer, logWriteFailures, _resetLogWriteFailures } from "../core/file-logger.ts";
 import { setUploadDir, invalidateStorageCache } from "../core/storage.ts";
 import { checkReadiness } from "../core/readiness.ts";
 import { enqueue, startQueueScheduler, stopQueueScheduler } from "../core/queues.ts";
@@ -27,6 +27,8 @@ let dir: string;
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "vb-ready-"));
   setLogsDir(join(dir, "logs"));
+  // Log write failures are counted per process: other test files leave some.
+  _resetLogWriteFailures();
   setUploadDir(join(dir, "uploads"));
   invalidateStorageCache();
   await initDb(":memory:");
