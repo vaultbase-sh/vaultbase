@@ -1,0 +1,47 @@
+# Fly.io: Vaultbase from the published image on one machine with a volume.
+#
+#   fly launch --config deploy/fly/fly.toml --copy-config --no-deploy   # pick a name and region
+#   fly volumes create vaultbase_data --size 1
+#   fly secrets set VAULTBASE_JWT_SECRET="$(openssl rand -base64 32)" \
+#                   VAULTBASE_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+#                   VAULTBASE_SETUP_KEY="$(openssl rand -base64 24)"
+#   fly deploy
+#
+# Then open https://<app>.fly.dev/_/setup with that setup key. SQLite lives on
+# the volume, so keep this at one machine (fly scale count 1).
+app = "vaultbase"
+primary_region = "fra"
+
+[build]
+  image = "ghcr.io/vaultbase-sh/vaultbase:latest"
+
+[env]
+  VAULTBASE_PORT = "8091"
+  VAULTBASE_DATA_DIR = "/data"
+  # fly-proxy reaches the machine over Fly's private network.
+  VAULTBASE_TRUSTED_PROXIES = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+  # Read worker threads cost 50–100 MB each; a shared-cpu-1x runs without.
+  VAULTBASE_READ_WORKERS = "0"
+
+[mounts]
+  source = "vaultbase_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8091
+  force_https = true
+  # Realtime connections and scheduled jobs need the machine up: don't stop it when idle.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/_/ready"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,0 +1,122 @@
+name: Docker image
+
+# Publishes ghcr.io/vaultbase-sh/vaultbase for a release: the release's own
+# Linux binaries (checked against its SHA256SUMS) on Debian slim, for amd64
+# and arm64, tagged X.Y.Z, X.Y and latest. See deploy/docker/Dockerfile.
+#
+# Runs after every successful Release run, by hand for a given tag, and when
+# the image's files change on main (then for the latest release).
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build the image for (e.g. v0.25.0)"
+        required: true
+  push:
+    branches: [main]
+    paths:
+      - "deploy/docker/**"
+      - ".github/workflows/docker.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-image
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push the image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - id: tag
+        name: Resolve the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -eu
+          case "${{ github.event_name }}" in
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            workflow_run)      tag="$RUN_TAG" ;;
+            *)                 tag="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r .tag_name)" ;;
+          esac
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$tag' is not a release tag (vX.Y.Z)"; exit 1
+          fi
+          ver="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "minor=${ver%.*}" >> "$GITHUB_OUTPUT"
+          echo "Image for $tag"
+
+      # The Dockerfile and entrypoint as of that tag, when they exist there;
+      # otherwise (a release made before the image existed) as on main.
+      - uses: actions/checkout@v4
+      - name: Use the tag's image files if it has them
+        run: |
+          git fetch --depth=1 origin "refs/tags/${{ steps.tag.outputs.tag }}:refs/tags/${{ steps.tag.outputs.tag }}"
+          if git cat-file -e "${{ steps.tag.outputs.tag }}:deploy/docker/Dockerfile" 2>/dev/null; then
+            git checkout "${{ steps.tag.outputs.tag }}" -- deploy/docker
+          fi
+
+      - name: Download and verify the release binaries
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          base="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          mkdir -p deploy/docker/bin
+          curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
+          for arch in x64:amd64 arm64:arm64; do
+            src="vaultbase-linux-${arch%%:*}"; dst="deploy/docker/bin/vaultbase-linux-${arch##*:}"
+            curl -fsSL -o "$dst" "$base/$src"
+            want="$(grep " $src\$" SHA256SUMS | awk '{print $1}')"
+            have="$(sha256sum "$dst" | awk '{print $1}')"
+            if [ -z "$want" ] || [ "$want" != "$have" ]; then echo "::error::$src checksum mismatch"; exit 1; fi
+            echo "$src ok"
+          done
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.version }}
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.minor }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.title=Vaultbase
+            org.opencontainers.image.description=Self-hosted backend in a single binary
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Smoke test the amd64 image
+        run: |
+          set -eu
+          img="ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.version }}"
+          docker run -d --name vb -p 8091:8091 -e VAULTBASE_READ_WORKERS=0 "$img"
+          for i in $(seq 30); do curl -fsS localhost:8091/api/health && break; sleep 1; done
+          curl -fsS localhost:8091/_/ready
+          docker logs vb 2>&1 | grep -q "Setup key:" || { echo "::error::no setup key in the log"; docker logs vb; exit 1; }
+          docker rm -f vb

@@ -12,6 +12,8 @@ drizzle/
 vaultbase
 vaultbase.exe
 releases/*
+# Release binaries the Docker image is built from (downloaded by docker.yml).
+deploy/docker/bin/
 !releases/.gitignore
 
 # Bun build artifacts

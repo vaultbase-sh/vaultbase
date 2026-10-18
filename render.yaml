@@ -1,0 +1,34 @@
+# Render Blueprint: "Deploy to Render" with
+#   https://render.com/deploy?repo=https://github.com/vaultbase-sh/vaultbase
+# One web service from the published image, with a disk for the data folder.
+# A disk needs a paid instance (Starter or above); without one the database
+# would be lost on every deploy. After it starts, the setup key is in the
+# service's Environment tab (VAULTBASE_SETUP_KEY): open /_/setup and use it.
+services:
+  - type: web
+    name: vaultbase
+    runtime: image
+    image:
+      url: ghcr.io/vaultbase-sh/vaultbase:latest
+    plan: starter
+    healthCheckPath: /_/ready
+    disk:
+      name: vaultbase-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: VAULTBASE_PORT
+        value: "8091"
+      - key: VAULTBASE_JWT_SECRET
+        generateValue: true
+      # No VAULTBASE_ENCRYPTION_KEY: the server makes one in /data/.encryption-key
+      # on first start (it must decode to exactly 32 bytes, which a generated
+      # value can't promise). Back that file up with the data.
+      - key: VAULTBASE_SETUP_KEY
+        generateValue: true
+      # Render's proxy reaches the service over its private network.
+      - key: VAULTBASE_TRUSTED_PROXIES
+        value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+      # Read worker threads cost 50–100 MB each; small instances run without.
+      - key: VAULTBASE_READ_WORKERS
+        value: "0"
