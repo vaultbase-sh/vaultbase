@@ -67,6 +67,11 @@ export interface SendResult {
   invalidTokens: string[];
   /** Human-readable summary written to the job log. */
   message: string;
+  /**
+   * Device-token ids that failed transiently while others were delivered:
+   * retried on their own, so the delivered ones don't get the push twice.
+   */
+  retryTokenIds?: string[];
 }
 
 // ── Settings I/O ────────────────────────────────────────────────────────────
@@ -109,6 +114,8 @@ export interface PushSendContext {
   settings: Record<string, string>;
   /** The worker's helpers (db, http, log, ...). */
   helpers: JobContext["helpers"];
+  /** Send only to these device-token ids (a retry of the ones that failed). */
+  onlyTokenIds?: string[];
 }
 
 export interface PushProviderDef {
@@ -354,6 +361,7 @@ export async function sendFcm(
 
   let delivered = 0;
   let transient = 0;
+  const retryTokenIds: string[] = [];
   const invalidTokens: string[] = [];
   const summaries: string[] = [];
 
@@ -361,6 +369,7 @@ export async function sendFcm(
     const r = results[i]!;
     if (r.status === "rejected") {
       transient++;
+      retryTokenIds.push(tokens[i]!.id);
       summaries.push(`token[${i}] network error: ${String(r.reason).slice(0, 80)}`);
       continue;
     }
@@ -375,6 +384,7 @@ export async function sendFcm(
     // 5xx / 429 → transient.
     if (v.status >= 500 || v.status === 429) {
       transient++;
+      retryTokenIds.push(v.id);
       summaries.push(`token[${i}] transient ${v.status}`);
       continue;
     }
@@ -389,6 +399,7 @@ export async function sendFcm(
     ok,
     delivered,
     invalidTokens,
+    ...(retryTokenIds.length > 0 ? { retryTokenIds } : {}),
     message: `FCM tokens=${tokens.length} delivered=${delivered} transient=${transient} dead=${invalidTokens.length}` +
       (summaries.length ? ` :: ${summaries.slice(0, 5).join("; ")}` : ""),
   };
@@ -400,7 +411,13 @@ export interface NotifyJobPayload {
   provider: string;
   userId: string;
   payload: NotificationPayload;
+  /** A retry of just these device tokens, and how many such retries came before. */
+  tokenIds?: string[];
+  tokenRetry?: number;
 }
+
+/** Retries of the tokens that failed when others were delivered: 2 s, 4 s, 8 s, 16 s. */
+const TOKEN_RETRY_MAX = 4;
 
 /**
  * Built-in `_notify` queue worker. Reads provider config from settings (so
@@ -425,7 +442,10 @@ async function notifyWorker(ctx: JobContext): Promise<void> {
     ctx.helpers.log(`notify: ${job.provider} disabled mid-flight, dropping job`);
     return;
   }
-  const result = await def.send({ userId: job.userId, payload: job.payload, settings, helpers: ctx.helpers });
+  const result = await def.send({
+    userId: job.userId, payload: job.payload, settings, helpers: ctx.helpers,
+    ...(job.tokenIds ? { onlyTokenIds: job.tokenIds } : {}),
+  });
   for (const id of result.invalidTokens ?? []) {
     try {
       await ctx.helpers.sql.exec(`UPDATE vb_device_tokens SET enabled = 0 WHERE id = ?`, [id]);
@@ -434,6 +454,17 @@ async function notifyWorker(ctx: JobContext): Promise<void> {
 
   ctx.helpers.log(result.message);
   if (!result.ok) {
+    // Some devices got it and some failed: retrying the job would send it
+    // again to the ones that got it. Retry the failed ones on their own.
+    if (result.delivered > 0 && result.retryTokenIds && result.retryTokenIds.length > 0) {
+      const retry = (job.tokenRetry ?? 0) + 1;
+      if (retry > TOKEN_RETRY_MAX) {
+        ctx.helpers.log(`notify: giving up on ${result.retryTokenIds.length} device(s) after ${TOKEN_RETRY_MAX} retries`);
+        return;
+      }
+      await enqueue(NOTIFY_QUEUE, { ...job, tokenIds: result.retryTokenIds, tokenRetry: retry } satisfies NotifyJobPayload, { delay: 2 ** retry });
+      return;
+    }
     // Throwing routes to the queue's retry/backoff/dead-letter machinery.
     throw new Error(result.message);
   }
@@ -512,6 +543,14 @@ export async function dispatchNotification(
         ],
       );
       out.inboxRowId = id;
+      // Announce it like any created record, so a client following its
+      // inbox over realtime sees it (and webhooks and after-hooks run).
+      const [{ getCollection }, { getRecord }, { emit }] = await Promise.all([
+        import("./collections.ts"), import("./records.ts"), import("./events.ts"),
+      ]);
+      const col = await getCollection("notifications");
+      const record = col ? await getRecord("notifications", id) : null;
+      if (col && record) emit("record.created", { collection: col, record: record as unknown as Record<string, unknown>, auth: null, source: "api" });
     } catch (e) {
       // vb_notifications doesn't exist yet — caller hasn't enabled notifications
       // bootstrap. Push still works without the inbox; just skip silently.
@@ -549,6 +588,13 @@ export async function bootstrapNotificationCollections(): Promise<{
   const { getCollection, createCollection } = await import("./collections.ts");
   const created: string[] = [];
   const skipped: string[] = [];
+
+  // Both collections point at `users`. Without it they used to be created
+  // anyway, and every notification then failed its relation check.
+  const users = await getCollection("users");
+  if (!users || users.type !== "auth") {
+    throw new Error("Notifications need an auth collection named 'users' (the inbox and device tokens belong to its users). Create it, then enable the provider again.");
+  }
 
   if (!(await getCollection("notifications"))) {
     await createCollection({
@@ -670,7 +716,7 @@ registerPushProvider({
     const c = loadProviderConfigs().fcm;
     return c.enabled && c.service_account !== "";
   },
-  send: async ({ userId, payload, helpers }) => {
+  send: async ({ userId, payload, helpers, onlyTokenIds }) => {
     // Raw FCM registration tokens live in vb_device_tokens.
     let tokens: FcmDeviceToken[] = [];
     try {
@@ -684,6 +730,7 @@ registerPushProvider({
       const msg = e instanceof Error ? e.message : String(e);
       if (!db.dialect.isMissingTable(e)) throw e;
     }
+    if (onlyTokenIds) tokens = tokens.filter((t) => onlyTokenIds.includes(t.id));
     return sendFcm(loadProviderConfigs().fcm, tokens, payload);
   },
 });

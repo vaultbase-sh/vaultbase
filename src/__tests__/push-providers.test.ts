@@ -22,7 +22,7 @@ import {
 
 let tmpDir: string;
 const sends: PushSendContext[] = [];
-let respond: () => { ok: boolean; delivered: number; message: string; invalidTokens?: string[] };
+let respond: () => { ok: boolean; delivered: number; message: string; invalidTokens?: string[]; retryTokenIds?: string[] };
 let off: () => void;
 
 beforeEach(async () => {
@@ -83,6 +83,22 @@ describe("registered push providers", () => {
     expect((await db.get<{ enabled: number }>(`SELECT enabled FROM vb_device_tokens WHERE id = 't1'`))!.enabled).toBe(0);
   });
 
+  it("retries only the devices that failed when others were delivered", async () => {
+    setSetting("notifications.providers.pager.enabled", "1");
+    let calls = 0;
+    respond = () => (++calls === 1
+      ? { ok: false, delivered: 1, message: "1 sent, 1 transient", retryTokenIds: ["t2"] }
+      : { ok: true, delivered: 1, message: "sent" });
+    const out = await dispatchNotification("user-1", { title: "Hi", body: "x" }, { inbox: false, providers: ["pager"] });
+    startQueueScheduler();
+    // The job itself succeeds: retrying it would push again to the delivered device.
+    await waitForStatus(out.enqueued[0]!.jobId, "succeeded");
+    for (let i = 0; i < 150 && sends.length < 2; i++) await Bun.sleep(40);
+    expect(sends).toHaveLength(2);
+    expect(sends[0]!.onlyTokenIds).toBeUndefined();
+    expect(sends[1]!.onlyTokenIds).toEqual(["t2"]);
+  }, 15000);
+
   it("ignores provider names nobody registered", async () => {
     setSetting("notifications.providers.pager.enabled", "1");
     const out = await dispatchNotification("user-1", { title: "Hi", body: "x" }, { inbox: false, providers: ["nope", "pager"] });
@@ -94,5 +110,29 @@ describe("registered push providers", () => {
       { name: "onesignal", builtin: true }, { name: "fcm", builtin: true }, { name: "pager", builtin: false },
     ]);
     expect(() => registerPushProvider({ name: "fcm", isEnabled: () => false, send: async () => respond() })).toThrow(/already registered/);
+  });
+});
+
+describe("the notification inbox", () => {
+  it("bootstrap needs a users auth collection", async () => {
+    const { bootstrapNotificationCollections } = await import("../core/notifications.ts");
+    await expect(bootstrapNotificationCollections()).rejects.toThrow(/auth collection named 'users'/);
+  });
+
+  it("a notify() inbox row is announced like any created record", async () => {
+    const { bootstrapNotificationCollections } = await import("../core/notifications.ts");
+    const { ensureAuthCollection, seedAuthUser } = await import("./_helpers.ts");
+    const { on } = await import("../core/events.ts");
+    await ensureAuthCollection("users");
+    const uid = await seedAuthUser({ collection: "users", email: "n@test.local" });
+    await bootstrapNotificationCollections();
+    const seen: string[] = [];
+    const stop = on("record.created", (e) => { if (e.collection.name === "notifications") seen.push(String(e.record["title"])); });
+    try {
+      const out = await dispatchNotification(uid, { title: "Welcome", body: "hi" }, { push: false });
+      expect(out.inboxRowId).not.toBeNull();
+      await Bun.sleep(10);
+      expect(seen).toEqual(["Welcome"]);
+    } finally { stop(); }
   });
 });
