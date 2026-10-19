@@ -19,6 +19,7 @@ import { on as onEvent } from "../core/events.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
+import { _reset as resetRealtime, subscribe as subscribeWs, type WSLike } from "../realtime/manager.ts";
 
 const SECRET = "test-secret-singleton";
 const fields = JSON.stringify([{ name: "site_name", type: "text" }, { name: "maintenance", type: "bool" }, { name: "limits", type: "json" }]);
@@ -124,6 +125,31 @@ describe("singleton collections", () => {
       await Bun.sleep(10);
       expect(seen).toEqual(["settings_page:Live"]);
     } finally { off(); }
+  });
+
+  it("reach non-admin subscribers of the collection: its view rule decides, not the unused list rule", async () => {
+    // list_rule is left out, so it's stored admin-only; a singleton never uses it.
+    await settings();
+    resetRealtime();
+    const got: string[] = [];
+    const ws = { data: { connId: "anon-1" }, send: (m: string) => { got.push(m); } } as unknown as WSLike;
+    subscribeWs(ws, ["settings_page"]);
+    await call("PATCH", "/settings_page", { site_name: "Live" });
+    await Bun.sleep(20);
+    expect(got.map((m) => JSON.parse(m).record?.site_name)).toEqual(["Live"]);
+    resetRealtime();
+  });
+
+  it("still keep updates from subscribers their view rule refuses", async () => {
+    await createCollection({ name: "private_page", type: "singleton", fields, view_rule: "", update_rule: null });
+    resetRealtime();
+    const got: string[] = [];
+    const ws = { data: { connId: "anon-2" }, send: (m: string) => { got.push(m); } } as unknown as WSLike;
+    subscribeWs(ws, ["private_page"]);
+    await call("PATCH", "/private_page", { site_name: "Hidden" });
+    await Bun.sleep(20);
+    expect(got).toEqual([]);
+    resetRealtime();
   });
 
   it("can't be turned into a base collection or back", async () => {

@@ -3,7 +3,7 @@
  * after-hooks, in that order. Imported for its side effect by the modules
  * that emit record events, so they're registered before the first write.
  */
-import { broadcast } from "../realtime/manager.ts";
+import { broadcast, broadcastRules } from "../realtime/manager.ts";
 import { on } from "./events.ts";
 import { makeHookHelpers, runAfterHook } from "./hooks.ts";
 import { dispatchEvent } from "./webhooks.ts";
@@ -19,19 +19,19 @@ export function registerBuiltinListeners(): void {
   on("record.created", ({ collection: col, record, source }) => {
     if (source === "auth") return;
     broadcast(col.name, { type: "create", collection: col.name, record: record as never }, {
-      viewRule: col.view_rule, listRule: col.list_rule, record,
+      ...broadcastRules(col), record,
     });
   }, "realtime");
   on("record.updated", ({ collection: col, record, source }) => {
     if (source === "auth") return;
     broadcast(col.name, { type: "update", collection: col.name, record: record as never }, {
-      viewRule: col.view_rule, listRule: col.list_rule, record,
+      ...broadcastRules(col), record,
     });
   }, "realtime");
   on("record.deleted", ({ collection: col, id, existing, source }) => {
     if (source === "auth") return;
     broadcast(col.name, { type: "delete", collection: col.name, id }, {
-      viewRule: col.view_rule, listRule: col.list_rule, record: existing,
+      ...broadcastRules(col), record: existing,
     });
   }, "realtime");
 

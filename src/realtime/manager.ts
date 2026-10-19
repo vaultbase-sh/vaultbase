@@ -106,6 +106,16 @@ export interface BroadcastOpts {
   record?: Record<string, unknown> | null;
 }
 
+/**
+ * The rules a collection's events are delivered under. A singleton's one
+ * record is read by its view rule alone (its list rule is never used, and
+ * is stored as admin-only), so its collection-wide topics follow the view
+ * rule too.
+ */
+export function broadcastRules(col: { type: string; view_rule: string | null; list_rule: string | null }): Pick<BroadcastOpts, "viewRule" | "listRule"> {
+  return col.type === "singleton" ? { viewRule: col.view_rule } : { viewRule: col.view_rule, listRule: col.list_rule };
+}
+
 const WILDCARD = "*";
 
 /**

@@ -16,7 +16,7 @@ import { invalidateEmailCache } from "./email.ts";
 import { clearThumbCache, invalidateStorageCache } from "./storage.ts";
 import { invalidateEgressCache } from "./hook-egress.ts";
 import { invalidateCorsCache } from "./cors.ts";
-import { broadcast as realtimeBroadcast, broadcastSystem } from "../realtime/manager.ts";
+import { broadcast as realtimeBroadcast, broadcastRules, broadcastSystem } from "../realtime/manager.ts";
 
 /** Collections, rules or tables changed on another server. */
 function schemaChanged(): void {
@@ -75,7 +75,7 @@ onPeerMessage("rec", async (msg: PeerMessage) => {
   if (msg["src"] === "auth") return;
   const record = (msg["r"] as Record<string, unknown> | undefined) ?? (type === "delete" ? null : await getRecord(name, id));
   if (type !== "delete" && !record) return;
-  const opts = { viewRule: col.view_rule, listRule: col.list_rule, record: record ?? {} };
+  const opts = { ...broadcastRules(col), record: record ?? {} };
   if (type === "delete") realtimeBroadcast(name, { type, collection: name, id }, opts);
   else realtimeBroadcast(name, { type, collection: name, record: record as never }, opts);
 });
