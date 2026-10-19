@@ -144,3 +144,20 @@ describe("created / updated", () => {
     }
   });
 });
+
+describe("list totals under a rule that reads another collection", () => {
+  it("drop when the other collection changes", async () => {
+    const { deleteRecord, listRecords } = await import("../core/records.ts");
+    await createPublicCollection({ name: "members", fields: JSON.stringify([{ name: "user", type: "text" }]) });
+    await createPublicCollection({ name: "board", fields: JSON.stringify([{ name: "t", type: "text" }]) });
+    const m = await createRecord("members", { user: "u1" });
+    await createRecord("board", { t: "x" });
+    const rule = "@collection.members.user = @request.auth.id";
+    const asU1 = () => listRecords("board", { accessRule: rule, auth: { id: "u1", type: "user" } });
+    expect((await asU1()).totalItems).toBe(1);
+    await deleteRecord("members", m.id);
+    const after = await asU1();
+    expect(after.data).toHaveLength(0);
+    expect(after.totalItems).toBe(0);
+  });
+});

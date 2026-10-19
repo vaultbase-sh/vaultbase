@@ -117,6 +117,14 @@ function countKey(sql: string, params: unknown[]): string {
   return key;
 }
 
+/** Whether a WHERE clause names a table other than `table` (quoted, as the compilers write them). */
+function readsOtherTables(whereSql: string, table: string): boolean {
+  for (const m of whereSql.matchAll(/"((?:vb|vaultbase)_[^"]+)"/g)) {
+    if (m[1] !== table) return true;
+  }
+  return false;
+}
+
 async function cachedCount(sql: string, params: unknown[], table: string): Promise<number> {
   const count = async () => (await db.get<{ c: number }>(sql, params))?.c ?? 0;
   const inTransaction = db.inTransaction;
@@ -663,9 +671,11 @@ export async function listRecords(
     rows = await db.all<Record<string, unknown>>(selectSql, selectParams);
     if (!opts.skipTotal) {
       const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
-      // A view's SELECT, or strftime('now', …) in a filter, can change its
-      // answer without any write, so those are always counted fresh.
-      totalItems = col.type === "view" || /strftime\(/i.test(whereSql)
+      // A view's SELECT, strftime('now', …) in a filter, or a rule or filter
+      // that reads another table (@collection, _via_, view-rule guards) can
+      // change its answer without a write to this table, which is all the
+      // cache watches: those are always counted fresh.
+      totalItems = col.type === "view" || /strftime\(/i.test(whereSql) || readsOtherTables(whereSql, tname)
         ? (await db.get<{ c: number }>(countSql, whereParams))?.c ?? 0
         : await cachedCount(countSql, whereParams, tname);
       totalPages = Math.ceil(totalItems / perPage);
