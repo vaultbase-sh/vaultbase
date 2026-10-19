@@ -7,6 +7,61 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.26.0] — 2026-10-19
+
+### Added
+
+- **The API preview is a small HTTP client.** Open several requests at once as tabs and
+  send with ⌘/Ctrl+Enter. Each has a Params table kept in step with the URL (path values
+  like `{id}` get their own fields, filled with a real record when you pick an endpoint),
+  Headers, and a JSON or form-data body (file uploads included). Send it as the admin, as
+  a user signed in from an auth collection (the token stays in memory), with a pasted
+  token, or with no auth, to see what a rule lets others do. The response shows status,
+  time, size, headers and the body pretty or raw, and the request can be copied as
+  Vaultbase SDK code, `fetch()` or curl. The last 50 requests are kept in the browser;
+  requests you save are kept on the server for each admin. Neither stores tokens or files.
+- **The API preview's endpoints come from the instance's OpenAPI spec**, so they follow the
+  collections: auth collections get their sign-in routes, singletons GET and PATCH, views
+  only reads. A filter and a reload sit above the list.
+- **Export menu** in the API preview: the OpenAPI spec, a Postman collection (v2.1), an
+  Insomnia export (format 4) or a `.http` file for the VS Code and JetBrains REST clients,
+  each with every endpoint, sample bodies and base URL and token variables.
+- **Favorites in the admin sidebar.** The star on a row puts the page in a Favorites section
+  at the top. Favorites are kept per admin on the server, so they follow you across
+  browsers.
+- **Docker image** at `ghcr.io/vaultbase-sh/vaultbase` (amd64 and arm64; tags `X.Y.Z`,
+  `X.Y` and `latest`), built from each release's own checked binaries. It runs as an
+  unprivileged user, takes over a root-owned `/data` volume on first start, and has a
+  health check. With it: a Docker Compose file with Caddy for HTTPS, and templates for
+  Render (`render.yaml`), Fly.io (`deploy/fly/fly.toml`) and Railway
+  (`deploy/railway/README.md`).
+
+### Changed
+
+- **The admin sidebar shows less until you need it.** Feature flags, Webhooks, API tokens,
+  Monitoring, API preview, SQL and the audit log stay out of the sidebar until something is
+  in them, they're open, they're a favorite, or they're pinned in the new Settings →
+  Sidebar. A **More** row at the bottom lists the rest, and ⌘K reaches every page (it used
+  to miss several). Nothing is turned off: the API, SDK and MCP are unchanged.
+
+### Fixed
+
+- **OpenAPI no longer lists a create operation for auth collections.** The server refuses
+  `POST /api/v1/<auth collection>` and points to `/auth/<name>/register`; the spec offered
+  it anyway.
+- **The API preview opened on `/api/v1/health`, which is a 404**; it now opens on
+  `/api/health`.
+- **On Postgres, closing the database waits for settings writes still in flight**, so a
+  write can't land after shutdown has started.
+
+### Upgrade notes
+
+- Some admin pages leave the sidebar until they're used. Open them from **More**, with ⌘K,
+  or pin them in Settings → Sidebar. Pages already in use (a flag, a webhook, an API token)
+  stay where they were.
+- Clients generated from the OpenAPI spec lose the create method for auth collections. It
+  never worked; use the register operation.
+
 ## [0.25.0] — 2026-10-18
 
 ### Added
