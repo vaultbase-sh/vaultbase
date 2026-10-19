@@ -214,7 +214,7 @@ export function sdkSnippet(r: ApiRequest, origin: string, kinds: Record<string, 
     const ref = kinds[c!] === "singleton" ? `vb.singleton(${JSON.stringify(c)})` : `vb.collection(${JSON.stringify(c)})`;
     const idArg = rest && rest.startsWith("{") ? id(rest.slice(1, -1)) : rest && rest !== "_aggregate" ? JSON.stringify(rest) : null;
     if (kinds[c!] === "singleton" && !rest) {
-      if (r.method === "GET") call = `const record = await ${ref}.get();`;
+      if (r.method === "GET") call = `const record = await ${ref}.get(${opts});`;
       if (r.method === "PATCH") call = `const record = await ${ref}.update(${body});`;
     } else if (rest === "_aggregate" && r.method === "GET") {
       call = `const rows = await ${ref}.aggregate(${opts});`;
@@ -222,7 +222,7 @@ export function sdkSnippet(r: ApiRequest, origin: string, kinds: Record<string, 
       if (r.method === "GET") call = `const { data, totalItems } = await ${ref}.list(${opts});`;
       if (r.method === "POST") call = `const record = await ${ref}.create(${body});`;
     } else if (idArg) {
-      if (r.method === "GET") call = `const record = await ${ref}.get(${idArg});`;
+      if (r.method === "GET") call = `const record = await ${ref}.get(${idArg}${opts ? `, ${opts}` : ""});`;
       if (r.method === "PATCH") call = `const record = await ${ref}.update(${idArg}, ${body});`;
       if (r.method === "DELETE") call = `await ${ref}.delete(${idArg});`;
     }

@@ -689,21 +689,37 @@ export async function listRecords(
     us: (performance.now() - queryStart) * 1000,
   });
 
-  let items = await rowsToMeta(rows, col, fields);
-
-  // Expand
-  if (opts.expand) {
-    const expandPaths = opts.expand.split(",").map((s) => s.trim()).filter(Boolean);
-    await expandRelations(items, expandPaths, fields, opts.auth ?? null, opts.request ?? null);
-  }
-
-  // Field projection
-  if (opts.fields) {
-    const keep = opts.fields.split(",").map((s) => s.trim()).filter(Boolean);
-    items = items.map((it) => projectFields(it, keep));
-  }
+  const items = await shapeRecords(col, await rowsToMeta(rows, col, fields), opts);
 
   return { data: items, page, perPage, totalItems, totalPages };
+}
+
+export interface ShapeOptions {
+  /** Comma-separated relation paths to expand, nested with `.`. */
+  expand?: string | undefined;
+  /** Comma-separated fields to return; `id` always is. */
+  fields?: string | undefined;
+  /** Who's asking: related records are expanded under their view rule. */
+  auth?: AuthContext | null | undefined;
+  request?: RequestContextLike | null | undefined;
+}
+
+/**
+ * `expand` then `fields`, as list and get-one both apply them. Expanded
+ * relations respect the related collection's view rule. A projection keeps
+ * `expand` when expanding was asked for.
+ */
+export async function shapeRecords(col: Collection, items: RecordWithMeta[], opts: ShapeOptions): Promise<RecordWithMeta[]> {
+  const expandPaths = (opts.expand ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (expandPaths.length) {
+    await expandRelations(items, expandPaths, cachedFields(col.fields), opts.auth ?? null, opts.request ?? null);
+  }
+  const keep = (opts.fields ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (keep.length) {
+    if (expandPaths.length && !keep.includes("expand")) keep.push("expand");
+    return items.map((it) => projectFields(it, keep));
+  }
+  return items;
 }
 
 function projectFields(item: RecordWithMeta, keep: string[]): RecordWithMeta {

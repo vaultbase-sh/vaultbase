@@ -96,6 +96,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
       [base]: {
         get: {
           tags, operationId: `get${T}`, summary: `Get the ${col.name} singleton`,
+          parameters: [qp("expand", "Relation fields to expand"), qp("fields", "Fields to return")],
           responses: { "200": ok(dataOf(ref(T))), ...ERRORS },
         },
         patch: {

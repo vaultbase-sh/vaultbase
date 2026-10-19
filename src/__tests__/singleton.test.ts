@@ -167,6 +167,8 @@ describe("singleton collections", () => {
     const p = spec.paths["/api/v1/settings_page"]!;
     expect(Object.keys(p).sort()).toEqual(["get", "patch"]);
     expect(spec.paths["/api/v1/settings_page/{id}"]).toBeUndefined();
+    const params = (p["get"] as { parameters?: Array<{ name: string }> }).parameters ?? [];
+    expect(params.map((x) => x.name)).toEqual(["expand", "fields"]);
   });
 
   it("keep their record across a restart", async () => {

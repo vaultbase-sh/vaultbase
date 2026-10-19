@@ -79,6 +79,10 @@ describe("snippets", () => {
     expect(sdk(newRequest({ method: "DELETE", path: "/api/v1/posts/{id}", pathValues: { id: "r1" } }))).toBe(`await vb.collection("posts").delete("r1");`);
     expect(sdk(newRequest({ path: "/api/v1/posts/{id}" }))).toBe(`const record = await vb.collection("posts").get("<id>");`);
     expect(sdk(newRequest({ path: "/api/v1/site" }), { site: "singleton" })).toBe(`const record = await vb.singleton("site").get();`);
+    expect(sdk(newRequest({ path: "/api/v1/posts/{id}", pathValues: { id: "r1" }, params: [{ key: "expand", value: "author", on: true }] })))
+      .toBe(`const record = await vb.collection("posts").get("r1", { expand: "author" });`);
+    expect(sdk(newRequest({ path: "/api/v1/site", params: [{ key: "fields", value: "name", on: true }] }), { site: "singleton" }))
+      .toBe(`const record = await vb.singleton("site").get({ fields: "name" });`);
     expect(sdk(newRequest({ method: "POST", path: "/api/v1/auth/members/login", bodyMode: "json", body: '{"email":"a@b.c","password":"x"}' })))
       .toBe(`const { token, record } = await vb.auth.members.login({"email":"a@b.c","password":"x"});`);
     expect(sdk(newRequest({ method: "POST", path: "/api/v1/auth/members/request-password-reset", bodyMode: "json", body: '{"email":"a@b.c"}' })))

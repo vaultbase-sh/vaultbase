@@ -8,6 +8,7 @@ import {
   deleteRecord,
   getRecord,
   listRecords,
+  shapeRecords,
   ReadOnlyCollectionError,
   SingletonRecordError,
   FilterError,
@@ -181,6 +182,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
       set.status = 403;
       return { error: "Forbidden", code: 403 };
     }
+    // The ETag is of the full record, whatever expand / fields return, so
+    // it matches what PATCH and DELETE compare against.
     const etag = recordEtag(record as unknown as Record<string, unknown>);
     if (etag) set.headers["ETag"] = etag;
     // Honor If-None-Match for cheap conditional GETs.
@@ -189,7 +192,14 @@ export function makeRecordsPlugin(jwtSecret: string) {
       set.status = 304;
       return null;
     }
-    return { data: record };
+    // expand / fields as on a list.
+    const q = new URL(request.url).searchParams;
+    const expand = q.get("expand") ?? undefined;
+    const fields = q.get("fields") ?? undefined;
+    if (!expand && !fields) return { data: record };
+    const [shaped] = await timeFor(request, "db_exec", () =>
+      shapeRecords(col, [record], { expand, fields, auth, request: buildRequestContext(request) }));
+    return { data: shaped };
   }
 
   /** Update one record by id, under its update rule, with If-Match. */
