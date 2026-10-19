@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
 import {
+  CollectionNotFoundError,
   CollectionValidationError,
   createCollection,
   deleteCollection,
@@ -114,6 +115,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           );
           return { data: col };
         } catch (e) {
+          if (e instanceof CollectionNotFoundError) { set.status = 404; return { error: e.message, code: 404 }; }
           if (e instanceof CollectionValidationError) {
             set.status = 422;
             return { error: e.message, code: 422, details: e.details };
@@ -184,8 +186,13 @@ export function makeCollectionsPlugin(jwtSecret: string) {
       },
       { requireAdmin: true, body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
     )
-    .delete("/collections/:id", async ({ params }) => {
-      await deleteCollection(params.id);
+    .delete("/collections/:id", async ({ params, set }) => {
+      try {
+        await deleteCollection(params.id);
+      } catch (e) {
+        if (e instanceof CollectionNotFoundError) { set.status = 404; return { error: e.message, code: 404 }; }
+        throw e;
+      }
       return { data: null };
     }, { requireAdmin: true })
 

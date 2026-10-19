@@ -397,8 +397,18 @@ export async function createUserTable(collectionName: string, fields: FieldDef[]
  * keeps it even if that type is no longer registered (its extension was
  * removed), so the rest of the collection can still be edited.
  */
+/**
+ * Names records already carry: the system columns and the meta keys the API
+ * adds. A field by one of these names collided with a column (`created_at`:
+ * the table couldn't be made) or replaced a value in every record (`created`).
+ */
+const RESERVED_FIELD_NAMES = new Set(["id", "created", "updated", "created_at", "updated_at", "collectionId", "collectionName", "expand"]);
+
 function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
   const errors = searchableErrors(fields);
+  for (const f of fields) {
+    if (!f.system && RESERVED_FIELD_NAMES.has(f.name)) errors[f.name] = `'${f.name}' is reserved: every record already has it`;
+  }
   const before = new Map(previous.map((f) => [f.name, f.type]));
   for (const f of fields) {
     if (f.system || isKnownFieldType(f.type) || before.get(f.name) === f.type) continue;
@@ -852,9 +862,9 @@ export async function alterUserTable(
     const oldField = oldByName.get(name);
     if (!oldField) continue;
     if (oldField.type !== newField.type) {
-      throw new Error(
-        `Cannot change type of field '${name}' from '${oldField.type}' to '${newField.type}'. Drop the field and re-add it with the new type.`
-      );
+      throw new CollectionValidationError({
+        [name]: `Cannot change type of field '${name}' from '${oldField.type}' to '${newField.type}'. Drop the field and re-add it with the new type.`,
+      });
     }
   }
 
@@ -918,6 +928,13 @@ export async function getCollection(nameOrId: string): Promise<Collection | null
 export async function listCollections(): Promise<Collection[]> {
   const db = getDb();
   return db.select().from(collections);
+}
+
+/** No collection by that id or name. HTTP 404. */
+export class CollectionNotFoundError extends Error {
+  constructor(idOrName: string) {
+    super(`Collection '${idOrName}' not found`);
+  }
 }
 
 export class CollectionValidationError extends Error {
@@ -990,24 +1007,36 @@ export async function createCollection(
     created_at: now,
     updated_at: now,
   };
+  // Check what the table step checks before writing the row, so a schema it
+  // would refuse leaves nothing behind.
+  if (type !== "view") assertFieldOptions(fields.filter((f) => !f.implicit), []);
   await db.insert(collections).values(row);
 
-  if (type === "view") {
-    await createUserView(row.name, data.view_query!);
-  } else if (type === "singleton") {
-    // A singleton holds exactly one record, made with the collection, its
-    // fields empty: reads never miss and an update always has a target.
-    await createUserTable(row.name, fields.filter((f) => !f.implicit));
-    await ensureSingletonRecord(row.name);
-  } else {
-    // Per-collection real table excludes implicit fields — those live on vaultbase_users.
-    await createUserTable(row.name, fields.filter((f) => !f.implicit));
-    if (type === "auth") {
-      // v0.11+: auth columns (email/password_hash/...) live on `vb_<name>`
-      // alongside the per-collection custom fields. Existing v0.10 installs
-      // get the same shape via the boot migration in db/migrate.ts.
-      await ensureAuthColumns(row.name);
+  try {
+    if (type === "view") {
+      await createUserView(row.name, data.view_query!);
+    } else if (type === "singleton") {
+      // A singleton holds exactly one record, made with the collection, its
+      // fields empty: reads never miss and an update always has a target.
+      // So no NOT NULL in the table: `required` is enforced on writes.
+      await createUserTable(row.name, fields.filter((f) => !f.implicit).map((f) => ({ ...f, required: false })));
+      await ensureSingletonRecord(row.name);
+    } else {
+      // Per-collection real table excludes implicit fields — those live on vaultbase_users.
+      await createUserTable(row.name, fields.filter((f) => !f.implicit));
+      if (type === "auth") {
+        // v0.11+: auth columns (email/password_hash/...) live on `vb_<name>`
+        // alongside the per-collection custom fields. Existing v0.10 installs
+        // get the same shape via the boot migration in db/migrate.ts.
+        await ensureAuthColumns(row.name);
+      }
     }
+  } catch (e) {
+    // The table (or view) couldn't be made: don't leave a collection that
+    // answers 500 to every request.
+    await db.delete(collections).where(eq(collections.id, id)).catch(() => {});
+    if (type !== "view") await dropUserTable(row.name).catch(() => {});
+    throw e;
   }
 
   const created = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
@@ -1126,9 +1155,11 @@ export async function updateCollection(
   const now = Math.floor(Date.now() / 1000);
 
   // Get existing collection for diff
-  const existing = await db.select().from(collections).where(eq(collections.id, id)).limit(1);
-  if (existing.length === 0) throw new Error("Collection not found");
+  // By id, or by name as GET /collections/:id accepts.
+  const existing = await db.select().from(collections).where(or(eq(collections.id, id), eq(collections.name, id))).limit(1);
+  if (existing.length === 0) throw new CollectionNotFoundError(id);
   const before = existing[0]!;
+  id = before.id;
 
   const effectiveType = data.type ?? before.type;
   if (data.type !== undefined && data.type !== before.type && (data.type === "singleton" || before.type === "singleton")) {
@@ -1194,16 +1225,20 @@ export async function updateCollection(
   return result;
 }
 
-export async function deleteCollection(id: string): Promise<void> {
-  schemaVersion++;
+/**
+ * Delete a collection by id or name. The row is deleted by the id found:
+ * given a name, it used to drop the table and keep the row, leaving a
+ * collection with no data that answered 500.
+ */
+export async function deleteCollection(idOrName: string): Promise<void> {
   const db = getDb();
-  const col = await getCollection(id);
-  if (col) {
-    if (col.type === "view") await dropUserView(col.name);
-    else await dropUserTable(col.name);
-    cache.delete(col.id);
-    cache.delete(col.name);
-    broadcast({ type: "bus", kind: "collections" });
-  }
-  await db.delete(collections).where(eq(collections.id, id));
+  const col = await getCollection(idOrName);
+  if (!col) throw new CollectionNotFoundError(idOrName);
+  schemaVersion++;
+  if (col.type === "view") await dropUserView(col.name);
+  else await dropUserTable(col.name);
+  cache.delete(col.id);
+  cache.delete(col.name);
+  broadcast({ type: "bus", kind: "collections" });
+  await db.delete(collections).where(eq(collections.id, col.id));
 }
