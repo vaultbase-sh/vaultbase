@@ -349,7 +349,17 @@ async function rowsToMeta(
     const plain: Record<string, unknown> = { ...r };
     for (const name of encrypted) {
       const v = r[name];
-      if (typeof v === "string" && isEncrypted(v)) plain[name] = await decryptValue(v);
+      if (typeof v === "string" && isEncrypted(v)) {
+        // One value that won't decrypt (tampered, or written under another
+        // key) used to fail the whole list with a bare WebCrypto 500. It
+        // reads as null, and the server log says which one.
+        try {
+          plain[name] = await decryptValue(v);
+        } catch {
+          plain[name] = null;
+          process.stderr.write(`[records] ${col.name}/${String(r["id"])}: field '${name}' doesn't decrypt with the current key; returned as null\n`);
+        }
+      }
     }
     return buildRecord(plain, col, fieldByName);
   }));

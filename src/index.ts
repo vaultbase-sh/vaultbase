@@ -403,10 +403,15 @@ async function main() {
   {
     const { encryptionKeyMatchesData } = await import("./api/settings.ts");
     if (!(await encryptionKeyMatchesData())) {
-      process.stderr.write(
-        "vaultbase: the encryption key does not decrypt the stored secrets. If you set VAULTBASE_ENCRYPTION_KEY, " +
-        `set it to the contents of ${config.dataDir}/.encryption-key (or unset it); a lost key can't be recovered.\n`,
-      );
+      const { existsSync } = await import("node:fs");
+      const keyFile = `${config.dataDir}/.encryption-key`;
+      // Point at the key file only when there is one to point at.
+      const hint = process.env["VAULTBASE_ENCRYPTION_KEY"]
+        ? existsSync(keyFile)
+          ? `VAULTBASE_ENCRYPTION_KEY isn't the key they were written with: set it to the contents of ${keyFile}, or unset it.`
+          : "VAULTBASE_ENCRYPTION_KEY isn't the key they were written with: set it back to the original value."
+        : `${keyFile} isn't the key they were written with: restore the original file, or set VAULTBASE_ENCRYPTION_KEY to the original key.`;
+      process.stderr.write(`vaultbase: the encryption key does not decrypt the stored secrets. ${hint} A lost key can't be recovered.\n`);
       process.exit(1);
     }
   }
