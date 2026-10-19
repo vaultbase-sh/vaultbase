@@ -83,4 +83,17 @@ describe("collection schema guards", () => {
     expect((await api("PATCH", "/collections/nope", { list_rule: null })).status).toBe(404);
     expect((await api("DELETE", "/collections/nope")).status).toBe(404);
   });
+
+  it("rules that don't parse are refused, with why", async () => {
+    await expect(createCollection({ name: "r1", fields: "[]", list_rule: "owner = " })).rejects.toBeInstanceOf(CollectionValidationError);
+    expect(await getCollection("r1")).toBeNull();
+    await expect(createCollection({
+      name: "r2",
+      fields: JSON.stringify([{ name: "doc", type: "file", options: { viewRule: "@auth.id = record.owner" } }]),
+    })).rejects.toBeInstanceOf(CollectionValidationError);
+    const col = await createCollection({ name: "r3", fields: "[]", list_rule: "@request.auth.id != \"\"" });
+    const r = await api("PATCH", `/collections/${col.id}`, { view_rule: "(a = 1" });
+    expect(r.status).toBe(422);
+    expect(JSON.stringify(r.json.details)).toContain("view_rule");
+  });
 });

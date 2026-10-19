@@ -9,6 +9,7 @@ import { collections, type Collection, type NewCollection } from "../db/schema.t
 import { dropFts, ftsColumns, searchableErrors, syncFts, SEARCH_COLUMN } from "./fts.ts";
 import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
+import { ruleSyntaxError } from "./expression.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -930,6 +931,29 @@ export async function listCollections(): Promise<Collection[]> {
   return db.select().from(collections);
 }
 
+const RULE_KEYS = ["list_rule", "view_rule", "create_rule", "update_rule", "delete_rule"] as const;
+
+/**
+ * Refuse rules that don't parse: the collection's own (those in `rules`) and
+ * any file field's viewRule. Saved, they denied every caller silently.
+ */
+function assertRulesParse(rules: Partial<Record<(typeof RULE_KEYS)[number], string | null | undefined>>, fields: FieldDef[] | null): void {
+  const errors: Record<string, string> = {};
+  for (const k of RULE_KEYS) {
+    const r = rules[k];
+    if (typeof r !== "string") continue;
+    const err = ruleSyntaxError(r);
+    if (err) errors[k] = `${k}: ${err}`;
+  }
+  for (const f of fields ?? []) {
+    const r = f.type === "file" ? f.options?.["viewRule"] : undefined;
+    if (typeof r !== "string") continue;
+    const err = ruleSyntaxError(r);
+    if (err) errors[f.name] = `${f.name}.viewRule: ${err}`;
+  }
+  if (Object.keys(errors).length > 0) throw new CollectionValidationError(errors);
+}
+
 /** No collection by that id or name. HTTP 404. */
 export class CollectionNotFoundError extends Error {
   constructor(idOrName: string) {
@@ -1010,6 +1034,7 @@ export async function createCollection(
   // Check what the table step checks before writing the row, so a schema it
   // would refuse leaves nothing behind.
   if (type !== "view") assertFieldOptions(fields.filter((f) => !f.implicit), []);
+  assertRulesParse(row, fields);
   await db.insert(collections).values(row);
 
   try {
@@ -1160,6 +1185,9 @@ export async function updateCollection(
   if (existing.length === 0) throw new CollectionNotFoundError(id);
   const before = existing[0]!;
   id = before.id;
+
+  // Only what this update sets: a broken rule saved earlier doesn't block other edits.
+  assertRulesParse(data, typeof data.fields === "string" ? parseFields(data.fields) : null);
 
   const effectiveType = data.type ?? before.type;
   if (data.type !== undefined && data.type !== before.type && (data.type === "singleton" || before.type === "singleton")) {

@@ -193,6 +193,26 @@ class TokenStream {
   }
 }
 
+/**
+ * Why a rule doesn't parse, or null when it does (an empty rule is fine:
+ * it means admin-only). For checking rules when they're saved: one that
+ * doesn't parse denies everyone, with nothing to say why.
+ */
+export function ruleSyntaxError(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 4096) return "rule is longer than 4096 characters";
+  try {
+    const ts = new TokenStream(trimmed);
+    parseOr(ts);
+    ts.skipWs();
+    if (ts.pos !== ts.src.length) return `unexpected input at position ${ts.pos + 1}: '${ts.src.slice(ts.pos, ts.pos + 20)}'`;
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 export function parseExpression(input: string): Expr | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
