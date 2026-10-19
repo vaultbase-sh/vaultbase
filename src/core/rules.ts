@@ -96,13 +96,16 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   // `= null` / `!= null` written as a literal are IS NULL / IS NOT NULL, and
   // any other comparison with a missing value is unknown, which no rule
   // passes (`status != "secret"` doesn't admit a record with no status).
+  // `~` / `!~` are the exception: the SQL wraps LIKE in coalesce(…, false),
+  // so a missing side is false for `~` and true for `!~`, which contains()
+  // below already gives.
   const nullLiteral = (o: Operand) => o.kind === "literal" && o.value === null;
   if ((op === "=" || op === "!=") && (nullLiteral(ast.left) || nullLiteral(ast.right))) {
     const v = nullLiteral(ast.left) ? r : l;
     const isNull = v === null || v === undefined;
     return op === "=" ? isNull : !isNull;
   }
-  if (l === null || l === undefined || r === null || r === undefined) return false;
+  if (op !== "~" && op !== "!~" && (l === null || l === undefined || r === null || r === undefined)) return false;
 
   switch (op) {
     case "=":  return looseEq(l, r);

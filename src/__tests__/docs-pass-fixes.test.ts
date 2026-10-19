@@ -98,7 +98,9 @@ describe("single-record checks treat NULL as the list query does", () => {
   const user = { id: "u1", type: "user" as const };
   it("a comparison with a missing value never passes", () => {
     expect(evaluateRule('status != "secret"', user, { status: null })).toBe(false);
-    expect(evaluateRule('status !~ "x"', user, {})).toBe(false);
+    // `~` / `!~` follow SQL's coalesce(LIKE, false): a missing side is false for ~, true for !~.
+    expect(evaluateRule('status ~ "x"', user, {})).toBe(false);
+    expect(evaluateRule('status !~ "x"', user, {})).toBe(true);
     expect(evaluateRule("score < 5", user, { score: null })).toBe(false);
     expect(evaluateRule("tags:length = 0", user, { tags: null })).toBe(false);
   });

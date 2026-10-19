@@ -117,10 +117,13 @@ function countKey(sql: string, params: unknown[]): string {
   return key;
 }
 
-/** Whether a WHERE clause names a table other than `table` (quoted, as the compilers write them). */
+/**
+ * Whether a WHERE clause names a table other than `table` (quoted, as the
+ * compilers write them). Its own full-text index changes only with it.
+ */
 function readsOtherTables(whereSql: string, table: string): boolean {
   for (const m of whereSql.matchAll(/"((?:vb|vaultbase)_[^"]+)"/g)) {
-    if (m[1] !== table) return true;
+    if (m[1] !== table && m[1] !== `${table}_fts`) return true;
   }
   return false;
 }
