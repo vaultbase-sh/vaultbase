@@ -1030,6 +1030,11 @@ export async function createCollection(
 ): Promise<Collection> {
   const db = getDb();
   const type = data.type ?? "base";
+  // Checked up front so every caller (MCP too) gets this, not the
+  // database's UNIQUE error. The constraint still decides a race.
+  const clash = await db.select({ id: collections.id }).from(collections)
+    .where(eq(collections.name, data.name)).limit(1);
+  if (clash.length > 0) throw new Error(`A collection named '${data.name}' already exists`);
 
   let fields: FieldDef[];
   if (type === "view") {

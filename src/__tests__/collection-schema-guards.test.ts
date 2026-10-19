@@ -127,3 +127,10 @@ describe("collection schema guards", () => {
     expect((await api("PATCH", `/collections/${other.id}`, { fields: [{ name: "t", type: "text" }] })).status).toBe(200);
   });
 });
+
+describe("duplicate collection name", () => {
+  it("names the clash for every caller, not the database's UNIQUE error", async () => {
+    await createCollection({ name: "dupes", type: "base", fields: "[]" });
+    await expect(createCollection({ name: "dupes", type: "base", fields: "[]" })).rejects.toThrow("A collection named 'dupes' already exists");
+  });
+});
