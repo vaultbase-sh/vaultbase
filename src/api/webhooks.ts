@@ -115,21 +115,10 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       const rows = await getDb().select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1);
       const w = rows[0];
       if (!w) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
-      // Synthesize a delivery scoped to this single webhook by temporarily
-      // narrowing the event-match. Simplest: emit a synthetic event under
-      // a name that only this webhook is subscribed to.
-      const event = `__test.${params.id}`;
-      // Force-subscribe by injecting `__test.<id>` into events temporarily.
-      const events = JSON.parse(w.events) as string[];
-      const updated = JSON.stringify(Array.from(new Set([...events, event])));
-      await getDb().update(webhooks).set({ events: updated }).where(eq(webhooks.id, w.id));
-      invalidateWebhookCache();
-      try {
-        await dispatchEvent({ event, data: { test: true, webhook_id: w.id } });
-      } finally {
-        await getDb().update(webhooks).set({ events: w.events }).where(eq(webhooks.id, w.id));
-        invalidateWebhookCache();
-      }
+      // Delivered to this webhook only. (It used to add the test event to
+      // this webhook's list and dispatch it, which every `*` webhook
+      // received too.)
+      await dispatchEvent({ event: `__test.${params.id}`, data: { test: true, webhook_id: w.id }, webhookId: w.id });
       return { data: { ok: true } };
     }, { requireAdmin: true })
 

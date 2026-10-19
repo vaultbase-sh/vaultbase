@@ -63,6 +63,8 @@ interface DeliveryRow {
 }
 
 export interface DispatchOpts {
+  /** Deliver to this webhook only, whatever its event list (the admin's test fire). */
+  webhookId?: string;
   /** Logical event label, e.g. `posts.create` or `users.delete`. Required. */
   event: string;
   /** Free-form data — encoded into delivery body under `data`. */
@@ -92,7 +94,7 @@ export async function dispatchEvent(opts: DispatchOpts): Promise<{ enqueued: num
   const now = Math.floor(Date.now() / 1000);
   let enqueued = 0;
   for (const w of rows) {
-    if (!eventMatches(w.events, opts.event)) continue;
+    if (opts.webhookId !== undefined ? w.id !== opts.webhookId : !eventMatches(w.events, opts.event)) continue;
     const id = crypto.randomUUID();
     const payload = JSON.stringify({
       id,
