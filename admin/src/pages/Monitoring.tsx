@@ -328,7 +328,9 @@ export default function Monitoring() {
         />
         <Stat
           label="P99 LATENCY"
-          value={snap ? dur(snap.total.p99_us) : "—"}
+          // Percentiles come from histogram buckets (an upper bound), so
+          // one can read above the exact max; the max is the true ceiling.
+          value={snap ? dur(Math.min(snap.total.p99_us, snap.total.max_us)) : "—"}
           sub={snap ? `p50 ${dur(snap.total.p50_us)} · max ${dur(snap.total.max_us)}` : "—"}
         />
         <Stat
@@ -346,7 +348,8 @@ export default function Monitoring() {
         <Stat
           label="MEMORY"
           value={p ? bytes(p.rss_bytes) : "—"}
-          sub={p ? `heap ${bytes(p.heap_used_bytes)} / ${bytes(p.heap_total_bytes)}` : "—"}
+          // Bun's heap total can read below heap used, so only used is shown.
+          sub={p ? `RSS · heap ${bytes(p.heap_used_bytes)} used` : "—"}
         />
       </div>
 

@@ -11,7 +11,7 @@ import { api, type ApiResponse } from "../api.ts";
 import {
   VbBtn, VbField, VbInput, VbPageHeader, VbPill, VbEmptyState,
 } from "../components/Vb.tsx";
-import { Toggle } from "../components/UI.tsx";
+import { Modal, Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -26,16 +26,60 @@ type Operator =
   | "gt" | "gte" | "lt" | "lte"
   | "between" | "exists" | "regex";
 
-interface Condition {
+interface LeafCondition {
   attr: string;
   op: Operator;
   value: unknown;
 }
+type Condition =
+  | LeafCondition
+  | { all: Condition[] }
+  | { any: Condition[] }
+  | { not: Condition }
+  | { segment: string };
+interface Prerequisite { flag: string; variation: string }
 interface Rule {
   id: string;
-  when?: { all: Condition[] };
+  when?: Condition;
   rollout?: { value: number; sticky: string };
   variation: string;
+  prerequisites?: Prerequisite[];
+}
+
+interface Segment {
+  name: string;
+  description: string;
+  conditions: Condition;
+}
+
+/**
+ * The leaf conditions of a rule the visual editor can show: none, or one
+ * `all` list of attribute checks. Anything else (`any`, `not`, segments,
+ * nesting) returns null and is edited as JSON, so saving never drops it.
+ */
+function flatLeaves(when: Condition | undefined): LeafCondition[] | null {
+  if (!when) return [];
+  if (!("all" in when)) return null;
+  return when.all.every((c) => "attr" in c) ? (when.all as LeafCondition[]) : null;
+}
+
+const STRING_OPS: Operator[] = ["contains", "starts_with", "ends_with", "regex"];
+const NUMBER_OPS: Operator[] = ["gt", "gte", "lt", "lte"];
+
+/** How a condition value is shown: strings bare unless they'd read back as another type. */
+function showValue(op: Operator, v: unknown): string {
+  if (typeof v === "string") {
+    if (STRING_OPS.includes(op)) return v;
+    try { JSON.parse(v); return JSON.stringify(v); } catch { return v; }
+  }
+  return v === undefined ? "" : JSON.stringify(v);
+}
+
+/** The inverse of showValue: valid JSON is taken as typed ("123" stays a string), anything else is text. */
+function parseValue(op: Operator, raw: string): unknown {
+  if (STRING_OPS.includes(op)) return raw;
+  if (NUMBER_OPS.includes(op)) return raw.trim() !== "" && !isNaN(Number(raw)) ? Number(raw) : raw;
+  try { return JSON.parse(raw); } catch { return raw; }
 }
 
 interface Flag {
@@ -89,6 +133,7 @@ export default function Flags() {
   const [flags, setFlags] = useState<Flag[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [segmentsOpen, setSegmentsOpen] = useState(false);
 
   const load = useCallback(() => {
     api.get<ApiResponse<Flag[]>>("/api/v1/admin/flags").then((res) => {
@@ -109,12 +154,15 @@ export default function Flags() {
         title="Feature flags"
         sub="Bool / string / number / json flags with rule-based targeting and sticky percentage rollout."
         right={
+          <div style={{ display: "flex", gap: 8 }}>
+          <VbBtn kind="ghost" size="sm" icon="users" onClick={() => setSegmentsOpen(true)}>Segments</VbBtn>
           <VbBtn
             kind="primary"
             size="sm"
             icon="plus"
             onClick={() => { setCreating(true); setSelectedKey(null); }}
           >New flag</VbBtn>
+          </div>
         }
       />
       <div className="app-body" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, alignItems: "stretch" }}>
@@ -146,7 +194,115 @@ export default function Flags() {
           />
         )}
       </div>
+      {segmentsOpen && <SegmentsModal onClose={() => setSegmentsOpen(false)} />}
     </>
+  );
+}
+
+/** Named condition sets that rules reference with { "segment": "name" }. */
+function SegmentsModal({ onClose }: { onClose: () => void }) {
+  const [segments, setSegments] = useState<Segment[] | null>(null);
+  const [editing, setEditing] = useState<{ isNew: boolean; name: string; description: string; text: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.get<ApiResponse<Segment[]>>("/api/v1/admin/flag-segments").then((res) => {
+      if (res.error) setError(res.error);
+      else setSegments(res.data ?? []);
+    });
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  function edit(seg: Segment | null) {
+    setError(null);
+    setEditing(seg
+      ? { isNew: false, name: seg.name, description: seg.description, text: JSON.stringify(seg.conditions, null, 2) }
+      : { isNew: true, name: "", description: "", text: JSON.stringify({ all: [{ attr: "user.plan", op: "eq", value: "pro" }] }, null, 2) });
+  }
+
+  async function save() {
+    if (!editing) return;
+    let conditions: unknown;
+    try { conditions = JSON.parse(editing.text); } catch { setError("Conditions aren't valid JSON."); return; }
+    if (!editing.name.trim()) { setError("Name the segment."); return; }
+    setBusy(true);
+    const body = { description: editing.description, conditions };
+    const res = editing.isNew
+      ? await api.post<ApiResponse<Segment>>("/api/v1/admin/flag-segments", { name: editing.name.trim(), ...body })
+      : await api.patch<ApiResponse<Segment>>(`/api/v1/admin/flag-segments/${encodeURIComponent(editing.name)}`, body);
+    setBusy(false);
+    if (res.error) { setError(res.error); return; }
+    toast(editing.isNew ? "Segment created" : "Segment saved");
+    setEditing(null);
+    load();
+  }
+
+  async function remove(name: string) {
+    const ok = await confirm({ title: `Delete segment "${name}"?`, message: "Rules that use it stop matching.", danger: true });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<{ deleted: string }>>(`/api/v1/admin/flag-segments/${encodeURIComponent(name)}`);
+    if (res.error) { setError(res.error); return; }
+    toast("Segment deleted");
+    if (editing?.name === name) setEditing(null);
+    load();
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Segments"
+      width={640}
+      footer={editing ? (
+        <>
+          <VbBtn kind="ghost" onClick={() => setEditing(null)}>Back</VbBtn>
+          <VbBtn kind="primary" onClick={save} disabled={busy}>{editing.isNew ? "Create segment" : "Save segment"}</VbBtn>
+        </>
+      ) : (
+        <>
+          <VbBtn kind="ghost" onClick={onClose}>Close</VbBtn>
+          <VbBtn kind="primary" icon="plus" onClick={() => edit(null)}>New segment</VbBtn>
+        </>
+      )}
+    >
+      {error && <div style={{ marginBottom: 10, fontSize: 12, color: "var(--vb-status-danger)" }}>{error}</div>}
+      {editing ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <VbField label="Name">
+            <VbInput mono value={editing.name} disabled={!editing.isNew} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="pro_users" />
+          </VbField>
+          <VbField label="Description">
+            <VbInput value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+          </VbField>
+          <VbField label="Conditions (JSON)">
+            <JsonArea value={editing.text} onChange={(t) => setEditing({ ...editing, text: t })} rows={10} />
+          </VbField>
+          <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+            Same shape as a rule's <code>when</code>. Use it in a rule with <code>{"{ \"segment\": \"name\" }"}</code>.
+          </span>
+        </div>
+      ) : segments === null ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>Loading…</div>
+      ) : segments.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
+          No segments yet. A segment is a named set of conditions you can reuse across flags.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {segments.map((seg) => (
+            <div key={seg.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", border: "1px solid var(--vb-border)", borderRadius: 6 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>{seg.name}</div>
+                {seg.description && <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{seg.description}</div>}
+              </div>
+              <VbBtn kind="ghost" size="sm" onClick={() => edit(seg)}>Edit</VbBtn>
+              <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(seg.name)} title="Delete segment" />
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -595,6 +751,7 @@ function VariationsEditor({ type, variations, onChange }: {
 function RulesEditor({ type, variations, rules, onChange }: {
   type: FlagType; variations: Variation[]; rules: Rule[]; onChange: (rules: Rule[]) => void;
 }) {
+  const [asJson, setAsJson] = useState<Set<string>>(new Set());
   function patch(i: number, p: Partial<Rule>) { onChange(rules.map((r, idx) => idx === i ? { ...r, ...p } : r)); }
   function remove(i: number) { onChange(rules.filter((_, idx) => idx !== i)); }
   function move(i: number, delta: number) {
@@ -625,7 +782,10 @@ function RulesEditor({ type, variations, rules, onChange }: {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {rules.map((r, i) => (
+          {rules.map((r, i) => {
+            const leaves = flatLeaves(r.when);
+            const json = leaves === null || asJson.has(r.id);
+            return (
             <div key={r.id} style={{
               padding: 14,
               borderRadius: 6,
@@ -636,17 +796,44 @@ function RulesEditor({ type, variations, rules, onChange }: {
                 <VbPill tone="accent">#{i + 1}</VbPill>
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--vb-fg-3)" }}>{r.id}</span>
                 <span style={{ flex: 1 }} />
+                <VbBtn
+                  kind="ghost"
+                  size="sm"
+                  disabled={leaves === null}
+                  title={leaves === null ? "This rule uses any / not / segments, which only the JSON editor shows" : undefined}
+                  onClick={() => setAsJson((cur) => {
+                    const next = new Set(cur);
+                    if (next.has(r.id)) next.delete(r.id); else next.add(r.id);
+                    return next;
+                  })}
+                >{json ? "Visual" : "JSON"}</VbBtn>
                 <VbBtn kind="ghost" size="sm" icon="arrowUp" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" />
                 <VbBtn kind="ghost" size="sm" icon="arrowDown" onClick={() => move(i, 1)} disabled={i === rules.length - 1} title="Move down" />
                 <VbBtn kind="danger" size="sm" icon="x" onClick={() => remove(i)} title="Remove rule" />
               </div>
 
-              <ConditionsEditor
-                conds={r.when?.all ?? []}
-                onChange={(conds) => patch(i, conds.length === 0
-                  ? { when: { all: [] } }
-                  : { when: { all: conds } })}
-              />
+              {json ? (
+                <RuleJsonEditor rule={r} onChange={(p) => patch(i, p)} />
+              ) : (
+                <>
+                  <ConditionsEditor
+                    conds={leaves ?? []}
+                    onChange={(conds) => patch(i, { when: { all: conds } })}
+                  />
+                  {r.prerequisites && r.prerequisites.length > 0 && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "var(--vb-fg-2)" }}>
+                      Only when{" "}
+                      {r.prerequisites.map((p, k) => (
+                        <span key={k}>
+                          {k > 0 && " and "}
+                          <code style={{ fontFamily: "var(--font-mono)" }}>{p.flag}</code> is <code style={{ fontFamily: "var(--font-mono)" }}>{p.variation}</code>
+                        </span>
+                      ))}
+                      <span style={{ color: "var(--vb-fg-3)" }}> · edit in JSON</span>
+                    </div>
+                  )}
+                </>
+              )}
 
               <div style={{ display: "flex", gap: 14, marginTop: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
                 <div style={{ minWidth: 140 }}>
@@ -696,15 +883,59 @@ function RulesEditor({ type, variations, rules, onChange }: {
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Section>
   );
 }
 
-function ConditionsEditor({ conds, onChange }: { conds: Condition[]; onChange: (conds: Condition[]) => void }) {
-  function update(i: number, patch: Partial<Condition>) { onChange(conds.map((c, idx) => idx === i ? { ...c, ...patch } : c)); }
+/** A rule's conditions and prerequisites as JSON, for what the visual editor can't show. */
+function RuleJsonEditor({ rule, onChange }: { rule: Rule; onChange: (p: Partial<Rule>) => void }) {
+  const [text, setText] = useState(() => JSON.stringify({
+    when: rule.when ?? { all: [] },
+    prerequisites: rule.prerequisites ?? [],
+  }, null, 2));
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <JsonArea
+        value={text}
+        invalid={!!error}
+        onChange={(t) => {
+          setText(t);
+          let parsed: unknown;
+          try { parsed = JSON.parse(t); } catch { setError("Not valid JSON yet. The last valid version is what gets saved."); return; }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { setError('Expected an object: { "when": …, "prerequisites": [] }'); return; }
+          const o = parsed as { when?: Condition; prerequisites?: Prerequisite[] };
+          if (o.prerequisites !== undefined && !Array.isArray(o.prerequisites)) { setError('"prerequisites" must be a list of { "flag", "variation" }'); return; }
+          setError(null);
+          onChange({ when: o.when, prerequisites: o.prerequisites && o.prerequisites.length > 0 ? o.prerequisites : undefined });
+        }}
+      />
+      <span style={{ fontSize: 11, color: error ? "var(--vb-status-danger)" : "var(--vb-fg-3)" }}>
+        {error ?? <>Combine checks with <code>all</code>, <code>any</code>, <code>not</code> and <code>{"{ \"segment\": \"name\" }"}</code>. Prerequisites: <code>{"[{ \"flag\": \"key\", \"variation\": \"on\" }]"}</code>.</>}
+      </span>
+    </div>
+  );
+}
+
+function JsonArea({ value, invalid, onChange, rows }: { value: string; invalid?: boolean; onChange: (t: string) => void; rows?: number }) {
+  return (
+    <textarea
+      className="input mono"
+      value={value}
+      spellCheck={false}
+      rows={rows ?? Math.min(14, Math.max(4, value.split("\n").length))}
+      onChange={(e) => onChange(e.target.value)}
+      style={{ width: "100%", height: "auto", resize: "vertical", fontSize: 12, lineHeight: 1.5, padding: "6px 8px", border: `1px solid ${invalid ? "var(--vb-status-danger)" : "var(--border-strong)"}`, background: "var(--bg-input)", color: "var(--vb-fg)" }}
+    />
+  );
+}
+
+function ConditionsEditor({ conds, onChange }: { conds: LeafCondition[]; onChange: (conds: LeafCondition[]) => void }) {
+  function update(i: number, patch: Partial<LeafCondition>) { onChange(conds.map((c, idx) => idx === i ? { ...c, ...patch } : c)); }
   function remove(i: number) { onChange(conds.filter((_, idx) => idx !== i)); }
   function add() { onChange([...conds, { attr: "user.id", op: "eq", value: "" }]); }
   return (
@@ -730,25 +961,21 @@ function ConditionsEditor({ conds, onChange }: { conds: Condition[]; onChange: (
           <Dropdown
             value={c.op}
             options={OP_OPTIONS}
-            onChange={(e) => update(i, { op: e.value as Operator })}
+            onChange={(e) => {
+              const op = e.value as Operator;
+              // Re-read the shown text under the new operator, so "5" becomes a number for ">".
+              update(i, { op, value: op === "exists" ? null : parseValue(op, showValue(c.op, c.value)) });
+            }}
             style={{ minWidth: 170, height: 32 }}
           />
           {c.op !== "exists" && (
             <div style={{ flex: 1, minWidth: 160 }}>
               <VbInput
                 mono
-                value={typeof c.value === "string" ? c.value : JSON.stringify(c.value)}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  let parsed: unknown = raw;
-                  if (c.op === "in" || c.op === "not_in" || c.op === "between") {
-                    try { parsed = JSON.parse(raw); } catch { parsed = raw; }
-                  } else if (raw === "true") parsed = true;
-                  else if (raw === "false") parsed = false;
-                  else if (!isNaN(Number(raw)) && raw.trim() !== "") parsed = Number(raw);
-                  update(i, { value: parsed });
-                }}
-                placeholder={c.op === "in" || c.op === "not_in" ? '["pro","enterprise"]' : c.op === "between" ? "[0, 100]" : "value"}
+                value={showValue(c.op, c.value)}
+                onChange={(e) => update(i, { value: parseValue(c.op, e.target.value) })}
+                title={STRING_OPS.includes(c.op) || NUMBER_OPS.includes(c.op) ? undefined : 'Numbers and true/false are matched as such; quote them ("123") to match text'}
+                placeholder={c.op === "in" || c.op === "not_in" ? '["pro","enterprise"]' : c.op === "between" ? "[0, 100]" : NUMBER_OPS.includes(c.op) ? "number" : "value"}
               />
             </div>
           )}

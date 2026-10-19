@@ -8,12 +8,29 @@
  * is dropped so a stray settings key can't inject `*` selectors or other
  * declarations.
  */
-const ALLOWED_VARS = new Set<string>([
-  "accent", "accent_hover", "accent_light",
-  "bg_app", "bg_sidebar", "bg_panel", "bg_code", "bg_input",
-  "text_primary", "text_secondary", "text_tertiary", "text_muted",
-  "success", "warning", "danger", "info",
-]);
+/**
+ * Each setting sets the older variable (`accent` → `--accent`) and the
+ * `--vb-*` tokens the current design reads; setting only the older ones left
+ * most of the UI unchanged.
+ */
+const VAR_MAP: Record<string, string[]> = {
+  accent:         ["--accent", "--vb-accent"],
+  accent_hover:   ["--accent-hover", "--vb-accent-h"],
+  accent_light:   ["--accent-light"],
+  bg_app:         ["--bg-app", "--vb-bg-0"],
+  bg_sidebar:     ["--bg-sidebar", "--vb-bg-2"],
+  bg_panel:       ["--bg-panel", "--vb-bg-1"],
+  bg_code:        ["--bg-code"],
+  bg_input:       ["--bg-input", "--vb-bg-3"],
+  text_primary:   ["--text-primary", "--vb-fg"],
+  text_secondary: ["--text-secondary", "--vb-fg-2", "--vb-fg-3"],
+  text_tertiary:  ["--text-tertiary", "--vb-fg-4"],
+  text_muted:     ["--text-muted", "--vb-fg-5"],
+  success:        ["--success", "--vb-status-success"],
+  warning:        ["--warning", "--vb-status-warning"],
+  danger:         ["--danger", "--vb-status-danger"],
+  info:           ["--info"],
+};
 
 const STYLE_ID = "vb-theme-overrides";
 
@@ -26,14 +43,30 @@ function isSafeColor(value: string): boolean {
   return COLOR_RE.test(v);
 }
 
-export function applyTheme(overrides: Record<string, string>): void {
-  let css = ":root {";
-  for (const [shortName, value] of Object.entries(overrides)) {
-    if (!ALLOWED_VARS.has(shortName)) continue;
-    if (!isSafeColor(value)) continue;
-    const cssName = `--${shortName.replace(/_/g, "-")}`;
-    css += `${cssName}:${value};`;
+/** The CSS variables a set of theme settings overrides. Unknown keys and unsafe values are dropped. */
+export function themeVars(overrides: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [shortName, raw] of Object.entries(overrides)) {
+    const vars = VAR_MAP[shortName];
+    const value = raw.trim();
+    if (!vars || !isSafeColor(value)) continue;
+    for (const v of vars) out[v] = value;
+    if (shortName === "accent") out["--primary-color"] = value;
+    if (shortName === "accent_hover") out["--vb-accent-hover"] = value;
+    if (shortName === "accent") {
+      out["--vb-accent-soft"] = `color-mix(in srgb, ${value} 16%, transparent)`;
+      out["--accent-soft"] = `color-mix(in srgb, ${value} 12%, transparent)`;
+      out["--accent-soft-2"] = `color-mix(in srgb, ${value} 18%, transparent)`;
+    }
   }
+  return out;
+}
+
+export function applyTheme(overrides: Record<string, string>): void {
+  // The sidebar, dashboard and sign-in page redefine some tokens on their own
+  // root element, so the overrides go there too.
+  let css = ":root, .sidebar--next, .vb-dash, .vb-auth {";
+  for (const [name, value] of Object.entries(themeVars(overrides))) css += `${name}:${value};`;
   css += "}";
 
   let el = document.getElementById(STYLE_ID) as HTMLStyleElement | null;

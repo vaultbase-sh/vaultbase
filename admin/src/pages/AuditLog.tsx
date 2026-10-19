@@ -124,7 +124,7 @@ export default function AuditLog() {
             type="date"
             value={from}
             onChange={(e) => { setFrom(e.target.value); setPage(1); }}
-            style={{ height: 30, fontSize: 12, padding: "0 8px" }}
+            style={{ height: 30, fontSize: 12, padding: "0 8px", width: 150, flex: "0 0 auto" }}
             title="From (UTC)"
           />
           <input
@@ -132,15 +132,12 @@ export default function AuditLog() {
             type="date"
             value={to}
             onChange={(e) => { setTo(e.target.value); setPage(1); }}
-            style={{ height: 30, fontSize: 12, padding: "0 8px" }}
+            style={{ height: 30, fontSize: 12, padding: "0 8px", width: 150, flex: "0 0 auto" }}
             title="To (UTC)"
           />
-          <button className="btn btn-primary" onClick={applyFilters}>Apply</button>
+          <VbBtn kind="primary" size="sm" onClick={applyFilters}>Apply</VbBtn>
           {(appliedActor || appliedAction || from || to) && (
-            <button className="btn btn-ghost" onClick={resetFilters}>
-              <Icon name="x" size={12} />
-              Clear
-            </button>
+            <VbBtn kind="ghost" size="sm" icon="x" onClick={resetFilters}>Clear</VbBtn>
           )}
           <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>
             append-only · {total} entries

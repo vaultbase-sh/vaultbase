@@ -5,7 +5,7 @@ import { CronExpressionParser } from "cron-parser";
 import { api, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
 import {
   VbPageHeader, VbTabs, type VbTab,
-  VbBtn, VbInput, VbField, VbPill, VbTable, VbEmptyState,
+  VbBtn, VbInput, VbField, VbNumberInput, VbPill, VbSelect, VbTable, VbEmptyState,
   type VbTableColumn,
 } from "../components/Vb.tsx";
 import { Modal, Toggle } from "../components/UI.tsx";
@@ -679,10 +679,10 @@ function HookEditor({
           </div>
           <div style={{ width: 220 }}>
             <VbField label="Collection">
-              <Dropdown
+              <VbSelect
                 value={collName}
                 options={collOptions}
-                onChange={(e) => setCollName(e.value)}
+                onChange={setCollName}
                 filter
                 style={{ width: "100%", height: 32 }}
               />
@@ -1017,6 +1017,7 @@ function fmtRelTime(secOrNull: number | null): string {
   if (abs >= 86400)      { unit = "d"; val = Math.floor(abs / 86400); }
   else if (abs >= 3600)  { unit = "h"; val = Math.floor(abs / 3600); }
   else if (abs >= 60)    { unit = "m"; val = Math.floor(abs / 60); }
+  if (abs < 1) return "now";
   return diff >= 0 ? `in ${val}${unit}` : `${val}${unit} ago`;
 }
 
@@ -1151,6 +1152,15 @@ interface CronAnalysis {
 function analyzeCron(expr: string): CronAnalysis {
   const trimmed = expr.trim();
   if (!trimmed) return { valid: false, description: "", nextRuns: [], error: "Empty expression" };
+  const fieldCount = trimmed.split(/\s+/).length;
+  if (!trimmed.startsWith("@") && fieldCount !== 5) {
+    return {
+      valid: false, description: "", nextRuns: [],
+      error: fieldCount === 6
+        ? "Use five fields (minute hour day month weekday). Jobs run at most once a minute, so a seconds field isn't supported."
+        : `Expected five fields (minute hour day month weekday), got ${fieldCount}`,
+    };
+  }
   let description = "";
   try {
     description = cronstrue.toString(trimmed, { use24HourTimeFormat: true, verbose: false });
@@ -1260,7 +1270,7 @@ function JobEditor({
             </VbField>
           </div>
           <div style={{ flex: 1, minWidth: 220 }}>
-            <VbField label="Cron expression" hint="UTC">
+            <VbField label="Cron expression (UTC)">
               <VbInput
                 mono
                 value={cron}
@@ -1634,24 +1644,12 @@ function WorkerEditor({
           </div>
           <div style={{ width: 110 }}>
             <VbField label="Concurrency">
-              <VbInput
-                mono
-                type="number"
-                min={1}
-                value={concurrency}
-                onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))}
-              />
+              <VbNumberInput min={1} value={concurrency} onChange={setConcurrency} />
             </VbField>
           </div>
           <div style={{ width: 100 }}>
             <VbField label="Retries">
-              <VbInput
-                mono
-                type="number"
-                min={0}
-                value={retryMax}
-                onChange={(e) => setRetryMax(Math.max(0, Number(e.target.value) || 0))}
-              />
+              <VbNumberInput min={0} value={retryMax} onChange={setRetryMax} />
             </VbField>
           </div>
           <div style={{ width: 150 }}>
@@ -1669,13 +1667,7 @@ function WorkerEditor({
           </div>
           <div style={{ width: 110 }}>
             <VbField label="Delay (ms)">
-              <VbInput
-                mono
-                type="number"
-                min={50}
-                value={retryDelayMs}
-                onChange={(e) => setRetryDelayMs(Math.max(50, Number(e.target.value) || 50))}
-              />
+              <VbNumberInput min={50} value={retryDelayMs} onChange={setRetryDelayMs} />
             </VbField>
           </div>
           <ToggleField on={enabled} onChange={setEnabled} />
@@ -1817,16 +1809,16 @@ function JobsLogTab() {
         alignItems: "center",
         flexWrap: "wrap",
       }}>
-        <Dropdown
+        <VbSelect
           value={queueFilter}
           options={queueOptions}
-          onChange={(e) => { setPage(1); setQueueFilter(e.value); }}
+          onChange={(v) => { setPage(1); setQueueFilter(v); }}
           style={{ height: 32, minWidth: 180 }}
         />
-        <Dropdown
+        <VbSelect
           value={statusFilter}
           options={JOB_STATUSES}
-          onChange={(e) => { setPage(1); setStatusFilter(e.value); }}
+          onChange={(v) => { setPage(1); setStatusFilter(v as JobLogStatus | ""); }}
           style={{ height: 32, minWidth: 140 }}
         />
         <VbBtn kind="ghost" size="sm" icon="refresh" onClick={load}>Refresh</VbBtn>

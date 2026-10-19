@@ -17,7 +17,7 @@ interface Admin {
 }
 
 export default function Superusers() {
-  const adminEmail = useAuth((s) => s.email);
+  const myId = useAuth((s) => s.id);
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState<Admin | null>(null);
@@ -60,7 +60,7 @@ export default function Superusers() {
           </span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--vb-fg-3)" }}>
             {a.id.slice(0, 12)}…
-            {a.email === adminEmail && (
+            {a.id === myId && (
               <span style={{ color: "var(--vb-accent)", marginLeft: 6 }}>· you</span>
             )}
           </span>
@@ -78,7 +78,7 @@ export default function Superusers() {
         onClick={(e) => e.stopPropagation()}
       >
         {/* The server only lets an admin change their own email and password. */}
-        {a.email === adminEmail && (
+        {a.id === myId && (
           <VbBtn kind="ghost" size="sm" icon="pencil" onClick={() => setShowEdit(a)} title="Edit" />
         )}
         <VbBtn
@@ -86,8 +86,8 @@ export default function Superusers() {
           size="sm"
           icon="trash"
           onClick={() => handleDelete(a)}
-          disabled={a.email === adminEmail}
-          title={a.email === adminEmail ? "Cannot delete your own account" : "Delete"}
+          disabled={a.id === myId}
+          title={a.id === myId ? "Cannot delete your own account" : "Delete"}
         />
       </span>
     )},
@@ -114,7 +114,7 @@ export default function Superusers() {
           columns={columns}
           rowKey={(a) => a.id}
           loading={loading}
-          onRowClick={(a) => { if (a.email === adminEmail) setShowEdit(a); }}
+          onRowClick={(a) => { if (a.id === myId) setShowEdit(a); }}
           emptyState={
             <VbEmptyState
               icon="users"
@@ -127,7 +127,21 @@ export default function Superusers() {
       </div>
 
       <AddSuperuserModal open={showAdd} onClose={() => setShowAdd(false)} onAdded={() => { toast("Superuser added"); load(); }} />
-      <EditSuperuserModal admin={showEdit} onClose={() => setShowEdit(null)} onSaved={() => { toast("Superuser updated"); load(); }} />
+      <EditSuperuserModal
+        admin={showEdit}
+        onClose={() => setShowEdit(null)}
+        onSaved={async (changedPassword) => {
+          if (changedPassword) {
+            // A new password ends every session, this one included.
+            toast("Password changed. Sign in with the new one.");
+            await useAuth.getState().signOut();
+            return;
+          }
+          toast("Superuser updated");
+          await useAuth.getState().load();
+          load();
+        }}
+      />
     </>
   );
 }
@@ -152,6 +166,7 @@ function ModalErrorBar({ message }: { message: string }) {
 }
 
 function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: () => void }) {
+  const minLen = usePasswordMinLength();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
@@ -163,7 +178,7 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
 
   async function handleSubmit() {
     if (!email.includes("@")) { setError("Invalid email"); return; }
-    if (pw.length < 8) { setError("Password must be at least 8 characters"); return; }
+    if (minLen && pw.length < minLen) { setError(`Password must be at least ${minLen} characters`); return; }
     setError(""); setSaving(true);
     const res = await api.post<ApiResponse<Admin>>("/api/v1/admin/admins", { email, password: pw });
     setSaving(false);
@@ -191,7 +206,7 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
         <VbField label="Email">
           <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus placeholder="ops@example.com" />
         </VbField>
-        <VbField label="Password" hint="min 8 characters">
+        <VbField label="Password" hint={passwordHint(minLen)}>
           <VbSecretInput value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
         </VbField>
       </div>
@@ -199,7 +214,24 @@ function AddSuperuserModal({ open, onClose, onAdded }: { open: boolean; onClose:
   );
 }
 
-function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; onClose: () => void; onSaved: () => void }) {
+/** The password policy's minimum length, for the hint (the server checks the whole policy). */
+function usePasswordMinLength(): number | null {
+  const [n, setN] = useState<number | null>(null);
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      const v = Number(res.data?.["password.min_length"]);
+      setN(Number.isFinite(v) && v > 0 ? v : null);
+    });
+  }, []);
+  return n;
+}
+
+function passwordHint(min: number | null): string {
+  return min ? `At least ${min} characters, plus the rest of the password policy (Settings → Password policy)` : "Must meet the password policy (Settings → Password policy)";
+}
+
+function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; onClose: () => void; onSaved: (changedPassword: boolean) => void }) {
+  const minLen = usePasswordMinLength();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
@@ -212,7 +244,7 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
   async function handleSubmit() {
     if (!admin) return;
     if (!email.includes("@")) { setError("Invalid email"); return; }
-    if (pw && pw.length < 8) { setError("Password must be at least 8 characters"); return; }
+    if (pw && minLen && pw.length < minLen) { setError(`Password must be at least ${minLen} characters`); return; }
     const body: { email?: string; password?: string } = {};
     if (email !== admin.email) body.email = email;
     if (pw) body.password = pw;
@@ -221,7 +253,7 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
     const res = await api.patch<ApiResponse<Admin>>(`/api/v1/admin/admins/${admin.id}`, body);
     setSaving(false);
     if (res.error) { setError(res.error); return; }
-    onSaved(); onClose();
+    onClose(); onSaved(!!body.password);
   }
 
   return (
@@ -244,7 +276,7 @@ function EditSuperuserModal({ admin, onClose, onSaved }: { admin: Admin | null; 
         <VbField label="Email">
           <VbInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </VbField>
-        <VbField label="New password" hint="leave blank to keep current">
+        <VbField label="New password" hint={`Leave blank to keep the current one. ${passwordHint(minLen)}. Changing it signs you out everywhere.`}>
           <VbSecretInput value={pw} onChange={(e) => setPw(e.target.value)} placeholder="••••••••" />
         </VbField>
       </div>

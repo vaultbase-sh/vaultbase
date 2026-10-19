@@ -86,14 +86,14 @@ function formatBytes(n: number): string {
 
 function renderCell(v: unknown): React.ReactNode {
   if (v === null || v === undefined) {
-    return <span style={{ color: "var(--vb-text-3)", fontStyle: "italic" }}>null</span>;
+    return <span style={{ color: "var(--vb-fg-3)", fontStyle: "italic" }}>null</span>;
   }
   if (v instanceof Uint8Array) {
-    return <span style={{ color: "var(--vb-text-3)" }}>&lt;blob {v.byteLength} B&gt;</span>;
+    return <span style={{ color: "var(--vb-fg-3)" }}>&lt;blob {v.byteLength} B&gt;</span>;
   }
   if (typeof v === "boolean") return v ? "true" : "false";
   if (typeof v === "number" || typeof v === "bigint") {
-    return <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-text-1)" }}>{String(v)}</span>;
+    return <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg)" }}>{String(v)}</span>;
   }
   const s = typeof v === "string" ? v : JSON.stringify(v);
   if (s.length > 200) {
@@ -191,7 +191,7 @@ function SaveModal({ open, onClose, initial, sql, onSaved }: {
 function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) {
   if (!result) {
     return (
-      <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13, textAlign: "center" }}>
+      <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13, textAlign: "center" }}>
         Run a query to see results here.
       </div>
     );
@@ -209,7 +209,7 @@ function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) 
 
   if (result.columns.length === 0) {
     return (
-      <div style={{ padding: 16, fontSize: 12, color: "var(--vb-text-2)" }}>
+      <div style={{ padding: 16, fontSize: 12, color: "var(--vb-fg-2)" }}>
         ✓ Statement executed in {result.durationMs}ms
         {result.changes !== undefined && (
           <> — <strong>{result.changes}</strong> row{result.changes === 1 ? "" : "s"} changed (sandbox only)</>
@@ -223,7 +223,7 @@ function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) 
       <div style={{
         padding: "8px 14px",
         borderBottom: "1px solid var(--vb-border)",
-        fontSize: 12, color: "var(--vb-text-3)",
+        fontSize: 12, color: "var(--vb-fg-3)",
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <VbPill tone="success" dot>{result.rowCount} row{result.rowCount === 1 ? "" : "s"}</VbPill>
@@ -250,7 +250,7 @@ function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) 
                   padding: "8px 12px",
                   textAlign: "left",
                   borderBottom: "1px solid var(--vb-border)",
-                  color: "var(--vb-text-2)",
+                  color: "var(--vb-fg-2)",
                   fontWeight: 600,
                   fontFamily: "var(--font-mono)",
                   whiteSpace: "nowrap",
@@ -264,7 +264,7 @@ function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) 
                 {row.map((cell, j) => (
                   <td key={j} style={{
                     padding: "6px 12px",
-                    color: "var(--vb-text-1)",
+                    color: "var(--vb-fg)",
                     verticalAlign: "top",
                     maxWidth: 400,
                     overflow: "hidden",
@@ -290,7 +290,7 @@ function SandboxStrip({ info, busy, onReset, onDrop }: {
 }) {
   if (!info?.exists) {
     return (
-      <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--vb-text-3)", display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--vb-fg-3)", display: "flex", alignItems: "center", gap: 10 }}>
         No sandbox yet — first sandbox-mode run creates one. Or
         <VbBtn kind="ghost" size="sm" onClick={onReset} disabled={busy}>
           Create sandbox
@@ -303,7 +303,7 @@ function SandboxStrip({ info, busy, onReset, onDrop }: {
     <div style={{
       padding: "8px 14px",
       fontSize: 12,
-      color: "var(--vb-text-3)",
+      color: "var(--vb-fg-3)",
       display: "flex", alignItems: "center", gap: 10,
       flexWrap: "wrap",
     }}>
@@ -411,16 +411,18 @@ export default function SqlPage() {
     void loadSaved(); // last_run_* updated
   }, [loadSaved]);
 
-  // Keyboard shortcut: ⌘↵ / Ctrl+↵ runs.
+  // Keyboard shortcut: ⌘↵ / Ctrl+↵ runs. Listened for in the capture phase:
+  // the editor keeps ⌘↵ ("insert line below") and stops it reaching window.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
+        e.stopPropagation();
         void run();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [run]);
 
   const selectQuery = useCallback((q: SavedQuery) => {
@@ -548,7 +550,7 @@ export default function SqlPage() {
           </div>
           <div style={{ flex: 1, overflowY: "auto", padding: "0 6px 12px" }}>
             {filtered.length === 0 ? (
-              <div style={{ padding: 16, fontSize: 12, color: "var(--vb-text-3)", textAlign: "center" }}>
+              <div style={{ padding: 16, fontSize: 12, color: "var(--vb-fg-3)", textAlign: "center" }}>
                 {savedList.length === 0 ? "No saved queries yet" : "No matches"}
               </div>
             ) : filtered.map((q) => (
@@ -564,7 +566,7 @@ export default function SqlPage() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--vb-text-1)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--vb-fg)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {q.name}
                   </span>
                   <span style={{ display: "flex", gap: 2 }}>
@@ -585,7 +587,7 @@ export default function SqlPage() {
                     />
                   </span>
                 </div>
-                <span style={{ fontSize: 11, color: "var(--vb-text-3)", display: "flex", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--vb-fg-3)", display: "flex", gap: 8 }}>
                   <span>last run {relTime(q.last_run_at)}</span>
                   {q.last_error
                     ? <span style={{ color: "var(--vb-status-danger)" }}>err</span>
@@ -658,7 +660,7 @@ export default function SqlPage() {
             </div>
             <div style={{ flex: 1, minHeight: 200, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               {result === null && !running ? (
-                <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13, textAlign: "center" }}>
+                <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13, textAlign: "center" }}>
                   <VbEmptyState
                     icon="play"
                     title="No results yet"
@@ -701,7 +703,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
         style={{
           padding: "5px 10px",
           background: mode === "readonly" ? "var(--vb-bg-3)" : "transparent",
-          color: mode === "readonly" ? "var(--vb-text-1)" : "var(--vb-text-3)",
+          color: mode === "readonly" ? "var(--vb-fg)" : "var(--vb-fg-3)",
           fontWeight: mode === "readonly" ? 600 : 400,
           border: 0, fontFamily: "inherit", cursor: "pointer",
         }}
@@ -715,7 +717,7 @@ function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => voi
         style={{
           padding: "5px 10px",
           background: mode === "sandbox" ? "var(--vb-accent-soft, rgba(232,90,79,0.16))" : "transparent",
-          color: mode === "sandbox" ? "var(--vb-accent)" : "var(--vb-text-3)",
+          color: mode === "sandbox" ? "var(--vb-accent)" : "var(--vb-fg-3)",
           fontWeight: mode === "sandbox" ? 600 : 400,
           border: 0, borderLeft: "1px solid var(--vb-border)",
           fontFamily: "inherit", cursor: "pointer",

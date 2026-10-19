@@ -12,6 +12,7 @@ import {
   VbInput,
   VbPageHeader,
   VbPill,
+  VbSelect,
   VbTable,
   type VbTableColumn,
 } from "../components/Vb.tsx";
@@ -221,7 +222,7 @@ function MintTokenModal({ open, onClose, onMinted }: {
           <div>
             <VbBtn kind="soft" size="sm" icon="copy" onClick={copyToken}>Copy token</VbBtn>
           </div>
-          <div style={{ fontSize: 11, color: "var(--vb-text-3)" }}>
+          <div style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
             Expires {new Date(minted.expires_at * 1000).toISOString()} · id <VbCode>{minted.id.slice(0, 12)}…</VbCode>
           </div>
         </div>
@@ -269,7 +270,7 @@ function MintTokenModal({ open, onClose, onMinted }: {
                       width: 14,
                       height: 14,
                       borderRadius: 3,
-                      border: `1px solid ${checked ? "var(--vb-accent)" : "var(--vb-border-3)"}`,
+                      border: `1px solid ${checked ? "var(--vb-accent)" : "var(--vb-border-2)"}`,
                       background: checked ? "var(--vb-accent)" : "transparent",
                       display: "flex",
                       alignItems: "center",
@@ -284,11 +285,11 @@ function MintTokenModal({ open, onClose, onMinted }: {
                         fontFamily: "var(--font-mono)",
                         fontSize: 12,
                         fontWeight: 500,
-                        color: "var(--vb-text-1)",
+                        color: "var(--vb-fg)",
                       }}>{s.label}</span>
                       <span style={{
                         fontSize: 11,
-                        color: "var(--vb-text-3)",
+                        color: "var(--vb-fg-3)",
                         marginLeft: 8,
                       }}>{s.description}</span>
                     </span>
@@ -302,23 +303,12 @@ function MintTokenModal({ open, onClose, onMinted }: {
             label="Lifetime"
             hint="Maximum 10 years. Best practice: rotate annually for production tokens."
           >
-            <select
-              value={ttlSec}
-              onChange={(e) => setTtlSec(parseInt(e.target.value, 10))}
-              style={{
-                width: "100%",
-                height: 32,
-                padding: "0 10px",
-                background: "var(--vb-bg-3)",
-                border: "1px solid var(--vb-border-2)",
-                borderRadius: 6,
-                color: "var(--vb-text-1)",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              {TTL_PRESETS.map((p) => <option key={p.seconds} value={p.seconds}>{p.label}</option>)}
-            </select>
+            <VbSelect
+              value={String(ttlSec)}
+              options={TTL_PRESETS.map((p) => ({ label: p.label, value: String(p.seconds) }))}
+              onChange={(v) => setTtlSec(parseInt(v, 10))}
+              style={{ width: "100%", height: 32 }}
+            />
           </VbField>
         </div>
       )}
@@ -345,7 +335,7 @@ export default function ApiTokensPage() {
   async function handleRevoke(r: TokenRow): Promise<void> {
     const ok = await confirm({
       title: `Revoke ${r.name}?`,
-      message: `Revocation is immediate. The next request bearing this token returns 401.`,
+      message: `Revocation is immediate: the token stops working on its next request.`,
       danger: true,
       confirmLabel: "Revoke",
     });
@@ -362,7 +352,7 @@ export default function ApiTokensPage() {
       key: "name",
       label: "Name",
       flex: 2,
-      render: (r) => <span style={{ fontWeight: 500, color: "var(--vb-text-1)" }}>{r.name}</span>,
+      render: (r) => <span style={{ fontWeight: 500, color: "var(--vb-fg)" }}>{r.name}</span>,
     },
     {
       key: "scopes",
@@ -380,13 +370,13 @@ export default function ApiTokensPage() {
       key: "last_used",
       label: "Last used",
       width: 110,
-      render: (r) => <span style={{ color: "var(--vb-text-3)", fontSize: 12 }}>{relTime(r.last_used_at)}</span>,
+      render: (r) => <span style={{ color: "var(--vb-fg-3)", fontSize: 12 }}>{relTime(r.last_used_at)}</span>,
     },
     {
       key: "expires",
       label: "Expires",
       width: 110,
-      render: (r) => <span style={{ color: "var(--vb-text-3)", fontSize: 12 }}>{relTime(r.expires_at)}</span>,
+      render: (r) => <span style={{ color: "var(--vb-fg-3)", fontSize: 12 }}>{relTime(r.expires_at)}</span>,
     },
     {
       key: "actions",
@@ -425,7 +415,7 @@ export default function ApiTokensPage() {
 
       <div className="app-body">
         {loading ? (
-          <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13 }}>loading…</div>
+          <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13 }}>loading…</div>
         ) : rows.length === 0 ? (
           <VbEmptyState
             icon="key"
@@ -476,14 +466,14 @@ export default function ApiTokensPage() {
             <DetailRow label="Scopes"    value={<ScopePills scopes={detail.scopes} />} />
             <DetailRow label="Minted by" value={detail.created_by_email} />
             <DetailRow label="Created"
-              value={<>{new Date(detail.created_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-text-3)" }}>· {relTime(detail.created_at)}</span></>}
+              value={<>{new Date(detail.created_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-fg-3)" }}>· {relTime(detail.created_at)}</span></>}
             />
             <DetailRow label="Expires"
-              value={<>{new Date(detail.expires_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-text-3)" }}>· {relTime(detail.expires_at)}</span></>}
+              value={<>{new Date(detail.expires_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-fg-3)" }}>· {relTime(detail.expires_at)}</span></>}
             />
             {detail.revoked_at && (
               <DetailRow label="Revoked"
-                value={<>{new Date(detail.revoked_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-text-3)" }}>· {relTime(detail.revoked_at)}</span></>}
+                value={<>{new Date(detail.revoked_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-fg-3)" }}>· {relTime(detail.revoked_at)}</span></>}
               />
             )}
 
@@ -492,15 +482,15 @@ export default function ApiTokensPage() {
             <DetailRow label="Use count" value={<span style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{detail.use_count.toLocaleString()}</span>} />
             <DetailRow label="Last used"
               value={detail.last_used_at
-                ? <>{new Date(detail.last_used_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-text-3)" }}>· {relTime(detail.last_used_at)}</span></>
-                : <span style={{ color: "var(--vb-text-3)" }}>never</span>
+                ? <>{new Date(detail.last_used_at * 1000).toLocaleString()} <span style={{ color: "var(--vb-fg-3)" }}>· {relTime(detail.last_used_at)}</span></>
+                : <span style={{ color: "var(--vb-fg-3)" }}>never</span>
               }
             />
-            <DetailRow label="Last IP" value={detail.last_used_ip ?? <span style={{ color: "var(--vb-text-3)" }}>—</span>} />
+            <DetailRow label="Last IP" value={detail.last_used_ip ?? <span style={{ color: "var(--vb-fg-3)" }}>—</span>} />
             <DetailRow label="Last User-Agent"
               value={detail.last_used_ua
-                ? <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, wordBreak: "break-all", color: "var(--vb-text-2)" }}>{detail.last_used_ua}</span>
-                : <span style={{ color: "var(--vb-text-3)" }}>—</span>
+                ? <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, wordBreak: "break-all", color: "var(--vb-fg-2)" }}>{detail.last_used_ua}</span>
+                : <span style={{ color: "var(--vb-fg-3)" }}>—</span>
               }
             />
           </div>
@@ -518,12 +508,12 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
         textTransform: "uppercase",
         letterSpacing: "0.06em",
         fontWeight: 600,
-        color: "var(--vb-text-3)",
+        color: "var(--vb-fg-3)",
         width: 110,
         paddingTop: 2,
         flexShrink: 0,
       }}>{label}</div>
-      <div style={{ fontSize: 13, color: "var(--vb-text-2)", flex: 1 }}>{value}</div>
+      <div style={{ fontSize: 13, color: "var(--vb-fg-2)", flex: 1 }}>{value}</div>
     </div>
   );
 }

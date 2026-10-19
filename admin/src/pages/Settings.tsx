@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Dropdown } from "primereact/dropdown";
 import { Tag } from "primereact/tag";
 import { api, getMemoryToken, type ApiResponse } from "../api.ts";
@@ -11,6 +12,7 @@ import { DEFAULT_EMAIL_TEMPLATES, type EmailTemplateKind } from "../lib/email-te
 import { useAuth } from "../stores/auth.ts";
 import { useSidebar } from "../stores/sidebar.ts";
 import { OPTIONAL_NAV_ITEMS } from "../lib/nav.ts";
+import { applyTheme, themeVars } from "../theme.ts";
 import {
   VbBtn,
   VbCode,
@@ -87,7 +89,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
     { id: "metrics",    label: "Health & metrics", subtitle: "Prometheus exposition" },
   ]},
   { group: "", items: [
-    { id: "danger", label: "Danger zone", subtitle: "irreversible actions" },
+    { id: "danger", label: "Danger zone", subtitle: "sign out" },
   ]},
 ];
 
@@ -203,10 +205,11 @@ const SaveBar: React.FC<{
 );
 
 export default function Settings() {
-  const [active, setActive] = useState<SettingsTabId>("application");
-  // activeTab still drives the (unused for now) page title; sections render
-  // their own VbPageHeader so we no longer surface a global topbar.
-  void SETTINGS_TABS.find((t) => t.id === active);
+  // The tab lives in the URL (?tab=smtp) so a reload keeps it and it can be linked.
+  const [params, setParams] = useSearchParams();
+  const fromUrl = params.get("tab");
+  const active: SettingsTabId = SETTINGS_TABS.some((t) => t.id === fromUrl) ? fromUrl as SettingsTabId : "application";
+  const setActive = (id: SettingsTabId) => setParams(id === "application" ? {} : { tab: id }, { replace: true });
 
   return (
     <>
@@ -266,16 +269,27 @@ export default function Settings() {
 }
 
 // ── Application config ───────────────────────────────────────────────────────
+interface RuntimeInfo { port: number; dataDir: string; jwtSecretSource: "env" | "data_dir" }
+
 function ApplicationSection() {
+  const [rt, setRt] = useState<RuntimeInfo | null>(null);
+  useEffect(() => {
+    api.get<ApiResponse<RuntimeInfo | null>>("/api/v1/admin/runtime").then((res) => { if (res.data) setRt(res.data); });
+  }, []);
   return (
     <SectionShell id="application">
       <VbField label="Port" hint={<>Set via <VbCode>VAULTBASE_PORT</VbCode></>}>
-        <VbInput mono defaultValue="8091" disabled />
+        <VbInput mono value={rt ? String(rt.port) : "…"} readOnly disabled />
       </VbField>
       <VbField label="Data directory" hint={<>Set via <VbCode>VAULTBASE_DATA_DIR</VbCode></>}>
-        <VbInput mono defaultValue="./vaultbase_data" disabled />
+        <VbInput mono value={rt?.dataDir ?? "…"} readOnly disabled />
       </VbField>
-      <VbField label="JWT secret" hint={<>Auto-generated. Stored in <VbCode>data_dir/.secret</VbCode></>}>
+      <VbField
+        label="JWT secret"
+        hint={rt?.jwtSecretSource === "env"
+          ? <>Set via <VbCode>VAULTBASE_JWT_SECRET</VbCode></>
+          : <>Auto-generated. Stored in <VbCode>data_dir/.secret</VbCode></>}
+      >
         <VbInput mono value="••••••••••••••••••••••••••••••••" disabled />
       </VbField>
       <div style={{
@@ -562,24 +576,23 @@ function EgressSection() {
 }
 
 // ── Theme ───────────────────────────────────────────────────────────────────
-interface ThemeKnob { key: string; label: string; defaultValue: string; cssVar: string }
+interface ThemeKnob { key: string; label: string; defaultValue: string }
 
 const THEME_KNOBS: ThemeKnob[] = [
   // Brand
-  { key: "accent",         label: "Primary accent",     defaultValue: "#e85a4f", cssVar: "--accent" },
-  { key: "accent_hover",   label: "Accent (hover)",     defaultValue: "#f06f64", cssVar: "--accent-hover" },
-  { key: "accent_light",   label: "Accent (light)",     defaultValue: "#f5807a", cssVar: "--accent-light" },
+  { key: "accent",         label: "Primary accent",     defaultValue: "#e85a4f" },
+  { key: "accent_hover",   label: "Accent (hover)",     defaultValue: "#f06f64" },
   // Surfaces
-  { key: "bg_app",         label: "Page background",    defaultValue: "#0e0f12", cssVar: "--bg-app" },
-  { key: "bg_sidebar",     label: "Sidebar background", defaultValue: "#131418", cssVar: "--bg-sidebar" },
-  { key: "bg_panel",       label: "Card background",    defaultValue: "#181a1f", cssVar: "--bg-panel" },
+  { key: "bg_app",         label: "Page background",    defaultValue: "#08090a" },
+  { key: "bg_sidebar",     label: "Sidebar and cards",  defaultValue: "#0d0e10" },
+  { key: "bg_panel",       label: "Panels",             defaultValue: "#0d0e10" },
   // Text
-  { key: "text_primary",   label: "Primary text",       defaultValue: "#e6e8ed", cssVar: "--text-primary" },
-  { key: "text_secondary", label: "Secondary text",     defaultValue: "#9aa0ac", cssVar: "--text-secondary" },
+  { key: "text_primary",   label: "Primary text",       defaultValue: "#edebe8" },
+  { key: "text_secondary", label: "Secondary text",     defaultValue: "#a9a7a2" },
   // Status
-  { key: "success",        label: "Success",            defaultValue: "#22c55e", cssVar: "--success" },
-  { key: "warning",        label: "Warning",            defaultValue: "#f59e0b", cssVar: "--warning" },
-  { key: "danger",         label: "Danger",             defaultValue: "#ef4444", cssVar: "--danger" },
+  { key: "success",        label: "Success",            defaultValue: "#7fcb8e" },
+  { key: "warning",        label: "Warning",            defaultValue: "#f0b056" },
+  { key: "danger",         label: "Danger",             defaultValue: "#f06f64" },
 ];
 
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
@@ -607,12 +620,7 @@ function ThemeSection() {
   }
 
   function liveStyle(): React.CSSProperties {
-    const out: Record<string, string> = {};
-    for (const k of THEME_KNOBS) {
-      const v = (values[k.key] ?? "").trim();
-      if (v) out[k.cssVar] = v;
-    }
-    return out as React.CSSProperties;
+    return themeVars(values) as React.CSSProperties;
   }
 
   async function save() {
@@ -629,15 +637,9 @@ function ThemeSection() {
     const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
-    toast("Theme saved — refresh to apply everywhere");
-    // Apply immediately to the live page so the change is visible without
-    // a full reload. Other tabs / pages pick it up on next mount.
-    const root = document.documentElement;
-    for (const k of THEME_KNOBS) {
-      const v = (values[k.key] ?? "").trim();
-      if (v) root.style.setProperty(k.cssVar, v);
-      else root.style.removeProperty(k.cssVar);
-    }
+    toast("Theme saved");
+    // Apply to this page now; other open tabs pick it up when they reload.
+    applyTheme(values);
   }
 
   function reset() {
@@ -2308,6 +2310,7 @@ function EmailTemplatesSection() {
                 size="sm"
                 disabled={loading || isDefault}
                 onClick={() => { set(subjectKey, t.subject); set(bodyKey, t.body); }}
+                style={{ whiteSpace: "nowrap", flexShrink: 0 }}
               >
                 Restore default
               </VbBtn>
@@ -3325,6 +3328,7 @@ function StorageSection() {
   const [accessKeyId, setAccessKeyId] = useState("");
   const [secretAccessKey, setSecretAccessKey] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
+  const [savedConfig, setSavedConfig] = useState<string | null>(null);
   const [maxUploadMb, setMaxUploadMb] = useState(String(DEFAULT_MAX_UPLOAD_MB));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3346,6 +3350,10 @@ function StorageSection() {
         if (Number.isFinite(bytes) && bytes > 0) {
           setMaxUploadMb(String(Math.round((bytes / MB) * 100) / 100));
         }
+        setSavedConfig(JSON.stringify([
+          s["storage.driver"] === "s3" ? "s3" : "local", s["s3.endpoint"] ?? "", s["s3.bucket"] ?? "",
+          s["s3.region"] ?? "auto", s["s3.access_key_id"] ?? "", s["s3.secret_access_key"] ?? "", s["s3.public_url"] ?? "",
+        ]));
       }
       setLoading(false);
     });
@@ -3353,6 +3361,10 @@ function StorageSection() {
       "/api/v1/admin/settings/storage/status"
     ).then((res) => { if (res.data) setStatus(res.data); });
   }, []);
+
+  // The test runs against the saved settings, so it waits for a save.
+  const currentConfig = JSON.stringify([driver, endpoint, bucket, region, accessKeyId, secretAccessKey, publicUrl]);
+  const unsaved = savedConfig !== null && savedConfig !== currentConfig;
 
   function applyR2Preset() {
     setRegion("auto");
@@ -3387,6 +3399,7 @@ function StorageSection() {
     });
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
+    setSavedConfig(currentConfig);
     toast("Storage settings saved");
     const s = await api.get<ApiResponse<{ driver: string; bucket?: string; endpoint?: string }>>(
       "/api/v1/admin/settings/storage/status"
@@ -3499,7 +3512,8 @@ function StorageSection() {
         display: "flex", justifyContent: "space-between", alignItems: "center",
         gap: 10, paddingTop: 12, borderTop: "1px solid var(--vb-border)", marginTop: 4,
       }}>
-        <VbBtn kind="ghost" size="sm" icon="send" onClick={handleTest} disabled={testing}>
+        <VbBtn kind="ghost" size="sm" icon="send" onClick={handleTest} disabled={testing || unsaved}
+          title={unsaved ? "Save first: the test uses the saved settings" : undefined}>
           {testing ? "Testing…" : "Test connection"}
         </VbBtn>
         <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={loading || saving}>
@@ -3610,12 +3624,13 @@ function NotificationsSection() {
       app_id: osAppId,
     };
     if (osDirty && osApiKey !== (cfg?.onesignal.api_key ?? "")) body.api_key = osApiKey; // only patch on real edits
-    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
+    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] }; bootstrap_error?: string }>(
       "/api/v1/admin/notifications/providers/onesignal",
       body,
     );
     setOsSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
+    if (res.bootstrap_error) { toast(`OneSignal settings saved, but its collections weren't set up: ${res.bootstrap_error}`, "info"); return; }
     if (res.bootstrap?.created?.length) {
       toast(`OneSignal saved · bootstrapped collections: ${res.bootstrap.created.join(", ")}`, "check");
     } else {
@@ -3642,12 +3657,13 @@ function NotificationsSection() {
       project_id: fcmProjectId,
     };
     if (fcmDirty && fcmServiceAccount !== (cfg?.fcm.service_account ?? "")) body.service_account = fcmServiceAccount;
-    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] } }>(
+    const res = await api.patch<ApiResponse<NotificationProvidersResponse> & { bootstrap?: { created: string[]; skipped: string[] }; bootstrap_error?: string }>(
       "/api/v1/admin/notifications/providers/fcm",
       body,
     );
     setFcmSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
+    if (res.bootstrap_error) { toast(`FCM settings saved, but its collections weren't set up: ${res.bootstrap_error}`, "info"); return; }
     if (res.bootstrap?.created?.length) {
       toast(`FCM saved · bootstrapped collections: ${res.bootstrap.created.join(", ")}`, "check");
     } else {
@@ -3733,7 +3749,7 @@ function NotificationsSection() {
             {liveCount} of 2 sending · enable any combination
           </span>
         </div>
-        <VbBtn kind="ghost" size="sm" icon="plus" disabled>Add provider</VbBtn>
+        <VbBtn kind="ghost" size="sm" icon="plus" disabled title="OneSignal and FCM are the providers available; configure them below">Add provider</VbBtn>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -4148,7 +4164,7 @@ const SystemCollectionsHint: React.FC = () => (
     <Icon name="sparkle" size={13} />
     <span>
       The first time you enable a provider, the <VbCode>notifications</VbCode> and <VbCode>device_tokens</VbCode>{" "}
-      system collections are created automatically.
+      system collections are created automatically. They need an auth collection named <VbCode>users</VbCode>.
     </span>
   </div>
 );

@@ -21,6 +21,7 @@ import {
   VbTabs,
   VbTable,
   FilterInput,
+  VbSelect,
   type VbTableColumn,
   type VbTab,
 } from "../components/Vb.tsx";
@@ -154,23 +155,20 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
 
   return (
     <div style={{ padding: 24, display: "grid", gap: 18, maxWidth: 920 }}>
-      <p style={{ margin: 0, color: "var(--vb-text-3)", fontSize: 13, lineHeight: 1.55 }}>
+      <p style={{ margin: 0, color: "var(--vb-fg-3)", fontSize: 13, lineHeight: 1.55 }}>
         Pick a token + client, then copy the snippet below into the client's MCP-server config.
         Your raw token is never stored — paste it once to render the snippet, then it lives
         only in the target client's config file.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 14 }}>
         <VbField label="MCP token">
-          <select
+          <VbSelect
             value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
-            style={selectStyle}
-          >
-            {mcpTokens.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+            options={mcpTokens.map((t) => ({ label: t.name, value: t.id }))}
+            onChange={setSelectedId}
+            style={{ width: "100%", height: 32 }}
+          />
           {selected && (
             <div style={{ marginTop: 8, display: "flex", gap: 4, flexWrap: "wrap" }}>
               {selected.scopes.map((s) => <ScopePill key={s} scope={s} />)}
@@ -179,16 +177,17 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
         </VbField>
 
         <VbField label="Client">
-          <select
+          <VbSelect
             value={client}
-            onChange={(e) => setClient(e.target.value as typeof client)}
-            style={selectStyle}
-          >
-            <option value="claude">Claude Desktop (npm bridge)</option>
-            <option value="cursor">Cursor (npm bridge)</option>
-            <option value="raw">Raw stdio (vaultbase binary)</option>
-            <option value="http">Direct HTTP (curl / SDK)</option>
-          </select>
+            options={[
+              { label: "Claude Desktop (npm bridge)", value: "claude" },
+              { label: "Cursor (npm bridge)", value: "cursor" },
+              { label: "Raw stdio (vaultbase binary)", value: "raw" },
+              { label: "Direct HTTP (curl / SDK)", value: "http" },
+            ]}
+            onChange={(v) => setClient(v as typeof client)}
+            style={{ width: "100%", height: 32 }}
+          />
         </VbField>
       </div>
 
@@ -213,7 +212,7 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
 
       <div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <span style={{ fontSize: 12, fontWeight: 500, color: "var(--vb-text-2)" }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: "var(--vb-fg-2)" }}>
             {snippet.heading}
           </span>
           <VbBtn kind="ghost" size="sm" icon="copy" onClick={() => copy(snippet.body, "Snippet")}>
@@ -222,7 +221,7 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
         </div>
         <pre style={preStyle}>{snippet.body}</pre>
         {snippet.footer && (
-          <p style={{ margin: "8px 0 0", color: "var(--vb-text-3)", fontSize: 12, lineHeight: 1.55 }}>
+          <p style={{ margin: "8px 0 0", color: "var(--vb-fg-3)", fontSize: 12, lineHeight: 1.55 }}>
             {snippet.footer}
           </p>
         )}
@@ -341,7 +340,7 @@ function ClientsTab({ rows, loading, onRefresh }: {
     {
       key: "ip", label: "IP", width: 140,
       render: (r) => (
-        <span style={{ color: "var(--vb-text-3)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
+        <span style={{ color: "var(--vb-fg-3)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
           {r.ip ?? "—"}
         </span>
       ),
@@ -349,7 +348,7 @@ function ClientsTab({ rows, loading, onRefresh }: {
     {
       key: "ua", label: "User-Agent", flex: 2,
       render: (r) => (
-        <span style={{ color: "var(--vb-text-3)", fontSize: 12 }}>
+        <span style={{ color: "var(--vb-fg-3)", fontSize: 12 }}>
           {truncate(r.userAgent ?? "—", 60)}
         </span>
       ),
@@ -357,7 +356,7 @@ function ClientsTab({ rows, loading, onRefresh }: {
     {
       key: "since", label: "Connected", width: 110,
       render: (r) => (
-        <span style={{ color: "var(--vb-text-3)", fontSize: 12 }}>{relTime(r.connectedAt)}</span>
+        <span style={{ color: "var(--vb-fg-3)", fontSize: 12 }}>{relTime(r.connectedAt)}</span>
       ),
     },
   ];
@@ -365,7 +364,7 @@ function ClientsTab({ rows, loading, onRefresh }: {
   return (
     <div className="app-body">
       <div style={{ padding: "14px 24px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: 12, color: "var(--vb-text-3)" }}>
+        <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
           Live SSE connections. Stateless POST clients (curl, the npm bridge mid-request) don't appear here — only ones with the events stream open.
         </span>
         <VbBtn kind="ghost" size="sm" icon="refresh" onClick={onRefresh}>
@@ -374,7 +373,7 @@ function ClientsTab({ rows, loading, onRefresh }: {
       </div>
       <div style={{ paddingTop: 14 }}>
         {loading ? (
-          <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13 }}>loading…</div>
+          <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13 }}>loading…</div>
         ) : rows.length === 0 ? (
           <VbEmptyState
             icon="zap"
@@ -419,10 +418,10 @@ function CatalogTab({ catalog, loading }: { catalog: CatalogResp | null; loading
   }, [catalog, query]);
 
   if (loading) {
-    return <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13 }}>loading…</div>;
+    return <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13 }}>loading…</div>;
   }
   if (!catalog || !filtered) {
-    return <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13 }}>catalog unavailable</div>;
+    return <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13 }}>catalog unavailable</div>;
   }
 
   const totalHits =
@@ -452,7 +451,7 @@ function CatalogTab({ catalog, loading }: { catalog: CatalogResp | null; loading
           mono
         />
         {query && (
-          <span style={{ fontSize: 12, color: "var(--vb-text-3)" }}>
+          <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>
             {totalHits} match{totalHits === 1 ? "" : "es"}
           </span>
         )}
@@ -582,7 +581,7 @@ function Section({ title, count, total, hint, children }: {
         <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{title}</h3>
         <VbPill tone="neutral">{showTotal ? `${count} / ${total}` : count}</VbPill>
       </div>
-      <p style={{ margin: "0 0 10px", color: "var(--vb-text-3)", fontSize: 12, lineHeight: 1.55 }}>{hint}</p>
+      <p style={{ margin: "0 0 10px", color: "var(--vb-fg-3)", fontSize: 12, lineHeight: 1.55 }}>{hint}</p>
       {children}
     </section>
   );
@@ -595,7 +594,7 @@ const selectStyle: React.CSSProperties = {
   height: 32,
   border: "1px solid var(--vb-border)",
   background: "var(--vb-bg-1)",
-  color: "var(--vb-text-1)",
+  color: "var(--vb-fg)",
   borderRadius: 6,
   padding: "0 10px",
   fontFamily: "inherit",
@@ -637,7 +636,7 @@ const codeNameStyle: React.CSSProperties = {
   fontWeight: 500,
 };
 const descStyle: React.CSSProperties = {
-  color: "var(--vb-text-3)",
+  color: "var(--vb-fg-3)",
   fontSize: 12,
   lineHeight: 1.55,
 };
@@ -703,7 +702,7 @@ export default function McpPage() {
             href="https://modelcontextprotocol.io"
             target="_blank"
             rel="noreferrer"
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--vb-text-3)" }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--vb-fg-3)" }}
           >
             Spec ↗
           </a>
@@ -713,7 +712,7 @@ export default function McpPage() {
 
       {tab === "connect" && (
         loadingTokens
-          ? <div style={{ padding: 24, color: "var(--vb-text-3)", fontSize: 13 }}>loading…</div>
+          ? <div style={{ padding: 24, color: "var(--vb-fg-3)", fontSize: 13 }}>loading…</div>
           : <ConnectTab tokens={tokens} />
       )}
       {tab === "clients" && (

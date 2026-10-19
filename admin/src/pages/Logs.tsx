@@ -91,7 +91,7 @@ export default function Logs() {
   useEffect(() => {
     setLoading(true);
     load(page);
-  }, [page, methodFilter, statusFilter, showAdmin, appliedSearch, minDuration]);
+  }, [page, load]);
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -113,7 +113,7 @@ export default function Logs() {
       <VbPageHeader
         breadcrumb={["Logs"]}
         title="Logs"
-        sub="Per-request log with rule-eval inspection. JSONPath search across the JSONL files on disk."
+        sub="Every request, with how its rules decided. JSONPath search over the log files."
         right={
           <>
             <Dropdown
@@ -244,7 +244,9 @@ export default function Logs() {
           onRowClick={(e) => setOpenLog(e.data as LogEntry)}
           selection={openLog}
           dataKey="id"
-          emptyMessage="No requests logged yet. Make some API calls."
+          emptyMessage={methodFilter !== "all" || statusFilter !== "all" || ruleOutcomeFilter !== "all" || appliedSearch || parseInt(minDuration) > 0
+            ? "No requests match these filters."
+            : "No requests logged yet. Make some API calls."}
           style={{ fontSize: 13 }}
         >
           <Column
@@ -561,6 +563,7 @@ function LogSearchPanel() {
             <h3>Results</h3>
             <span className="meta">
               {result.matched} matched · {result.scanned} scanned
+              {result.results.length < result.matched && ` · showing the newest ${result.results.length}`}
             </span>
           </div>
           {result.results.length === 0 ? (
@@ -591,7 +594,7 @@ function LogSearchPanel() {
       <div className="editor-card" style={{ marginTop: 16 }}>
         <div className="editor-card-head">
           <h3>Available log files</h3>
-          <span className="meta">date-rotated, append-only, never deleted</span>
+          <span className="meta">one file per day · kept for the request-log retention in Settings → Data retention</span>
         </div>
         <div style={{ padding: 12 }}>
           {files.length === 0 ? (

@@ -6,10 +6,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ApiResponse } from "../api.ts";
 import {
-  VbBtn, VbField, VbInput, VbPageHeader, VbPill,
+  VbBtn, VbField, VbInput, VbNumberInput, VbPageHeader, VbPill,
   VbTable, VbEmptyState, type VbTableColumn,
 } from "../components/Vb.tsx";
-import { Toggle } from "../components/UI.tsx";
+import { Drawer, Toggle } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -365,7 +365,16 @@ function Editor({
     if (isNew) { toast("Save first to fire a test", "info"); return; }
     const res = await api.post<ApiResponse<{ ok: boolean }>>(`/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}/test`, {});
     if (res.error) { toast(res.error, "info"); return; }
-    toast("Test event enqueued — refresh deliveries");
+    toast("Test event queued");
+    setTimeout(loadDeliveries, 1500);
+  }
+
+  async function redeliver(d: Delivery) {
+    const res = await api.post<ApiResponse<{ id: string }>>(
+      `/api/v1/admin/webhooks/${encodeURIComponent(draft.id)}/deliveries/${encodeURIComponent(d.id)}/redeliver`, {});
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Redelivery queued");
+    setOpenDelivery(null);
     setTimeout(loadDeliveries, 1500);
   }
 
@@ -443,7 +452,7 @@ function Editor({
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 120 }}>
               <VbField label="Retry max">
-                <VbInput mono type="number" min={0} value={draft.retry_max} onChange={(e) => patch({ retry_max: parseInt(e.target.value) || 0 })} />
+                <VbNumberInput min={0} value={draft.retry_max} onChange={(v) => patch({ retry_max: v })} />
               </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
@@ -453,12 +462,12 @@ function Editor({
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
               <VbField label="Retry delay (ms)">
-                <VbInput mono type="number" min={100} value={draft.retry_delay_ms} onChange={(e) => patch({ retry_delay_ms: parseInt(e.target.value) || 1000 })} />
+                <VbNumberInput min={100} fallback={1000} value={draft.retry_delay_ms} onChange={(v) => patch({ retry_delay_ms: v })} />
               </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}>
               <VbField label="Timeout (ms)">
-                <VbInput mono type="number" min={1000} value={draft.timeout_ms} onChange={(e) => patch({ timeout_ms: parseInt(e.target.value) || 30000 })} />
+                <VbNumberInput min={1000} fallback={30000} value={draft.timeout_ms} onChange={(v) => patch({ timeout_ms: v })} />
               </VbField>
             </div>
           </div>
@@ -503,7 +512,7 @@ function Editor({
       </div>
 
       {openDelivery && (
-        <DeliveryDetail delivery={openDelivery} onClose={() => setOpenDelivery(null)} />
+        <DeliveryDetail delivery={openDelivery} onClose={() => setOpenDelivery(null)} onRedeliver={() => redeliver(openDelivery)} />
       )}
     </div>
   );
@@ -601,54 +610,33 @@ function HeaderEditor({ headers, onChange }: { headers: Record<string, string>; 
   );
 }
 
-function DeliveryDetail({ delivery, onClose }: { delivery: Delivery; onClose: () => void }) {
+function DeliveryDetail({ delivery, onClose, onRedeliver }: { delivery: Delivery; onClose: () => void; onRedeliver: () => Promise<void> }) {
   const tone = delivery.status === "succeeded" ? "success"
     : delivery.status === "failed"  ? "warning"
     : delivery.status === "dead"    ? "danger" : "neutral";
+  const [busy, setBusy] = useState(false);
 
   return (
-    <div
-      onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 100, display: "flex", justifyContent: "flex-end" }}
+    <Drawer
+      open
+      onClose={onClose}
+      title="Delivery"
+      idLabel={delivery.id}
+      width={540}
+      footer={
+        <>
+          <VbBtn kind="ghost" onClick={onClose}>Close</VbBtn>
+          <VbBtn
+            kind="primary"
+            icon="refresh"
+            disabled={busy || delivery.status === "pending"}
+            title={delivery.status === "pending" ? "Still being delivered" : "Send this payload again as a new delivery"}
+            onClick={async () => { setBusy(true); await onRedeliver(); setBusy(false); }}
+          >Redeliver</VbBtn>
+        </>
+      }
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 540,
-          maxWidth: "100vw",
-          height: "100vh",
-          background: "var(--vb-bg-2)",
-          borderLeft: "1px solid var(--vb-border)",
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: "-8px 0 40px rgba(0,0,0,0.4)",
-        }}
-      >
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "14px 18px",
-          borderBottom: "1px solid var(--vb-border)",
-          background: "var(--vb-bg-1)",
-          gap: 12,
-        }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--vb-fg)" }}>Delivery</div>
-            <div style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: 11,
-              color: "var(--vb-fg-3)",
-              marginTop: 2,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}>{delivery.id}</div>
-          </div>
-          <VbBtn kind="ghost" size="sm" icon="x" onClick={onClose} title="Close" />
-        </div>
-
-        <div style={{ flex: 1, overflow: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{ display: "flex", gap: 16 }}>
             <div style={{ flex: 1 }}>
               <KvLabel>Event</KvLabel>
@@ -734,8 +722,7 @@ function DeliveryDetail({ delivery, onClose }: { delivery: Delivery; onClose: ()
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Drawer>
   );
 }
 

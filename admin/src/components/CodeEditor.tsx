@@ -332,8 +332,12 @@ function buildRecordType(collectionName: string, fields: FieldDef[]): string {
   return `
 interface ${collectionName}Record {
   id: string;
-  created_at: number;
-  updated_at: number;
+  collectionId: string;
+  collectionName: string;
+  /** unix seconds */
+  created: number;
+  /** unix seconds */
+  updated: number;
 ${propLines.join("\n")}
   /** dynamic / unknown fields */
   [key: string]: any;
@@ -353,8 +357,12 @@ ${HOOK_BASE_DECL}
 ${extraInterface}
 
 interface HookContext {
-  /** Record being processed. Mutable in before* hooks. */
-  record: ${recordTypeName};
+  /**
+   * Record being processed. In after* hooks it's the saved record. In
+   * beforeCreate / beforeUpdate it's the request body (mutable): only the
+   * fields being written, with no id, created or updated yet.
+   */
+  record: Partial<${recordTypeName}>;
   /** Existing record (only in beforeUpdate / beforeDelete) */
   existing: ${recordTypeName} | null;
   /** Authenticated user/admin or null */
