@@ -2964,9 +2964,14 @@ a { color: inherit; text-decoration: none; }
 /* Sidebar "More" row: a button styled as a nav item. */
 .sb-more {
   width: 100%;
+  box-sizing: border-box;
   background: none;
   border: none;
   cursor: pointer;
   font: inherit;
   text-align: left;
 }
+
+/* Sections keep their size when "More" adds rows; the sidebar scrolls. */
+.sidebar { overflow-y: auto; }
+.sidebar > * { flex-shrink: 0; }
