@@ -1,18 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
-import { api, getMemoryToken, type ApiResponse, type Collection, parseFields } from "../api.ts";
+import { api, getMemoryToken, type ApiResponse } from "../api.ts";
 import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
 import { Toggle } from "../components/UI.tsx";
-
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
-
-interface Preset {
-  label: string;
-  method: Method;
-  path: string;
-  body?: string;
-}
+import {
+  SYSTEM_PRESETS, groupPresets, matchesPreset, presetsFromSpec,
+  type Method, type OpenApiSpec, type Preset,
+} from "../lib/api-presets.ts";
 
 interface ResponseInfo {
   status: number;
@@ -24,19 +19,38 @@ interface ResponseInfo {
 }
 
 export default function ApiPreview() {
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const [specPresets, setSpecPresets] = useState<Preset[]>([]);
+  const [specError, setSpecError] = useState<string | null>(null);
+  const [loadingSpec, setLoadingSpec] = useState(true);
+  const [query, setQuery] = useState("");
+  const [activePreset, setActivePreset] = useState<Preset | null>(null);
   const [method, setMethod] = useState<Method>("GET");
-  const [path, setPath] = useState("/api/v1/health");
+  const [path, setPath] = useState("/api/health");
   const [body, setBody] = useState("");
   const [includeAuth, setIncludeAuth] = useState(true);
   const [response, setResponse] = useState<ResponseInfo | null>(null);
   const [sending, setSending] = useState(false);
   const [specPublic, setSpecPublic] = useState(false);
 
+  // Endpoints come from the instance's own OpenAPI spec, so they follow the
+  // live collections (see lib/api-presets.ts).
+  async function loadSpec() {
+    setLoadingSpec(true);
+    const token = getMemoryToken();
+    try {
+      const r = await fetch("/api/v1/openapi.json", { credentials: "same-origin", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSpecPresets(presetsFromSpec((await r.json()) as OpenApiSpec));
+      setSpecError(null);
+    } catch (e) {
+      setSpecError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingSpec(false);
+    }
+  }
+
   useEffect(() => {
-    api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
-      if (res.data) setCollections(res.data);
-    });
+    void loadSpec();
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
       if (res.data) setSpecPublic(res.data["api.openapi_public"] === "1");
     });
@@ -61,36 +75,24 @@ export default function ApiPreview() {
     toast(on ? "OpenAPI spec is public (admin-only collections hidden)" : "OpenAPI spec is admin-only", "check");
   }
 
-  const presets = useMemo<Preset[]>(() => {
-    const base: Preset[] = [
-      { label: "GET /api/health", method: "GET", path: "/api/v1/health" },
-      { label: "GET /api/collections", method: "GET", path: "/api/v1/collections" },
-      { label: "GET /api/admin/auth/me", method: "GET", path: "/api/v1/admin/auth/me" },
-      { label: "GET /api/admin/admins", method: "GET", path: "/api/v1/admin/admins" },
-      { label: "GET /api/admin/logs?perPage=10", method: "GET", path: "/api/v1/admin/logs?perPage=10" },
-    ];
-    for (const c of collections) {
-      base.push({ label: `GET /api/v1/${c.name}`, method: "GET", path: `/api/v1/${c.name}?perPage=10` });
-      const fields = parseFields(c.fields).filter((f) => !f.system && f.type !== "autodate");
-      const sample: Record<string, unknown> = {};
-      for (const f of fields.slice(0, 3)) {
-        sample[f.name] = f.type === "number" ? 0 : f.type === "bool" ? false : "";
-      }
-      base.push({
-        label: `POST /api/v1/${c.name}`,
-        method: "POST",
-        path: `/api/v1/${c.name}`,
-        body: JSON.stringify(sample, null, 2),
-      });
-    }
-    return base;
-  }, [collections]);
+  const groups = useMemo(
+    () => groupPresets([...SYSTEM_PRESETS, ...specPresets].filter((p) => matchesPreset(p, query))),
+    [specPresets, query],
+  );
 
-  function applyPreset(p: Preset) {
+  async function applyPreset(p: Preset) {
+    setActivePreset(p);
     setMethod(p.method);
-    setPath(p.path);
     setBody(p.body ?? "");
     setResponse(null);
+    // Fill {id} with a real record so the request works as is.
+    let next = p.path;
+    if (p.collection && next.includes("{id}")) {
+      const res = await api.get<ApiResponse<Array<{ id: string }>>>(`/api/v1/${p.collection}?perPage=1&skipTotal=true&fields=id`);
+      const id = res.data?.[0]?.id;
+      if (id) next = next.replace("{id}", encodeURIComponent(id));
+    }
+    setPath(next);
   }
 
   async function send() {
@@ -231,37 +233,71 @@ export default function ApiPreview() {
             top: 0,
           }}
         >
-          <div
-            style={{
-              padding: "10px 14px",
-              borderBottom: "0.5px solid var(--border-default)",
-              fontSize: 11,
-              fontWeight: 500,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Presets
+          <div style={{ padding: 8, borderBottom: "0.5px solid var(--border-default)", display: "flex", gap: 6 }}>
+            <input
+              className="input"
+              style={{ flex: 1, height: 28, fontSize: 12 }}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter endpoints"
+              aria-label="Filter endpoints"
+            />
+            <button className="btn-icon" title="Reload from the OpenAPI spec" onClick={() => void loadSpec()} disabled={loadingSpec}>
+              <Icon name="refresh" size={12} />
+            </button>
           </div>
           <div style={{ maxHeight: "70vh", overflowY: "auto" }}>
-            {presets.map((p, i) => (
-              <div
-                key={i}
-                onClick={() => applyPreset(p)}
-                style={{
-                  padding: "8px 14px",
-                  fontSize: 12,
-                  fontFamily: "var(--font-mono)",
-                  cursor: "pointer",
-                  borderBottom: i < presets.length - 1 ? "0.5px solid rgba(255,255,255,0.04)" : "none",
-                  color: "var(--text-secondary)",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.025)"; e.currentTarget.style.color = "var(--text-primary)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
-              >
-                <span className={`badge method-${p.method.toLowerCase()}`} style={{ marginRight: 6 }}>{p.method}</span>
-                {p.path.length > 24 ? p.path.slice(0, 22) + "…" : p.path}
+            {specError && (
+              <div style={{ padding: "8px 14px", fontSize: 11.5, color: "var(--text-secondary)" }}>
+                Couldn't load the OpenAPI spec ({specError}). Collection endpoints are missing until it loads.
+              </div>
+            )}
+            {groups.length === 0 && !loadingSpec && (
+              <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--text-secondary)" }}>No endpoints match.</div>
+            )}
+            {groups.map((g) => (
+              <div key={g.group}>
+                <div
+                  style={{
+                    padding: "10px 14px 4px",
+                    fontSize: 10.5,
+                    fontWeight: 500,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {g.group}
+                </div>
+                {g.items.map((p) => {
+                  const active = activePreset === p;
+                  return (
+                    <div
+                      key={`${p.method} ${p.path}`}
+                      role="button"
+                      tabIndex={0}
+                      title={p.summary}
+                      onClick={() => void applyPreset(p)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void applyPreset(p); } }}
+                      className="api-preset"
+                      data-active={active ? "true" : undefined}
+                      style={{
+                        padding: "6px 14px",
+                        fontSize: 11.5,
+                        fontFamily: "var(--font-mono)",
+                        cursor: "pointer",
+                        display: "flex",
+                        gap: 6,
+                        alignItems: "baseline",
+                        color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                        background: active ? "rgba(255,255,255,0.04)" : "transparent",
+                      }}
+                    >
+                      <span className={`badge method-${p.method.toLowerCase()}`} style={{ flexShrink: 0 }}>{p.method}</span>
+                      <span style={{ wordBreak: "break-all" }}>{p.path.replace(/^\/api\/v1/, "")}</span>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>
@@ -273,7 +309,7 @@ export default function ApiPreview() {
           <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
             <Dropdown
               value={method}
-              options={["GET", "POST", "PATCH", "DELETE"]}
+              options={["GET", "POST", "PATCH", "PUT", "DELETE"]}
               onChange={(e) => setMethod(e.value as Method)}
               style={{ width: 110, height: 36 }}
             />
@@ -309,7 +345,7 @@ export default function ApiPreview() {
           </label>
 
           {/* Body */}
-          {(method === "POST" || method === "PATCH") && (
+          {(method === "POST" || method === "PATCH" || method === "PUT") && (
             <div>
               <label className="label">Request body (JSON)</label>
               <textarea

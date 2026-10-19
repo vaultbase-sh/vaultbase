@@ -2998,3 +2998,7 @@ a { color: inherit; text-decoration: none; }
 .sb-fav:hover { opacity: 1; color: var(--vb-fg-2); }
 .sb-fav.on { opacity: 1; color: var(--vb-accent); }
 .sb-fav.on svg { fill: currentColor; }
+
+/* API preview endpoint list */
+.api-preset:hover { background: rgba(255, 255, 255, 0.025); color: var(--text-primary); }
+.api-preset:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
