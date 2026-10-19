@@ -167,6 +167,9 @@ export default function Dashboard() {
   const baseCount = colls.filter((c) => c.type === "base").length;
   const authCount = colls.filter((c) => c.type === "auth").length;
   const singletonCount = colls.filter((c) => c.type === "singleton").length;
+  const viewCount = colls.filter((c) => c.type === "view").length;
+  const collsBreakdown = ([[baseCount, "base"], [authCount, "auth"], [viewCount, "view"], [singletonCount, "single"]] as const)
+    .filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}`).join(" · ");
 
   const oldestDead = dead.reduce<number | null>((acc, j) => {
     const t = j.finished_at ?? j.enqueued_at;
@@ -227,7 +230,7 @@ export default function Dashboard() {
         <Stat
           label="COLLECTIONS"
           value={nf.format(colls.length)}
-          sub={colls.length ? `${baseCount} base · ${authCount} auth${singletonCount ? ` · ${singletonCount} singleton` : ""}` : "—"}
+          sub={colls.length ? collsBreakdown : "—"}
         />
         <Stat
           label="QUEUED"
@@ -377,7 +380,7 @@ function Stat({ label, value, sub, alert }: {
       <span className={"vb-dash__stat-value" + (alert ? " vb-dash__stat-value--alert" : "")}>
         {value}
       </span>
-      <span className="vb-dash__stat-sub">{sub}</span>
+      <span className="vb-dash__stat-sub" title={sub}>{sub}</span>
     </div>
   );
 }

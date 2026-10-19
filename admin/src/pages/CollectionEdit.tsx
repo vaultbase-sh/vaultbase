@@ -823,6 +823,12 @@ function SchemaCode({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * One column set for the header and every row. Each row is its own grid, so
+ * `auto` columns sized per row and Type / Constraints didn't line up.
+ */
+const SCHEMA_COLUMNS = "20px minmax(140px, 1fr) 104px minmax(160px, 2fr) 112px 28px";
+
 function SchemaTableHeader() {
   const labelStyle: React.CSSProperties = {
     fontSize: 10.5,
@@ -835,7 +841,7 @@ function SchemaTableHeader() {
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "20px minmax(140px, 1fr) auto minmax(160px, 2fr) auto 28px",
+      gridTemplateColumns: SCHEMA_COLUMNS,
       gap: 12,
       padding: "9px 14px",
       alignItems: "center",
@@ -872,7 +878,7 @@ function FieldRow({
       data-idx={index}
       style={{
         display: "grid",
-        gridTemplateColumns: "20px minmax(140px, 1fr) auto minmax(160px, 2fr) auto 28px",
+        gridTemplateColumns: SCHEMA_COLUMNS,
         gap: 12,
         padding: "10px 14px",
         alignItems: "center",
@@ -1581,6 +1587,8 @@ function IndexesSection({
 
   async function handleAdd() {
     if (newFields.length === 0) return;
+    const same = indexes.find((i) => i.unique === newUnique && (i.fields ?? [i.field]).join(",") === newFields.join(","));
+    if (same) { toast(`"${same.name}" already indexes ${newFields.join(", ")}`, "info"); return; }
     const res = await api.post<ApiResponse<IndexInfo>>(
       `/api/v1/admin/collections/${collectionName}/indexes`,
       { fields: newFields, unique: newUnique }
@@ -1635,8 +1643,12 @@ function IndexesSection({
         indexes.map((idx) => (
           <div key={idx.name} className="indexes-table-row">
             <span className="name">{idx.name}</span>
-            <span>
-              <span className="vb-type-badge mono" style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "0.5px solid var(--border-default)", fontSize: 11, color: "var(--text-secondary)" }}>{idx.field}</span>
+            <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {(idx.fields ?? [idx.field]).map((f, k) => (
+                <span key={f} className="vb-type-badge mono" style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 999, background: "rgba(255,255,255,0.04)", border: "0.5px solid var(--border-default)", fontSize: 11, color: "var(--text-secondary)" }}>
+                  {(idx.fields?.length ?? 1) > 1 && `${k + 1}. `}{f}
+                </span>
+              ))}
             </span>
             <span className="meta-cell">btree</span>
             <span style={{ fontSize: 12, color: idx.unique ? "#c4b5fd" : "var(--text-muted)" }}>
@@ -1676,12 +1688,8 @@ function IndexesSection({
             <Toggle on={newUnique} onChange={setNewUnique} />
             <span>Unique</span>
           </label>
-          <button className="btn btn-primary" disabled={newFields.length === 0} onClick={handleAdd}>
-            <Icon name="check" size={12} /> Create
-          </button>
-          <button className="btn btn-ghost" onClick={() => { setAdding(false); setNewFields([]); setNewUnique(false); }}>
-            Cancel
-          </button>
+          <VbBtn kind="primary" size="sm" icon="check" disabled={newFields.length === 0} onClick={handleAdd}>Create</VbBtn>
+          <VbBtn kind="ghost" size="sm" onClick={() => { setAdding(false); setNewFields([]); setNewUnique(false); }}>Cancel</VbBtn>
         </div>
       ) : (
         <div className="fields-add-bar" style={{ borderTop: "0.5px solid var(--border-default)" }}>

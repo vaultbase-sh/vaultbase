@@ -187,7 +187,7 @@ export default function Collections() {
         {/* Summary strip */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
+          gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
           gap: 1,
           marginBottom: 16,
           background: "var(--vb-border)",
@@ -198,6 +198,8 @@ export default function Collections() {
           <BigStat label="Collections" value={enriched.length} />
           <BigStat label="Auth" value={counts.auth} />
           <BigStat label="Base" value={counts.base} />
+          <BigStat label="Views" value={counts.view} />
+          <BigStat label="Singletons" value={counts.singleton} />
           <BigStat label="Total fields" value={totalFields} />
         </div>
 

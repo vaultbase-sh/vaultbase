@@ -240,7 +240,7 @@ a.vb-dash__row:hover { background: var(--vb-surface-hover); }
 /* Column templates, one per panel — shared by the header and its rows. */
 .vb-dash__t--dead  { grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1.6fr) 44px 44px; }
 .vb-dash__t--queue { grid-template-columns: 96px minmax(0, 1fr) 56px 84px 56px; }
-.vb-dash__t--coll  { grid-template-columns: minmax(0, 1fr) 48px 72px 84px 84px; }
+.vb-dash__t--coll  { grid-template-columns: minmax(0, 1fr) 72px 72px 84px 84px; } /* type fits "singleton" */
 .vb-dash__t--req   { grid-template-columns: 64px 52px minmax(0, 1fr) 44px 48px; }
 
 /* Backlog bar inside the PENDING cell. */

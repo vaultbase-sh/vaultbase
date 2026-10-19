@@ -208,3 +208,7 @@ body { font-family: var(--font-sans); }
 
 /* The topbar matches the dashboard board's 48px band. */
 :is(.app, .vb-layer) .topbar { height: 48px; min-height: 48px; border-bottom: 1px solid var(--vb-border); }
+
+/* Placeholders read as hints, not values: the browser default (the text
+   colour at reduced opacity) looked like a saved setting. */
+.vb-input-next::placeholder { color: var(--vb-fg-5); opacity: 0.8; }

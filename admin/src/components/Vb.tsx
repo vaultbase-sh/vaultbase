@@ -124,10 +124,11 @@ export const VbBtn: React.FC<{
 // ── Input ───────────────────────────────────────────────────────────────────
 
 export const VbInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean }>(
-  ({ mono, style, ...rest }, ref) => (
+  ({ mono, style, className, ...rest }, ref) => (
     <input
       ref={ref}
       {...rest}
+      className={className ? `vb-input-next ${className}` : "vb-input-next"}
       style={{
         width: "100%",
         height: 32,

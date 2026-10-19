@@ -4,7 +4,7 @@ import { Column } from "primereact/column";
 import type { DataTablePageEvent } from "primereact/datatable";
 import { Dropdown } from "primereact/dropdown";
 import { api, type ListResponse } from "../api.ts";
-import { VbBtn, VbPageHeader, VbTabs, type VbTab } from "../components/Vb.tsx";
+import { VbBtn, VbCode, VbField, VbInput, VbPageHeader, VbTabs, type VbTab } from "../components/Vb.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 
@@ -197,19 +197,19 @@ export default function Logs() {
       <div className="app-body">
         <div className="filter-bar">
           <div
-            className="input-group"
-            style={{ flex: 1, maxWidth: 480 }}
+            style={{ flex: 1, maxWidth: 480, position: "relative", display: "flex", alignItems: "center" }}
             onKeyDown={(e) => e.key === "Enter" && (setAppliedSearch(search), setPage(1))}
           >
-            <Icon name="search" size={13} />
-            <input
+            <span style={{ position: "absolute", left: 10, display: "flex", color: "var(--vb-fg-3)" }}><Icon name="search" size={13} /></span>
+            <VbInput
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="search path / hook name / event / message — press Enter"
+              placeholder="Search path, hook, event or message, then Enter"
+              style={{ paddingLeft: 30, paddingRight: appliedSearch ? 30 : 10 }}
             />
             {appliedSearch && (
               <button
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 0 }}
+                style={{ position: "absolute", right: 8, display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--vb-fg-3)", padding: 0 }}
                 onClick={() => { setSearch(""); setAppliedSearch(""); setPage(1); }}
                 title="Clear search"
               >
@@ -218,17 +218,17 @@ export default function Logs() {
             )}
           </div>
           <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>min duration:</span>
-            <input
-              className="input mono"
-              style={{ width: 80, height: 30, fontSize: 12, padding: "0 8px" }}
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>min duration:</span>
+            <VbInput
+              mono
+              style={{ width: 80 }}
               type="number"
               min={0}
               value={minDuration}
               onChange={(e) => { setMinDuration(e.target.value); setPage(1); }}
               placeholder="0"
             />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>ms</span>
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>ms</span>
           </div>
         </div>
         <div className="vb-pr-table">
@@ -497,120 +497,108 @@ function LogSearchPanel() {
 
   return (
     <div className="app-body">
-      <div className="editor-card" style={{ marginBottom: 16 }}>
-        <div className="editor-card-head">
-          <h3>Query</h3>
-          <span className="meta">JSONPath against JSONL files</span>
-        </div>
-        <div style={{ padding: 14, display: "grid", gap: 12 }}>
-          <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Panel title="Query" meta="JSONPath over the log files">
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 160 }}>
-              <label className="label">From (UTC date)</label>
-              <input
-                className="input mono"
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-              />
+              <VbField label="From (UTC date)">
+                <VbInput mono type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </VbField>
             </div>
             <div style={{ flex: 1, minWidth: 160 }}>
-              <label className="label">To (UTC date)</label>
-              <input
-                className="input mono"
-                type="date"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-              />
+              <VbField label="To (UTC date)">
+                <VbInput mono type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+              </VbField>
             </div>
           </div>
-          <div>
-            <label className="label">JSONPath expression</label>
-            <input
-              className="input mono"
+          <VbField
+            label="JSONPath expression"
+            hint={<>Each log entry is one document. Examples:{" "}
+              <VbCode>$[?(@.status &gt;= 500)]</VbCode>, <VbCode>$[?(@.path =~ /api\/users/)]</VbCode>, <VbCode>$.auth_email</VbCode></>}
+          >
+            <VbInput
+              mono
               value={jsonpath}
               onChange={(e) => setJsonpath(e.target.value)}
-              placeholder='$[?(@.status >= 400)]'
+              placeholder="$[?(@.status >= 400)]"
               onKeyDown={(e) => { if (e.key === "Enter") run(); }}
             />
-            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-              Each log entry is one document. Examples:{" "}
-              <code style={{ fontFamily: "var(--font-mono)" }}>$[?(@.status &gt;= 500)]</code>,{" "}
-              <code style={{ fontFamily: "var(--font-mono)" }}>$[?(@.path =~ /api\/users/)]</code>,{" "}
-              <code style={{ fontFamily: "var(--font-mono)" }}>$.auth_email</code>
-            </div>
-          </div>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <span className="muted" style={{ fontSize: 11 }}>
-              {files.length} log file{files.length === 1 ? "" : "s"} ·{" "}
-              {fmtSize(files.reduce((a, f) => a + f.size, 0))} total
+          </VbField>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+              {files.length} log file{files.length === 1 ? "" : "s"} · {fmtSize(files.reduce((a, f) => a + f.size, 0))} total
             </span>
-            <button className="btn btn-primary" onClick={run} disabled={running || !jsonpath.trim()}>
+            <VbBtn kind="primary" size="sm" icon="play" onClick={run} disabled={running || !jsonpath.trim()}>
               {running ? "Running…" : "Run query"}
-            </button>
+            </VbBtn>
           </div>
         </div>
-      </div>
+      </Panel>
 
       {err && (
-        <div className="editor-card" style={{ borderColor: "rgba(248,113,113,0.3)" }}>
-          <div style={{ padding: 14, color: "var(--danger)", fontSize: 12 }}>{err}</div>
+        <div style={{ padding: "10px 14px", borderRadius: 6, border: "1px solid var(--vb-status-danger)", background: "var(--vb-status-danger-bg)", color: "var(--vb-status-danger)", fontSize: 12 }}>
+          {err}
         </div>
       )}
 
       {result && (
-        <div className="editor-card">
-          <div className="editor-card-head">
-            <h3>Results</h3>
-            <span className="meta">
-              {result.matched} matched · {result.scanned} scanned
-              {result.results.length < result.matched && ` · showing the newest ${result.results.length}`}
-            </span>
-          </div>
+        <Panel
+          title="Results"
+          meta={<>{result.matched} matched · {result.scanned} scanned{result.results.length < result.matched && ` · showing the newest ${result.results.length}`}</>}
+        >
           {result.results.length === 0 ? (
-            <div className="empty">No matches</div>
+            <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>No matches.</div>
           ) : (
-            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {result.results.map((hit, i) => (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  <div>
-                    <label className="label">Entry</label>
-                    <pre className="code-block" style={{ margin: 0, maxHeight: 180 }}>
-                      {JSON.stringify(hit.entry, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <label className="label">Matched values</label>
-                    <pre className="code-block" style={{ margin: 0, maxHeight: 180 }}>
-                      {JSON.stringify(hit.matches, null, 2)}
-                    </pre>
-                  </div>
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 }}>
+                  <VbField label="Entry">
+                    <pre style={PRE}>{JSON.stringify(hit.entry, null, 2)}</pre>
+                  </VbField>
+                  <VbField label="Matched values">
+                    <pre style={PRE}>{JSON.stringify(hit.matches, null, 2)}</pre>
+                  </VbField>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </Panel>
       )}
 
-      <div className="editor-card" style={{ marginTop: 16 }}>
-        <div className="editor-card-head">
-          <h3>Available log files</h3>
-          <span className="meta">one file per day · kept for the request-log retention in Settings → Data retention</span>
-        </div>
-        <div style={{ padding: 12 }}>
-          {files.length === 0 ? (
-            <div className="empty">No log files yet</div>
-          ) : (
-            <div className="col" style={{ gap: 4 }}>
-              {files.map((f) => (
-                <div key={f.date} className="row" style={{ gap: 12, padding: "6px 0", borderBottom: "0.5px solid rgba(255,255,255,0.04)" }}>
-                  <span className="mono" style={{ fontSize: 12, minWidth: 110 }}>{f.date}.jsonl</span>
-                  <span className="muted mono" style={{ fontSize: 11 }}>{fmtSize(f.size)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      <Panel title="Log files" meta="one file per day · kept for the request-log retention in Settings → Data retention">
+        {files.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>No log files yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {files.map((f) => (
+              <div key={f.date} style={{ display: "flex", gap: 12, padding: "6px 0", borderBottom: "1px solid var(--vb-border)" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, minWidth: 130, color: "var(--vb-fg)" }}>{f.date}.jsonl</span>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>{fmtSize(f.size)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
       </div>
+    </div>
+  );
+}
+
+const PRE: React.CSSProperties = {
+  margin: 0, maxHeight: 180, overflow: "auto", padding: 10, borderRadius: 6,
+  background: "var(--vb-bg-1)", border: "1px solid var(--vb-border)",
+  fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg)",
+};
+
+function Panel({ title, meta, children }: { title: string; meta?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{ background: "var(--vb-bg-2)", border: "1px solid var(--vb-border)", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--vb-border)", background: "var(--vb-bg-1)" }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</h3>
+        {meta && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--vb-fg-3)" }}>{meta}</span>}
+      </div>
+      <div style={{ padding: 16 }}>{children}</div>
     </div>
   );
 }

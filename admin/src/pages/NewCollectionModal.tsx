@@ -48,6 +48,8 @@ export default function NewCollectionModal({
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
   const [viewQuery, setViewQuery] = useState("");
   const [viewError, setViewError] = useState<string | null>(null);
+  /** Columns from the last successful Validate, shown under the editor. */
+  const [viewColumns, setViewColumns] = useState<string[] | null>(null);
   const [validating, setValidating] = useState(false);
 
   const sqlSchema: SqlSchema = useMemo(() => ({
@@ -63,6 +65,7 @@ export default function NewCollectionModal({
   }), [allCollections]);
 
   async function validateView() {
+    setViewColumns(null);
     if (!viewQuery.trim()) { setViewError("Empty query"); return; }
     setValidating(true);
     const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
@@ -72,6 +75,7 @@ export default function NewCollectionModal({
     setValidating(false);
     if (res.error) { setViewError(res.error); return; }
     setViewError(null);
+    setViewColumns(res.data?.columns ?? []);
   }
 
   useEffect(() => {
@@ -83,6 +87,8 @@ export default function NewCollectionModal({
       setError("");
       setLoading(false);
       setViewQuery("");
+      setViewError(null);
+      setViewColumns(null);
       api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
         if (res.data) setAllCollections(res.data);
       });
@@ -294,12 +300,23 @@ export default function NewCollectionModal({
               <CodeEditor
                 language="sql"
                 value={viewQuery}
-                onChange={(v) => { setViewQuery(v); setViewError(null); }}
+                onChange={(v) => { setViewQuery(v); setViewError(null); setViewColumns(null); }}
                 sqlSchema={sqlSchema}
                 markers={viewError ? [{ message: viewError, line: 1, severity: "error" }] : []}
                 height={200}
               />
             </div>
+            {viewError && (
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--vb-status-danger)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap" }}>
+                {viewError}
+              </div>
+            )}
+            {viewColumns && (
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--vb-status-success)" }}>
+                Valid · {viewColumns.length} {viewColumns.length === 1 ? "column" : "columns"}
+                {viewColumns.length > 0 && <span style={{ color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>: {viewColumns.join(", ")}</span>}
+              </div>
+            )}
           </VbField>
         )}
 

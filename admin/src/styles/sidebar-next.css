@@ -85,7 +85,9 @@
 }
 /* The board separates sections with space, not rules. */
 .sidebar--next .sb-section + .sb-section { margin-top: 20px; }
-.sidebar--next .sb-section:first-of-type { margin-top: 16px; }
+/* The first section after the brand row. (:first-of-type never matched:
+   the brand row is the first div.) */
+.sidebar--next .sb-brand + .sb-section { margin-top: 16px; }
 .sidebar--next .sb-section:last-of-type { margin-bottom: 16px; }
 
 .sidebar--next .sb-section-title {
