@@ -82,6 +82,13 @@ describe("openapi.json", () => {
     expect(input.properties!["cover"]).toBeUndefined();
   });
 
+  it("offers auth records only through register, as the server does", async () => {
+    const { spec } = await fetchSpec(await adminToken());
+    expect(spec.paths["/api/v1/users"]!["post"]).toBeUndefined();
+    expect(spec.paths["/api/v1/users"]!["get"]).toBeDefined();
+    expect(spec.paths["/api/v1/auth/users/register"]!["post"]).toBeDefined();
+  });
+
   it("has no dangling $refs", async () => {
     const { spec } = await fetchSpec(await adminToken());
     const refs = [...JSON.stringify(spec).matchAll(/"\$ref":"#\/components\/schemas\/([^"]+)"/g)].map((m) => m[1]!);

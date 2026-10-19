@@ -133,7 +133,8 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
           ...ERRORS,
         },
       },
-      ...(col.type === "view" ? {} : {
+      // Views are read-only; auth records are created through /auth/<name>/register.
+      ...(col.type === "view" || col.type === "auth" ? {} : {
         post: {
           tags, operationId: `create${T}`, summary: `Create a ${col.name} record`,
           requestBody: { required: true, content: json(ref(`${T}Input`)) },
