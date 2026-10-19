@@ -7,6 +7,61 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.26.4] — 2026-10-20
+
+### Security
+
+- **A hook egress list made of typos is refused.** Entries that weren't CIDRs were dropped
+  silently, so a deny list of only bad entries replaced the default list with nothing.
+  `hooks.http.deny` / `hooks.http.allow`, trusted proxies, the lockout duration (60s minimum),
+  CORS max-age and the SMTP From address are validated at save, through the admin and MCP.
+- **Admin emails ignore case.** `ops@` and `OPS@` could be two accounts; sign-in and the
+  uniqueness check now match without regard to case.
+- **The audit log credits a password change to the admin who made it.** Changing your own
+  password ends your session, and the actor was read afterwards, so the change was recorded
+  as anonymous.
+
+### Added
+
+- **Webhook redelivery:** `POST /api/v1/admin/webhooks/<id>/deliveries/<deliveryId>/redeliver`
+  queues a past delivery's payload again, and the admin's delivery drawer has a Redeliver
+  button.
+- **Feature-flag segments in the admin**, and rules that use `any`, `not`, segments or
+  prerequisites are edited as JSON.
+- `GET /api/v1/admin/runtime` returns the port and data directory the server runs with.
+
+### Fixed
+
+- **Log JSONPath search looked at the newest 500 entries only.** `limit` now caps the results
+  returned, and `matched` counts every match.
+- **Feature flags:** saving a flag in the admin dropped rules that used `any`, `not`,
+  segments or prerequisites, and condition values like `"02134"` were saved as numbers.
+- **Cron:** a six-field expression (with seconds) is refused; the scheduler runs at most once
+  a minute, so those jobs ran late or not at all.
+- **Webhooks:** a test fire on a disabled webhook is a 409 instead of a success that delivers
+  nothing; egress-blocked deliveries point to Settings → Hook egress.
+- **`/api/v1/admin/auth/me`** returns the admin's current email, not the one in the token.
+- **Storage and SMTP test failures** return 422 with the reason (a refused connection, a bad
+  key) instead of a generic 500 message.
+- **Audit log:** log searches and flag evaluations are no longer recorded as changes, and
+  `POST /admin/<resource>/<action>` is labelled with the action instead of `create`.
+- **Admin UI**, from a full pass in a browser:
+  - Errors without an `error` field, or that aren't JSON, are shown instead of read as
+    success; saves and deletes say why they failed.
+  - Records: empty number, relation, select and geo values save as null; JSON and vector
+    fields flag invalid input; dates use a date-time picker; record history with restore;
+    create users; export the selection; import errors listed; sortable columns.
+  - Collections: vector, editor, geoPoint and password fields in the editor; autodate create /
+    update toggles; the history toggle; a type switch keeps your fields; view errors shown as
+    text; the schema table lines up at any width.
+  - The theme settings colour the whole admin; the Application tab shows the real port and
+    data directory; the Settings tab is kept in the URL.
+  - Changing your own superuser email keeps your row editable; a password change says to sign
+    in again.
+  - Number inputs no longer clamp while you type; ⌘↵ runs SQL from inside the editor; Logs
+    filters apply at once.
+  - Fonts are served with the admin (Google Fonts was blocked by the admin's own CSP).
+
 ## [0.26.3] — 2026-10-19
 
 ### Security
