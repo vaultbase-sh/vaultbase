@@ -77,6 +77,12 @@ describe("API tokens as the docs show them (Bearer vbat_…)", () => {
     expect(res.status).toBe(200);
   });
 
+  it("the token verifier takes the prefix too (realtime and SSE auth go through it)", async () => {
+    const { verifyAuthToken } = await import("../core/sec.ts");
+    const { token } = await mintApiToken({ name: "rt", scopes: ["read"], createdBy: "a1", createdByEmail: "ops@test.local" }, SECRET);
+    expect((await verifyAuthToken(token, SECRET))?.viaApiToken).toBe(true);
+  });
+
   it("an unknown token is still nobody (legitimate path)", async () => {
     await createPublicCollection({ name: "secrets", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: "", view_rule: "" });
     expect((await call("GET", "/secrets", "vbat_not.a.token")).status).toBe(403);

@@ -101,6 +101,9 @@ export async function verifyAuthToken(
   opts: VerifyOpts = {}
 ): Promise<VerifiedAuth | null> {
   const recheck = opts.recheckPrincipal ?? true;
+  // API tokens are handed out as vbat_<jwt>; take them that way wherever a
+  // token arrives (realtime auth messages, SSE, request bodies).
+  if (token.startsWith("vbat_")) token = token.slice(5);
   try {
     const payload = verifyHs256(token, jwtSecret, { issuer: ISSUER, ...(opts.audience ? { audience: opts.audience } : {}) });
     if (!payload) return null;

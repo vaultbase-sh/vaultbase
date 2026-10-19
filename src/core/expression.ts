@@ -202,14 +202,19 @@ export function ruleSyntaxError(input: string): string | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   if (trimmed.length > 4096) return "rule is longer than 4096 characters";
+  const ts = new TokenStream(trimmed);
   try {
-    const ts = new TokenStream(trimmed);
     parseOr(ts);
     ts.skipWs();
     if (ts.pos !== ts.src.length) return `unexpected input at position ${ts.pos + 1}: '${ts.src.slice(ts.pos, ts.pos + 20)}'`;
     return null;
   } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    // The parser's own errors say what's wrong; anything else (an operand
+    // missing at the end, which it reads past) gets the position instead.
+    if (e instanceof Error && !(e instanceof TypeError)) return e.message;
+    return ts.pos >= ts.src.length
+      ? "the rule ends too early: something is missing at the end"
+      : `doesn't parse near position ${ts.pos + 1}: '${ts.src.slice(ts.pos, ts.pos + 20)}'`;
   }
 }
 

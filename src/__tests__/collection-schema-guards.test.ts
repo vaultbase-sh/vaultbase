@@ -95,5 +95,8 @@ describe("collection schema guards", () => {
     const r = await api("PATCH", `/collections/${col.id}`, { view_rule: "(a = 1" });
     expect(r.status).toBe(422);
     expect(JSON.stringify(r.json.details)).toContain("view_rule");
+    const { ruleSyntaxError } = await import("../core/expression.ts");
+    expect(ruleSyntaxError("title ===")).toContain("near position");
+    expect(ruleSyntaxError("title = ")).toContain("ends too early");
   });
 });
