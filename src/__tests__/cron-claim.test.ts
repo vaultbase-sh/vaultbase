@@ -43,3 +43,13 @@ describe("cron scheduler claims each slot once", () => {
     expect(row.last_status).toBe("ok");
   });
 });
+
+describe("validateCron", () => {
+  it("takes five fields and @names, refuses a seconds field", async () => {
+    const { validateCron } = await import("../core/jobs.ts");
+    expect(validateCron("*/5 * * * *")).toBeNull();
+    expect(validateCron("@hourly")).toBeNull();
+    expect(validateCron("*/10 * * * * *")).toContain("seconds field");
+    expect(validateCron("* * *")).toContain("got 3");
+  });
+});

@@ -70,6 +70,14 @@ export function nextRunFromCron(cronExpr: string, fromSec?: number): number {
 }
 
 export function validateCron(cronExpr: string): string | null {
+  const fields = cronExpr.trim().split(/\s+/);
+  // The scheduler checks every 30s, so a seconds field would run late or be
+  // skipped. Only five-field expressions (and @hourly-style names) are taken.
+  if (!fields[0]?.startsWith("@") && fields.length !== 5) {
+    return fields.length === 6
+      ? "Use five fields (minute hour day month weekday). Jobs run at most once a minute, so a seconds field isn't supported."
+      : `Expected five fields (minute hour day month weekday), got ${fields.length}`;
+  }
   try { CronExpressionParser.parse(cronExpr, { tz: "UTC" }); return null; }
   catch (e) { return e instanceof Error ? e.message : "Invalid cron expression"; }
 }
