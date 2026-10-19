@@ -87,7 +87,9 @@ export class ToolRegistry {
    */
   async call(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
     const { result, status } = await this.dispatch(name, args, ctx);
-    if (name !== "vaultbase.run_sql") {
+    // run_sql audits its own calls, with the query, but only once its handler
+    // runs: one refused before that (scope, unknown) is recorded here.
+    if (name !== "vaultbase.run_sql" || status === 403 || status === 404) {
       const failure = result.isError ? result.content.map((c) => ("text" in c ? c.text : "")).join(" ") : "";
       await recordAuditEvent({
         actor: { id: ctx.adminId, email: ctx.adminEmail },

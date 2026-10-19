@@ -68,4 +68,24 @@ describe("MCP audit", () => {
     expect(await entries()).toHaveLength(0);
     expect((await listAuditEntries({})).data.some((e) => e.action === "mcp.sql.read")).toBe(true);
   });
+
+  it("records a run_sql call refused for its scope", async () => {
+    const reg = await buildRegistry(false);
+    const r = await reg.call("vaultbase.run_sql", { query: "SELECT 1" }, ctx(["mcp:read"]));
+    expect(r.isError).toBe(true);
+    const rows = await entries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe(403);
+  });
+
+  it("update_setting checks values as PATCH /admin/settings does", async () => {
+    const reg = await buildRegistry(false);
+    const bad = await reg.call("vaultbase.update_setting", { key: "backups.cron", value: "not a cron" }, ctx(["mcp:read", "mcp:admin"]));
+    expect(bad.isError).toBe(true);
+    const { getSetting } = await import("../api/settings.ts");
+    expect(getSetting("backups.cron", "")).not.toBe("not a cron");
+    const ok = await reg.call("vaultbase.update_setting", { key: "backups.cron", value: "0 4 * * *" }, ctx(["mcp:read", "mcp:admin"]));
+    expect(ok.isError).toBeFalsy();
+    expect(getSetting("backups.cron", "")).toBe("0 4 * * *");
+  });
 });

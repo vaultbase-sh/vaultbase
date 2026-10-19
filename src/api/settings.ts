@@ -296,6 +296,70 @@ export function validateRetentionDays(value: unknown): string | null {
   return null;
 }
 
+/**
+ * The first problem with a settings change, or null. Checked for the whole
+ * change before any of it is written, so a bad value doesn't half-apply it.
+ * Shared by PATCH /admin/settings and MCP's update_setting.
+ */
+export function validateSettingsPatch(body: Record<string, unknown>): string | null {
+  for (const [k, v] of Object.entries(body)) {
+    if (k === SESSION_MAX_KEY) {
+      const err = validateSessionMaxSeconds(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (isAuthWindowKey(k)) {
+      const err = validateWindowSeconds(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "files.max_upload_size") {
+      const err = validateMaxUploadSize(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "maintenance.retention_days" || k === "audit.retention_days") {
+      const err = validateRetentionDays(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "backups.keep") {
+      const err = validateBackupKeep(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "storage.driver" && v !== "" && !listStorageDrivers().some((d) => d.name === v)) {
+      return `${k}: no storage driver named '${String(v)}' is registered`;
+    }
+    if (k === "email.transport" && v !== "" && !listEmailTransports().some((t) => t.name === v)) {
+      return `${k}: no email transport named '${String(v)}' is registered`;
+    }
+    if (k === "backups.cron") {
+      const err = validateCron(String(v).trim());
+      if (err) return `${k}: ${err}`;
+    }
+  }
+  return null;
+}
+
+/** Write a validated settings change and refresh what depends on settings. */
+export async function applySettingsPatch(body: Record<string, unknown>): Promise<void> {
+  for (const [k, v] of Object.entries(body)) {
+    // The masked value the UI read and sent back: keep what's stored.
+    if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
+    await setSetting(k, String(v));
+  }
+  // Bust caches that depend on settings
+  invalidateRateLimitCache();
+  invalidateEmailCache();
+  // Storage driver / S3 creds may have changed — drop the cached client
+  // and the local thumb cache (different bucket means different objects)
+  invalidateStorageCache();
+  clearThumbCache();
+  invalidateEgressCache();
+  invalidateCorsCache();
+  // Re-arm the update-check scheduler if the toggle flipped.
+  if (Object.prototype.hasOwnProperty.call(body, "update_check.enabled")) {
+    if (String(body["update_check.enabled"]) === "1") startUpdateCheckScheduler();
+    else stopUpdateCheckScheduler();
+  }
+}
+
 export function makeSettingsPlugin(jwtSecret: string) {
   return new Elysia({ name: "settings" })
     .use(adminGuard(jwtSecret))
@@ -307,59 +371,9 @@ export function makeSettingsPlugin(jwtSecret: string) {
     .patch(
       "/admin/settings",
       async ({ body, set }) => {
-        // Pre-validate auth window keys before any write — reject the whole
-        // PATCH on the first invalid value rather than half-applying.
-        for (const [k, v] of Object.entries(body)) {
-          if (k === SESSION_MAX_KEY) {
-            const err = validateSessionMaxSeconds(v);
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-          if (isAuthWindowKey(k)) {
-            const err = validateWindowSeconds(v);
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-          if (k === "files.max_upload_size") {
-            const err = validateMaxUploadSize(v);
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-          if (k === "maintenance.retention_days" || k === "audit.retention_days") {
-            const err = validateRetentionDays(v);
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-          if (k === "backups.keep") {
-            const err = validateBackupKeep(v);
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-          if (k === "storage.driver" && v !== "" && !listStorageDrivers().some((d) => d.name === v)) {
-            set.status = 422; return { error: `${k}: no storage driver named '${String(v)}' is registered`, code: 422 };
-          }
-          if (k === "email.transport" && v !== "" && !listEmailTransports().some((t) => t.name === v)) {
-            set.status = 422; return { error: `${k}: no email transport named '${String(v)}' is registered`, code: 422 };
-          }
-          if (k === "backups.cron") {
-            const err = validateCron(String(v).trim());
-            if (err) { set.status = 422; return { error: `${k}: ${err}`, code: 422 }; }
-          }
-        }
-        for (const [k, v] of Object.entries(body)) {
-          // The masked value the UI read and sent back: keep what's stored.
-          if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
-          await setSetting(k, String(v));
-        }
-        // Bust caches that depend on settings
-        invalidateRateLimitCache();
-        invalidateEmailCache();
-        // Storage driver / S3 creds may have changed — drop the cached client
-        // and the local thumb cache (different bucket means different objects)
-        invalidateStorageCache();
-        clearThumbCache();
-        invalidateEgressCache();
-        invalidateCorsCache();
-        // Re-arm the update-check scheduler if the toggle flipped.
-        if (Object.prototype.hasOwnProperty.call(body, "update_check.enabled")) {
-          if (String(body["update_check.enabled"]) === "1") startUpdateCheckScheduler();
-          else stopUpdateCheckScheduler();
-        }
+        const err = validateSettingsPatch(body);
+        if (err) { set.status = 422; return { error: err, code: 422 }; }
+        await applySettingsPatch(body);
         return { data: getAllSettingsMasked() };
       },
       { requireAdmin: true, body: t.Record(t.String(), t.Any()) }

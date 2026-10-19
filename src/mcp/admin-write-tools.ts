@@ -34,7 +34,7 @@ import { dispatchEvent } from "../core/webhooks.ts";
 import { runJob, validateCron, invalidateJobsCache } from "../core/jobs.ts";
 import { invalidateRoutesCache, ROUTE_METHODS } from "../core/routes.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
-import { getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK } from "../api/settings.ts";
+import { applySettingsPatch, getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK, validateSettingsPatch } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { ToolRegistry, asJsonText } from "./tools.ts";
 import { hasScope } from "../core/api-tokens.ts";
@@ -634,7 +634,11 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if (shouldEncryptSettingKey(key) && String(args.value) === SECRET_SETTING_MASK) {
         return asJsonText({ updated: false, key: args.key, reason: "masked value; stored secret kept" });
       }
-      await setSetting(key, String(args.value));
+      // The same checks and cache refreshes as PATCH /admin/settings.
+      const change = { [key]: String(args.value) };
+      const err = validateSettingsPatch(change);
+      if (err) throw new Error(err);
+      await applySettingsPatch(change);
       return asJsonText({ updated: true, key: args.key });
     },
   });
