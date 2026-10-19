@@ -83,6 +83,20 @@ describe("JSONPath search", () => {
     // A plain path still reads the entry (legitimate path).
     expect((await searchLogs("$.status")).matched).toBe(3);
   });
+
+  it("limit caps the results, not the entries searched", async () => {
+    const { searchLogs } = await import("../core/file-logger.ts");
+    await insertLog("GET", "/api/old", 500, 1, null, null);
+    for (let i = 0; i < 5; i++) await insertLog("GET", `/api/new${i}`, 200, 1, null, null);
+    await Bun.sleep(20);
+    // The match is older than the newest 3 entries.
+    const r = await searchLogs("$[?(@.status >= 500)]", { limit: 3 });
+    expect(r.matched).toBe(1);
+    expect(r.scanned).toBe(6);
+    const all = await searchLogs("$.status", { limit: 2 });
+    expect(all.results).toHaveLength(2);
+    expect(all.matched).toBe(6);
+  });
 });
 
 describe("log buffer", () => {

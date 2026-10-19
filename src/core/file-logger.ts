@@ -364,6 +364,9 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
   return cached.entries;
 }
 
+/** Entries one search looks through, newest first. */
+const SEARCH_SCAN_LIMIT = 100_000;
+
 export interface SearchResult {
   matched: number;
   scanned: number;
@@ -372,13 +375,17 @@ export interface SearchResult {
 
 /**
  * Run a JSONPath expression against entries in the requested date range.
- * Each entry is the haystack; matches are returned per-entry.
+ * Each entry is the haystack; matches are returned per-entry. `limit` caps
+ * the results returned, not the entries searched (it used to do both, so a
+ * search with limit 500 only looked at the newest 500 entries), and
+ * `matched` counts every match.
  */
 export async function searchLogs(
   jsonpath: string,
   opts: ReadOptions = {}
 ): Promise<SearchResult> {
-  const entries = await readLogs({ ...opts, limit: opts.limit ?? 100_000 });
+  const entries = await readLogs({ ...opts, limit: SEARCH_SCAN_LIMIT });
+  const maxResults = opts.limit ?? 500;
   // A filter at the root (`$[?(@.status >= 400)]`) selects from an array:
   // given the entry itself it tested each field, so it never matched an
   // entry. Filters get the entry as a one-item list; plain paths
@@ -397,8 +404,7 @@ export async function searchLogs(
     }
     if (Array.isArray(m) && m.length > 0) {
       matched++;
-      results.push({ entry: e, matches: m });
-      if (results.length >= (opts.limit ?? 500)) break;
+      if (results.length < maxResults) results.push({ entry: e, matches: m });
     }
   }
   return { matched, scanned, results };
