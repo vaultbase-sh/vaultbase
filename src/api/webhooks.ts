@@ -115,11 +115,33 @@ export function makeWebhooksPlugin(jwtSecret: string) {
       const rows = await getDb().select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1);
       const w = rows[0];
       if (!w) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
+      if (w.enabled !== 1) { set.status = 409; return { error: "This webhook is disabled. Enable it to send a test.", code: 409 }; }
       // Delivered to this webhook only. (It used to add the test event to
       // this webhook's list and dispatch it, which every `*` webhook
       // received too.)
       await dispatchEvent({ event: `__test.${params.id}`, data: { test: true, webhook_id: w.id }, webhookId: w.id });
       return { data: { ok: true } };
+    }, { requireAdmin: true })
+
+    // Send a past delivery again, as a new delivery with the same payload
+    // (same event id, so receivers that dedupe on it still can).
+    .post("/admin/webhooks/:id/deliveries/:deliveryId/redeliver", async ({ params, set }) => {
+      const db = getDb();
+      const w = (await db.select().from(webhooks).where(eq(webhooks.id, params.id)).limit(1))[0];
+      if (!w) { set.status = 404; return { error: "Webhook not found", code: 404 }; }
+      if (w.enabled !== 1) { set.status = 409; return { error: "This webhook is disabled. Enable it to redeliver.", code: 409 }; }
+      const d = (await db.select().from(webhookDeliveries)
+        .where(and(eq(webhookDeliveries.id, params.deliveryId), eq(webhookDeliveries.webhook_id, params.id)))
+        .limit(1))[0];
+      if (!d) { set.status = 404; return { error: "Delivery not found", code: 404 }; }
+      const now = Math.floor(Date.now() / 1000);
+      const id = crypto.randomUUID();
+      await db.insert(webhookDeliveries).values({
+        id, webhook_id: w.id, event: d.event, payload: d.payload,
+        attempt: 1, status: "pending",
+        scheduled_at: now, created_at: now,
+      });
+      return { data: { id } };
     }, { requireAdmin: true })
 
     // Delivery log — per-webhook recent deliveries.
