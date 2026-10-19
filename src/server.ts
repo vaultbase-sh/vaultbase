@@ -346,7 +346,11 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       .use(makeAdminsPlugin(config.jwtSecret))
       .use(makeBackupPlugin(config.jwtSecret, config.dbPath))
       .use(makeIndexesPlugin(config.jwtSecret))
-      .use(makeSettingsPlugin(config.jwtSecret))
+      .use(makeSettingsPlugin(config.jwtSecret, {
+        port: config.port,
+        dataDir: config.dataDir,
+        jwtSecretSource: config.secretsFromDataDir?.includes("VAULTBASE_JWT_SECRET") ? "data_dir" : "env",
+      }))
       .use(makeHooksPlugin(config.jwtSecret))
       .use(makeRoutesPlugin(config.jwtSecret))
       .use(makeJobsPlugin(config.jwtSecret))

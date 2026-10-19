@@ -5,7 +5,8 @@ import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
 import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers } from "../core/storage.ts";
-import { invalidateEgressCache } from "../core/hook-egress.ts";
+import { invalidateEgressCache, parseCidr } from "../core/hook-egress.ts";
+import { isIP } from "node:net";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
@@ -301,8 +302,46 @@ export function validateRetentionDays(value: unknown): string | null {
  * change before any of it is written, so a bad value doesn't half-apply it.
  * Shared by PATCH /admin/settings and MCP's update_setting.
  */
+/** Comma-separated CIDRs (or bare IPs, when `bareIps`). Names the first entry that isn't one. */
+function validateAddressList(v: unknown, bareIps: boolean): string | null {
+  const bad = String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+    .find((x) => (x.includes("/") || !bareIps ? parseCidr(x) === null : isIP(x) === 0));
+  return bad === undefined ? null : `'${bad}' isn't ${bareIps ? "an IP address or CIDR" : "a CIDR"} (e.g. 10.0.0.0/8)`;
+}
+
+function validateIntAtLeast(v: unknown, min: number): string | null {
+  const raw = String(v ?? "").trim();
+  if (raw === "") return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min ? null : `must be a whole number of at least ${min}`;
+}
+
+/** `ops@example.com` or `Ops <ops@example.com>`. */
+const FROM_RE = /^(?:[^<>@]*<\s*[^\s<>@]+@[^\s<>@]+\s*>|[^\s<>@]+@[^\s<>@]+)$/;
+
 export function validateSettingsPatch(body: Record<string, unknown>): string | null {
   for (const [k, v] of Object.entries(body)) {
+    if (k === "hooks.http.deny" || k === "hooks.http.allow") {
+      if (!(k === "hooks.http.deny" && String(v).trim().toLowerCase() === "off")) {
+        const err = validateAddressList(v, false);
+        if (err) return `${k}: ${err}`;
+      }
+    }
+    if (k === "security.trusted_proxies") {
+      const err = validateAddressList(v, true);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "auth.lockout.duration_seconds") {
+      const err = validateIntAtLeast(v, 60);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "cors.max_age") {
+      const err = validateIntAtLeast(v, 0);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "smtp.from" && String(v ?? "").trim() !== "" && !FROM_RE.test(String(v).trim())) {
+      return `${k}: expected an address like ops@example.com or "Ops <ops@example.com>"`;
+    }
     if (k === SESSION_MAX_KEY) {
       const err = validateSessionMaxSeconds(v);
       if (err) return `${k}: ${err}`;
@@ -331,7 +370,7 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
     }
     if (k === "backups.cron") {
       const err = validateCron(String(v).trim());
-      if (err) return `${k}: ${err}`;
+      if (err) return `Backup schedule isn't a valid cron expression: ${err}`;
     }
   }
   return null;
@@ -360,9 +399,20 @@ export async function applySettingsPatch(body: Record<string, unknown>): Promise
   }
 }
 
-export function makeSettingsPlugin(jwtSecret: string) {
+/** What the Application tab shows: how this server was started. */
+export interface RuntimeInfo {
+  port: number;
+  dataDir: string;
+  /** Whether the JWT secret came from the environment or the data directory. */
+  jwtSecretSource: "env" | "data_dir";
+}
+
+export function makeSettingsPlugin(jwtSecret: string, runtime?: RuntimeInfo) {
   return new Elysia({ name: "settings" })
     .use(adminGuard(jwtSecret))
+    .get("/admin/runtime", () => {
+      return { data: runtime ?? null };
+    }, { requireAdmin: true })
     // Read all settings
     .get("/admin/settings", async () => {
       return { data: getAllSettingsMasked() };
@@ -385,6 +435,9 @@ export function makeSettingsPlugin(jwtSecret: string) {
         if (!body.to || typeof body.to !== "string") {
           set.status = 422; return { error: "`to` required", code: 422 };
         }
+        if (!/^[^\s<>@]+@[^\s<>@]+$/.test(body.to.trim())) {
+          set.status = 422; return { error: `'${body.to}' isn't an email address`, code: 422 };
+        }
         const v = await verifySmtp();
         if (!v.ok) { set.status = 422; return { error: v.error ?? "SMTP verify failed", code: 422 }; }
         try {
@@ -395,8 +448,8 @@ export function makeSettingsPlugin(jwtSecret: string) {
           });
           return { data: { messageId: info.messageId } };
         } catch (e) {
-          set.status = 500;
-          return { error: e instanceof Error ? e.message : String(e), code: 500 };
+          set.status = 422;
+          return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
       { requireAdmin: true, body: t.Object({ to: t.String() }) }
@@ -404,7 +457,9 @@ export function makeSettingsPlugin(jwtSecret: string) {
     // Storage round-trip test: write probe object → read back → delete
     .post("/admin/settings/storage/test", async ({ set }) => {
       const result = await testStorage();
-      if (!result.ok) { set.status = 500; return { error: result.error ?? "Storage test failed", code: 500 }; }
+      // 422, not 500: a 5xx message is replaced with a generic one, and the
+      // reason (a refused connection, a bad key) is what the admin needs.
+      if (!result.ok) { set.status = 422; return { error: result.error ?? "Storage test failed", code: 422 }; }
       return { data: result };
     }, { requireAdmin: true })
     // Storage status — what driver is in use, plus relevant identifiers
