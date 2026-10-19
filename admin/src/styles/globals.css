@@ -2975,3 +2975,26 @@ a { color: inherit; text-decoration: none; }
 /* Sections keep their size when "More" adds rows; the sidebar scrolls. */
 .sidebar { overflow-y: auto; }
 .sidebar > * { flex-shrink: 0; }
+
+/* Favorite star on each sidebar row: shown on hover, or always once set. */
+.sb-nav-row { position: relative; }
+.sb-fav {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  padding: 4px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--vb-fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-fast);
+}
+.sb-nav-row:hover .sb-fav,
+.sb-fav:focus-visible { opacity: 0.7; }
+.sb-fav:hover { opacity: 1; color: var(--vb-fg-2); }
+.sb-fav.on { opacity: 1; color: var(--vb-accent); }
+.sb-fav.on svg { fill: currentColor; }

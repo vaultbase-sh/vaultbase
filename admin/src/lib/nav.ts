@@ -66,6 +66,11 @@ export const OPTIONAL_NAV_ITEMS: NavItem[] = NAV_ITEMS.filter((i) => i.optional)
 /** Setting holding the optional pages pinned to the sidebar, comma-separated ids. */
 export const SIDEBAR_PINNED_KEY = "admin.sidebar.pinned";
 
+/** Setting holding one admin's favorite pages, comma-separated ids, shown first. */
+export function favoritesKey(adminId: string): string {
+  return `admin.favorites.${adminId}`;
+}
+
 export function parsePinned(value: string | undefined): string[] {
   return (value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
@@ -76,8 +81,13 @@ export function isNavActive(item: NavItem, pathname: string): boolean {
   return item.end ? path === to : path === to || path.startsWith(to + "/");
 }
 
-/** Whether an item belongs in the sidebar right now. */
-export function isNavShown(item: NavItem, s: { pinned: string[]; inUse: string[]; pathname: string }): boolean {
+/** Whether an item belongs in the sidebar right now. Favorites always do. */
+export function isNavShown(item: NavItem, s: { pinned: string[]; inUse: string[]; pathname: string; favorites?: string[] }): boolean {
   if (!item.optional) return true;
-  return s.pinned.includes(item.id) || s.inUse.includes(item.id) || isNavActive(item, s.pathname);
+  return s.pinned.includes(item.id) || s.inUse.includes(item.id) || !!s.favorites?.includes(item.id) || isNavActive(item, s.pathname);
+}
+
+/** Favorites first, in the order they were added; known ids only. */
+export function favoriteItems(favorites: string[]): NavItem[] {
+  return favorites.map((id) => NAV_ITEMS.find((i) => i.id === id)).filter((i): i is NavItem => !!i);
 }

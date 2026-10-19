@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, type ApiResponse } from "../api.ts";
 
 interface AuthState {
+  id: string;
   email: string;
   isAuthed: boolean;
   expiresAt: number | null;
@@ -17,6 +18,7 @@ interface AuthState {
 interface MePayload { id: string; email: string; aud: string; exp?: number }
 
 export const useAuth = create<AuthState>((set) => ({
+  id: "",
   email: "",
   isAuthed: false,
   expiresAt: null,
@@ -25,13 +27,14 @@ export const useAuth = create<AuthState>((set) => ({
     const res = await api.get<ApiResponse<MePayload>>("/api/v1/admin/auth/me");
     if (res.data?.id) {
       set({
+        id: res.data.id,
         email: res.data.email ?? "",
         expiresAt: res.data.exp ?? null,
         isAuthed: true,
         loaded: true,
       });
     } else {
-      set({ email: "", expiresAt: null, isAuthed: false, loaded: true });
+      set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true });
     }
   },
   signIn: async () => {
@@ -42,7 +45,7 @@ export const useAuth = create<AuthState>((set) => ({
     try { await api.post<ApiResponse<unknown>>("/api/v1/auth/logout", {}); } catch { /* noop */ }
     const { setMemoryToken } = await import("../api.ts");
     setMemoryToken(null);
-    set({ email: "", expiresAt: null, isAuthed: false, loaded: true });
+    set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true });
   },
   refresh: async () => {
     await useAuth.getState().load();

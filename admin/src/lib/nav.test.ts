@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { NAV_ITEMS, OPTIONAL_NAV_ITEMS, isNavActive, isNavShown, parsePinned } from "./nav.ts";
+import { NAV_ITEMS, OPTIONAL_NAV_ITEMS, favoriteItems, favoritesKey, isNavActive, isNavShown, parsePinned } from "./nav.ts";
 
 const item = (id: string) => NAV_ITEMS.find((i) => i.id === id)!;
 const none = { pinned: [], inUse: [], pathname: "/_/" };
@@ -30,5 +30,11 @@ describe("admin sidebar pages", () => {
   it("read the pinned setting leniently", () => {
     expect(parsePinned(undefined)).toEqual([]);
     expect(parsePinned(" sql, flags ,,")).toEqual(["sql", "flags"]);
+  });
+
+  it("show favorites first, in the order added, and always", () => {
+    expect(favoriteItems(["sql", "hooks", "gone"]).map((i) => i.id)).toEqual(["sql", "hooks"]);
+    expect(isNavShown(item("sql"), { ...none, favorites: ["sql"] })).toBe(true);
+    expect(favoritesKey("a1")).toBe("admin.favorites.a1");
   });
 });

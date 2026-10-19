@@ -5,7 +5,8 @@ import { VaultbaseLogo, VaultbaseWordmark } from "./VaultbaseLogo.tsx";
 import { useAuth } from "../stores/auth.ts";
 import { useVersion } from "../stores/version.ts";
 import { useSidebar } from "../stores/sidebar.ts";
-import { NAV_SECTIONS, isNavActive, isNavShown, type NavItem } from "../lib/nav.ts";
+import { NAV_SECTIONS, favoriteItems, isNavActive, isNavShown, type NavItem } from "../lib/nav.ts";
+import { toast } from "../stores/toast.ts";
 import "../styles/sidebar-next.css";
 
 /* ── SIDEBAR EXPERIMENT ──────────────────────────────────────────────────────
@@ -48,10 +49,10 @@ export const Sidebar: React.FC = () => {
     ? adminEmail.slice(0, 19) + "…"
     : adminEmail ?? "";
 
-  // Optional pages (lib/nav.ts) appear once they're in use, pinned, or open;
-  // the rest wait under "More".
+  // Favorites go first. Optional pages (lib/nav.ts) appear once they're in
+  // use, pinned, favorited or open; the rest wait under "More".
   const { pathname } = useLocation();
-  const { pinned, inUse, loaded, load, refreshUsage } = useSidebar();
+  const { pinned, inUse, favorites, loaded, load, refreshUsage, toggleFavorite } = useSidebar();
   const [moreOpen, setMoreOpen] = React.useState(false);
   React.useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   // Leaving an optional page: it may have gained (or lost) its first entry.
@@ -61,10 +62,16 @@ export const Sidebar: React.FC = () => {
     prevPath.current = pathname;
     if (left && !isNavActive(left, pathname)) void refreshUsage(left.id);
   }, [pathname, refreshUsage]);
-  const shown = (item: NavItem) => !loaded ? !item.optional || isNavActive(item, pathname) : isNavShown(item, { pinned, inUse, pathname });
+  const shown = (item: NavItem) => !loaded ? !item.optional || isNavActive(item, pathname) : isNavShown(item, { pinned, inUse, favorites, pathname });
   const hidden = loaded ? NAV_SECTIONS.flatMap((s) => s.items).filter((i) => !shown(i)) : [];
+  const favs = loaded ? favoriteItems(favorites) : [];
+  const isFav = (item: NavItem) => favorites.includes(item.id);
+  const star = async (item: NavItem) => {
+    const err = await toggleFavorite(item.id);
+    if (err) toast(err, "info");
+  };
   const link = (item: NavItem) => (
-    <li key={item.to}>
+    <li key={item.to} className="sb-nav-row">
       <NavLink
         to={item.to}
         end={item.end}
@@ -75,6 +82,18 @@ export const Sidebar: React.FC = () => {
         <Icon name={item.icon} size={13} />
         <span>{item.label}</span>
       </NavLink>
+      {loaded && (
+        <button
+          type="button"
+          className={`sb-fav${isFav(item) ? " on" : ""}`}
+          aria-pressed={isFav(item)}
+          aria-label={isFav(item) ? `Remove ${item.label} from favorites` : `Add ${item.label} to favorites`}
+          title={isFav(item) ? "Remove from favorites" : "Add to favorites"}
+          onClick={() => void star(item)}
+        >
+          <Icon name="star" size={12} />
+        </button>
+      )}
     </li>
   );
 
@@ -87,8 +106,14 @@ export const Sidebar: React.FC = () => {
         <VaultbaseWordmark height={15} className="sb-brand-name" />
         {version && <div className="sb-brand-version mono">v{version}</div>}
       </div>
+      {favs.length > 0 && (
+        <div className="sb-section">
+          <div className="sb-section-title">Favorites</div>
+          <ul className="sb-nav">{favs.map(link)}</ul>
+        </div>
+      )}
       {NAV_SECTIONS.map((sec) => {
-        const items = sec.items.filter(shown);
+        const items = sec.items.filter((i) => shown(i) && !isFav(i));
         if (items.length === 0) return null;
         return (
           <div className="sb-section" key={sec.label}>
