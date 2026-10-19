@@ -400,7 +400,13 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         return { error: `Upload too large (max ${cap} bytes)`, code: 413 };
       }
 
-      const formData = await request.formData();
+      let formData: Awaited<ReturnType<Request["formData"]>>;
+      try {
+        formData = await request.formData();
+      } catch {
+        set.status = 400;
+        return { error: "Send the file as multipart/form-data, in a field named 'file'", code: 400 };
+      }
       const fileEntries = (formData.getAll("file") as unknown[]).filter((v): v is File => v instanceof File);
       const total = fileEntries.reduce((n, f) => n + f.size, 0);
       if (total > cap) {

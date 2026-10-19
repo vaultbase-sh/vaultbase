@@ -301,7 +301,13 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       { const r = noRestore(set); if (r) return r; }
       const refused = clusterRestoreRefusal(set);
       if (refused) return refused;
-      const formData = await request.formData();
+      let formData: Awaited<ReturnType<Request["formData"]>>;
+      try {
+        formData = await request.formData();
+      } catch {
+        set.status = 400;
+        return { error: "No file uploaded (expected multipart 'file' field)", code: 400 };
+      }
       const file = formData.get("file");
       if (!(file instanceof File)) {
         set.status = 400;

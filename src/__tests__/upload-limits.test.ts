@@ -99,3 +99,19 @@ describe("upload size limits", () => {
     expect(r.status).toBe(422);
   });
 });
+
+describe("malformed upload bodies", () => {
+  it("answer 400, not 500, when the body isn't multipart", async () => {
+    for (const [type, body] of [["multipart/form-data; boundary=xyz", "garbage"], ["application/json", "{}"], ["text/plain", "x"]]) {
+      const res = await makeFilesPlugin(dir, SECRET).handle(
+        new Request(`http://localhost/files/posts/${recordId}/cover`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": type! },
+          body,
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain("multipart/form-data");
+    }
+  });
+});
