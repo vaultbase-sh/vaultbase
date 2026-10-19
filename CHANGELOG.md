@@ -7,6 +7,24 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.26.1] — 2026-10-19
+
+### Fixed
+
+- **`GET /api/v1/<collection>/<id>` takes `expand` and `fields`.** The OpenAPI spec and the
+  docs offered both, but the record came back as stored: no `expand`, every field. Get-one
+  now shapes the record with the same code as a list, so a related record the caller can't
+  view is still left out of `expand`. Singletons (`GET /api/v1/<name>`) take them too, and
+  the OpenAPI spec now lists them there. The
+  ETag stays that of the full record, so `If-None-Match` and `If-Match` work as before.
+- **`fields` no longer drops `expand`.** `?fields=id,title&expand=author` returned the two
+  fields without the expansion, on lists too; `expand` is kept when the request expands.
+
+### Changed
+
+- SDK 0.7.1: `collection(name).get(id, { expand, fields })`. `singleton(name).get()`
+  already sent them; the server now honours them. The API preview's SDK code includes them.
+
 ## [0.26.0] — 2026-10-19
 
 ### Added
