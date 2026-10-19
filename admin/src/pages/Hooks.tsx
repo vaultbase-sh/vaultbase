@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
-import { Dialog } from "primereact/dialog";
 import cronstrue from "cronstrue";
 import { CronExpressionParser } from "cron-parser";
 import { api, type ApiResponse, type Collection, type FieldDef, parseFields } from "../api.ts";
@@ -9,7 +8,7 @@ import {
   VbBtn, VbInput, VbField, VbPill, VbTable, VbEmptyState,
   type VbTableColumn,
 } from "../components/Vb.tsx";
-import { Toggle } from "../components/UI.tsx";
+import { Modal, Toggle } from "../components/UI.tsx";
 import { CodeEditor } from "../components/CodeEditor.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
@@ -519,19 +518,10 @@ function EditorHeader({
   title, idHint,
 }: { title: string; idHint?: string | null }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
-      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--vb-fg)" }}>{title}</span>
-      {idHint && (
-        <span style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 11,
-          color: "var(--vb-fg-3)",
-          background: "var(--vb-bg-3)",
-          padding: "2px 6px",
-          borderRadius: 4,
-        }}>{idHint}</span>
-      )}
-    </div>
+    <>
+      <span>{title}</span>
+      {idHint && <span className="vb-ov__id">{idHint}</span>}
+    </>
   );
 }
 
@@ -664,13 +654,10 @@ function HookEditor({
   }
 
   return (
-    <Dialog
-      visible={open}
-      onHide={onClose}
-      header={<EditorHeader title={isNew ? "New hook" : (name || "Edit hook")} idHint={hook ? `${hook.id.slice(0, 12)}…` : null} />}
-      modal
-      draggable={false}
-      resizable={false}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={<EditorHeader title={isNew ? "New hook" : (name || "Edit hook")} idHint={hook ? `${hook.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
       contentStyle={EDITOR_CONTENT_STYLE}
@@ -764,7 +751,7 @@ function HookEditor({
           </EditorFootnote>
         </div>
       </div>
-    </Dialog>
+    </Modal>
   );
 }
 
@@ -939,13 +926,10 @@ function RouteEditor({
   }
 
   return (
-    <Dialog
-      visible={open}
-      onHide={onClose}
-      header={<EditorHeader title={isNew ? "New route" : (name || `${method} ${path}`)} idHint={route ? `${route.id.slice(0, 12)}…` : null} />}
-      modal
-      draggable={false}
-      resizable={false}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={<EditorHeader title={isNew ? "New route" : (name || `${method} ${path}`)} idHint={route ? `${route.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
       contentStyle={EDITOR_CONTENT_STYLE}
@@ -1019,7 +1003,7 @@ function RouteEditor({
           </EditorFootnote>
         </div>
       </div>
-    </Dialog>
+    </Modal>
   );
 }
 
@@ -1252,13 +1236,10 @@ function JobEditor({
     : cronAnalysis.valid ? "var(--vb-status-success)" : "var(--vb-status-danger)";
 
   return (
-    <Dialog
-      visible={open}
-      onHide={onClose}
-      header={<EditorHeader title={isNew ? "New cron job" : (name || "Edit job")} idHint={job ? `${job.id.slice(0, 12)}…` : null} />}
-      modal
-      draggable={false}
-      resizable={false}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={<EditorHeader title={isNew ? "New cron job" : (name || "Edit job")} idHint={job ? `${job.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
       contentStyle={EDITOR_CONTENT_STYLE}
@@ -1418,7 +1399,7 @@ function JobEditor({
           </EditorFootnote>
         </div>
       </div>
-    </Dialog>
+    </Modal>
   );
 }
 
@@ -1618,13 +1599,10 @@ function WorkerEditor({
   }
 
   return (
-    <Dialog
-      visible={open}
-      onHide={onClose}
-      header={<EditorHeader title={isNew ? "New worker" : (name || "Edit worker")} idHint={worker ? `${worker.id.slice(0, 12)}…` : null} />}
-      modal
-      draggable={false}
-      resizable={false}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={<EditorHeader title={isNew ? "New worker" : (name || "Edit worker")} idHint={worker ? `${worker.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
       contentStyle={EDITOR_CONTENT_STYLE}
@@ -1729,7 +1707,7 @@ function WorkerEditor({
           </EditorFootnote>
         </div>
       </div>
-    </Dialog>
+    </Modal>
   );
 }
 
@@ -1907,13 +1885,10 @@ function JobsLogTab() {
         </div>
       </div>
 
-      <Dialog
-        visible={!!selected}
-        onHide={() => setSelected(null)}
-        header={<EditorHeader title={selected ? `Job ${selected.id.slice(0, 12)}…` : ""} />}
-        modal
-        draggable={false}
-        resizable={false}
+      <Modal
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        title={<EditorHeader title={selected ? `Job ${selected.id.slice(0, 12)}…` : ""} />}
         style={{ width: 680 }}
         contentStyle={{ background: "var(--vb-bg-2)" }}
       >
@@ -1966,7 +1941,7 @@ function JobsLogTab() {
             )}
           </div>
         )}
-      </Dialog>
+      </Modal>
     </>
   );
 }

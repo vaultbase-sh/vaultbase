@@ -81,7 +81,8 @@ export const VbBtn: React.FC<{
   type?: "button" | "submit";
   title?: string;
   style?: React.CSSProperties;
-}> = ({ kind = "primary", size = "md", icon, iconRight, disabled, onClick, children, type = "button", title, style }) => {
+  autoFocus?: boolean;
+}> = ({ kind = "primary", size = "md", icon, iconRight, disabled, onClick, children, type = "button", title, style, autoFocus }) => {
   const sizes = size === "sm" ? { h: 26, px: 10, fs: 11.5 } : { h: 30, px: 12, fs: 12.5 };
   const styles: Record<string, React.CSSProperties> = {
     primary: { background: "var(--vb-accent)", color: "#fff", border: "1px solid transparent" },
@@ -95,6 +96,7 @@ export const VbBtn: React.FC<{
       onClick={onClick}
       disabled={disabled}
       title={title}
+      autoFocus={autoFocus}
       style={{
         ...styles[kind],
         height: sizes.h,

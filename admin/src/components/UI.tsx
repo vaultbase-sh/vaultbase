@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Dialog } from "primereact/dialog";
-import { Sidebar } from "primereact/sidebar";
+import { createPortal } from "react-dom";
 import Icon from "./Icon.tsx";
 import { useToast, type ToastSeverity } from "../stores/toast.ts";
 
@@ -58,86 +57,146 @@ export const StatCard: React.FC<{
   </div>
 );
 
-// ── Modal (PrimeReact Dialog) ─────────────────────────────────────────────────
+// ── Overlays: Modal and Drawer ───────────────────────────────────────────────
+// Rendered into a `.vb-layer` on <body>, so the admin theme's `.app`-scoped
+// rules (square corners, mono inputs and labels) reach them as they reach the
+// pages. Escape and a click outside close the topmost overlay only, and focus
+// goes back where it was when it closes.
+
+const overlayStack: symbol[] = [];
+
+function useOverlay(open: boolean, onClose: () => void, panel: React.RefObject<HTMLDivElement | null>, focusField = true) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const id = Symbol("overlay");
+    overlayStack.push(id);
+    const before = document.activeElement as HTMLElement | null;
+    // Focus the first field (or the panel), unless something inside asked first.
+    const t = window.setTimeout(() => {
+      const el = panel.current;
+      if (!el || el.contains(document.activeElement)) return;
+      const editable = ":not([disabled]):not([readonly]):not([type=hidden])";
+      const first = focusField
+        ? el.querySelector<HTMLElement>(`.vb-ov__body input${editable}, .vb-ov__body textarea${editable}, .vb-ov__body select${editable}`)
+        : null;
+      (first ?? el).focus({ preventScroll: true });
+    }, 0);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || overlayStack[overlayStack.length - 1] !== id) return;
+      // A PrimeReact dropdown open inside the overlay closes first.
+      if (document.querySelector(".p-dropdown-panel, .p-multiselect-panel")) return;
+      e.stopPropagation();
+      close.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("keydown", onKey);
+      const i = overlayStack.indexOf(id);
+      if (i >= 0) overlayStack.splice(i, 1);
+      if (before && document.contains(before)) before.focus({ preventScroll: true });
+    };
+  }, [open, panel, focusField]);
+}
+
+const OverlayHeader: React.FC<{
+  title: React.ReactNode;
+  idLabel?: string | undefined;
+  onClose: () => void;
+  extra?: React.ReactNode;
+}> = ({ title, idLabel, onClose, extra }) => (
+  <div className="vb-ov__head">
+    <div className="vb-ov__title">
+      {typeof title === "string" ? <span>{title}</span> : title}
+      {idLabel && <span className="vb-ov__id">{idLabel}</span>}
+    </div>
+    {extra}
+    <button type="button" className="vb-ov__icon" onClick={onClose} aria-label="Close" title="Close (Esc)">
+      <Icon name="x" size={14} />
+    </button>
+  </div>
+);
+
 export const Modal: React.FC<{
   open: boolean;
   onClose: () => void;
-  title: string;
-  footer?: React.ReactNode;
-  children: React.ReactNode;
-  width?: number;
-}> = ({ open, onClose, title, footer, children, width }) => (
-  <Dialog
-    visible={open}
-    onHide={onClose}
-    header={title}
-    footer={footer}
-    style={{ width: width ? `${width}px` : "520px" }}
-    modal
-    draggable={false}
-    resizable={false}
-  >
-    {children}
-  </Dialog>
-);
-
-// ── Drawer (PrimeReact Sidebar) ───────────────────────────────────────────────
-export const Drawer: React.FC<{
-  open: boolean;
-  onClose: () => void;
-  title: string;
+  title: React.ReactNode;
   idLabel?: string;
   footer?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ open, onClose, title, idLabel, footer, children }) => (
-  <Sidebar
-    visible={open}
-    onHide={onClose}
-    position="right"
-    style={{ width: "480px" }}
-    header={
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontWeight: 600, fontSize: 14 }}>{title}</span>
-        {idLabel && (
-          <span
-            className="mono"
-            style={{
-              fontSize: 11,
-              color: "var(--text-muted)",
-              background: "rgba(255,255,255,0.05)",
-              padding: "2px 6px",
-              borderRadius: 4,
-            }}
-          >
-            {idLabel}
-          </span>
-        )}
-      </div>
-    }
-  >
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
-      <div style={{ flex: 1, overflow: "auto" }}>{children}</div>
-      {footer && (
+  width?: number;
+  /** Panel style overrides (size, mostly). */
+  style?: React.CSSProperties;
+  /** Body style overrides; `padding: 0` for content that draws its own. */
+  contentStyle?: React.CSSProperties;
+  /** Offer a button that grows the panel to the whole window. */
+  maximizable?: boolean;
+}> = ({ open, onClose, title, idLabel, footer, children, width, style, contentStyle, maximizable }) => {
+  const panel = useRef<HTMLDivElement>(null);
+  const [max, setMax] = useState(false);
+  useOverlay(open, onClose, panel);
+  useEffect(() => { if (!open) setMax(false); }, [open]);
+  if (!open) return null;
+  return createPortal(
+    <div className="vb-layer">
+      <div className="vb-ov__mask" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
         <div
-          style={{
-            padding: "12px 20px",
-            borderTop: "1px solid var(--border-subtle)",
-            display: "flex",
-            flexWrap: "wrap",
-            rowGap: 8,
-            gap: "var(--space-2)",
-            justifyContent: "flex-end",
-            alignItems: "center",
-            background: "var(--bg-app)",
-            margin: "16px -20px -18px",
-          }}
+          ref={panel}
+          className="vb-ov vb-modal"
+          data-max={max ? "true" : undefined}
+          role="dialog"
+          aria-modal="true"
+          tabIndex={-1}
+          style={{ width: width ?? 520, ...style, ...(max ? { width: "100vw", height: "100vh", maxWidth: "none", maxHeight: "none" } : {}) }}
         >
-          {footer}
+          <OverlayHeader
+            title={title}
+            idLabel={idLabel}
+            onClose={onClose}
+            extra={maximizable ? (
+              <button type="button" className="vb-ov__icon" onClick={() => setMax((m) => !m)}
+                aria-label={max ? "Restore size" : "Maximize"} title={max ? "Restore size" : "Maximize"}>
+                <Icon name={max ? "minimize" : "maximize"} size={13} />
+              </button>
+            ) : null}
+          />
+          <div className="vb-ov__body" style={contentStyle}>{children}</div>
+          {footer && <div className="vb-ov__foot">{footer}</div>}
         </div>
-      )}
-    </div>
-  </Sidebar>
-);
+      </div>
+    </div>,
+    document.body,
+  );
+};
+
+export const Drawer: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  title: React.ReactNode;
+  idLabel?: string;
+  footer?: React.ReactNode;
+  children: React.ReactNode;
+  width?: number;
+}> = ({ open, onClose, title, idLabel, footer, children, width }) => {
+  const panel = useRef<HTMLDivElement>(null);
+  // A drawer opens on something to read first; focus the panel, not a field.
+  useOverlay(open, onClose, panel, false);
+  if (!open) return null;
+  return createPortal(
+    <div className="vb-layer">
+      <div className="vb-ov__mask vb-ov__mask--drawer" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div ref={panel} className="vb-ov vb-drawer" role="dialog" aria-modal="true" tabIndex={-1} style={{ width: width ?? 480 }}>
+          <OverlayHeader title={title} idLabel={idLabel} onClose={onClose} />
+          <div className="vb-ov__body">{children}</div>
+          {footer && <div className="vb-ov__foot">{footer}</div>}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+};
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 // Custom toast host (per admin redesign §13). Bottom-right stack of

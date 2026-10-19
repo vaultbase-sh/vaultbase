@@ -214,7 +214,7 @@ export default function AuditLog() {
         onClose={() => setOpen(null)}
         title={open ? `${open.method} ${open.path}` : ""}
         idLabel={open ? `${open.action} · ${open.status}` : undefined}
-        footer={<button className="btn btn-ghost" onClick={() => setOpen(null)}>Close</button>}
+        footer={<VbBtn kind="ghost" onClick={() => setOpen(null)}>Close</VbBtn>}
       >
         {open && (
           <div className="col" style={{ gap: 16 }}>

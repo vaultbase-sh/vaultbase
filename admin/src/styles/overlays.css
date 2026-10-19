@@ -1,0 +1,169 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Modals, drawers and the confirm dialog (components/UI.tsx, Confirm.tsx),
+ * drawn like the rest of the redesign: square, hairline borders, a 48px
+ * header as on the page top bars, mono id chips, no rounded chrome.
+ *
+ * They render into `.vb-layer` on <body>; theme-next.css scopes its shared
+ * rules to `.app` and `.vb-layer` alike. Above the page, below toasts (1000)
+ * and PrimeReact dropdown panels (1000+), so a dropdown in a modal opens on top.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.vb-layer {
+  position: relative;
+  z-index: 900;
+  font-family: var(--font-sans);
+  color: var(--vb-fg);
+}
+
+.vb-ov__mask {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.6);
+  animation: vb-fade-in var(--motion-standard, 160ms) var(--ease-standard, ease);
+}
+.vb-ov__mask--drawer {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.vb-ov {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 100%;
+  background: var(--vb-bg-1);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-e3);
+  outline: none;
+}
+.vb-modal {
+  max-height: calc(100vh - 48px);
+  animation: vb-dialog-in var(--motion-slow, 200ms) var(--ease-slow, ease);
+}
+.vb-modal[data-max="true"] { border: 0; }
+.vb-drawer {
+  height: 100%;
+  border-width: 0 0 0 1px;
+  animation: vb-drawer-in var(--motion-standard, 160ms) var(--ease-standard, ease);
+}
+
+/* Header — same rhythm as .vb-dash__bar */
+.vb-ov__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  flex: none;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.vb-ov__title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vb-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vb-ov__title > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.vb-ov__id {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--vb-fg-4);
+  border: 1px solid var(--border-default);
+  padding: 2px 6px;
+}
+.vb-ov__icon {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  color: var(--vb-fg-3);
+  transition: border-color 150ms, color 150ms;
+}
+.vb-ov__icon:hover { border-color: var(--vb-accent); color: var(--vb-fg); }
+.vb-ov__icon:focus-visible { border-color: var(--vb-accent); color: var(--vb-fg); outline: 1px solid var(--vb-accent); outline-offset: 1px; }
+
+.vb-ov__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+  font-size: 13px;
+  color: var(--vb-fg);
+}
+
+.vb-ov__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+  padding: 12px 20px;
+  border-top: 1px solid var(--vb-border);
+  background: var(--vb-bg-1);
+}
+
+/* Field rows in a modal form read like the drawer's: mono uppercase names. */
+.vb-layer .field-name {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--vb-fg-2);
+}
+
+/* Confirm dialog */
+.vb-confirm__title { display: flex; align-items: center; gap: 10px; }
+.vb-confirm__mark {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  color: var(--vb-fg-3);
+}
+.vb-confirm__mark[data-danger="true"] { border-color: rgba(240, 111, 100, 0.45); color: var(--vb-status-danger); }
+.vb-confirm__msg {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--vb-fg-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* PrimeReact overlay panels (dropdowns, multiselects) portal to <body> too. */
+.p-dropdown-panel,
+.p-multiselect-panel,
+.p-dropdown-panel *,
+.p-multiselect-panel * { border-radius: 0 !important; }
+.p-dropdown-panel,
+.p-multiselect-panel {
+  background: var(--vb-bg-1);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-e2);
+  font-family: var(--font-sans);
+}

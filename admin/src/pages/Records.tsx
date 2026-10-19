@@ -197,17 +197,16 @@ function NewRecordModal({
       width={520}
       footer={
         <>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleCreate} disabled={saving}>
-            <Icon name="check" size={12} />
+          <VbBtn kind="ghost" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn icon="check" onClick={handleCreate} disabled={saving}>
             {saving ? "Creating…" : "Create record"}
-          </button>
+          </VbBtn>
         </>
       }
     >
-      <div className="col" style={{ gap: 14 }}>
+      <div className="col" style={{ gap: 18 }}>
         {error && (
-          <div style={{ color: "var(--danger)", fontSize: 12, padding: "8px 12px", background: "rgba(248,113,113,0.1)", borderRadius: 6 }}>
+          <div style={{ color: "var(--vb-status-danger)", fontSize: 12, padding: "8px 12px", border: "1px solid rgba(240,111,100,0.35)" }}>
             {error}
           </div>
         )}
@@ -217,16 +216,7 @@ function NewRecordModal({
           </div>
         ) : (
           editableFields.map((f) => (
-            <div className="field-row" key={f.name}>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <span className="field-name">{f.name}</span>
-                <div className="row" style={{ gap: 6 }}>
-                  <FieldTypeChip type={f.type} />
-                  {f.required && (
-                    <span style={{ fontSize: 10, color: "var(--danger)" }}>required</span>
-                  )}
-                </div>
-              </div>
+            <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
               <FieldInput
                 field={f}
                 value={values[f.name]}
@@ -234,11 +224,11 @@ function NewRecordModal({
                 relationCache={relationCache}
               />
               {fieldErrors[f.name] && (
-                <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: "var(--vb-status-danger)" }}>
                   {fieldErrors[f.name]}
                 </div>
               )}
-            </div>
+            </DrawerFieldRow>
           ))
         )}
       </div>

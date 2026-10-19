@@ -318,7 +318,7 @@ export default function Logs() {
         title={openLog ? `${openLog.method} ${openLog.path}` : ""}
         idLabel={openLog ? `${openLog.status} · ${openLog.duration_ms}ms` : undefined}
         footer={
-          <button className="btn btn-ghost" onClick={() => setOpenLog(null)}>Close</button>
+          <VbBtn kind="ghost" onClick={() => setOpenLog(null)}>Close</VbBtn>
         }
       >
         {openLog && (

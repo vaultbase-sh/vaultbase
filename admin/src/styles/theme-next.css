@@ -137,49 +137,49 @@
  * genuinely need a circle opt out below. Blunt on purpose — it is the thing
  * that makes the promotion read as one design rather than two.
  * ───────────────────────────────────────────────────────────────────────── */
-.app *:not(.spinner):not(.vb-spinner):not([data-round]),
-.app *:not(.spinner):not(.vb-spinner):not([data-round])::before,
-.app *:not(.spinner):not(.vb-spinner):not([data-round])::after {
+:is(.app, .vb-layer) *:not(.spinner):not(.vb-spinner):not([data-round]),
+:is(.app, .vb-layer) *:not(.spinner):not(.vb-spinner):not([data-round])::before,
+:is(.app, .vb-layer) *:not(.spinner):not(.vb-spinner):not([data-round])::after {
   border-radius: 0 !important;
 }
 /* Round things that must stay round. */
-.app .spinner,
-.app .vb-spinner,
-.app [data-round] { border-radius: 50% !important; }
+:is(.app, .vb-layer) .spinner,
+:is(.app, .vb-layer) .vb-spinner,
+:is(.app, .vb-layer) [data-round] { border-radius: 50% !important; }
 /* Status dots read as squares in this system — that is intended, and the
  * dashboard board draws them that way. */
 
 /* ── Shared primitives ──────────────────────────────────────────────────── */
 body { font-family: var(--font-sans); }
 
-.app .btn,
-.app .btn-primary,
-.app .btn-ghost {
+:is(.app, .vb-layer) .btn,
+:is(.app, .vb-layer) .btn-primary,
+:is(.app, .vb-layer) .btn-ghost {
   font-family: var(--font-sans);
   font-weight: 500;
 }
-.app .btn-primary { background: var(--vb-accent); color: #0d0e10; border-color: var(--vb-accent); }
-.app .btn-primary:hover:not(:disabled) { background: var(--vb-accent-h); border-color: var(--vb-accent-h); }
+:is(.app, .vb-layer) .btn-primary { background: var(--vb-accent); color: #0d0e10; border-color: var(--vb-accent); }
+:is(.app, .vb-layer) .btn-primary:hover:not(:disabled) { background: var(--vb-accent-h); border-color: var(--vb-accent-h); }
 
-.app .input,
-.app input[type="text"],
-.app input[type="email"],
-.app input[type="password"],
-.app input[type="search"],
-.app input[type="number"],
-.app textarea,
-.app select {
+:is(.app, .vb-layer) .input,
+:is(.app, .vb-layer) input[type="text"],
+:is(.app, .vb-layer) input[type="email"],
+:is(.app, .vb-layer) input[type="password"],
+:is(.app, .vb-layer) input[type="search"],
+:is(.app, .vb-layer) input[type="number"],
+:is(.app, .vb-layer) textarea,
+:is(.app, .vb-layer) select {
   font-family: var(--font-mono);
   background: var(--bg-input);
   border-color: var(--border-strong);
 }
-.app .input:focus,
-.app .input:focus-visible,
-.app textarea:focus,
-.app select:focus { border-color: var(--vb-accent); outline: none; }
+:is(.app, .vb-layer) .input:focus,
+:is(.app, .vb-layer) .input:focus-visible,
+:is(.app, .vb-layer) textarea:focus,
+:is(.app, .vb-layer) select:focus { border-color: var(--vb-accent); outline: none; }
 
 /* Mono uppercase field labels, as drawn on every board. */
-.app .label {
+:is(.app, .vb-layer) .label {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.06em;
@@ -189,9 +189,9 @@ body { font-family: var(--font-sans); }
 }
 
 /* Table headers follow the dashboard board: mono, 11px, wide tracking. */
-.app thead th,
-.app .table-head,
-.app .th {
+:is(.app, .vb-layer) thead th,
+:is(.app, .vb-layer) .table-head,
+:is(.app, .vb-layer) .th {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.04em;
@@ -201,10 +201,10 @@ body { font-family: var(--font-sans); }
 }
 
 /* Numeric cells line up. */
-.app .mono,
-.app .mono-cell,
-.app code,
-.app pre { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+:is(.app, .vb-layer) .mono,
+:is(.app, .vb-layer) .mono-cell,
+:is(.app, .vb-layer) code,
+:is(.app, .vb-layer) pre { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 /* The topbar matches the dashboard board's 48px band. */
-.app .topbar { height: 48px; min-height: 48px; border-bottom: 1px solid var(--vb-border); }
+:is(.app, .vb-layer) .topbar { height: 48px; min-height: 48px; border-bottom: 1px solid var(--vb-border); }
