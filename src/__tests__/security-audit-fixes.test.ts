@@ -11,7 +11,9 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { initDb, closeDb } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { admin } from "../db/schema.ts";
+import { signAuthToken } from "../core/sec.ts";
 import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
@@ -157,9 +159,13 @@ describe("file field values must be storage filenames", () => {
   });
 
   it("accepts stored names", async () => {
+    // As an admin: a non-admin may only add files uploaded to the record
+    // (file-field-ownership.test.ts), which a record being created has none of.
     await seedDocs();
+    await getDb().insert(admin).values({ id: "a1", email: "a@x", password_hash: "x", password_reset_at: 0, created_at: 0 }).onConflictDoNothing();
+    const adminToken = (await signAuthToken({ payload: { id: "a1", email: "a@x" }, audience: "admin", expiresInSeconds: 600, jwtSecret: SECRET })).token;
     const res = await makeRecordsPlugin(SECRET).handle(
-      req("POST", "/docs", { attachment: `${crypto.randomUUID()}.png`, gallery: ["a.png", "b.jpg"] }),
+      req("POST", "/docs", { attachment: `${crypto.randomUUID()}.png`, gallery: ["a.png", "b.jpg"] }, adminToken),
     );
     expect(res.status).toBe(200);
   });

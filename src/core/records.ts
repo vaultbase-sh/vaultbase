@@ -877,7 +877,7 @@ async function updateRecordImpl(
     helpers,
   });
 
-  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
+  await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined, existing as unknown as Record<string, unknown>);
 
   const fields = parseFields(col.fields);
   const userFields = fields.filter((f) => !f.system && !f.implicit);

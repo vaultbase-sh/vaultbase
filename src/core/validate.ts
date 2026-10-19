@@ -1,6 +1,8 @@
 import { db } from "../db/index.ts";
 import { customFieldType } from "./field-types.ts";
-import { type Collection } from "../db/schema.ts";
+import { and, eq, inArray } from "drizzle-orm";
+import { getDb } from "../db/client.ts";
+import { files, type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
 import { sanitizeHtml } from "./html-sanitize.ts";
@@ -37,6 +39,8 @@ export function normalizeColor(value: unknown, alpha: boolean): string | null {
  *
  * @param mode "create" requires all required fields; "update" only validates provided fields
  * @param existingId existing record id (skip unique check against self when updating)
+ * @param canSee set when validating for a non-admin caller (see CanSeeRecord)
+ * @param existing the stored record, on update
  */
 /**
  * Whether the caller may see record `id` of `target` — set when validating
@@ -51,6 +55,7 @@ export async function validateRecord(
   mode: "create" | "update",
   existingId?: string,
   canSee?: CanSeeRecord,
+  existing?: Record<string, unknown> | null,
 ): Promise<void> {
   data = data ?? {};
   const schema = parseFields(collection.fields);
@@ -110,9 +115,55 @@ export async function validateRecord(
       const targetErr = await checkRelationTarget(field, value, canSee);
       if (targetErr) errors[field.name] = targetErr;
     }
+
+    // A non-admin attaches only files uploaded to this record's field.
+    if (field.type === "file" && canSee) {
+      const fileErr = await checkFileOwnership(collection, field, value, existingId, existing?.[field.name]);
+      if (fileErr) errors[field.name] = fileErr;
+    }
   }
 
   if (Object.keys(errors).length > 0) throw new ValidationError(errors);
+}
+
+/** The stored file names in a file field's value: one name, an array, or a multi field's JSON string. */
+function fileNames(value: unknown): string[] {
+  let v = value;
+  if (typeof v === "string" && v.startsWith("[")) {
+    try { v = JSON.parse(v); } catch { /* a single name */ }
+  }
+  const list = Array.isArray(v) ? v : [v];
+  return list.filter((n): n is string => typeof n === "string" && n !== "");
+}
+
+/**
+ * Every file name a non-admin newly puts in a file field must be a file
+ * uploaded to this record's field. Otherwise anyone who learned a file name
+ * could show someone else's upload on their own record, and it would vanish
+ * from theirs when the owner replaced it (the sweep deletes a file its own
+ * record no longer names). Names the field already holds stay valid, so
+ * sending the whole record back unchanged works. A new record has no uploads
+ * yet: files are uploaded to it once it exists.
+ */
+async function checkFileOwnership(
+  collection: Collection,
+  field: FieldDef,
+  value: unknown,
+  recordId: string | undefined,
+  stored: unknown,
+): Promise<string | null> {
+  const kept = new Set(fileNames(stored));
+  const added = [...new Set(fileNames(value))].filter((n) => !kept.has(n));
+  if (added.length === 0) return null;
+  if (!recordId) return `${field.name}: upload files to the record after creating it`;
+  const rows = await getDb().select({ filename: files.filename }).from(files).where(and(
+    eq(files.collection_id, collection.id),
+    eq(files.record_id, recordId),
+    eq(files.field_name, field.name),
+    inArray(files.filename, added),
+  ));
+  const owned = new Set(rows.map((r) => r.filename));
+  return added.every((n) => owned.has(n)) ? null : `${field.name} must name a file uploaded to this record's ${field.name}`;
 }
 
 function validateValue(field: FieldDef, value: unknown): string | null {
