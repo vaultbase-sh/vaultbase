@@ -16,7 +16,7 @@ import { admin as adminTable } from "../db/schema.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { createRecord } from "../core/records.ts";
 import { createServer } from "../server.ts";
-import { readTarget, startReadPool, stopReadPool, readPoolStats, readWorkerCount, forwardRead, respawnDelay, _setReadPoolTimings } from "../core/read-pool.ts";
+import { readTarget, startReadPool, stopReadPool, readPoolStats, readWorkerCount, forwardRead, respawnDelay, _resetReadPoolStats, _setReadPoolTimings } from "../core/read-pool.ts";
 import { stopScheduler } from "../core/jobs.ts";
 import { stopQueueScheduler } from "../core/queues.ts";
 import { stopWebhookDispatcher } from "../core/webhooks.ts";
@@ -35,6 +35,10 @@ const fromWorker = (res: Response) => res.headers.get("x-vaultbase-read-worker")
 let mainDenied = 0;
 
 beforeAll(async () => {
+  // Start from a fresh pool whatever ran before in this process (another
+  // file's pool leaves counters and worker ids behind).
+  await stopReadPool();
+  _resetReadPoolStats();
   dir = mkdtempSync(join(tmpdir(), "vb-read-pool-"));
   const dbPath = join(dir, "data.db");
   await initDb(`file:${dbPath}`);

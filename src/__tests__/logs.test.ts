@@ -84,3 +84,23 @@ describe("JSONPath search", () => {
     expect((await searchLogs("$.status")).matched).toBe(3);
   });
 });
+
+describe("log buffer", () => {
+  it("a flush during another flush writes what was buffered meanwhile", async () => {
+    const { appendLogEntry, drainLogBuffer, readLogs } = await import("../core/file-logger.ts");
+    const entry = (path: string) => ({
+      id: crypto.randomUUID(), ts: new Date().toISOString(), created_at: Math.floor(Date.now() / 1000),
+      method: "GET", path, status: 200, duration_ms: 1, ip: null,
+    });
+    appendLogEntry(entry("/api/first"));
+    const first = drainLogBuffer();          // in flight
+    appendLogEntry(entry("/api/second"));    // buffered meanwhile
+    await Promise.all([first, drainLogBuffer()]);
+    // On disk now, without another drain (readLogs would drain again).
+    const { readdirSync, readFileSync } = await import("fs");
+    const onDisk = readdirSync(tmpDir).map((f) => readFileSync(join(tmpDir, f), "utf8")).join("");
+    expect(onDisk).toContain("/api/first");
+    expect(onDisk).toContain("/api/second");
+    void readLogs;
+  });
+});

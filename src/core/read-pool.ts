@@ -89,6 +89,11 @@ let forwardTimeoutMs = FORWARD_TIMEOUT_MS;
 let respawnBaseMs = RESPAWN_BASE_MS;
 
 /** Shorter timings for tests. */
+/** Tests: zero the counters and worker ids, as in a fresh process. Stop the pool first. */
+export function _resetReadPoolStats(): void {
+  forwarded = 0; dropped = 0; restarted = 0; nextWorkerId = 0; failures = 0;
+}
+
 export function _setReadPoolTimings(t: { forwardTimeoutMs?: number; respawnBaseMs?: number }): void {
   forwardTimeoutMs = t.forwardTimeoutMs ?? FORWARD_TIMEOUT_MS;
   respawnBaseMs = t.respawnBaseMs ?? RESPAWN_BASE_MS;

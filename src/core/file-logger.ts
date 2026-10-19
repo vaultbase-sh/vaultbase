@@ -132,8 +132,10 @@ class BufferedLogWriter {
   /** Flush all pending buffers. Safe to call from drain(). */
   async flushNow(): Promise<void> {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
-    // Coalesce concurrent flushes — flush latest snapshot once.
-    if (this.flushInFlight) { await this.flushInFlight; return; }
+    // One flush at a time. Entries buffered while one was in flight aren't
+    // in its snapshot: wait for it, then flush those too. (Returning after
+    // the wait left them unwritten, so a read right after missed them.)
+    while (this.flushInFlight) await this.flushInFlight;
 
     if (this.buffers.size === 0) return;
     // Move buffers out — we cleared the LIVE Map below, so we have to take a
