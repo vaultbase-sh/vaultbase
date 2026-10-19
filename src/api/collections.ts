@@ -1,5 +1,6 @@
 import Elysia, { t } from "elysia";
 import {
+  CollectionInUseError,
   CollectionNotFoundError,
   CollectionValidationError,
   createCollection,
@@ -116,6 +117,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           return { data: col };
         } catch (e) {
           if (e instanceof CollectionNotFoundError) { set.status = 404; return { error: e.message, code: 404 }; }
+          if (e instanceof CollectionInUseError) { set.status = 409; return { error: e.message, code: 409 }; }
           if (e instanceof CollectionValidationError) {
             set.status = 422;
             return { error: e.message, code: 422, details: e.details };
@@ -191,6 +193,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         await deleteCollection(params.id);
       } catch (e) {
         if (e instanceof CollectionNotFoundError) { set.status = 404; return { error: e.message, code: 404 }; }
+        if (e instanceof CollectionInUseError) { set.status = 409; return { error: e.message, code: 409 }; }
         throw e;
       }
       return { data: null };

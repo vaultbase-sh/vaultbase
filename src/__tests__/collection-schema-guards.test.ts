@@ -99,4 +99,31 @@ describe("collection schema guards", () => {
     expect(ruleSyntaxError("title ===")).toContain("near position");
     expect(ruleSyntaxError("title = ")).toContain("ends too early");
   });
+
+  it("two fields with one name are refused", async () => {
+    await expect(createCollection({ name: "dup", fields: JSON.stringify([{ name: "title", type: "text" }, { name: "Title", type: "text" }]) }))
+      .rejects.toBeInstanceOf(CollectionValidationError);
+    expect(await getCollection("dup")).toBeNull();
+  });
+
+  it("a view query the database refuses is a 422, and saves nothing", async () => {
+    await createCollection({ name: "authors", fields: JSON.stringify([{ name: "name", type: "text" }]) });
+    const r = await api("POST", "/collections", { name: "bad_view", type: "view", view_query: "SELECT id, nope FROM vb_authors" });
+    expect(r.status).toBe(422);
+    expect(await getCollection("bad_view")).toBeNull();
+  });
+
+  it("a change a view depends on is refused with the view's name", async () => {
+    const authors = await createCollection({ name: "authors", fields: JSON.stringify([{ name: "name", type: "text" }, { name: "age", type: "number" }]) });
+    await createCollection({ name: "author_names", type: "view", view_query: "SELECT id, name, age FROM vb_authors" });
+    // Rename a column the view reads → 409.
+    const rename = await api("PATCH", `/collections/${authors.id}`, { fields: [{ name: "name", type: "text" }, { name: "years", type: "number", renamedFrom: "age" }] });
+    expect(rename.status).toBe(409);
+    expect(rename.json.error).toContain("author_names");
+    // Delete the collection → 409.
+    expect((await api("DELETE", `/collections/${authors.id}`)).status).toBe(409);
+    // A column the view doesn't read can go (legitimate path).
+    const other = await createCollection({ name: "books", fields: JSON.stringify([{ name: "t", type: "text" }, { name: "x", type: "text" }]) });
+    expect((await api("PATCH", `/collections/${other.id}`, { fields: [{ name: "t", type: "text" }] })).status).toBe(200);
+  });
 });

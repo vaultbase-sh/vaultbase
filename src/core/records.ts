@@ -634,6 +634,11 @@ export async function listRecords(
     "id", "created_at", "updated_at",
     ...fields.filter((f) => !f.system).map((f) => f.name),
   ]);
+  let viewCols: ReadonlySet<string> | null = null;
+  const viewColumns = (): ReadonlySet<string> => {
+    if (!viewCols) { try { viewCols = new Set(tableColumns(col.name)); } catch { viewCols = new Set(); } }
+    return viewCols;
+  };
   const sortPrivate = privateFieldNames(col);
   const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses: string[] = [];
@@ -643,10 +648,11 @@ export async function listRecords(
     const field = desc ? s.slice(1) : s;
     const colName = field === "created" ? "created_at"
       : field === "updated" ? "updated_at" : field;
-    // View collections accept any column name (the schema is inferred from
-    // the SELECT and may not be fully reflected in `fields`); base + auth
-    // collections strictly whitelist.
-    if (col.type !== "view" && !sortableCols.has(colName)) continue;
+    // Base and auth collections whitelist their schema; a view takes the
+    // columns its SELECT really has (its `fields` may not list them all).
+    // A column it doesn't have (created_at, often) used to reach SQL and
+    // answer 500.
+    if (col.type === "view" ? !viewColumns().has(colName) : !sortableCols.has(colName)) continue;
     // Never order by a private column: the row order alone leaks it one
     // comparison at a time (a password field, or auth secrets in a view).
     if (sortPrivate.has(colName)) continue;

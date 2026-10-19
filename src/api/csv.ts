@@ -23,7 +23,7 @@ function decodeCell(raw: string, type: string): unknown {
   if (type === "bool") {
     return raw === "true" || raw === "1";
   }
-  if (type === "json" || type === "geoPoint") {
+  if (type === "json" || type === "geoPoint" || type === "vector") {
     try { return JSON.parse(raw); } catch { return raw; }
   }
   if (type === "select") {
@@ -116,7 +116,7 @@ export function makeCsvPlugin(jwtSecret: string) {
     //
     // Output is byte-identical to the previous buffered implementation:
     //   header CRLF row1 CRLF row2 ... CRLF rowN     (no trailing CRLF)
-    .get("/admin/export/:collection", async ({ params, set }) => {
+    .get("/admin/export/:collection", async ({ params, query, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "base") {
@@ -136,9 +136,17 @@ export function makeCsvPlugin(jwtSecret: string) {
       // and CSV formatting time.
       let nextBatch: Promise<Awaited<ReturnType<typeof listRecords>>> | null = null;
 
+      // `?ids=a,b,c` exports just those records (the admin's selection).
+      const rawIds = typeof query["ids"] === "string" ? query["ids"].split(",").filter(Boolean) : [];
+      if (rawIds.length > 500 || rawIds.some((id) => !/^[A-Za-z0-9_-]{1,64}$/.test(id))) {
+        set.status = 400;
+        return { error: "ids: up to 500 record ids, comma-separated", code: 400 };
+      }
+      const idFilter = rawIds.length > 0 ? rawIds.map((id) => `id = "${id}"`).join(" || ") : undefined;
+
       // Admin-only export of the whole table: not bound by the offset cap
       // that protects client-facing lists.
-      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true });
+      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true, ...(idFilter ? { filter: idFilter } : {}) });
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {

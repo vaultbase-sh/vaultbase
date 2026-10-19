@@ -407,8 +407,13 @@ const RESERVED_FIELD_NAMES = new Set(["id", "created", "updated", "created_at", 
 
 function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
   const errors = searchableErrors(fields);
+  const seen = new Set<string>();
   for (const f of fields) {
     if (!f.system && RESERVED_FIELD_NAMES.has(f.name)) errors[f.name] = `'${f.name}' is reserved: every record already has it`;
+    // Two fields with one name failed later as a plain-text SQL 500.
+    const key = f.name.toLowerCase();
+    if (seen.has(key)) errors[f.name] = `There are two fields named '${f.name}'`;
+    seen.add(key);
   }
   const before = new Map(previous.map((f) => [f.name, f.type]));
   for (const f of fields) {
@@ -804,6 +809,10 @@ export async function alterUserTable(
     renamed.set(from, newName);
   }
 
+  // Renamed and dropped columns: a view reading them would break.
+  const gone = [...oldByName.keys()].filter((n) => renamed.has(n) || !newByName.has(n));
+  await assertNoViewUses(table, gone, `rename or remove ${gone.map((g) => `'${g}'`).join(", ")}`);
+
   // The search index triggers reference their columns, which blocks DROP
   // COLUMN and keep a renamed column's old name; drop the index first and
   // let syncFts below recreate it.
@@ -954,6 +963,31 @@ function assertRulesParse(rules: Partial<Record<(typeof RULE_KEYS)[number], stri
   if (Object.keys(errors).length > 0) throw new CollectionValidationError(errors);
 }
 
+/** A change that would break a view reading this collection. HTTP 409. */
+export class CollectionInUseError extends Error {}
+
+/**
+ * Refuse a change a view depends on: dropping or renaming the table
+ * `tableName`, or (with `columns`) renaming or dropping those columns of it.
+ * A view's query is matched as text, so this errs on the side of refusing;
+ * the message names the view to change first. Without it the view broke
+ * silently and every read of it answered 500.
+ */
+async function assertNoViewUses(tableName: string, columns: string[] | null, verb: string): Promise<void> {
+  if (columns && columns.length === 0) return;
+  const word = (w: string) => new RegExp(`(^|[^A-Za-z0-9_])${w.replace(/[^A-Za-z0-9_]/g, "")}([^A-Za-z0-9_]|$)`, "i");
+  const views = (await getDb().select().from(collections)).filter((c) => c.type === "view" && c.view_query);
+  for (const v of views) {
+    const q = v.view_query!;
+    if (!word(tableName).test(q)) continue;
+    const hit = columns ? columns.find((c) => word(c).test(q)) : undefined;
+    if (columns && !hit) continue;
+    throw new CollectionInUseError(
+      `Can't ${verb}: the view '${v.name}' reads ${hit ? `'${hit}' from ` : ""}${tableName}. Change or delete that view first.`,
+    );
+  }
+}
+
 /** No collection by that id or name. HTTP 404. */
 export class CollectionNotFoundError extends Error {
   constructor(idOrName: string) {
@@ -1004,7 +1038,11 @@ export async function createCollection(
     validateViewQuery(data.view_query);
     const incoming = parseFields(data.fields ?? "[]");
     // If caller didn't pre-populate fields, infer column names + types from the query.
-    fields = incoming.length > 0 ? incoming : await inferViewFields(data.view_query);
+    try {
+      fields = incoming.length > 0 ? incoming : await inferViewFields(data.view_query);
+    } catch (e) {
+      throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
+    }
   } else {
     const incoming = parseFields(data.fields ?? "[]");
     assertValidFieldsForType(type, incoming);
@@ -1039,7 +1077,12 @@ export async function createCollection(
 
   try {
     if (type === "view") {
-      await createUserView(row.name, data.view_query!);
+      try {
+        await createUserView(row.name, data.view_query!);
+      } catch (e) {
+        // The database refusing the query (a missing column) is the caller's to fix.
+        throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
+      }
     } else if (type === "singleton") {
       // A singleton holds exactly one record, made with the collection, its
       // fields empty: reads never miss and an update always has a target.
@@ -1198,6 +1241,7 @@ export async function updateCollection(
   // new table.
   let currentName = before.name;
   if (data.name !== undefined && data.name !== before.name) {
+    if (before.type !== "view") await assertNoViewUses(userTableName(before.name), null, `rename '${before.name}'`);
     await renameCollectionStorage(before, data.name, effectiveType, data.view_query ?? before.view_query);
     currentName = data.name;
   }
@@ -1213,10 +1257,18 @@ export async function updateCollection(
       await loadSensitiveSchema();
       validateViewQuery(newQuery);
       await dropUserView(currentName);
-      await createUserView(currentName, newQuery);
+      try {
+        await createUserView(currentName, newQuery);
+      } catch (e) {
+        // Put the old query back, then report the new one's problem.
+        if (before.view_query) await createUserView(currentName, before.view_query).catch(() => {});
+        throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
+      }
       // Re-infer fields if the caller didn't supply explicit field defs.
       if (data.fields === undefined) {
-        const inferred = await inferViewFields(newQuery);
+        const inferred = await inferViewFields(newQuery).catch((e) => {
+          throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
+        });
         data = { ...data, fields: JSON.stringify(inferred) };
       }
     }
@@ -1262,6 +1314,7 @@ export async function deleteCollection(idOrName: string): Promise<void> {
   const db = getDb();
   const col = await getCollection(idOrName);
   if (!col) throw new CollectionNotFoundError(idOrName);
+  if (col.type !== "view") await assertNoViewUses(userTableName(col.name), null, `delete '${col.name}'`);
   schemaVersion++;
   if (col.type === "view") await dropUserView(col.name);
   else await dropUserTable(col.name);
