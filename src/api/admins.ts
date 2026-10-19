@@ -1,10 +1,15 @@
-import { count, eq } from "drizzle-orm";
+import { count, eq, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
 import { HASH_OPTS } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
 import { adminGuard } from "./_admin.ts";
+
+/** Admin emails are matched without regard to case, so `Ops@` and `ops@` are one account. */
+export function adminByEmail(email: string) {
+  return getDb().select().from(admin).where(sql`lower(${admin.email}) = ${email.trim().toLowerCase()}`).limit(1);
+}
 
 export function makeAdminsPlugin(jwtSecret: string) {
   return new Elysia({ name: "admins" })
@@ -27,7 +32,8 @@ export function makeAdminsPlugin(jwtSecret: string) {
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
         const db = getDb();
-        const existing = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
+        const email = body.email.trim();
+        const existing = await adminByEmail(email);
         if (existing.length > 0) {
           set.status = 400;
           return { error: "Email already in use", code: 400 };
@@ -35,8 +41,8 @@ export function makeAdminsPlugin(jwtSecret: string) {
         const hash = await Bun.password.hash(body.password, HASH_OPTS);
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
-        await db.insert(admin).values({ id, email: body.email, password_hash: hash, created_at: now });
-        return { data: { id, email: body.email, created_at: now } };
+        await db.insert(admin).values({ id, email, password_hash: hash, created_at: now });
+        return { data: { id, email, created_at: now } };
       },
       { requireAdmin: true, body: t.Object({ email: t.String(), password: t.String() }) }
     )
@@ -60,12 +66,12 @@ export function makeAdminsPlugin(jwtSecret: string) {
         const update: { email?: string; password_hash?: string; password_reset_at?: number } = {};
         if (body.email !== undefined) {
           // Check email uniqueness
-          const dup = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
+          const dup = await adminByEmail(body.email);
           if (dup.length > 0 && dup[0]!.id !== params.id) {
             set.status = 400;
             return { error: "Email already in use", code: 400 };
           }
-          update.email = body.email;
+          update.email = body.email.trim();
         }
         if (body.password !== undefined) {
           const pwErr = await validatePassword(body.password);

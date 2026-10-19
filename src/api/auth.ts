@@ -65,6 +65,7 @@ import {
   releaseAttempt,
 } from "../core/security.ts";
 import { adminGuard } from "./_admin.ts";
+import { adminByEmail } from "./admins.ts";
 
 /**
  * Whether auth cookies get `Secure`: the request came over HTTPS (directly
@@ -700,7 +701,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
         const db = getDb();
-        const rows = await db.select().from(admin).where(eq(admin.email, body.email)).limit(1);
+        const rows = await adminByEmail(body.email);
         const a = rows[0];
         const attempt = await reserveLoginAttempt({ email: body.email, subject: a?.id, ip });
         if (!attempt) {
@@ -742,9 +743,12 @@ export function makeAuthPlugin(jwtSecret: string) {
       },
       { body: t.Object({ email: t.String(), password: t.String() }) }
     )
-    .get("/admin/auth/me", ({ admin }) => ({
-      data: { id: admin.id, email: admin.email, aud: "admin", exp: admin.exp },
-    }), { requireAdmin: true })
+    .get("/admin/auth/me", async ({ admin: me }) => {
+      // The email from the database: the token's copy is stale after an
+      // admin changes their email.
+      const row = (await getDb().select({ email: admin.email }).from(admin).where(eq(admin.id, me.id)).limit(1))[0];
+      return { data: { id: me.id, email: row?.email ?? me.email, aud: "admin", exp: me.exp } };
+    }, { requireAdmin: true })
     // Admin recovery: clear a user's TOTP secret + recovery codes. Records
     // flow `PATCH` strips auth-system columns, so this dedicated endpoint
     // exists for the "user lost their authenticator" admin operation.

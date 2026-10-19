@@ -52,3 +52,15 @@ describe("PATCH /admin/admins/:id", () => {
     expect(row.email).toBe("new-one@test.local");
   });
 });
+
+describe("admin emails ignore case", () => {
+  it("refuses a second admin, or an email change, that differs only in case", async () => {
+    const res = await makeAdminsPlugin(SECRET).handle(new Request("http://localhost/admin/admins", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${await as("a1")}` },
+      body: JSON.stringify({ email: "TWO@test.local", password: "a-long-enough-password-1A!" }),
+    }));
+    expect(res.status).toBe(400);
+    expect((await patch("a1", { email: "Two@Test.Local" }, "a1")).status).toBe(400);
+  });
+});
