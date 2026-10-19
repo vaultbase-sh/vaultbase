@@ -337,6 +337,10 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
     // Every plugin route is declared without the `/api/...` prefix; the
     // group below adds `/api/v1`. Future v2 lives in a sibling group.
     .group("/api/v1", (app) => app
+      // First: its hooks only cover routes registered after it, and most
+      // admin writes live in the plugins below (it used to sit halfway down,
+      // so settings, hooks, admins, backups and more went unaudited).
+      .use(makeAuditLogPlugin(config.jwtSecret))
       .use(makeLogsPlugin(config.jwtSecret))
       .use(makeAuthPlugin(config.jwtSecret))
       .use(makeAdminsPlugin(config.jwtSecret))
@@ -351,7 +355,6 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       .use(makeCsvPlugin(config.jwtSecret))
       .use(makeMigrationsPlugin(config.jwtSecret))
       .use(makeMetricsPlugin(config.jwtSecret))
-      .use(makeAuditLogPlugin(config.jwtSecret))
       .use(makeApiTokensPlugin(config.jwtSecret))
       .use(makeMcpPlugin(config.jwtSecret))
       .use(makeMcpAdminPlugin(config.jwtSecret))

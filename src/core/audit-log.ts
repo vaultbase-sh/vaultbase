@@ -36,6 +36,8 @@ function shouldAudit(method: string, rawPath: string): boolean {
   // Normalise so `/api/v1/admin/...` is treated identically to `/api/admin/...`.
   const path = normalizeApiPath(rawPath);
   if (!AUDITED_METHODS.has(method)) return false;
+  // Collections are admin-only but live outside /admin.
+  if (path === "/api/collections" || path.startsWith("/api/collections/")) return true;
   if (!path.startsWith("/api/admin/")) return false;
   for (const p of SKIP_PATHS) {
     if (typeof p === "string") {
@@ -53,6 +55,11 @@ function shouldAudit(method: string, rawPath: string): boolean {
  */
 function deriveAction(method: string, rawPath: string): { action: string; target: string | null } {
   const path = normalizeApiPath(rawPath);
+  const col = /^\/api\/collections(?:\/([^/?]+))?/.exec(path);
+  if (col) {
+    const verb = method === "POST" ? "create" : method === "DELETE" ? "delete" : "update";
+    return { action: `collections.${verb}`, target: col[1] ?? null };
+  }
   // /api/admin/<resource>/<id?>
   const m = /^\/api\/admin\/([a-z][a-z0-9_-]*)(?:\/([^/?]+))?(?:\/([^/?]+))?/.exec(path);
   if (!m) return { action: `${method} ${path}`, target: null };

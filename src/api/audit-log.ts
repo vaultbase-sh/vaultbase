@@ -1,7 +1,14 @@
 import Elysia, { t } from "elysia";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
-import { isAdminApiPath } from "../core/api-paths.ts";
+import { isAdminApiPath, normalizeApiPath } from "../core/api-paths.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
+
+/** Admin paths, plus collections: admin-only, but outside /admin. */
+function isAuditedPath(pathname: string): boolean {
+  if (isAdminApiPath(pathname)) return true;
+  const p = normalizeApiPath(pathname);
+  return p === "/api/collections" || p.startsWith("/api/collections/");
+}
 
 export function makeAuditLogPlugin(jwtSecret: string) {
   return new Elysia({ name: "audit-log" })
@@ -12,7 +19,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
     .onAfterHandle({ as: "global" }, async ({ request, set }) => {
       // No need to skip non-admin paths here — recordAuditEntry filters.
       const url = new URL(request.url);
-      if (!isAdminApiPath(url.pathname)) return;
+      if (!isAuditedPath(url.pathname)) return;
 
       const status = Number(set.status ?? 200);
       // Same token sources as the admin UI, the session cookie included, so
@@ -25,7 +32,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
     })
     .onError({ as: "global" }, async ({ request, error }) => {
       const url = new URL(request.url);
-      if (!isAdminApiPath(url.pathname)) return;
+      if (!isAuditedPath(url.pathname)) return;
       const status = "status" in error ? Number((error as { status: number }).status) : 500;
       const actor = await adminFromRequest(request, jwtSecret, { cookie: true });
       void recordAuditEntry({ request, status, actor }).catch(() => { /* swallow */ });
