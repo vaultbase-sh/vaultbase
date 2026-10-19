@@ -36,6 +36,15 @@ export async function tryDispatchCustom(request: Request, jwtSecret: string): Pr
   try {
     const result = await dispatchCustomRoute(request, inner, jwtSecret);
     if (!result) return respond(404, { error: "No matching custom route", code: 404 });
+    // A handler that returns a Response (a stream, XML, a file) is answered
+    // with it as is, plus the security and CORS headers it doesn't set itself.
+    if (result.body instanceof Response) {
+      const set = { headers: { ...securityHeaders({ isApi: true }), ...result.headers } as Record<string, string | undefined> };
+      applyCorsHeaders(request, set);
+      const headers = new Headers(result.body.headers);
+      for (const [k, v] of Object.entries(set.headers)) if (v !== undefined && !headers.has(k)) headers.set(k, v);
+      return new Response(result.body.body, { status: result.body.status, statusText: result.body.statusText, headers });
+    }
     return respond(result.status, result.body, result.headers);
   } catch (e) {
     // Details go to the log, not to the caller.

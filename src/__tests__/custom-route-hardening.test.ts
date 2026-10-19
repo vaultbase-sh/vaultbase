@@ -95,4 +95,22 @@ describe("custom route hardening", () => {
     // Own peer address, so rate-limit buckets from other tests can't interfere.
     expect((await get("/mine", { authorization: `Bearer ${guest}` }, "198.51.100.77"))!.status).toBe(401);
   });
+
+  it("a returned Response is answered as is, with the security headers added", async () => {
+    await route("/sitemap.xml", `return new Response("<urlset/>", { status: 200, headers: { "Content-Type": "application/xml" } });`);
+    const res = (await get("/sitemap.xml"))!;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/xml");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await res.text()).toBe("<urlset/>");
+  });
+
+  it("a rate-limit rule written with /api/v1/ matches", async () => {
+    setSetting("rate_limit.enabled", "1");
+    setSetting("rate_limit.rules", JSON.stringify([{ label: "/api/v1/custom/limited", max: 1, windowMs: 60000, audience: "all" }]));
+    invalidateRateLimitCache();
+    await route("/limited", `return { ok: true };`);
+    expect((await get("/limited"))!.status).toBe(200);
+    expect((await get("/limited"))!.status).toBe(429);
+  });
 });

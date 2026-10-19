@@ -217,6 +217,8 @@ function detectAction(method: string, rawPath: string): RuleAction | null {
 
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === "*") return true;
+  // Paths are matched in /api/... form; a rule written /api/v1/... means the same.
+  pattern = normalizeApiPath(pattern);
   if (pattern.endsWith("*")) {
     const prefix = pattern.slice(0, -1);
     return path.startsWith(prefix);

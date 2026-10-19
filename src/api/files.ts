@@ -269,6 +269,15 @@ async function emitDownloadAudit(opts: {
   } catch { /* audit must never break a download */ }
 }
 
+/**
+ * A part's media type without parameters. Bun reports text parts with a
+ * charset (`text/plain;charset=utf-8`), which no allow-list entry matched,
+ * so .txt and .json uploads were refused.
+ */
+function baseMime(type: string): string {
+  return (type || "application/octet-stream").split(";")[0]!.trim().toLowerCase() || "application/octet-stream";
+}
+
 function mimeAllowed(mime: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true;
   for (const p of patterns) {
@@ -450,7 +459,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
             details: { [params.field]: `Max ${maxSize} bytes` },
           };
         }
-        const fm = f.type || "application/octet-stream";
+        const fm = baseMime(f.type);
         if (!isAllowedUploadMime(fm)) {
           set.status = 415;
           return { error: `MIME type '${fm}' not allowed`, code: 415 };
@@ -469,7 +478,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const now = Math.floor(Date.now() / 1000);
       const uploaded: Array<{ id: string; filename: string; originalName: string; size: number; mimeType: string }> = [];
       for (const file of fileEntries) {
-        const fileMime = file.type || "application/octet-stream";
+        const fileMime = baseMime(file.type);
         const id = crypto.randomUUID();
         const filename = `${id}.${storageExt(fileMime)}`;
         // Pass the File (a Blob) straight through: no second in-memory copy.

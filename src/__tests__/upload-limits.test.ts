@@ -115,3 +115,17 @@ describe("malformed upload bodies", () => {
     }
   });
 });
+
+describe("text uploads", () => {
+  it("a .txt file (sent as text/plain;charset=utf-8) is accepted", async () => {
+    const form = new FormData();
+    form.append("file", new File(["hello"], "notes.txt", { type: "text/plain;charset=utf-8" }));
+    const res = await makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost/files/posts/${recordId}/cover`, {
+      method: "POST", headers: { authorization: `Bearer ${token}` }, body: form,
+    }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { mimeType: string; filename: string } };
+    expect(body.data.mimeType).toBe("text/plain");
+    expect(body.data.filename.endsWith(".txt")).toBe(true);
+  });
+});

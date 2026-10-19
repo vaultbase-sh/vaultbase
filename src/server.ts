@@ -89,7 +89,7 @@ function errorStatus(code: unknown, error: unknown, setStatus: unknown): number 
 }
 
 interface ClientMessage {
-  type: "subscribe" | "unsubscribe" | "auth" | "list-subs";
+  type: "subscribe" | "unsubscribe" | "auth" | "list-subs" | "ping";
   /** Preferred field name. */
   topics?: string[];
   /** Backwards-compat alias for topics. */
@@ -495,6 +495,11 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
           if (typeof msg.token !== "string") return;
           const auth = await verifyTokenForWS(msg.token, config.jwtSecret);
           setWSAuth(ws, auth);
+          return;
+        }
+        // The SDK's 30 s keepalive. Answered, so it isn't an invalid_topics error.
+        if (msg.type === "ping") {
+          ws.send(JSON.stringify({ type: "pong" }));
           return;
         }
         // Debug introspection: tell the client which topics THIS connection
