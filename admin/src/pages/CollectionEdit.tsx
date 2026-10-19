@@ -30,7 +30,7 @@ import { toast } from "../stores/toast.ts";
 const FIELD_TYPES: FieldDef["type"][] = [
   "text", "number", "bool", "email", "url", "date",
   "password", "editor", "geoPoint", "color",
-  "file", "relation", "select", "json", "autodate",
+  "file", "relation", "select", "json", "vector", "autodate",
 ];
 
 const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
@@ -45,10 +45,11 @@ const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
   select:   "Pick from a fixed list of values (single or multi).",
   json:     "Arbitrary JSON value.",
   autodate: "Auto-set on create / update.",
-  password: "Bcrypt-hashed. Never returned in API responses.",
+  password: "Argon2-hashed. Never returned in API responses.",
   editor:   "Rich text / HTML body.",
   geoPoint: "Latitude / longitude coordinates.",
   color:    "Hex color (#rrggbb), optional alpha channel.",
+  vector:   "Embedding: a fixed-length array of numbers, for similarity search.",
 };
 
 type Rules = RuleSet;
@@ -96,6 +97,9 @@ type Tab = "fields" | "rules" | "indexes";
 function forSave(fields: FieldDef[]): FieldDef[] {
   return fields
     .filter((f) => !f.system)
+    // An autodate with neither flag is never filled: default to "set on create",
+    // as its toggle shows.
+    .map((f) => (f.type === "autodate" && f.onCreate === undefined && f.onUpdate === undefined ? { ...f, onCreate: true } : f))
     .map(({ renamedFrom, ...f }) => (renamedFrom && renamedFrom !== f.name ? { ...f, renamedFrom } : f));
 }
 
@@ -110,6 +114,8 @@ export default function CollectionEdit() {
   const [saving, setSaving] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
   const [viewQuery, setViewQuery] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [historyEnabled, setHistoryEnabled] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
   const [tab, setTab] = useState<Tab>("fields");
@@ -182,8 +188,9 @@ export default function CollectionEdit() {
 
   useEffect(() => {
     api.get<ApiResponse<Collection>>(`/api/v1/collections/${collId}`).then((res) => {
-      if (!res.data) return;
+      if (!res.data) { setLoadError(res.error ?? "Collection not found"); return; }
       setCollection(res.data);
+      setHistoryEnabled(res.data.history_enabled === 1);
       // Remember each field's stored name so a rename reaches the server as
       // a rename (the column keeps its data) and not as a drop plus an add.
       setFields(parseFields(res.data.fields).map((f) => ({ ...f, renamedFrom: f.name })));
@@ -237,6 +244,7 @@ export default function CollectionEdit() {
       const queryChanged = viewQuery.trim() !== (collection.view_query ?? "");
       const payload: Record<string, unknown> = {
         view_query: viewQuery.trim(),
+        history_enabled: historyEnabled,
         // `|| null` here used to turn every admin-only rule public on save.
         ...fromRuleSet(rules),
       };
@@ -267,11 +275,19 @@ export default function CollectionEdit() {
       }
     }
     setSaving(true);
-    await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, {
+    const res = await api.patch<ApiResponse<Collection>>(`/api/v1/collections/${collId}`, {
       fields: userFields,
       ...fromRuleSet(rules),
+      history_enabled: historyEnabled,
     });
     setSaving(false);
+    // A refused save (a rule that doesn't parse, a type change, a reserved
+    // name) used to say "Changes saved" and lose every edit.
+    if (res.error) {
+      const why = res.details ? Object.values(res.details).join(" · ") : res.error;
+      toast(`Not saved: ${why}`, "x");
+      return;
+    }
     toast("Changes saved");
     navigate(`/_/collections/${collId}/records`);
   }
@@ -284,12 +300,17 @@ export default function CollectionEdit() {
       danger: true,
     });
     if (!ok) return;
-    await api.delete(`/api/v1/collections/${collId}`);
+    const res = await api.delete<ApiResponse<null>>(`/api/v1/collections/${collId}`);
+    if (res?.error) { toast(`Couldn't delete: ${res.error}`, "x"); return; }
     toast(`Collection deleted`, "trash");
     navigate("/_/collections");
   }
 
-  if (!collection) return <div className="empty">Loading…</div>;
+  if (!collection) {
+    return loadError
+      ? <div className="empty">{loadError}. <a href="/_/collections">All collections</a></div>
+      : <div className="empty">Loading…</div>;
+  }
 
   // A singleton's one record is made with the collection and can't be
   // deleted, so only reading and updating it are gated by rules.
@@ -466,7 +487,7 @@ export default function CollectionEdit() {
                     fontFamily: "var(--font-mono)", fontSize: "0.86em",
                     padding: "1px 5px", borderRadius: 4,
                     background: "var(--vb-code-bg)", color: "var(--vb-code-fg)",
-                  }}>@request.data.*</code>,{" "}
+                  }}>@request.body.*</code>,{" "}
                   <code style={{
                     fontFamily: "var(--font-mono)", fontSize: "0.86em",
                     padding: "1px 5px", borderRadius: 4,
@@ -475,6 +496,16 @@ export default function CollectionEdit() {
                   , plus all field paths on the record.
                 </span>
               </div>
+
+              {!isView && (
+                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", border: "1px solid var(--vb-border)" }}>
+                  <Toggle on={historyEnabled} onChange={setHistoryEnabled} ariaLabel="Keep record history" />
+                  <div style={{ fontSize: 12, color: "var(--vb-fg-2)", lineHeight: 1.5 }}>
+                    <strong style={{ color: "var(--vb-fg)" }}>Keep record history.</strong>{" "}
+                    Every create, update and delete keeps a copy of the record; an admin can view and restore earlier versions from the record drawer.
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {tab === "indexes" && showIndexesTab && (
@@ -966,6 +997,7 @@ function describeField(f: FieldDef): string {
     if (opts["pattern"]) bits.push(`/${opts["pattern"]}/`);
   }
   if (f.type === "color" && opts["alpha"]) bits.push("alpha");
+  if (f.type === "vector" && typeof opts["dimensions"] === "number") bits.push(`${opts["dimensions"]} dims`);
   if (f.type === "number") {
     if (opts["min"] !== undefined || opts["max"] !== undefined) {
       bits.push(`${opts["min"] ?? "−∞"}–${opts["max"] ?? "∞"}`);
@@ -1026,16 +1058,21 @@ function FieldOptionsBody({
         />
       </VbField>
 
-      <VbField label="Type">
+      <VbField
+        label="Type"
+        // The server can't change a stored field's type (drop it and add a new one).
+        hint={!locked && sel.renamedFrom ? "A saved field's type can't change. Remove it and add a new field instead." : undefined}
+      >
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
           {FIELD_TYPES.map((t) => {
             const active = t === sel.type;
+            const fixed = locked || !!sel.renamedFrom;
             return (
               <button
                 key={t}
                 type="button"
-                onClick={() => !locked && updateSel({ type: t })}
-                disabled={locked}
+                onClick={() => !fixed && updateSel({ type: t })}
+                disabled={fixed}
                 style={{
                   appearance: "none",
                   display: "inline-flex",
@@ -1047,8 +1084,8 @@ function FieldOptionsBody({
                   color: active ? "var(--vb-accent)" : "var(--vb-fg-2)",
                   fontFamily: "var(--font-mono)",
                   fontSize: 11,
-                  cursor: locked ? "not-allowed" : "pointer",
-                  opacity: locked && !active ? 0.45 : 1,
+                  cursor: fixed ? "not-allowed" : "pointer",
+                  opacity: fixed && !active ? 0.45 : 1,
                   transition: "background 100ms, border-color 100ms",
                 }}
               >{t}</button>
@@ -1175,6 +1212,34 @@ function FieldOptionsBody({
         }}>
           Stored as <SchemaCode>{`{ lat, lng }`}</SchemaCode> JSON. Latitude in [-90, 90], longitude in [-180, 180].
         </div>
+      )}
+      {sel.type === "autodate" && (
+        <>
+          {/* Without either, the server never fills the field. */}
+          <OptionRow
+            title="Set on create"
+            on={sel.onCreate !== false}
+            onChange={(v) => updateSel({ onCreate: v })}
+          />
+          <OptionRow
+            title="Set on every update"
+            on={sel.onUpdate === true}
+            onChange={(v) => updateSel({ onUpdate: v })}
+          />
+        </>
+      )}
+      {sel.type === "vector" && (
+        <VbField label="Dimensions" hint="The length of every vector, 1–4096. Search with ?nearVector= on the list endpoint.">
+          <VbInput
+            mono
+            type="number"
+            min={1}
+            max={4096}
+            value={(sel.options?.["dimensions"] as number | undefined) ?? ""}
+            onChange={(e) => updateSelOptions({ dimensions: numOrUndef(e.target.value) })}
+            placeholder="e.g. 1536"
+          />
+        </VbField>
       )}
       {sel.type === "color" && (
         <OptionRow
@@ -1333,7 +1398,7 @@ function FieldOptionsBody({
                 const v = e.target.value;
                 updateSelOptions({ viewRule: v === "" ? undefined : v });
               }}
-              placeholder="@auth.id != '' && @auth.id = record.owner"
+              placeholder='@request.auth.id = owner'
               style={{
                 width: "100%",
                 background: "var(--vb-bg-3)",

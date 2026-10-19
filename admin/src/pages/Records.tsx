@@ -17,6 +17,8 @@ import {
   TypePill,
   VbBtn,
   VbEmptyState,
+  VbField,
+  VbPill,
   VbInput,
   VbSubHeader,
   VbTable,
@@ -138,6 +140,9 @@ function GeoPointMap({
   );
 }
 
+/** One failed row from a CSV import. */
+interface ImportRowError { row: number; details?: Record<string, string> | string; error?: string }
+
 // ── New Record Modal ────────────────────────────────────────────────────────
 function NewRecordModal({
   open,
@@ -169,6 +174,8 @@ function NewRecordModal({
 
   async function handleCreate() {
     setError(""); setFieldErrors({});
+    const badJson = firstInvalidJson(values);
+    if (badJson) { setFieldErrors({ [badJson]: "Not valid JSON" }); return; }
     setSaving(true);
     // Strip empty password fields on create — server treats undefined as null
     const passwordNames = new Set(fields.filter((f) => f.type === "password").map((f) => f.name));
@@ -567,7 +574,7 @@ function FieldInput({
   recordId?: string;
 }) {
   if (field.type === "bool") {
-    return <Toggle on={!!value} onChange={onChange} />;
+    return <Toggle on={!!value} onChange={onChange} disabled={readOnly} />;
   }
   if (field.type === "file") {
     return (
@@ -589,7 +596,9 @@ function FieldInput({
         <Dropdown
           value={String(value ?? "")}
           options={opts}
-          onChange={(e) => onChange(e.value)}
+          // Cleared, the dropdown gives undefined, which JSON drops from the
+          // save: send null so the relation is actually emptied.
+          onChange={(e) => onChange(e.value ?? null)}
           disabled={readOnly}
           filter
           showClear
@@ -638,11 +647,16 @@ function FieldInput({
         />
       );
     }
+    // PrimeReact hands back the whole option for an empty-string value, so
+    // "none" is a sentinel here and saves as null.
+    const NONE = "\u0000none";
     return (
       <Dropdown
-        value={String(value ?? "")}
-        options={[{ label: "— none —", value: "" }, ...opts.map((o) => ({ label: o, value: o }))]}
-        onChange={(e) => onChange(e.value)}
+        value={typeof value === "string" && value !== "" ? value : NONE}
+        options={[{ label: "— none —", value: NONE }, ...opts.map((o) => ({ label: o, value: o }))]}
+        optionLabel="label"
+        optionValue="value"
+        onChange={(e) => onChange(e.value === NONE ? null : e.value)}
         disabled={readOnly}
         style={{ width: "100%", height: 32 }}
       />
@@ -653,8 +667,8 @@ function FieldInput({
       <VbInput
         mono
         type="number"
-        value={String(value ?? "")}
-        onChange={(e) => onChange(e.target.valueAsNumber)}
+        value={typeof value === "number" && Number.isFinite(value) ? String(value) : ""}
+        onChange={(e) => onChange(Number.isFinite(e.target.valueAsNumber) ? e.target.valueAsNumber : null)}
         readOnly={readOnly}
       />
     );
@@ -690,8 +704,15 @@ function FieldInput({
   }
   if (field.type === "geoPoint") {
     const v = (value && typeof value === "object" ? value : {}) as { lat?: number; lng?: number };
-    const setLat = (lat: number) => onChange({ lat, lng: v.lng ?? 0 });
-    const setLng = (lng: number) => onChange({ lat: v.lat ?? 0, lng });
+    // Both empty clears the point; one empty stays empty (it used to save 0,
+    // a real place), and the server says which is missing.
+    const point = (lat: number | undefined, lng: number | undefined) => {
+      const a = typeof lat === "number" && Number.isFinite(lat) ? lat : undefined;
+      const b = typeof lng === "number" && Number.isFinite(lng) ? lng : undefined;
+      return a === undefined && b === undefined ? null : { lat: a ?? null, lng: b ?? null };
+    };
+    const setLat = (lat: number) => onChange(point(lat, v.lng));
+    const setLng = (lng: number) => onChange(point(v.lat, lng));
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -717,13 +738,94 @@ function FieldInput({
       </div>
     );
   }
+  if (field.type === "json" || field.type === "vector") {
+    return <JsonInput field={field} value={value} onChange={onChange} readOnly={readOnly} />;
+  }
+  if (field.type === "date") {
+    // Stored as Unix seconds; edited in local time.
+    const secs = typeof value === "number" ? value : null;
+    return (
+      <VbInput
+        mono
+        type="datetime-local"
+        step={1}
+        value={secs === null ? "" : toLocalInput(secs)}
+        onChange={(e) => onChange(e.target.value ? Math.floor(new Date(e.target.value).getTime() / 1000) : null)}
+        readOnly={readOnly}
+      />
+    );
+  }
+  if (field.type === "autodate") {
+    // Set by the server; shown, not edited.
+    return <VbInput mono value={typeof value === "number" ? new Date(value * 1000).toISOString() : "—"} readOnly />;
+  }
   return (
     <VbInput
-      mono={["autodate"].includes(field.type)}
       value={String(value ?? "")}
       onChange={(e) => onChange(e.target.value)}
       readOnly={readOnly}
     />
+  );
+}
+
+/** `YYYY-MM-DDTHH:MM:SS` in local time, as a datetime-local input takes it. */
+function toLocalInput(secs: number): string {
+  const d = new Date(secs * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/**
+ * Text that isn't valid JSON yet. Kept in the form so the typing isn't lost,
+ * and refused at save with a message (see firstInvalidJson).
+ */
+export class InvalidJsonValue {
+  constructor(readonly text: string) {}
+}
+
+/** The first field holding text that isn't valid JSON, or null. */
+export function firstInvalidJson(values: Record<string, unknown>): string | null {
+  for (const [k, v] of Object.entries(values)) if (v instanceof InvalidJsonValue) return k;
+  return null;
+}
+
+/**
+ * A json field (any JSON value) or a vector (an array of numbers) as text.
+ * Shown pretty-printed; parsed as you type.
+ */
+function JsonInput({ field, value, onChange, readOnly }: {
+  field: FieldDef;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readOnly?: boolean;
+}) {
+  const vector = field.type === "vector";
+  const show = (v: unknown) =>
+    v instanceof InvalidJsonValue ? v.text
+      : v === null || v === undefined ? ""
+      : vector ? JSON.stringify(v) : JSON.stringify(v, null, 2);
+  const [text, setText] = useState(() => show(value));
+  const invalid = value instanceof InvalidJsonValue;
+  const dims = vector && typeof field.options?.["dimensions"] === "number" ? field.options["dimensions"] as number : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <textarea
+        className="input mono"
+        value={text}
+        readOnly={readOnly}
+        spellCheck={false}
+        rows={vector ? 2 : Math.min(12, Math.max(3, text.split("\n").length))}
+        placeholder={vector ? `[0.1, 0.2, …]${dims ? ` (${dims} numbers)` : ""}` : "{ }"}
+        style={{ width: "100%", height: "auto", resize: "vertical", fontSize: 12, lineHeight: 1.5, padding: "6px 8px", border: `1px solid ${invalid ? "var(--vb-status-danger)" : "var(--border-strong)"}`, background: "var(--bg-input)", color: "var(--vb-fg)" }}
+        onChange={(e) => {
+          const t = e.target.value;
+          setText(t);
+          if (t.trim() === "") { onChange(null); return; }
+          try { onChange(JSON.parse(t)); } catch { onChange(new InvalidJsonValue(t)); }
+        }}
+      />
+      {invalid && <span style={{ fontSize: 11, color: "var(--vb-status-danger)" }}>Not valid JSON yet{vector ? " (an array of numbers)" : ""}.</span>}
+    </div>
   );
 }
 
@@ -868,6 +970,8 @@ function recordColumns(
       label: c,
       flex: 1,
       mono: false,
+      // The API sorts on any field; one value per record makes it meaningful.
+      sortable: !!fdef && !["file", "json", "geoPoint", "vector", "password", "editor"].includes(fdef.type) && !fdef.options?.["multiple"] && !(collection?.type === "auth" && fdef.implicit && fdef.name === "verified"),
       render: (r) => {
         if (isFile && collection && fdef) {
           return (
@@ -916,14 +1020,14 @@ function recordColumns(
       width: 100,
       render: (r) => (
         <span style={{ display: "inline-flex", gap: 4 }}>
-          {r["mfa_enabled"] === true && (
+          {!!r["totp_enabled"] && (
             <span title="MFA enabled" style={{
               fontSize: 10, padding: "1px 6px", borderRadius: 8,
               background: "var(--vb-status-success-bg)", color: "var(--vb-status-success)",
               fontFamily: "var(--font-mono)",
             }}>MFA</span>
           )}
-          {r["anonymous"] === true && (
+          {!!r["is_anonymous"] && (
             <span title="Anonymous user" style={{
               fontSize: 10, padding: "1px 6px", borderRadius: 8,
               background: "var(--vb-bg-3)", color: "var(--vb-fg-3)",
@@ -983,6 +1087,11 @@ export default function Records() {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  // The edit form as it was opened, to tell whether closing loses changes.
+  const editStart = useRef("");
+  const [importErrors, setImportErrors] = useState<{ created: number; failed: number; errors: ImportRowError[] } | null>(null);
   const [selected, setSelected] = useState<RecordRow[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -1042,18 +1151,30 @@ export default function Records() {
   function openRecord(r: RecordRow) {
     setOpenRec(r);
     // seed edit data with current non-meta values
-    const meta = new Set(["id", "collectionId", "collectionName", "created", "updated"]);
+    const meta = new Set(["id", "collectionId", "collectionName", "created", "updated", "email_verified", "totp_enabled", "is_anonymous"]);
     const initial: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(r)) {
       if (!meta.has(k)) initial[k] = v;
     }
     setEditData(initial);
+    editStart.current = JSON.stringify(initial);
     setEditErrors({});
+  }
+
+  /** Close the drawer; ask first when the form has changes. */
+  async function closeDrawer() {
+    if (openRec && JSON.stringify(editData) !== editStart.current) {
+      const ok = await confirm({ title: "Discard changes?", message: "This record has changes that aren't saved.", confirmLabel: "Discard", danger: true });
+      if (!ok) return;
+    }
+    setOpenRec(null);
   }
 
   async function handleSave() {
     if (!collection || !openRec) return;
     setEditErrors({});
+    const badJson = firstInvalidJson(editData);
+    if (badJson) { setEditErrors({ [badJson]: "Not valid JSON" }); toast("Fix the JSON before saving", "info"); return; }
     setSaving(true);
 
     if (collection.type === "auth") {
@@ -1062,9 +1183,10 @@ export default function Records() {
       // are stripped server-side from incoming patches; credential
       // changes go through dedicated /auth/<col>/* flows.
       const payload: Record<string, unknown> = {};
+      const implicit = new Set(parseFields(collection.fields).filter((f) => f.implicit).map((f) => f.name));
       for (const [k, v] of Object.entries(editData)) {
-        if (k === "verified") payload["email_verified"] = v ? 1 : 0;
-        else payload[k] = v;
+        if (implicit.has(k) || k === "email_verified" || k === "totp_enabled" || k === "is_anonymous") continue;
+        payload[k] = v;
       }
       const res = await api.patch<ApiResponse<RecordRow>>(
         `/api/v1/${collection.name}/${encodeURIComponent(String(openRec.id))}`,
@@ -1121,7 +1243,9 @@ export default function Records() {
     if (!ok) return;
     // v0.11: auth + base + view all use the records flow.
     const url = `/api/v1/${collection.name}/${encodeURIComponent(id)}`;
-    await api.delete(url);
+    const res = await api.delete<ApiResponse<null>>(url);
+    // A restrict relation (409) or a rule can refuse it: say so.
+    if (res?.error) { toast(`Couldn't delete: ${res.error}`, "info"); return; }
     toast(isAuth ? "User deleted" : "Record deleted", "trash");
     setOpenRec(null);
     loadRecords(page);
@@ -1140,6 +1264,7 @@ export default function Records() {
     setBulkDeleting(true);
     const ids = selected.map((r) => String(r.id));
     let failed = 0;
+    let reason = "";
 
     {
       // v0.11: every collection (incl. auth) uses the records flow.
@@ -1156,7 +1281,7 @@ export default function Records() {
             })),
           }
         );
-        if (res.error) failed += slice.length; // batches are atomic — all-or-nothing per chunk
+        if (res.error) { failed += slice.length; reason ||= res.error; } // batches are atomic — all-or-nothing per chunk
       }
     }
 
@@ -1165,9 +1290,9 @@ export default function Records() {
     if (failed === 0) {
       toast(`Deleted ${ids.length} ${isAuth ? "user" : "record"}${ids.length === 1 ? "" : "s"}`, "trash");
     } else if (failed === ids.length) {
-      toast(`Bulk delete failed`, "info");
+      toast(`Bulk delete failed: ${reason}`, "info");
     } else {
-      toast(`Deleted ${ids.length - failed} of ${ids.length}; ${failed} failed`, "info");
+      toast(`Deleted ${ids.length - failed} of ${ids.length}; ${failed} failed: ${reason}`, "info");
     }
     loadRecords(page);
   }
@@ -1182,10 +1307,12 @@ export default function Records() {
     }
   }
 
-  function handleExport() {
+  /** Download the collection as CSV: every record, or just `ids`. */
+  function handleExport(ids?: string[]) {
     if (!collection) return;
     const token = getMemoryToken();
-    fetch(`/api/v1/admin/export/${collection.name}`, {
+    const qs = ids && ids.length > 0 ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
+    fetch(`/api/v1/admin/export/${collection.name}${qs}`, {
       credentials: "same-origin",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -1197,7 +1324,7 @@ export default function Records() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${collection.name}.csv`;
+        a.download = ids && ids.length > 0 ? `${collection.name}-selection.csv` : `${collection.name}.csv`;
         a.click();
         URL.revokeObjectURL(url);
         toast(`Exported ${collection.name}.csv`, "download");
@@ -1225,8 +1352,7 @@ export default function Records() {
       if (d.failed === 0) {
         toast(`Imported ${d.created} of ${d.total} rows`, "check");
       } else {
-        toast(`Imported ${d.created}, ${d.failed} failed (see console)`, "info");
-        console.warn(`Import errors for ${collection.name}:`, d.errors);
+        setImportErrors({ created: d.created, failed: d.failed, errors: d.errors as ImportRowError[] });
       }
       loadRecords(page);
     });
@@ -1283,10 +1409,13 @@ export default function Records() {
   const fieldsByName = new Map<string, FieldDef>(userFields.map((f) => [f.name, f]));
 
   function cellValue(rec: RecordRow, col: string): string {
+    // An auth record's verified flag comes back as email_verified (0 / 1).
+    if (collection?.type === "auth" && col === "verified") return rec["email_verified"] ? "true" : "false";
     const val = rec[col];
     if (val === null || val === undefined) return "—";
     if (typeof val === "boolean") return val ? "true" : "false";
     const f = fieldsByName.get(col);
+    if ((f?.type === "date" || f?.type === "autodate") && typeof val === "number") return new Date(val * 1000).toISOString().slice(0, 19).replace("T", " ");
     if (f?.type === "geoPoint" && val && typeof val === "object") {
       const o = val as { lat?: unknown; lng?: unknown };
       if (typeof o.lat === "number" && typeof o.lng === "number" &&
@@ -1295,6 +1424,7 @@ export default function Records() {
       }
       return "—";
     }
+    if (typeof val === "object") return JSON.stringify(val);
     return String(val);
   }
 
@@ -1322,9 +1452,10 @@ export default function Records() {
         {/* System read-only fields */}
         {(["id", "created", "updated"] as const).map((key) => {
           const raw = rec[key];
+          // A view may have no created / updated.
           const display = key === "id"
             ? String(raw)
-            : new Date((raw as number) * 1000).toISOString();
+            : typeof raw === "number" ? new Date(raw * 1000).toISOString() : "—";
           return (
             <DrawerFieldRow key={key} name={key} type={key === "id" ? "text" : "autodate"}>
               <VbInput mono value={display} readOnly />
@@ -1333,7 +1464,18 @@ export default function Records() {
         })}
         <div style={{ borderTop: "1px solid var(--vb-border)", margin: "4px 0" }} />
         {/* User fields */}
-        {userFields.map((f) => (
+        {userFields.map((f) => collection?.type === "auth" && f.implicit ? (
+          // Email and verified belong to the auth flows (email change,
+          // verification); a record PATCH ignores them, so they're shown, not edited.
+          <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
+            {f.name === "verified"
+              ? <Toggle on={!!rec["email_verified"]} onChange={() => {}} disabled ariaLabel="Email verified" />
+              : <VbInput mono value={String(rec[f.name] ?? "")} readOnly />}
+            <div style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+              {f.name === "verified" ? "Set when the user confirms their email." : "Changed by the user, through the email-change flow."}
+            </div>
+          </DrawerFieldRow>
+        ) : (
           <DrawerFieldRow key={f.name} name={f.name} type={f.type} required={f.required}>
             <FieldInput
               field={f}
@@ -1399,7 +1541,7 @@ export default function Records() {
           <>
             {collection?.type === "base" && (
               <>
-                <VbBtn kind="ghost" size="sm" icon="download" onClick={handleExport} title="Download all records as CSV">
+                <VbBtn kind="ghost" size="sm" icon="download" onClick={() => handleExport()} title="Download all records as CSV">
                   Export
                 </VbBtn>
                 <VbBtn kind="ghost" size="sm" icon="upload" onClick={() => importInputRef.current?.click()} title="Upload a CSV to bulk-create records">
@@ -1417,16 +1559,22 @@ export default function Records() {
             {!isSingleton && (
               <>
                 <span style={{ width: 1, height: 20, background: "var(--vb-border)", margin: "0 4px" }} />
-                <VbBtn
-                  kind="primary"
-                  size="sm"
-                  icon="plus"
-                  onClick={() => (collection?.type === "auth" ? setShowInvite(true) : setShowNew(true))}
-                  disabled={!collection || collection.type === "view"}
-                  title={newBtnTitle}
-                >
-                  {newBtnLabel}
-                </VbBtn>
+                {collection?.type === "auth" && (
+                  <VbBtn kind="ghost" size="sm" icon="send" onClick={() => setShowInvite(true)} title={newBtnTitle}>
+                    Invite user
+                  </VbBtn>
+                )}
+                {/* A view has no create; no button rather than a disabled one. */}
+                {collection && collection.type !== "view" && (
+                  <VbBtn
+                    kind="primary"
+                    size="sm"
+                    icon="plus"
+                    onClick={() => (collection.type === "auth" ? setShowCreateUser(true) : setShowNew(true))}
+                  >
+                    {collection.type === "auth" ? "Create user" : newBtnLabel}
+                  </VbBtn>
+                )}
               </>
             )}
           </>
@@ -1558,7 +1706,7 @@ export default function Records() {
             fontFamily: "var(--font-mono)",
           }}>presets</span>
           {[
-            { label: "Last 24h",    set: `created > "${new Date(Date.now() - 86400_000).toISOString()}"` },
+            { label: "Last 24h",    set: `created > ${Math.floor(Date.now() / 1000) - 86400}` },
             { label: "Has updates", set: `updated != created` },
           ].map((p) => (
             <button
@@ -1597,7 +1745,7 @@ export default function Records() {
               <span style={{ fontWeight: 700 }}>{selected.length}</span> selected
             </span>
             {collection?.type === "base" && (
-              <VbBtn kind="ghost" size="sm" icon="download" onClick={handleExport} disabled={bulkDeleting}>
+              <VbBtn kind="ghost" size="sm" icon="download" onClick={() => handleExport(selected.map((r) => String(r.id)))} disabled={bulkDeleting} title="Download the selected records as CSV">
                 Export
               </VbBtn>
             )}
@@ -1630,7 +1778,8 @@ export default function Records() {
           onSelectionChange={setSelected}
           onRowClick={(r) => openRecord(r)}
           sort={sort}
-          onSortChange={(s) => { setSort(s); setPage(1); }}
+          // A third click clears a column's sort: back to newest first.
+          onSortChange={(s) => { setSort(s || "-created"); setPage(1); }}
           total={total}
           page={page}
           pageSize={30}
@@ -1652,12 +1801,12 @@ export default function Records() {
       {/* Edit drawer (a singleton edits its record inline instead) */}
       <Drawer
         open={!!openRec && !isSingleton}
-        onClose={() => setOpenRec(null)}
+        onClose={() => void closeDrawer()}
         title={collection?.type === "view" ? "View record (read-only)" : "Edit record"}
         idLabel={openRec ? String(openRec.id).slice(0, 16) : undefined}
         footer={
           collection?.type === "view" ? (
-            <VbBtn kind="ghost" size="sm" onClick={() => setOpenRec(null)} style={{ marginLeft: "auto" }}>
+            <VbBtn kind="ghost" size="sm" onClick={() => void closeDrawer()} style={{ marginLeft: "auto" }}>
               Close
             </VbBtn>
           ) : (
@@ -1672,7 +1821,7 @@ export default function Records() {
               </VbBtn>
               {collection?.type === "auth" && openRec && (
                 <>
-                  {openRec["mfa_enabled"] === true && (
+                  {!!openRec["totp_enabled"] && (
                     <VbBtn
                       kind="ghost"
                       size="sm"
@@ -1694,8 +1843,13 @@ export default function Records() {
                   </VbBtn>
                 </>
               )}
+              {collection?.history_enabled === 1 && openRec && (
+                <VbBtn kind="ghost" size="sm" icon="clock" onClick={() => setShowHistory(true)} title="Earlier versions of this record">
+                  History
+                </VbBtn>
+              )}
               <span style={{ flex: 1 }} />
-              <VbBtn kind="ghost" size="sm" onClick={() => setOpenRec(null)}>
+              <VbBtn kind="ghost" size="sm" onClick={() => void closeDrawer()}>
                 Cancel
               </VbBtn>
               <VbBtn kind="primary" size="sm" icon="check" onClick={handleSave} disabled={saving}>
@@ -1717,9 +1871,50 @@ export default function Records() {
         />
       )}
 
+      <Modal
+        open={!!importErrors}
+        onClose={() => setImportErrors(null)}
+        title={importErrors ? `Imported ${importErrors.created}, ${importErrors.failed} failed` : ""}
+        width={560}
+        footer={<VbBtn kind="ghost" onClick={() => setImportErrors(null)}>Close</VbBtn>}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 12.5 }}>
+          <div style={{ color: "var(--vb-fg-3)" }}>Rows are counted from the header (row 1). Fix these in the file and import them again.</div>
+          {importErrors?.errors.map((e, i) => (
+            <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 12, borderTop: "1px solid var(--vb-border)", paddingTop: 6 }}>
+              <span style={{ color: "var(--vb-fg-3)" }}>row {e.row}</span>{" "}
+              {typeof e.details === "string" ? e.details : Object.entries(e.details ?? {}).map(([k, v]) => `${k}: ${String(v)}`).join("; ")}
+            </div>
+          ))}
+          {importErrors && importErrors.failed > importErrors.errors.length && (
+            <div style={{ color: "var(--vb-fg-3)" }}>…and {importErrors.failed - importErrors.errors.length} more.</div>
+          )}
+        </div>
+      </Modal>
+
+      {collection && openRec && showHistory && (
+        <HistoryModal
+          collectionName={collection.name}
+          recordId={String(openRec.id)}
+          onClose={() => setShowHistory(false)}
+          onRestored={(rec) => { setShowHistory(false); toast("Record restored"); if (rec) openRecord(rec); loadRecords(page); }}
+        />
+      )}
+
+      {collection && showCreateUser && (
+        <CreateUserModal
+          collectionName={collection.name}
+          onClose={() => setShowCreateUser(false)}
+          onCreated={(email) => { setShowCreateUser(false); toast(`Created ${email}`, "check"); loadRecords(1); setPage(1); }}
+        />
+      )}
+
       {/* New record modal */}
       {collection && (
-        <NewRecordModal
+        // Mounted only while open, per collection: typed values don't carry
+        // over to the next form (or into another collection's create).
+        showNew && <NewRecordModal
+          key={collection.name}
           open={showNew}
           onClose={() => setShowNew(false)}
           fields={allFields}
@@ -1778,6 +1973,126 @@ function InviteUserModal({ open, onClose, collectionName, onInvited }: {
         <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
           Creates the user without a password and emails a link (valid 7 days) to set one. Users can still sign up themselves via <code>/auth/{collectionName}/register</code>.
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Create a user with a password, no email needed (Invite needs SMTP). */
+function CreateUserModal({ collectionName, onClose, onCreated }: {
+  collectionName: string;
+  onClose: () => void;
+  onCreated: (email: string) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function create() {
+    setError("");
+    setSaving(true);
+    // Sign-up as the admin: the collection's create rule doesn't apply.
+    const res = await api.post<ApiResponse<{ id?: string; email?: string }>>(
+      `/api/v1/auth/${encodeURIComponent(collectionName)}/register`,
+      { email: email.trim(), password },
+    );
+    setSaving(false);
+    if (res.details) { setError(Object.values(res.details).join(" ")); return; }
+    if (res.error) { setError(res.error); return; }
+    onCreated(email.trim());
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Create user · ${collectionName}`}
+      width={440}
+      footer={
+        <>
+          <VbBtn kind="ghost" size="sm" onClick={onClose}>Cancel</VbBtn>
+          <VbBtn kind="primary" size="sm" icon="check" onClick={() => void create()} disabled={saving || !email.trim() || !password}>
+            {saving ? "Creating…" : "Create user"}
+          </VbBtn>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <VbField label="Email">
+          <VbInput mono type="email" placeholder="person@example.com" value={email} autoFocus onChange={(e) => setEmail(e.target.value)} />
+        </VbField>
+        <VbField label="Password" hint="Must meet the password policy (12 characters by default).">
+          <VbInput mono type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void create(); }} />
+        </VbField>
+        {error && <div style={{ fontSize: 12, color: "var(--vb-status-danger)" }}>{error}</div>}
+        <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+          If the address already has an account, nothing changes (sign-up never says whether an address is taken).
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+interface HistoryEntry { id: string; op: "create" | "update" | "delete"; snapshot: Record<string, unknown>; actor_id: string | null; actor_type: string | null; at: number }
+
+/** A record's earlier versions (record history), newest first, each restorable. */
+function HistoryModal({ collectionName, recordId, onClose, onRestored }: {
+  collectionName: string;
+  recordId: string;
+  onClose: () => void;
+  onRestored: (rec: RecordRow | null) => void;
+}) {
+  const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const base = `/api/v1/${encodeURIComponent(collectionName)}/${encodeURIComponent(recordId)}`;
+
+  useEffect(() => {
+    api.get<ApiResponse<{ data: HistoryEntry[] }>>(`${base}/history?perPage=100`).then((res) => {
+      if (res.error) { setError(res.error); return; }
+      setEntries(res.data?.data ?? []);
+    });
+  }, [base]);
+
+  async function restore(e: HistoryEntry) {
+    const ok = await confirm({ title: "Restore this version?", message: `The record goes back to how it was on ${new Date(e.at * 1000).toLocaleString()}. The current version stays in the history.`, confirmLabel: "Restore" });
+    if (!ok) return;
+    setRestoring(true);
+    const res = await api.post<ApiResponse<RecordRow>>(`${base}/restore?at=${e.at}`, {});
+    setRestoring(false);
+    if (res.error) { toast(`Couldn't restore: ${res.error}`, "x"); return; }
+    onRestored(res.data ?? null);
+  }
+
+  return (
+    <Modal open onClose={onClose} title="History" idLabel={recordId.slice(0, 16)} width={640}
+      footer={<VbBtn kind="ghost" onClick={onClose}>Close</VbBtn>}>
+      {error && <div style={{ color: "var(--vb-status-danger)", fontSize: 12 }}>{error}</div>}
+      {!error && entries === null && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+      {entries && entries.length === 0 && <div className="muted" style={{ fontSize: 12 }}>No earlier versions.</div>}
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {entries?.map((e, i) => (
+          <div key={e.id} style={{ borderTop: i ? "1px solid var(--vb-border)" : undefined, padding: "8px 0" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+              <span className="mono" style={{ width: 160, color: "var(--vb-fg-2)" }}>{new Date(e.at * 1000).toLocaleString()}</span>
+              <VbPill tone={e.op === "delete" ? "danger" : e.op === "create" ? "success" : "neutral"}>{e.op}</VbPill>
+              <span style={{ color: "var(--vb-fg-3)", fontSize: 11.5 }}>{e.actor_type ? `${e.actor_type}${e.actor_id ? ` ${e.actor_id.slice(0, 8)}` : ""}` : "system"}</span>
+              <span style={{ flex: 1 }} />
+              <VbBtn kind="ghost" size="sm" onClick={() => setOpen(open === e.id ? null : e.id)}>{open === e.id ? "Hide" : "Show"}</VbBtn>
+              {i > 0 && e.op !== "delete" && (
+                <VbBtn kind="ghost" size="sm" icon="refresh" disabled={restoring} onClick={() => void restore(e)}>Restore</VbBtn>
+              )}
+            </div>
+            {open === e.id && (
+              <pre className="mono" style={{ margin: "8px 0 0", padding: 10, fontSize: 11.5, background: "var(--bg-code)", border: "1px solid var(--vb-border)", maxHeight: 260, overflow: "auto" }}>
+                {JSON.stringify(e.snapshot, null, 2)}
+              </pre>
+            )}
+          </div>
+        ))}
       </div>
     </Modal>
   );

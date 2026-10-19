@@ -41,7 +41,25 @@ async function req<T>(method: string, path: string, body?: unknown, extraHeaders
       window.location.href = "/_/login";
     }
   }
-  return res.json() as Promise<T>;
+  // Every API answer is JSON, but a proxy or a crash can answer with text:
+  // turn that into the usual error shape instead of throwing, so the page
+  // shows it rather than hanging on a failed parse.
+  const text = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    return { error: text.slice(0, 300) || `HTTP ${res.status}`, code: res.status } as T;
+  }
+  // Pages decide success by the absence of `error`. A failed request whose
+  // body has none (the framework's own 422 for a bad request body is
+  // `{ type, message, … }`) used to read as success.
+  if (!res.ok && parsed && typeof parsed === "object" && !("error" in parsed)) {
+    const b = parsed as { message?: unknown; summary?: unknown };
+    const msg = typeof b.summary === "string" ? b.summary : typeof b.message === "string" ? b.message : `HTTP ${res.status}`;
+    return { ...(parsed as object), error: msg, code: res.status } as T;
+  }
+  return parsed as T;
 }
 
 export const api = {
@@ -77,7 +95,7 @@ export interface FieldDef {
   type:
     | "text" | "number" | "bool" | "file" | "relation"
     | "select" | "autodate" | "date" | "json" | "email" | "url"
-    | "password" | "editor" | "geoPoint" | "color";
+    | "password" | "editor" | "geoPoint" | "color" | "vector";
   required?: boolean;
   system?: boolean;
   /** Auth-collection implicit field (email, verified). Storage lives on vaultbase_users. */
@@ -104,6 +122,8 @@ export interface Collection {
   create_rule: string | null;
   update_rule: string | null;
   delete_rule: string | null;
+  /** 1 when every change keeps a copy (record history). */
+  history_enabled?: number;
   created_at: number;
   updated_at: number;
 }

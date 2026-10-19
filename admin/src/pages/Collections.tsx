@@ -78,7 +78,8 @@ export default function Collections() {
       danger: true,
     });
     if (!ok) return;
-    await api.delete(`/api/v1/collections/${id}`);
+    const res = await api.delete<{ error?: string }>(`/api/v1/collections/${id}`);
+    if (res.error) { toast(`Not deleted: ${res.error}`, "info"); return; }
     toast(`Collection "${name}" deleted`, "trash");
     load();
   }
@@ -101,6 +102,7 @@ export default function Collections() {
       ...c,
       type: (c.type ?? "base") as CollectionType,
       fieldCount: parseFields(c.fields).length,
+      fieldPreview: parseFields(c.fields).filter((f) => !f.system).map((f) => f.name).slice(0, 3),
       records: recordCount,
       recordsCapped: capped,
       writeRate,
@@ -262,8 +264,9 @@ export default function Collections() {
                       color: "var(--vb-fg)",
                       fontFamily: "var(--font-mono)",
                     }}>{c.name}</span>
-                    <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
-                      {c.fieldCount} fields · id, created…
+                    <span style={{ fontSize: 11, color: "var(--vb-fg-3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {c.fieldCount} {c.fieldCount === 1 ? "field" : "fields"}
+                      {c.fieldPreview.length > 0 && ` · ${c.fieldPreview.join(", ")}${c.fieldCount > c.fieldPreview.length ? "…" : ""}`}
                     </span>
                   </div>
                 </div>

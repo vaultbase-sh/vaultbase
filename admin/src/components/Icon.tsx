@@ -29,6 +29,7 @@ const Icon: React.FC<IconProps> = ({ name, size = 14, stroke = 1.5, style, class
     sort: <><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></>,
     grip: <><circle cx="9" cy="6" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="18" r="1.2" fill="currentColor"/><circle cx="15" cy="6" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="18" r="1.2" fill="currentColor"/></>,
     x: <><path d="M18 6L6 18M6 6l12 12"/></>,
+    clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     maximize: <><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></>,
     minimize: <><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></>,
     chevronDown: <><path d="M6 9l6 6 6-6"/></>,

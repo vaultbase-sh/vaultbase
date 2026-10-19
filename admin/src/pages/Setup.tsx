@@ -414,7 +414,7 @@ function DoneStep({ email, onFinish }: { email: string; onFinish: () => void }) 
 
   const rows = [
     { key: "admin", label: "ADMIN", value: `${base}/_/` },
-    { key: "rest", label: "REST", value: `${base}/api/` },
+    { key: "rest", label: "REST", value: `${base}/api/v1/` },
   ];
 
   return (

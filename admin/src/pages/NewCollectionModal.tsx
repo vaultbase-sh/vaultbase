@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import { Chips } from "primereact/chips";
 import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type CollectionType, type FieldDef, parseFields } from "../api.ts";
@@ -7,7 +7,7 @@ import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb
 import Icon from "../components/Icon.tsx";
 import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
 
-const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "color", "file", "relation", "select", "json"];
+const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "color", "file", "relation", "select", "json", "editor", "geoPoint", "password"];
 
 const SYSTEM_FIELDS: FieldDef[] = [
   { name: "id",      type: "text",     required: true, system: true },
@@ -24,7 +24,7 @@ function cleanCollName(raw: string): string {
 }
 
 const TYPE_DESCRIPTIONS: Record<CollectionType, (name: string) => React.ReactNode> = {
-  base: (name) => <>Standard records collection. CRUD via <Code>/api/{name || "name"}</Code>.</>,
+  base: (name) => <>Standard records collection. CRUD via <Code>/api/v1/{name || "name"}</Code>.</>,
   auth: (name) => <>Email + password sign-up via <Code>/api/v1/auth/{name || "name"}/register</Code>. Field names <Code>email</Code>, <Code>password</Code>, <Code>verified</Code> are managed by the implicit auth schema and cannot be redefined.</>,
   view: () => <>Read-only collection backed by a SQL <Code>SELECT</Code>. Defaults to admin-only access — open it up via the API rules after creation. Writes return 405.</>,
   singleton: (name) => <>One record, for site settings or app config. Read with <Code>GET /api/v1/{name || "name"}</Code>, update with <Code>PATCH</Code>. The record is created with the collection and can't be deleted.</>,
@@ -89,18 +89,24 @@ export default function NewCollectionModal({
     }
   }, [open]);
 
+  // A view's fields come from its query; the fields added for another type
+  // are kept aside while View is picked, not thrown away.
+  const stashedFields = useRef<FieldDef[]>([]);
   useEffect(() => {
     setFields((prev) => {
-      const userFields = prev.filter((f) => !f.system && !f.implicit);
+      let userFields = prev.filter((f) => !f.system && !f.implicit);
+      if (type === "view") {
+        if (userFields.length > 0) stashedFields.current = userFields;
+        return SYSTEM_FIELDS;
+      }
+      if (userFields.length === 0) userFields = stashedFields.current;
       if (type === "auth") {
         return [...AUTH_IMPLICIT_FIELDS, ...userFields, ...SYSTEM_FIELDS];
-      }
-      if (type === "view") {
-        return SYSTEM_FIELDS;
       }
       return [...userFields, ...SYSTEM_FIELDS];
     });
     setExpanded(null);
+    setError("");
   }, [type]);
 
   const collectionNames = useMemo(
@@ -228,7 +234,7 @@ export default function NewCollectionModal({
               {name && collName !== name && (
                 <span>Stored as <Code>{collName}</Code> · </span>
               )}
-              API path: <Code>/api/{collName || "name"}</Code>
+              API path: <Code>/api/v1/{collName || "name"}</Code>
             </>
           }
         >

@@ -7,6 +7,7 @@
  * routing, data fetching, or the rest of the admin.
  */
 import React from "react";
+import { Dropdown, type DropdownProps } from "primereact/dropdown";
 import Icon from "./Icon.tsx";
 
 // ── Tone palette (status pills, status dots) ────────────────────────────────
@@ -47,7 +48,6 @@ export const VbPill: React.FC<{
     background: TONE_BG[tone],
     color: TONE_FG[tone],
     fontFamily: "var(--font-mono)",
-    textTransform: "lowercase",
   }}>
     {dot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: TONE_FG[tone] }} />}
     {children}
@@ -213,8 +213,13 @@ export const VbField: React.FC<{
   hint?: React.ReactNode;
   right?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ label, hint, right, children }) => (
-  <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+}> = ({ label, hint, right, children }) => {
+  // A <label> passes a click anywhere in it to its first control. With a
+  // control on the right (a Validate button) that hijacked clicks meant for
+  // the field below, so then it's a plain container.
+  const Wrap = right ? "div" : "label";
+  return (
+  <Wrap style={{ display: "flex", flexDirection: "column", gap: 5 }}>
     <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
       <span style={{
         fontSize: 10.5,
@@ -228,8 +233,9 @@ export const VbField: React.FC<{
     </div>
     {hint && <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>{hint}</div>}
     {children}
-  </label>
-);
+  </Wrap>
+  );
+};
 
 // ── Status dot (live / paused / not configured) ─────────────────────────────
 
@@ -1144,3 +1150,71 @@ export const VbEmptyState: React.FC<{
     {actions && <div style={{ display: "flex", gap: 8, marginTop: 4 }}>{actions}</div>}
   </div>
 );
+
+// ── Dropdown that allows an empty-string option ─────────────────────────────
+
+const EMPTY_OPTION = "\u0000empty";
+
+/**
+ * PrimeReact's Dropdown, for options whose value may be "" ("All", "Global").
+ * Given an option with value "", PrimeReact shows a blank label and hands the
+ * whole option object to onChange; this maps "" to an internal value and back.
+ */
+export function VbSelect({ value, options, onChange, ...rest }: Omit<DropdownProps, "options" | "onChange" | "value"> & {
+  value: string;
+  options: Array<{ label: string; value: string }>;
+  onChange: (value: string) => void;
+}) {
+  const mapped = options.map((o) => (o.value === "" ? { ...o, value: EMPTY_OPTION } : o));
+  return (
+    <Dropdown
+      {...rest}
+      value={value === "" ? EMPTY_OPTION : value}
+      options={mapped}
+      optionLabel="label"
+      optionValue="value"
+      onChange={(e) => onChange(e.value === EMPTY_OPTION ? "" : String(e.value ?? ""))}
+    />
+  );
+}
+
+// ── Number input that lets you type ─────────────────────────────────────────
+
+/**
+ * A whole-number input with a minimum. The minimum is applied when you leave
+ * the field, not on every keystroke: clamping each keystroke turned "clear,
+ * type 4" into 14 and "type 250" into 5050.
+ */
+export function VbNumberInput({ value, min = 0, fallback, onChange, ...rest }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "min"> & {
+  value: number;
+  min?: number;
+  /** Used when the field is left empty; defaults to `min`. */
+  fallback?: number;
+  onChange: (value: number) => void;
+}) {
+  const [text, setText] = React.useState(String(value));
+  const focused = React.useRef(false);
+  React.useEffect(() => { if (!focused.current) setText(String(value)); }, [value]);
+  return (
+    <VbInput
+      {...rest}
+      mono
+      type="number"
+      min={min}
+      value={text}
+      onFocus={() => { focused.current = true; }}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = Number(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(n) && n >= min) onChange(Math.floor(n));
+      }}
+      onBlur={() => {
+        focused.current = false;
+        const n = Number(text);
+        const next = text === "" || !Number.isFinite(n) ? (fallback ?? min) : Math.max(min, Math.floor(n));
+        setText(String(next));
+        onChange(next);
+      }}
+    />
+  );
+}
