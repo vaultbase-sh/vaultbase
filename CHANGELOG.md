@@ -21,6 +21,91 @@ Binaries, checksums, signatures and SBOMs for every version are on
   to it, then set the field, as uploads always required. Access to a file was, and is,
   checked against the record it was uploaded to.
 
+### Security
+
+- **Rules read NULL the same way for one record as for a list.** A rule like
+  `status != "secret"` hid a record with no status from lists but let it through on view by
+  id and on realtime, as did `tags:length = 0` on a record with no tags. Any comparison with a
+  missing value is now false in both, as in SQL (`= null` / `!= null` still test for it;
+  `~` / `!~` keep their SQL answers).
+- **List totals no longer go stale under rules that read other collections.** With a rule
+  such as `@collection.members.user = @request.auth.id`, `totalItems` was served from a cache
+  that only watched the listed table, so it kept counting rows the caller could no longer see.
+- **Every admin write is audited.** The audit plugin was mounted after most admin routes, so
+  settings, hooks, routes, jobs, admins, backups and indexes went unrecorded, and collection
+  writes (outside `/admin`) never were. All are recorded now, collections as
+  `collections.create` / `update` / `delete`.
+- **A failed `vaultbase backup` to S3, R2 or B2 leaves no database copy behind.** Missing
+  credentials or endpoint were found after the snapshot was taken and the process exited
+  before removing it, leaving a full copy of the database in the data directory. The
+  destination is checked first.
+
+### Fixed
+
+- **API tokens work as the docs show them.** A token sent as `Authorization: Bearer vbat_…`
+  counted as anonymous on the records, batch, custom-route and notification APIs, and on
+  realtime. The request log attributes token calls as `api:<token id>`. Admin REST routes
+  (`/api/v1/admin/*`, `/api/v1/collections`) still take only an admin session; automate admin
+  work through MCP.
+- **Collections:**
+  - `DELETE /api/v1/collections/<name>` dropped the table but kept the collection, which then
+    answered 500. Deleting by name or id now deletes both; an unknown one is a 404, and
+    `PATCH` takes a name too.
+  - Field names that records already have (`id`, `created`, `updated`, `created_at`,
+    `updated_at`, `collectionId`, `collectionName`, `expand`) are refused; `created_at` used to
+    leave a collection with no table, and `created` replaced the timestamp in every record.
+  - A table that can't be made rolls the collection back.
+  - A singleton can have required fields (its record starts empty; required is checked on
+    writes).
+  - Changing a field's type is a 422, not a 500.
+  - A rule (or a file field's `viewRule`) that doesn't parse is refused at save with 422 and
+    the reason, instead of silently denying every caller.
+- **`created` and `updated` work in filters and list rules**, as in `sort`;
+  `created_at` / `updated_at` work in view rules too.
+- **Creating a record in an auth collection is a 405 JSON error** pointing to sign-up, not a
+  plain-text 500.
+- **A dotted filter or `?=` on a field that isn't JSON** names the problem.
+- **Custom routes can return a `Response`** (XML, a stream): it's sent as is, with the
+  security and CORS headers added. It used to arrive as JSON `{}`.
+- **`.txt` and `.json` uploads work.** The type was compared with its parameters
+  (`text/plain;charset=utf-8`) and refused.
+- **Rate-limit rules labelled `/api/v1/...` match.** Only `/api/...` labels did.
+- **Webhooks:** a test fire reaches only that webhook, not every `*` webhook too.
+- **Notifications:**
+  - `helpers.notify()` inbox rows go out over realtime (and to webhooks and after-hooks).
+  - When FCM reached some of a user's devices, only the failed ones are retried, so the others
+    don't get the push twice.
+  - Enabling a provider without a `users` auth collection says so instead of creating
+    collections every notification then failed against.
+- **MCP:** `update_setting` validates values and refreshes caches as `PATCH /admin/settings`
+  does; a `run_sql` call refused for its scope is audited.
+- **Logs:** JSONPath filters at the root (`$[?(@.status >= 400)]`, the Logs page's default)
+  match entries; they used to match nothing.
+- **Encryption:** a value that won't decrypt reads as null (the server log names it) instead
+  of failing the request; the startup error for a mismatched key names the right fix.
+- **Realtime:** the SDK's `{type: "ping"}` keepalive gets `{type: "pong"}` instead of an error.
+- **CLI:** `vaultbase doctor` no longer creates the data directory or key files, and exits 2
+  when the database is missing or unreadable; `--help` lists `--snapshot-mode additive|sync`.
+
+### Changed (SDK 0.7.3)
+
+- **One client no longer affects another's session.** Every client in a process (or tab)
+  shared one BroadcastChannel: one client's 401 signed the others out, and one user's
+  refreshed token was written into the others' stores. It's gone; `LocalStorageAuthStore`
+  still shares a session across tabs. Scripts that create a client now exit normally.
+- **`vb.flags`** evaluates with the session, so `auth.*` targeting works, and no longer signs
+  the user out when public evaluation is off. A 401 on any request sent without the session
+  keeps the session.
+- **Realtime:** a dropped SSE stream reconnects.
+- A caller's own `AbortSignal` throws kind `aborted` (it was `network`).
+- `vb-types` types auth records as the server returns them (`email_verified`,
+  `totp_enabled`, `is_anonymous` as 0/1), and its header names the command that produced the
+  file. `totpConfirm` returns `recovery_codes`.
+
+### Docs
+
+- Every page was checked against the server and SDK; 47 pages corrected.
+
 ## [0.26.2] — 2026-10-19
 
 ### Added
