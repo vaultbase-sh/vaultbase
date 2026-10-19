@@ -441,6 +441,122 @@ function FileFieldPreview({
   );
 }
 
+/**
+ * A file field in the record form: the stored files, each removable, and an
+ * upload button. Uploading stores the file on the server right away; the
+ * field changes to name it like any other edit, and is attached when the
+ * record is saved. A file left unattached (the form closed unsaved, or
+ * one replaced) is deleted by the server's hourly sweep.
+ *
+ * Files belong to an existing record, so a new record gets its files after
+ * it's created.
+ */
+function FileFieldEditor({
+  field,
+  value,
+  onChange,
+  readOnly,
+  collectionName,
+  recordId,
+}: {
+  field: FieldDef;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  readOnly?: boolean;
+  collectionName?: string;
+  recordId?: string;
+}) {
+  const multiple = field.options?.["multiple"] === true;
+  const mimeTypes = Array.isArray(field.options?.["mimeTypes"]) ? (field.options["mimeTypes"] as string[]) : [];
+  const filenames = filenamesFromValue(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  // Previews for files uploaded in this form: they aren't attached yet, so
+  // the server doesn't serve them until the record is saved.
+  const [local, setLocal] = useState<Record<string, string>>({});
+  const localRef = useRef(local);
+  localRef.current = local;
+  useEffect(() => () => { for (const u of Object.values(localRef.current)) URL.revokeObjectURL(u); }, []);
+
+  if (!collectionName || !recordId) {
+    return <span className="muted" style={{ fontSize: 12 }}>Create the record first, then add files here.</span>;
+  }
+
+  async function upload(list: FileList | null) {
+    const files = list ? [...list] : [];
+    if (files.length === 0) return;
+    setBusy(true);
+    try {
+      const path = `/api/v1/files/${[collectionName!, recordId!, field.name].map(encodeURIComponent).join("/")}`;
+      const res = await api.upload<ApiResponse<{ filename: string } | Array<{ filename: string }>>>(path, multiple ? files : files.slice(0, 1));
+      if (!res.data) { toast(res.details?.[field.name] ?? res.error ?? "Upload failed", "x"); return; }
+      const uploaded = Array.isArray(res.data) ? res.data : [res.data];
+      const picked = multiple ? files : files.slice(0, 1);
+      setLocal((prev) => {
+        const next = { ...prev };
+        uploaded.forEach((m, i) => { if (picked[i]) next[m.filename] = URL.createObjectURL(picked[i]!); });
+        return next;
+      });
+      const names = uploaded.map((m) => m.filename);
+      onChange(multiple ? [...filenames, ...names] : names[0]);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  function remove(fn: string) {
+    onChange(multiple ? filenames.filter((f) => f !== fn) : null);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {filenames.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {filenames.map((fn) => (
+            <div key={fn} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {local[fn] ? (
+                looksImage(fn)
+                  ? <img src={local[fn]} alt={fn} title={`${fn} (not saved yet)`} style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4, border: "0.5px dashed var(--vb-accent)" }} />
+                  : <span className="mono" style={{ fontSize: 11 }} title={`${fn} (not saved yet)`}>{fn.length > 20 ? `${fn.slice(0, 8)}…${fn.slice(-8)}` : fn}</span>
+              ) : (
+                <FileFieldPreview field={field} value={fn} collectionName={collectionName} recordId={recordId} />
+              )}
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => remove(fn)}
+                  title="Remove"
+                  aria-label={`Remove ${fn}`}
+                  style={{ background: "none", border: 0, padding: 2, cursor: "pointer", color: "var(--vb-fg-3)", display: "flex" }}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!readOnly && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <VbBtn kind="ghost" size="sm" icon="upload" disabled={busy} onClick={() => inputRef.current?.click()}>
+            {busy ? "Uploading…" : filenames.length > 0 && !multiple ? "Replace" : multiple ? "Add files" : "Upload"}
+          </VbBtn>
+          {filenames.length === 0 && <span className="muted" style={{ fontSize: 11 }}>No file</span>}
+          <input
+            ref={inputRef}
+            type="file"
+            hidden
+            multiple={multiple}
+            accept={mimeTypes.length > 0 ? mimeTypes.join(",") : undefined}
+            onChange={(e) => void upload(e.target.files)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Shared field input renderer ──────────────────────────────────────────────
 function FieldInput({
   field,
@@ -464,25 +580,15 @@ function FieldInput({
     return <Toggle on={!!value} onChange={onChange} />;
   }
   if (field.type === "file") {
-    const filenames = filenamesFromValue(value);
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filenames.length > 0 && collectionName && recordId ? (
-          <FileFieldPreview
-            field={field}
-            value={value}
-            collectionName={collectionName}
-            recordId={recordId}
-          />
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <VbInput value="—" disabled style={{ flex: 1 }} />
-            <span style={{ fontSize: 11, color: "var(--vb-fg-3)", whiteSpace: "nowrap" }}>
-              File upload available in v2
-            </span>
-          </div>
-        )}
-      </div>
+      <FileFieldEditor
+        field={field}
+        value={value}
+        onChange={onChange}
+        readOnly={readOnly}
+        collectionName={collectionName}
+        recordId={recordId}
+      />
     );
   }
   if (field.type === "relation") {

@@ -24,14 +24,16 @@ export function getMemoryToken(): string | null {
 }
 
 async function req<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...extraHeaders };
+  // A FormData body sets its own multipart Content-Type, boundary included.
+  const form = body instanceof FormData;
+  const headers: Record<string, string> = { ...(form ? {} : { "Content-Type": "application/json" }), ...extraHeaders };
   const memToken = getMemoryToken();
   if (memToken) headers.Authorization = `Bearer ${memToken}`;
   const res = await fetch(BASE + path, {
     method,
     credentials: "same-origin",
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: form ? body : body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401 && !PUBLIC_PATHS.some((p) => path.startsWith(p))) {
     setMemoryToken(null);
@@ -47,6 +49,12 @@ export const api = {
   post: <T>(path: string, body: unknown) => req<T>("POST", path, body),
   patch: <T>(path: string, body: unknown, headers?: Record<string, string>) => req<T>("PATCH", path, body, headers),
   delete: <T>(path: string) => req<T>("DELETE", path),
+  /** POST files as multipart form data, each under the field name `file`. */
+  upload: <T>(path: string, files: File[]) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("file", f);
+    return req<T>("POST", path, fd);
+  },
 };
 
 export interface ApiResponse<T> {
