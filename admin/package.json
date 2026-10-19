@@ -10,6 +10,9 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "5",
+    "@fontsource/ibm-plex-sans": "5",
+    "@fontsource/instrument-serif": "5",
     "@monaco-editor/react": "^4.7.0",
     "cron-parser": "^5.10.2",
     "cronstrue": "^3.31.0",
