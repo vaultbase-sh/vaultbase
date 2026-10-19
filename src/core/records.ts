@@ -677,7 +677,7 @@ export async function listRecords(
     // `field.key` reads inside a JSON value. On any other field (a relation,
     // a text) the database can't parse the column as JSON.
     if (opts.filter && isJsonPathError(e)) {
-      throw new FilterError("a dotted path (field.key) reads inside a json field, and this field isn't one. Filters don't follow relations: compare the relation's id (author = \"…\"), or use @collection.<name>.<field>");
+      throw new FilterError("a field used as JSON isn't JSON. A dotted path (field.key) reads inside a json field, and the ?= family of operators needs a json or multi-value field. Filters don't follow relations: compare the relation's id (author = \"…\"), or use @collection.<name>.<field>");
     }
     throw e;
   }
@@ -766,7 +766,8 @@ async function createRecordImpl(
     // Auth collections require credential hashing + verification-email
     // semantics + uniqueness checks that records.ts createRecord doesn't
     // run. Route callers to the auth signup flow instead.
-    throw new Error(
+    throw new ReadOnlyCollectionError(
+      col.name,
       `'${col.name}' is an auth collection. Create users via POST /api/v1/auth/${col.name}/register ` +
       `(or /anonymous) — direct record-create bypasses password hashing + email verification.`,
     );
@@ -1094,9 +1095,13 @@ export class RestrictError extends Error {
   }
 }
 
+/**
+ * A write the collection's type doesn't allow: any write to a view, or a
+ * direct create on an auth collection (users sign up instead). HTTP 405.
+ */
 export class ReadOnlyCollectionError extends Error {
-  constructor(collectionName: string) {
-    super(`Collection '${collectionName}' is read-only (view collection)`);
+  constructor(collectionName: string, message?: string) {
+    super(message ?? `Collection '${collectionName}' is read-only (view collection)`);
   }
 }
 
