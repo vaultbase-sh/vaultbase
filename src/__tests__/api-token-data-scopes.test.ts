@@ -136,7 +136,8 @@ describe("collections admin check", () => {
   it("rejects a revoked admin token", async () => {
     const { token, jti, exp } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
     const del = () => makeCollectionsPlugin(SECRET).handle(req("DELETE", "/collections/missing", token));
-    expect((await del()).status).toBe(200);
+    // Admitted (an unknown collection is a 404), then refused once revoked.
+    expect((await del()).status).toBe(404);
     await revokeToken(jti, exp);
     expect((await del()).status).toBe(401);
   });
