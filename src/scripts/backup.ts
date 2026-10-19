@@ -148,7 +148,15 @@ async function pushLocal(snapPath: string, destAbs: string, opts: BackupOpts): P
   }
 }
 
-async function pushS3(snapPath: string, dest: DestSpec, opts: BackupOpts): Promise<void> {
+type S3Writer = { write(key: string, data: Uint8Array, opts?: { type?: string }): Promise<unknown> };
+
+/**
+ * The S3 client for a destination, or exit with what's missing. Called before
+ * the snapshot is taken: `die()` exits the process, so a failure after the
+ * snapshot existed left a full copy of the database (password hashes and all)
+ * in the data directory.
+ */
+function s3Client(dest: DestSpec): S3Writer {
   const accessKeyId = process.env["AWS_ACCESS_KEY_ID"] ?? "";
   const secretAccessKey = process.env["AWS_SECRET_ACCESS_KEY"] ?? "";
   if (!accessKeyId || !secretAccessKey) {
@@ -159,20 +167,22 @@ async function pushS3(snapPath: string, dest: DestSpec, opts: BackupOpts): Promi
     (dest.endpointEnvHint ? process.env[dest.endpointEnvHint] : undefined) ??
     "";
   if ((dest.endpointEnvHint === "R2_ENDPOINT" || dest.endpointEnvHint === "B2_ENDPOINT") && !endpoint) {
-    die(`${dest.endpointEnvHint} is required for r2:// / b2:// destinations`);
+    die(`${dest.endpointEnvHint} (or AWS_ENDPOINT_URL) is required for r2:// / b2:// destinations`);
   }
   const region = process.env["AWS_REGION"] ?? "auto";
 
   // Bun.S3Client (1.x). Falls back to constructing per-request if cached
   // shape changes.
   type S3Opts = { accessKeyId: string; secretAccessKey: string; bucket: string; region?: string; endpoint?: string };
-  const ctor = (Bun as unknown as { S3Client: new (o: S3Opts) => { write(key: string, data: Uint8Array, opts?: { type?: string }): Promise<unknown> } }).S3Client;
+  const ctor = (Bun as unknown as { S3Client: new (o: S3Opts) => S3Writer }).S3Client;
   if (!ctor) die("Bun.S3Client unavailable — upgrade Bun (≥ 1.1.0)");
   const s3opts: S3Opts = { accessKeyId, secretAccessKey, bucket: dest.bucket };
   if (region) s3opts.region = region;
   if (endpoint) s3opts.endpoint = endpoint;
-  const client = new ctor(s3opts);
+  return new ctor(s3opts);
+}
 
+async function pushS3(snapPath: string, dest: DestSpec, client: S3Writer, opts: BackupOpts): Promise<void> {
   const data = await Bun.file(snapPath).bytes();
   let body: Uint8Array = data;
   let key = dest.key;
@@ -191,13 +201,15 @@ export async function runBackup(dbPath: string, argv: string[]): Promise<void> {
   const opts = parseBackupArgs(argv);
   const dest = parseDestination(opts.to);
 
+  const client = dest.kind === "file" ? null : s3Client(dest);
+
   log(opts, `snapshotting ${dbPath}`);
   const snap = await snapshotDb(dbPath);
   try {
-    if (dest.kind === "file") {
+    if (!client) {
       await pushLocal(snap, dest.bucket, opts);
     } else {
-      await pushS3(snap, dest, opts);
+      await pushS3(snap, dest, client, opts);
     }
   } finally {
     try { unlinkSync(snap); } catch { /* best-effort cleanup */ }

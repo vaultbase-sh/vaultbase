@@ -235,7 +235,7 @@ Subcommands:
 
 Server flags:
   --apply-snapshot <path>         Apply a snapshot JSON before booting.
-                                  --snapshot-mode additive|replace (default additive)
+                                  --snapshot-mode additive|sync (default additive)
 
   --help, -h                      Show this help.
   --version, -v                   Print version.
@@ -301,9 +301,12 @@ async function main() {
     process.exit(1);
   }
   if (process.argv[2] === "doctor") {
-    const config = await loadConfig();
+    // Read-only: no loadConfig(), which creates the data directory and its
+    // key files on a path that may not be an install at all.
+    const { join } = await import("node:path");
+    const dbPath = join(process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data", "data.db");
     const { runDoctorCli } = await import("./scripts/doctor.ts");
-    const code = runDoctorCli(process.argv.slice(3), config.dbPath);
+    const code = runDoctorCli(process.argv.slice(3), dbPath);
     process.exit(code);
   }
 

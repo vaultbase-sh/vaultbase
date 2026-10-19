@@ -17,6 +17,7 @@
  * Read-only — never mutates state. Just inspects.
  */
 
+import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
 
 interface DoctorIssue {
@@ -153,7 +154,17 @@ export function runDoctor(dbPath: string): DoctorReport {
 
 /** CLI entry point. Returns the exit code (0 ok, 1 blockers found). */
 export function runDoctorCli(_argv: readonly string[], dbPath: string): number {
-  const report = runDoctor(dbPath);
+  if (!existsSync(dbPath)) {
+    process.stderr.write(`vaultbase doctor: no database at ${dbPath} (set VAULTBASE_DATA_DIR to the install's data directory)\n`);
+    return 2;
+  }
+  let report: DoctorReport;
+  try {
+    report = runDoctor(dbPath);
+  } catch (e) {
+    process.stderr.write(`vaultbase doctor: couldn't read ${dbPath}: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
   if (report.ok && report.warnings.length === 0) {
     process.stdout.write("✓ vaultbase doctor — clean. v0.11 migration is safe.\n");
     return 0;
