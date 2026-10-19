@@ -674,6 +674,11 @@ export async function listRecords(
     // The query builders quote every term, but report anything the search
     // engine still rejects as a bad request rather than a 500.
     if (opts.search && isSearchSyntaxError(e)) throw new FilterError(`invalid search: ${(e as Error).message}`);
+    // `field.key` reads inside a JSON value. On any other field (a relation,
+    // a text) the database can't parse the column as JSON.
+    if (opts.filter && isJsonPathError(e)) {
+      throw new FilterError("a dotted path (field.key) reads inside a json field, and this field isn't one. Filters don't follow relations: compare the relation's id (author = \"…\"), or use @collection.<name>.<field>");
+    }
     throw e;
   }
   recordListQuery({
@@ -1106,6 +1111,11 @@ export class SingletonRecordError extends Error {
 }
 
 /** A user-supplied `filter` that does not compile. Maps to HTTP 400. */
+/** The database refusing to read a non-JSON column as JSON (SQLite, then Postgres). */
+function isJsonPathError(e: unknown): boolean {
+  return e instanceof Error && /malformed JSON|invalid input syntax for type json/i.test(e.message);
+}
+
 export class FilterError extends Error {
   constructor(reason: string) {
     super(`Invalid filter: ${reason}`);
