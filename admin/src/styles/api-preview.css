@@ -155,8 +155,8 @@
 }
 .ap-menu button {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 10px;
   width: 100%;
   text-align: left;
   appearance: none;
@@ -170,7 +170,19 @@
   font-size: 12.5px;
 }
 .ap-menu button:hover, .ap-menu button:focus-visible { background: rgba(255, 255, 255, 0.05); outline: none; }
+.ap-menu button > span { display: flex; flex-direction: column; gap: 2px; }
+.ap-menu button > svg { flex-shrink: 0; margin-top: 2px; color: var(--text-secondary); }
+.ap-menu button:hover > svg { color: var(--accent); }
 .ap-menu small { color: var(--text-secondary); font-size: 11px; }
+.ap-menu-sep { height: 0.5px; margin: 4px 6px; background: var(--border-default); }
+.ap-menu-label {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
 
 @media (max-width: 900px) {
   .ap-layout { grid-template-columns: minmax(0, 1fr); }

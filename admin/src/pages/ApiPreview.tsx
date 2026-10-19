@@ -327,17 +327,26 @@ export default function ApiPreview() {
               </VbBtn>
               {exportOpen && (
                 <div className="ap-menu" role="menu">
+                  <div className="ap-menu-label">Specification</div>
                   <button type="button" role="menuitem" onClick={() => void exportAs("openapi")}>
-                    OpenAPI spec<small>openapi.json, for code generators and docs</small>
+                    <Icon name="code" size={14} />
+                    <span>OpenAPI spec<small>openapi.json, for code generators and docs</small></span>
                   </button>
+                  <div className="ap-menu-sep" role="separator" />
+                  <div className="ap-menu-label">HTTP clients</div>
                   <button type="button" role="menuitem" onClick={() => void exportAs("postman")}>
-                    Postman collection<small>v2.1, with baseUrl and token variables</small>
+                    <Icon name="send" size={14} />
+                    <span>Postman collection<small>v2.1, with baseUrl and token variables</small></span>
                   </button>
                   <button type="button" role="menuitem" onClick={() => void exportAs("insomnia")}>
-                    Insomnia<small>export format 4, with a base environment</small>
+                    <Icon name="layers" size={14} />
+                    <span>Insomnia<small>export format 4, with a base environment</small></span>
                   </button>
+                  <div className="ap-menu-sep" role="separator" />
+                  <div className="ap-menu-label">Editors</div>
                   <button type="button" role="menuitem" onClick={() => void exportAs("http")}>
-                    .http file<small>for the VS Code and JetBrains REST clients</small>
+                    <Icon name="scroll" size={14} />
+                    <span>.http file<small>for the VS Code and JetBrains REST clients</small></span>
                   </button>
                 </div>
               )}
