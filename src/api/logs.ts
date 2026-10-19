@@ -1,4 +1,4 @@
-import { clientIp } from "../core/sec.ts";
+import { clientIp, headerBearer } from "../core/sec.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
@@ -134,7 +134,7 @@ const ATTRIBUTION_CACHE_MAX = 1000;
 const attributionCache = new Map<string, { ctx: AuthLogContext; exp: number }>();
 
 export async function extractAuth(request: Request, secret: Uint8Array): Promise<AuthLogContext | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = headerBearer(request);
   if (!token) return null;
   const cached = attributionCache.get(token);
   if (cached) {
@@ -163,6 +163,10 @@ async function verifyForAttribution(
     // serviced the request already enforced the live verification.
     const { payload } = await jose.jwtVerify(token, secret, { issuer: "vaultbase" });
     const aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+    // An API token acts for the admin who minted it; log it as the token.
+    if (aud === "api" && typeof payload["jti"] === "string") {
+      return { ctx: { id: `api:${payload["jti"]}`, type: "admin" }, exp: typeof payload.exp === "number" ? payload.exp : 0 };
+    }
     if (aud !== "user" && aud !== "admin") return null;
     const ctx: AuthLogContext = {
       id: payload["id"] as string,

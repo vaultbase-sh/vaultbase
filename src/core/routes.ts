@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { accessFor, clientIp, dataPrincipal, verifyAuthToken } from "./sec.ts";
+import { accessFor, clientIp, dataPrincipal, headerBearer, verifyAuthToken } from "./sec.ts";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -11,7 +11,7 @@ import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
 async function extractAuth(request: Request, jwtSecret: string): Promise<AuthContext | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = headerBearer(request);
   if (!token) return null;
   // Central verifier: issuer, revocation and principal checks apply here
   // too; API tokens act within their scopes.

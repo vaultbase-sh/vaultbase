@@ -526,6 +526,19 @@ export function isSameOriginRequest(request: Request): boolean {
  * callers always see a raw JWT — the prefix is purely for log-scanner /
  * secret-scanning detection on the wire.
  */
+/**
+ * The token in the Authorization header, without `Bearer ` and without the
+ * `vbat_` prefix API tokens carry. Header only (no cookie): see
+ * extractBearer for the cookie-aware form.
+ */
+export function headerBearer(request: Request): string | null {
+  const h = request.headers.get("authorization");
+  if (!h) return null;
+  const raw = h.replace(/^Bearer\s+/i, "").trim();
+  if (!raw) return null;
+  return raw.startsWith("vbat_") ? raw.slice(5) : raw;
+}
+
 export function extractBearer(request: Request): string | null {
   const h = request.headers.get("authorization");
   if (h) {

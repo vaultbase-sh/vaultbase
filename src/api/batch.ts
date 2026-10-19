@@ -7,7 +7,7 @@ import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, del
 import { ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
-import { dataPrincipal, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
+import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 
 interface BatchRequest {
@@ -31,7 +31,7 @@ class BatchOpError extends Error {
 }
 
 async function extractAuth(request: Request, jwtSecret: string): Promise<VerifiedAuth | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = headerBearer(request);
   if (!token) return null;
   // Centralized verifier — fixes N-1 admin-token-bypass. The principal is
   // resolved per op, so an API token's scopes apply to each one.

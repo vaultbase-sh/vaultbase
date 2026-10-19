@@ -15,7 +15,7 @@
 import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { setSetting, getAllSettings } from "./settings.ts";
-import { verifyAuthToken } from "../core/sec.ts";
+import { headerBearer, verifyAuthToken } from "../core/sec.ts";
 import {
   loadProviderConfigs,
   testOneSignalConnection,
@@ -33,7 +33,7 @@ async function authedUser(
   request: Request,
   jwtSecret: string,
 ): Promise<{ id: string; email?: string } | null> {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = headerBearer(request);
   if (!token) return null;
   const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
   if (!ctx) return null;

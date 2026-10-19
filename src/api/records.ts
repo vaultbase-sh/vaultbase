@@ -1,7 +1,7 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
-import { accessFor, dataPrincipal, verifyAuthToken } from "../core/sec.ts";
+import { accessFor, dataPrincipal, headerBearer, verifyAuthToken } from "../core/sec.ts";
 import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
 import {
   createRecord,
@@ -159,7 +159,7 @@ async function getAuthContext(
   jwtSecret: string
 ): Promise<AuthContext | null> {
   return await timeFor(request, "auth_verify", async () => {
-    const token = request.headers.get("authorization")?.replace("Bearer ", "");
+    const token = headerBearer(request);
     if (!token) return null;
     // Centralized verifier — fixes N-1 admin-token-bypass. Accepts user or
     // admin (records API serves both); checks signature, audience, expiry,
