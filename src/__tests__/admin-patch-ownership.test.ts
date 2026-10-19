@@ -64,3 +64,13 @@ describe("admin emails ignore case", () => {
     expect((await patch("a1", { email: "Two@Test.Local" }, "a1")).status).toBe(400);
   });
 });
+
+describe("adminByEmail", () => {
+  it("prefers an exact match when two admins differ only in case", async () => {
+    const { adminByEmail } = await import("../api/admins.ts");
+    await getDb().insert(admin).values({ id: "a3", email: "One@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    expect((await adminByEmail("One@test.local"))[0]!.id).toBe("a3");
+    expect((await adminByEmail("one@test.local"))[0]!.id).toBe("a1");
+    expect((await adminByEmail("ONE@TEST.LOCAL"))).toHaveLength(1);
+  });
+});

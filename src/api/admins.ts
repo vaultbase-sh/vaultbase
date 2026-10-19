@@ -6,9 +6,17 @@ import { HASH_OPTS } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
 import { adminGuard } from "./_admin.ts";
 
-/** Admin emails are matched without regard to case, so `Ops@` and `ops@` are one account. */
+/**
+ * Admin emails are matched without regard to case, so `Ops@` and `ops@` are
+ * one account. Two admins made before this that differ only in case each
+ * still sign in: an exact match comes first.
+ */
 export function adminByEmail(email: string) {
-  return getDb().select().from(admin).where(sql`lower(${admin.email}) = ${email.trim().toLowerCase()}`).limit(1);
+  const e = email.trim();
+  return getDb().select().from(admin)
+    .where(sql`lower(${admin.email}) = ${e.toLowerCase()}`)
+    .orderBy(sql`case when ${admin.email} = ${e} then 0 else 1 end`)
+    .limit(1);
 }
 
 export function makeAdminsPlugin(jwtSecret: string) {
