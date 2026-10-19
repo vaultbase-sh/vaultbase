@@ -7,19 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
-
-### Changed
-
-- **A file field takes only its own record's uploads.** A non-admin could set a file field
-  to any stored file name, including one uploaded to someone else's record: the file then
-  showed on both, and broke on the copy when its owner replaced it (the hourly sweep deletes
-  a file its own record no longer names). For everyone but admins, a file name added to a
-  field must now be a file uploaded to that record and field; otherwise the write is a `422`.
-  Names the field already holds stay valid, so a client that sends the whole record back is
-  unaffected. Creating a record with a file name is refused the same way: create it, upload
-  to it, then set the field, as uploads always required. Access to a file was, and is,
-  checked against the record it was uploaded to.
+## [0.26.3] — 2026-10-19
 
 ### Security
 
@@ -39,6 +27,18 @@ Binaries, checksums, signatures and SBOMs for every version are on
   credentials or endpoint were found after the snapshot was taken and the process exited
   before removing it, leaving a full copy of the database in the data directory. The
   destination is checked first.
+
+### Changed
+
+- **A file field takes only its own record's uploads.** A non-admin could set a file field
+  to any stored file name, including one uploaded to someone else's record: the file then
+  showed on both, and broke on the copy when its owner replaced it (the hourly sweep deletes
+  a file its own record no longer names). For everyone but admins, a file name added to a
+  field must now be a file uploaded to that record and field; otherwise the write is a `422`.
+  Names the field already holds stay valid, so a client that sends the whole record back is
+  unaffected. Creating a record with a file name is refused the same way: create it, upload
+  to it, then set the field, as uploads always required. Access to a file was, and is,
+  checked against the record it was uploaded to.
 
 ### Fixed
 
@@ -87,7 +87,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **CLI:** `vaultbase doctor` no longer creates the data directory or key files, and exits 2
   when the database is missing or unreadable; `--help` lists `--snapshot-mode additive|sync`.
 
-### Changed (SDK 0.7.3)
+### SDK 0.7.3
 
 - **One client no longer affects another's session.** Every client in a process (or tab)
   shared one BroadcastChannel: one client's 401 signed the others out, and one user's
