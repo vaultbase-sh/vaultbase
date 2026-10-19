@@ -50,6 +50,20 @@ describe("audit actor", () => {
   });
 });
 
+describe("audit actor of a request that ends its own session", () => {
+  it("is still the admin (a password change used to read as anonymous)", async () => {
+    const { eq } = await import("drizzle-orm");
+    const ending = new Elysia().use(makeAuditLogPlugin(SECRET)).patch("/api/v1/admin/admins/a1", async () => {
+      await getDb().update(admin).set({ password_reset_at: Math.floor(Date.now() / 1000) + 60 }).where(eq(admin.id, "a1"));
+      return { data: { id: "a1" } };
+    });
+    await ending.handle(new Request("http://localhost/api/v1/admin/admins/a1", {
+      method: "PATCH", headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(await actors()).toEqual(["a1"]);
+  });
+});
+
 describe("audit retention", () => {
   const insertAt = (id: string, at: number) => db.run(
     `INSERT INTO vaultbase_audit_log (id, method, path, action, status, at) VALUES (?, 'POST', '/x', 'x', 200, ?)`,

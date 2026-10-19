@@ -28,6 +28,8 @@ const SKIP_PATHS: ReadonlyArray<string | RegExp> = [
   "/api/admin/auth/login",       // login attempts already logged separately
   "/api/admin/auth/logout",
   "/api/admin/migrations/diff",  // read-only despite being POST
+  "/api/admin/logs/search",      // read-only: a JSONPath search
+  /^\/api\/admin\/flags\/[^/]+\/evaluate$/,
   /^\/api\/admin\/preview-/,
   /^\/api\/admin\/.*\/preview$/,
 ];
@@ -70,8 +72,10 @@ function deriveAction(method: string, rawPath: string): { action: string; target
   // Common resource shapes: collections, settings, hooks, jobs, queues,
   // routes, indexes, admins, auth-users, migrations, backup, etc.
   const noun = resource.replace(/-/g, "_");
+  // POST /admin/<resource>/<action> (sql/run, backup/restore) names the
+  // action; it used to read as "<resource>.create".
   const verb =
-    method === "POST"   ? (sub ? sub : "create") :
+    method === "POST"   ? (sub ? sub : id && /^[a-z][a-z-]*$/.test(id) ? id.replace(/-/g, "_") : "create") :
     method === "PUT"    ? "replace" :
     method === "PATCH"  ? "update" :
     method === "DELETE" ? "delete" :
