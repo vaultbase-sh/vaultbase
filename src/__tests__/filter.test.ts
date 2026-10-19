@@ -58,9 +58,10 @@ describe("parseFilter", () => {
     expect(r!.sql).toContain(`"vb_t"."id"`);
   });
 
-  it("emits column ref for created/updated", () => {
-    const r = parseFilter("created > 1700000000", "vb_t");
-    expect(r!.sql).toContain(`"vb_t"."created"`);
+  it("maps created/updated to their columns, as sort does", () => {
+    expect(parseFilter("created > 1700000000", "vb_t")!.sql).toContain(`"vb_t"."created_at"`);
+    expect(parseFilter("updated > 1700000000", "vb_t")!.sql).toContain(`"vb_t"."updated_at"`);
+    expect(parseFilter("created_at > 1700000000", "vb_t")!.sql).toContain(`"vb_t"."created_at"`);
   });
 
   it("coerces bool true to 1, false to 0", () => {

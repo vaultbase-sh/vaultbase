@@ -92,6 +92,18 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
 
   if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
 
+  // NULL as SQL has it, so a single-record check agrees with the list query:
+  // `= null` / `!= null` written as a literal are IS NULL / IS NOT NULL, and
+  // any other comparison with a missing value is unknown, which no rule
+  // passes (`status != "secret"` doesn't admit a record with no status).
+  const nullLiteral = (o: Operand) => o.kind === "literal" && o.value === null;
+  if ((op === "=" || op === "!=") && (nullLiteral(ast.left) || nullLiteral(ast.right))) {
+    const v = nullLiteral(ast.left) ? r : l;
+    const isNull = v === null || v === undefined;
+    return op === "=" ? isNull : !isNull;
+  }
+  if (l === null || l === undefined || r === null || r === undefined) return false;
+
   switch (op) {
     case "=":  return looseEq(l, r);
     case "!=": return !looseEq(l, r);
@@ -218,7 +230,7 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
     case "macro": return macroValue(op.name);
     case "func":  return evalFunc(op, ctx);
     case "field": {
-      const head = ctx.record?.[op.name];
+      const head = fieldValue(ctx.record, op.name);
       const v = walkPath(head, op.path);
       return applyModifierValue(v, op.modifier);
     }
@@ -244,6 +256,19 @@ function walkPath(start: unknown, path: string[]): unknown {
   return v;
 }
 
+/**
+ * A record's field for a rule. A record may come as the API shapes it
+ * (`created`, `updated`) or as the table row (`created_at`, `updated_at`);
+ * the list query (filter.ts) takes either name, so this does too.
+ */
+function fieldValue(record: Record<string, unknown> | null | undefined, name: string): unknown {
+  if (!record) return undefined;
+  if (Object.prototype.hasOwnProperty.call(record, name)) return record[name];
+  const twin = name === "created_at" ? "created" : name === "updated_at" ? "updated"
+    : name === "created" ? "created_at" : name === "updated" ? "updated_at" : null;
+  return twin ? record[twin] : undefined;
+}
+
 function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
   if (!m) return v;
   switch (m) {
@@ -251,7 +276,8 @@ function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
     case "length":
       if (Array.isArray(v)) return v.length;
       if (typeof v === "string") return v.length;
-      return 0;
+      // SQL's length of NULL is NULL, which no comparison matches.
+      return v === null || v === undefined ? null : 0;
     default: return v;
   }
 }

@@ -540,8 +540,20 @@ function compileOperand(op: Operand, ctx: CompileCtx): string {
   }
 }
 
+/**
+ * Records come back with `created` and `updated`, and `sort` takes those
+ * names; the columns are `created_at` and `updated_at`. A filter takes both,
+ * unless the table has a real column by the short name (a view can).
+ */
+function columnFor(name: string, ctx: CompileCtx): string {
+  const alias = name === "created" ? "created_at" : name === "updated" ? "updated_at" : null;
+  if (!alias) return name;
+  return ctx.hostFilterable?.(name) ? name : alias;
+}
+
 function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCtx): string {
   if (!IDENT_RE.test(op.name)) throw new Error(`invalid field name: ${op.name}`);
+  op = { ...op, name: columnFor(op.name, ctx) };
   // Private first, then existence — both raise the same error, so the order
   // only matters for readability.
   if (ctx.hostPrivateField(op.name)) throw new PrivateFieldError(op.name);
