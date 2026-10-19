@@ -1,9 +1,11 @@
 import React from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import Icon from "./Icon.tsx";
 import { VaultbaseLogo, VaultbaseWordmark } from "./VaultbaseLogo.tsx";
 import { useAuth } from "../stores/auth.ts";
 import { useVersion } from "../stores/version.ts";
+import { useSidebar } from "../stores/sidebar.ts";
+import { NAV_SECTIONS, isNavActive, isNavShown, type NavItem } from "../lib/nav.ts";
 import "../styles/sidebar-next.css";
 
 /* ── SIDEBAR EXPERIMENT ──────────────────────────────────────────────────────
@@ -37,48 +39,6 @@ function sidebarNextClass(): string {
   return on ? " sidebar--next" : "";
 }
 
-interface NavItem { to: string; label: string; icon: string; end?: boolean }
-interface NavSection { label: string; items: NavItem[] }
-
-// Sidebar groupings — semantic, not feature-alphabetical. Per the
-// Notifications redesign handoff (vaultbase/project/shell.jsx).
-const SECTIONS: NavSection[] = [
-  {
-    label: "Data",
-    items: [
-      { to: "/_/",             label: "Dashboard",    icon: "grid", end: true },
-      { to: "/_/collections",  label: "Collections",  icon: "stack" },
-      { to: "/_/logs",         label: "Logs",         icon: "scroll" },
-      { to: "/_/monitoring",   label: "Monitoring",   icon: "activity" },
-    ],
-  },
-  {
-    label: "Logic",
-    items: [
-      { to: "/_/hooks",        label: "Hooks",        icon: "zap" },
-      { to: "/_/flags",        label: "Feature flags", icon: "flag" },
-      { to: "/_/webhooks",     label: "Webhooks",     icon: "arrowUp" },
-      { to: "/_/api-tokens",   label: "API tokens",   icon: "key" },
-    ],
-  },
-  {
-    label: "Tools",
-    items: [
-      { to: "/_/api-preview",  label: "API preview",  icon: "play" },
-      { to: "/_/sql",          label: "SQL",          icon: "database" },
-      { to: "/_/mcp",          label: "MCP",          icon: "zap" },
-    ],
-  },
-  {
-    label: "System",
-    items: [
-      { to: "/_/users",        label: "Superusers",   icon: "users" },
-      { to: "/_/audit-log",    label: "Audit log",    icon: "scroll" },
-      { to: "/_/settings",     label: "Settings",     icon: "settings" },
-    ],
-  },
-];
-
 export const Sidebar: React.FC = () => {
   const adminEmail = useAuth((s) => s.email);
   const version = useVersion();
@@ -87,6 +47,36 @@ export const Sidebar: React.FC = () => {
   const truncatedEmail = adminEmail && adminEmail.length > 22
     ? adminEmail.slice(0, 19) + "…"
     : adminEmail ?? "";
+
+  // Optional pages (lib/nav.ts) appear once they're in use, pinned, or open;
+  // the rest wait under "More".
+  const { pathname } = useLocation();
+  const { pinned, inUse, loaded, load, refreshUsage } = useSidebar();
+  const [moreOpen, setMoreOpen] = React.useState(false);
+  React.useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
+  // Leaving an optional page: it may have gained (or lost) its first entry.
+  const prevPath = React.useRef(pathname);
+  React.useEffect(() => {
+    const left = NAV_SECTIONS.flatMap((s) => s.items).find((i) => i.optional && i.usage && isNavActive(i, prevPath.current));
+    prevPath.current = pathname;
+    if (left && !isNavActive(left, pathname)) void refreshUsage(left.id);
+  }, [pathname, refreshUsage]);
+  const shown = (item: NavItem) => !loaded ? !item.optional || isNavActive(item, pathname) : isNavShown(item, { pinned, inUse, pathname });
+  const hidden = loaded ? NAV_SECTIONS.flatMap((s) => s.items).filter((i) => !shown(i)) : [];
+  const link = (item: NavItem) => (
+    <li key={item.to}>
+      <NavLink
+        to={item.to}
+        end={item.end}
+        className={({ isActive }) =>
+          `sb-nav-item${isActive ? " active" : ""}`
+        }
+      >
+        <Icon name={item.icon} size={13} />
+        <span>{item.label}</span>
+      </NavLink>
+    </li>
+  );
 
   return (
     <aside className={"sidebar" + sidebarNextClass()}>
@@ -97,27 +87,34 @@ export const Sidebar: React.FC = () => {
         <VaultbaseWordmark height={15} className="sb-brand-name" />
         {version && <div className="sb-brand-version mono">v{version}</div>}
       </div>
-      {SECTIONS.map((sec) => (
-        <div className="sb-section" key={sec.label}>
-          <div className="sb-section-title">{sec.label}</div>
+      {NAV_SECTIONS.map((sec) => {
+        const items = sec.items.filter(shown);
+        if (items.length === 0) return null;
+        return (
+          <div className="sb-section" key={sec.label}>
+            <div className="sb-section-title">{sec.label}</div>
+            <ul className="sb-nav">{items.map(link)}</ul>
+          </div>
+        );
+      })}
+      {hidden.length > 0 && (
+        <div className="sb-section">
           <ul className="sb-nav">
-            {sec.items.map((item) => (
-              <li key={item.to}>
-                <NavLink
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) =>
-                    `sb-nav-item${isActive ? " active" : ""}`
-                  }
-                >
-                  <Icon name={item.icon} size={13} />
-                  <span>{item.label}</span>
-                </NavLink>
-              </li>
-            ))}
+            <li>
+              <button
+                type="button"
+                className="sb-nav-item sb-more"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((o) => !o)}
+              >
+                <Icon name={moreOpen ? "chevronDown" : "chevronRight"} size={13} />
+                <span>{moreOpen ? "Less" : `More (${hidden.length})`}</span>
+              </button>
+            </li>
+            {moreOpen && hidden.map(link)}
           </ul>
         </div>
-      ))}
+      )}
       <div className="sb-bottom">
         <div
           className="sb-admin-pill"

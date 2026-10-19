@@ -2960,3 +2960,13 @@ a { color: inherit; text-decoration: none; }
   background: var(--vb-bg-3);
   color: var(--vb-fg);
 }
+
+/* Sidebar "More" row: a button styled as a nav item. */
+.sb-more {
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}

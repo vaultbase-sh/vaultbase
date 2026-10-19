@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import Icon from "./Icon.tsx";
 import { useCollections } from "../stores/collections.ts";
+import { NAV_ITEMS as PAGES } from "../lib/nav.ts";
 
 interface CmdItem {
   id: string;
@@ -15,16 +16,10 @@ interface CmdItem {
   hay?: string;
 }
 
-const NAV_ITEMS: CmdItem[] = [
-  { id: "n-dash",    label: "Dashboard",   group: "Navigate", to: "/_/" },
-  { id: "n-coll",    label: "Collections", group: "Navigate", to: "/_/collections" },
-  { id: "n-logs",    label: "Logs",        group: "Navigate", to: "/_/logs" },
-  { id: "n-mon",     label: "Monitoring",  group: "Navigate", to: "/_/monitoring", hay: "monitoring metrics performance rps latency" },
-  { id: "n-api",     label: "API preview", group: "Navigate", to: "/_/api-preview" },
-  { id: "n-hooks",   label: "Hooks",       group: "Navigate", to: "/_/hooks" },
-  { id: "n-set",     label: "Settings",    group: "Navigate", to: "/_/settings" },
-  { id: "n-su",      label: "Superusers",  group: "Navigate", to: "/_/users" },
-];
+// Every page, hidden-from-the-sidebar ones included.
+const NAV_ITEMS: CmdItem[] = PAGES.map((p) => ({
+  id: `n-${p.id}`, label: p.label, group: "Navigate", to: p.to, hay: p.hay,
+}));
 
 function fuzzy(query: string, hay: string): number {
   // Simple subsequence-with-positions score. 0 = no match.

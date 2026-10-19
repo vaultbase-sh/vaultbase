@@ -9,6 +9,8 @@ import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 import { DEFAULT_EMAIL_TEMPLATES, type EmailTemplateKind } from "../lib/email-templates.ts";
 import { useAuth } from "../stores/auth.ts";
+import { useSidebar } from "../stores/sidebar.ts";
+import { OPTIONAL_NAV_ITEMS } from "../lib/nav.ts";
 import {
   VbBtn,
   VbCode,
@@ -36,7 +38,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 ];
 
 type SettingsTabId =
-  | "application" | "theme" | "rate-limit" | "egress" | "cors" | "security"
+  | "application" | "theme" | "sidebar" | "rate-limit" | "egress" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
   | "storage" | "backup" | "retention" | "migrations" | "notifications"
   | "metrics" | "updates" | "danger";
@@ -58,6 +60,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   { group: "General", items: [
     { id: "application", label: "Application", subtitle: "runtime configuration" },
     { id: "theme",       label: "Theme",       subtitle: "admin UI accent + surface colors" },
+    { id: "sidebar",     label: "Sidebar",     subtitle: "which pages the admin sidebar shows" },
     { id: "updates",     label: "Updates",     subtitle: "GitHub release checker" },
   ]},
   { group: "Traffic", items: [
@@ -233,6 +236,7 @@ export default function Settings() {
         <div className="settings-content">
           {active === "application" && <ApplicationSection />}
           {active === "theme" && <ThemeSection />}
+          {active === "sidebar" && <SidebarSection />}
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
           {active === "cors" && <CorsSection />}
@@ -718,6 +722,53 @@ function ThemeSection() {
           Reset to defaults
         </VbBtn>
         <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </VbBtn>
+      </div>
+    </SectionShell>
+  );
+}
+
+// ── Sidebar ─────────────────────────────────────────────────────────────────
+function SidebarSection() {
+  const { pinned, inUse, loaded, load, setPinned } = useSidebar();
+  const [draft, setDraft] = useState<string[]>(pinned);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
+  useEffect(() => { setDraft(pinned); }, [pinned]);
+
+  function toggle(id: string, on: boolean) {
+    setDraft((d) => (on ? [...d.filter((x) => x !== id), id] : d.filter((x) => x !== id)));
+  }
+  async function save() {
+    setSaving(true);
+    const err = await setPinned(OPTIONAL_NAV_ITEMS.map((i) => i.id).filter((id) => draft.includes(id)));
+    setSaving(false);
+    if (err) toast(err, "info"); else toast("Sidebar saved");
+  }
+  const dirty = draft.slice().sort().join() !== pinned.slice().sort().join();
+
+  return (
+    <SectionShell id="sidebar">
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        These pages stay out of the sidebar until something is in them, until you open
+        them, or until you pin them here. Hidden pages still work: open them from{" "}
+        <b>More</b> at the bottom of the sidebar, or with <VbCode>⌘K</VbCode>.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {OPTIONAL_NAV_ITEMS.map((item) => (
+          <div key={item.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <Toggle on={draft.includes(item.id)} onChange={(on) => toggle(item.id, on)} disabled={!loaded} ariaLabel={`Always show ${item.label}`} />
+            <span style={{ fontSize: 12, color: "var(--vb-fg-2)" }}>{item.label}</span>
+            {inUse.includes(item.id) && <VbPill tone="neutral">in use · shown</VbPill>}
+          </div>
+        ))}
+      </div>
+      <div style={{
+        display: "flex", justifyContent: "flex-end", gap: 8,
+        paddingTop: 4, borderTop: "1px solid var(--vb-border)", marginTop: 4,
+      }}>
+        <VbBtn kind="primary" size="sm" icon="check" onClick={save} disabled={!loaded || saving || !dirty}>
           {saving ? "Saving…" : "Save changes"}
         </VbBtn>
       </div>
