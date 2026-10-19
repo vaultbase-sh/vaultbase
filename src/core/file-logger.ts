@@ -377,13 +377,18 @@ export async function searchLogs(
   opts: ReadOptions = {}
 ): Promise<SearchResult> {
   const entries = await readLogs({ ...opts, limit: opts.limit ?? 100_000 });
+  // A filter at the root (`$[?(@.status >= 400)]`) selects from an array:
+  // given the entry itself it tested each field, so it never matched an
+  // entry. Filters get the entry as a one-item list; plain paths
+  // (`$.status`) still get the entry.
+  const asList = /^\$\s*\[\s*\?/.test(jsonpath.trim());
   const results: unknown[] = [];
   let matched = 0;
   const scanned = entries.length;
   for (const e of entries) {
     let m: unknown[] = [];
     try {
-      m = JSONPath({ path: jsonpath, json: e as unknown as Record<string, unknown> }) as unknown[];
+      m = JSONPath({ path: jsonpath, json: (asList ? [e] : e) as unknown as Record<string, unknown> }) as unknown[];
     } catch {
       // Invalid expression — bail out with empty results
       return { matched: 0, scanned, results: [] };

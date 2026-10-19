@@ -70,3 +70,17 @@ describe("listLogs", () => {
     expect(result.data.every((r) => r.status >= 400 && r.status < 500)).toBe(true);
   });
 });
+
+describe("JSONPath search", () => {
+  it("a root filter selects entries ($[?(@.status >= 400)])", async () => {
+    const { searchLogs } = await import("../core/file-logger.ts");
+    await insertLog("GET", "/api/a", 200, 1, null, null);
+    await insertLog("GET", "/api/b", 404, 1, null, null);
+    await insertLog("POST", "/api/c", 500, 1, null, null);
+    await Bun.sleep(20);
+    const r = await searchLogs("$[?(@.status >= 400)]");
+    expect(r.matched).toBe(2);
+    // A plain path still reads the entry (legitimate path).
+    expect((await searchLogs("$.status")).matched).toBe(3);
+  });
+});
