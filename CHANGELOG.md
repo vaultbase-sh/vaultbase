@@ -7,6 +7,45 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.26.2] — 2026-10-19
+
+### Added
+
+- **Upload files from the admin.** A file field in the record form had no way to change it
+  (an empty one said "File upload available in v2"). It now has an Upload / Replace / Add
+  files button that follows the field's allowed types and `multiple`, a remove button on
+  each file, and a preview of what you just picked. The change is saved with the record, like
+  any other field; an upload left unsaved is removed by the hourly file sweep. A new record
+  gets its files once it's created, since files belong to an existing record.
+
+### Changed
+
+- **Modals, drawers and the confirm dialog look like the rest of the admin.** They were
+  drawn outside the app shell, so the redesign's square corners, mono labels and inputs never
+  reached them. They're square now, with a header like the page bars, and Escape or a click
+  outside closes the topmost one. Dropdown panels match too. The New record form lays out its
+  fields like the edit drawer.
+- **SDK 0.7.2: realtime callbacks get only their own collection's events, and all of them.**
+  `vb.subscribe(name, "*")` also joined the global topic and was handed every collection's
+  events, and a second update to the same record within a second was dropped, so pages that
+  followed a record could show stale data. `vb.subscribe("*", "*")` is how to hear every
+  collection. Unsubscribing no longer drops a topic another subscription still holds.
+- SDK 0.7.2: `FileMeta` and `UploadOptions` are exported; `vb.files.upload` with one `File`
+  is typed as returning one `FileMeta`.
+
+### Fixed
+
+- **A singleton's updates reach everyone allowed to read it.** Subscribing to a singleton's
+  collection (`vb.subscribe("settings", "*")`) also applied its list rule, which a singleton
+  never uses and stores as admin-only, so only admins heard about changes. The view rule alone
+  decides now. Subscribing by the record's id already worked.
+- **A dotted filter on a field that isn't JSON is a 400.** `?filter=author.name="Ada"` (or
+  any `field.key` on a relation or text field) answered 500 "malformed JSON". It's a 400 that
+  says a dotted path reads inside a `json` field and that filters don't follow relations. The
+  docs showed `author.id=u1`, which never worked; they now compare the relation's id.
+- **An upload that isn't multipart is a 400.** A body that couldn't be parsed as form data
+  answered 500 with the parser's message, on file uploads and on restoring a backup.
+
 ## [0.26.1] — 2026-10-19
 
 ### Fixed
