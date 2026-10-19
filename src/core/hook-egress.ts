@@ -59,7 +59,7 @@ export class EgressBlockedError extends Error {
         : `helpers.http: egress to ${url} blocked — resolved IP ${resolvedIp} is in denylist range ${cidr}. ` +
           (METADATA_CIDRS.includes(cidr)
             ? `Cloud metadata endpoints are always blocked.`
-            : `Override per-server via Settings → hooks.http.deny (or set "off" to disable; not recommended for public-internet deployments).`),
+            : `Change the list in Settings → Hook egress (hooks.http.deny; "off" disables it, not recommended for public-internet deployments).`),
     );
     this.name = "EgressBlockedError";
     this.url = url;

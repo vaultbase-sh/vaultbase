@@ -188,7 +188,7 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
   catch (e) {
     if (e instanceof EgressBlockedError) {
       await db.update(webhookDeliveries)
-        .set({ status: "dead", error: `egress blocked: ${e.message}`, delivered_at: Math.floor(Date.now() / 1000) })
+        .set({ status: "dead", error: e.message.replace(/^helpers\.http: /, ""), delivered_at: Math.floor(Date.now() / 1000) })
         .where(eq(webhookDeliveries.id, d.id));
       return;
     }
