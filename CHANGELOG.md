@@ -7,6 +7,26 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.26.5] — 2026-10-20
+
+### Fixed
+
+- **Relation fields are indexed.** Finding records from the other side of a relation
+  (`post = "<id>"`: a post's comments, a user's records) scanned the whole table, since only
+  `created_at` / `updated_at` had indexes: 56 ms on 265k rows in a load test, 1.2 ms with the
+  index. New and added relation fields get one, and existing collections are indexed once at
+  the first start of this version (not multiple relations, which an index can't serve). In a
+  mixed load test, throughput at 100 concurrent clients went from 466 to 761 req/s.
+- **Dropping a field that has an index** made in the admin failed, because SQLite refuses to
+  drop an indexed column. The field's indexes are dropped with it.
+- **Renaming a collection renames the indexes made in the admin.** They kept the old name,
+  which a new collection with that name then collided with.
+- **A realtime connection over the cap** (100 per address, 10,000 per process) is refused with
+  a `503` and `Retry-After` before the WebSocket upgrade. It used to get a full handshake, an
+  error frame and a close, on the thread that delivers events.
+- **MCP `create_collection` with a name in use** says so instead of returning the database's
+  `UNIQUE constraint` error.
+
 ## [0.26.4] — 2026-10-20
 
 ### Security
