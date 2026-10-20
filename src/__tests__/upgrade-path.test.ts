@@ -19,6 +19,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
+import { db } from "../db/index.ts";
 import { createServer } from "../server.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
@@ -95,6 +96,9 @@ describe.skipIf(!onSqlite)("upgrade path", () => {
       if (m.steps.posts_collection === "ok") {
         expect(byName["posts"]?.list_rule).toBeNull();
         expect(byName["posts"]?.update_rule).toBe("author = @request.auth.id");
+        // The relation got its index on upgrade (none of these releases made one).
+        const idx = await db.all<{ name: string }>(db.dialect.listIndexesSql(), ["vb_posts"]);
+        expect(idx.map((i) => i.name)).toContain("idx_vb_posts_author");
       }
 
       // Every record, with its values.
