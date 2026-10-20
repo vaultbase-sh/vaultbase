@@ -25,9 +25,12 @@ describe("an encrypted value that won't decrypt", () => {
     const good = await createRecord("vault", { title: "good", secret: "kept" });
     const bad = await createRecord("vault", { title: "bad", secret: "lost" });
     const row = await db.get<{ secret: string }>(`SELECT secret FROM vb_vault WHERE id = ?`, [bad.id]);
-    // Flip the last character of the ciphertext.
+    // Change the first character of the ciphertext (`vbenc:1:<iv>:<ct>`). It
+    // used to change the one before the base64 padding, whose low bits are
+    // unused: about 1 run in 16 the value still decrypted.
     const s = row!.secret;
-    await db.run(`UPDATE vb_vault SET secret = ? WHERE id = ?`, [s.slice(0, -2) + (s.at(-2) === "A" ? "B" : "A") + s.at(-1), bad.id]);
+    const at = s.lastIndexOf(":") + 1;
+    await db.run(`UPDATE vb_vault SET secret = ? WHERE id = ?`, [s.slice(0, at) + (s[at] === "A" ? "Q" : "A") + s.slice(at + 1), bad.id]);
 
     const list = await listRecords("vault", { sort: "title" });
     const byTitle = Object.fromEntries(list.data.map((r) => [(r as unknown as { title: string }).title, r as unknown as { secret: unknown }]));
