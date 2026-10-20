@@ -85,6 +85,17 @@ async function runMigrationsNow() {
     try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
 
+  // ── v0.26.5: an index on every relation field ──
+  // New fields get one in createUserTable / alterUserTable. Once, so an
+  // index an admin dropped stays dropped.
+  await runOnce("v0_26_5_relation_indexes", async () => {
+    const { ensureRelationIndexes } = await import("../core/collections.ts");
+    const rows = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
+    for (const { name, fields } of rows) {
+      try { await ensureRelationIndexes(name, JSON.parse(fields)); } catch { /* table missing — skip */ }
+    }
+  });
+
   // ── v0.15: full-text index for `searchable` fields ──
   // No-op when the index already matches; (re)builds it otherwise.
   if (db.capabilities.fts !== "none") {

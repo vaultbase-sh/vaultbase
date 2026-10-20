@@ -1,3 +1,6 @@
+-- index idx_vb_gold_author
+CREATE INDEX "idx_vb_gold_author" ON "vb_gold"("author");
+
 -- index idx_vb_gold_created_at
 CREATE INDEX "idx_vb_gold_created_at" ON "vb_gold"("created_at");
 

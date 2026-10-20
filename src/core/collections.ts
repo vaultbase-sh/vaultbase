@@ -390,6 +390,7 @@ export async function createUserTable(collectionName: string, fields: FieldDef[]
   ];
   await db.exec(db.dialect.createTable(tname, cols));
   await ensureTimestampIndexes(collectionName);
+  await ensureRelationIndexes(collectionName, fields);
   await syncFts(collectionName, fields);
 }
 
@@ -442,6 +443,39 @@ export async function ensureTimestampIndexes(collectionName: string): Promise<vo
   const table = userTableName(collectionName);
   for (const col of ["created_at", "updated_at"]) {
     await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${col}`), table: quoteIdent(table), columns: [quoteIdent(col), ...db.dialect.indexTail] }));
+  }
+}
+
+/**
+ * An index on each relation field. A relation is how records are found from
+ * the other side (a post's comments: `post = "<id>"`), and without one that
+ * filter scanned the whole table. Named after the table, like the
+ * timestamp indexes; listed in the admin, where it can be dropped (a dropped
+ * one isn't recreated).
+ */
+export async function ensureRelationIndexes(collectionName: string, fields: FieldDef[]): Promise<void> {
+  const table = userTableName(collectionName);
+  for (const f of fields) {
+    // A multiple relation is a list in one column, which an index can't serve.
+    if (f.type !== "relation" || f.system || f.options?.multiple === true) continue;
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${f.name}`), table: quoteIdent(table), columns: [quoteIdent(f.name), ...db.dialect.indexTail] }));
+  }
+}
+
+/**
+ * Drop the indexes this server made (timestamps, relations, ones added in the
+ * admin) that cover `column`: SQLite refuses to drop an indexed column.
+ */
+async function dropIndexesOn(table: string, column: string): Promise<void> {
+  const rows = await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [table]);
+  for (const r of rows) {
+    if (!r.sql || !/^(idx|uniq|uq)_/.test(r.name)) continue;
+    const on = r.sql.search(/\bON\b/i);
+    const open = on < 0 ? -1 : r.sql.indexOf("(", on);
+    const close = open < 0 ? -1 : r.sql.indexOf(")", open);
+    if (open < 0 || close < 0) continue;
+    const cols = r.sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1"));
+    if (cols.includes(column)) await db.exec(`DROP INDEX ${quoteIdent(r.name)}`);
   }
 }
 
@@ -831,8 +865,10 @@ export async function alterUserTable(
   // Drop fields removed in new
   for (const oldName of oldByName.keys()) {
     if (!newByName.has(oldName)) {
-      // SQLite refuses to drop an indexed column.
+      // SQLite refuses to drop an indexed column: its unique index, and any
+      // other index on it (a relation's, or one added in the admin).
       if (await hasUniqueIndex(oldName)) await db.exec(`DROP INDEX ${uniqueIndex(oldName)}`);
+      await dropIndexesOn(table, oldName);
       await db.exec(`ALTER TABLE ${tname} DROP COLUMN ${quoteIdent(oldName)}`);
     }
   }
@@ -846,6 +882,7 @@ export async function alterUserTable(
       // at app level, unique by an index.
       await db.exec(db.dialect.addColumn(tname, { ...fieldColumn(newField), notNull: false, unique: false }));
       if (newField.options?.unique) await addUniqueIndex(newName);
+      await ensureRelationIndexes(collectionName, [newField]);
     }
   }
 
@@ -1179,13 +1216,19 @@ async function renameCollectionStorage(
       // The search index is named after the collection; rebuilt below.
       await dropFts(oldName);
       await db.exec(`ALTER TABLE ${quoteIdent(oldTable)} RENAME TO ${quoteIdent(newTable)}`);
-      // Our indexes are named after the table (idx_<table>_*, uq_<table>_*).
+      // Our indexes are named after the table (idx_<table>_*, uq_<table>_*)
+      // or, when added in the admin, the collection (idx_<name>_*, uniq_<name>_*).
       // SQLite moves them with the table but keeps their names; recreate each
-      // under the new name from its stored definition.
+      // under the new name from its stored definition. (Admin-made ones kept
+      // the old name, which a new collection of that name then collided with.)
       const indexes = await db.all<{ name: string; sql: string }>(db.dialect.listIndexesSql(), [newTable]);
       for (const { name, sql } of indexes) {
-        if (!name.includes(oldTable)) continue;
-        for (const stmt of db.dialect.renameIndex(name, name.replace(oldTable, newTable), sql)) await db.exec(stmt);
+        const next = name.includes(oldTable) ? name.replace(oldTable, newTable)
+          : name.startsWith(`idx_${oldName}_`) ? `idx_${newName}_${name.slice(`idx_${oldName}_`.length)}`
+          : name.startsWith(`uniq_${oldName}_`) ? `uniq_${newName}_${name.slice(`uniq_${oldName}_`.length)}`
+          : null;
+        if (!next) continue;
+        for (const stmt of db.dialect.renameIndex(name, next, sql)) await db.exec(stmt);
       }
     }
     for (const u of relationUpdates) await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);

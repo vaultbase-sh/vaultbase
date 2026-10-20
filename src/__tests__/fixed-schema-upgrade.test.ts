@@ -65,7 +65,8 @@ describe.skipIf(!onSqlite)("fixed schema", () => {
     await runOnce("test_step", () => { runs++; });
     expect(runs).toBe(1);
     const keys = (getRawClient().prepare(`SELECT key FROM vaultbase_migrations ORDER BY key`).all() as Array<{ key: string }>).map((r) => r.key);
-    expect(keys).toEqual(["test_step"]);
+    // Recorded once (the server's own migrations add their keys too).
+    expect(keys.filter((k) => k === "test_step")).toEqual(["test_step"]);
     await closeDb();
     await initDb(":memory:");
     await runMigrations();
