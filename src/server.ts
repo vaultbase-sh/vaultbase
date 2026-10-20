@@ -55,6 +55,7 @@ import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 
 import {
   admitConnection,
+  hasRoom,
   reverifyRealtimeAuth,
   setSSEOwner,
   setWSAuth,
@@ -253,6 +254,18 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       // trusted-proxy rule (sec.ts clientIp) instead of trusting headers.
       // A read worker has no socket; its entry remembers the forwarded peer.
       if (!reader) rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
+    })
+    // A realtime connection over the cap is refused before the upgrade (see
+    // hasRoom); admitConnection in `open` still decides a race.
+    .onRequest(({ request, server }) => {
+      if (reader || request.headers.get("upgrade")?.toLowerCase() !== "websocket") return;
+      if (new URL(request.url).pathname !== "/realtime") return;
+      const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      if (hasRoom(perClientLimitIp(request, peer))) return;
+      return new Response(JSON.stringify({ error: "Too many realtime connections; retry later", code: 503 }), {
+        status: 503,
+        headers: { "content-type": "application/json", "retry-after": "5" },
+      });
     })
     // CORS preflight short-circuit — must run before any normal route.
     .onRequest(({ request }) => {

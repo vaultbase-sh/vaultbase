@@ -70,6 +70,17 @@ export function admitConnection(id: string, ip?: string | null): boolean {
   return true;
 }
 
+/**
+ * Whether a connection from `ip` would be admitted now, without counting it.
+ * Checked before a WebSocket upgrade, so a client over the cap is refused
+ * with a plain 503 instead of a full handshake (and an error frame) on the
+ * thread that fans events out to everyone already connected.
+ */
+export function hasRoom(ip?: string | null): boolean {
+  if (liveConns.size >= MAX_REALTIME_CONNECTIONS) return false;
+  return !ip || (connsByIp.get(ip) ?? 0) < MAX_CONNECTIONS_PER_IP;
+}
+
 /** Stop counting a connection (it closed or was dropped). */
 function releaseConnection(id: string): void {
   if (!liveConns.delete(id)) return;

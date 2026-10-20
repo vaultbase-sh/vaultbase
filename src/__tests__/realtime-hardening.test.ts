@@ -8,7 +8,7 @@
 import { describe, expect, it, beforeEach } from "bun:test";
 import {
   _reset, admitConnection, broadcast, getSSEClient, reverifyRealtimeAuth, setSSESubscriptions,
-  setWSAuth, subscribe, unregisterSSEClient, MAX_CONNECTIONS_PER_IP, MAX_REALTIME_CONNECTIONS,
+  setWSAuth, subscribe, unregisterSSEClient, MAX_CONNECTIONS_PER_IP, MAX_REALTIME_CONNECTIONS, hasRoom,
   MAX_TOPIC_LENGTH, MAX_TOPICS_PER_CONNECTION, type WSLike,
 } from "../realtime/manager.ts";
 import { openSSEStream } from "../realtime/sse.ts";
@@ -95,6 +95,14 @@ describe("review 11 follow-ups", () => {
     for (let i = 0; i < MAX_CONNECTIONS_PER_IP; i++) expect(admitConnection(`a${i}`, "203.0.113.9")).toBe(true);
     expect(admitConnection("one-more", "203.0.113.9")).toBe(false);
     expect(admitConnection("someone-else", "198.51.100.1")).toBe(true);
+  });
+
+  it("hasRoom answers as admitConnection would, without counting", () => {
+    for (let i = 0; i < MAX_CONNECTIONS_PER_IP; i++) admitConnection(`a${i}`, "203.0.113.9");
+    expect(hasRoom("203.0.113.9")).toBe(false);
+    expect(hasRoom("198.51.100.1")).toBe(true);
+    expect(hasRoom("198.51.100.1")).toBe(true); // asking didn't use the room up
+    expect(admitConnection("first", "198.51.100.1")).toBe(true);
   });
 
   it("unregistering an SSE client closes its stream", async () => {
