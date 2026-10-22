@@ -17,6 +17,24 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `sort` a search now returns the newest matches first and stops at the page (a word in every
   record: 3.3 ms over HTTP, from 67 ms); pass `sort=@rank` for relevance order as before. On
   Postgres, newest first is `-created`.
+- **Record reads go to a read worker without passing through the main thread's request
+  pipeline.** The main thread sends every list and get-one to a worker, and its time per
+  request caps read throughput. Measured locally with 4 workers: get-one 43k → 46k req/s, list
+  pages (38 KB) 8.7k → 9.1k req/s. Most of what remains is the HTTP server's own work.
+- **Read workers accept connections themselves (Linux).** Every request used to arrive on
+  the main thread, which forwarded record reads to a worker and wrote the reply out; past a
+  few workers that work on one thread capped reads. Each read worker now also listens on the
+  public port, and the kernel spreads connections over the main thread and the workers. A
+  worker serves list and get-one itself and passes everything else (writes, auth, admin,
+  files, SSE, realtime WebSockets, custom routes) to the main thread over loopback, with the
+  client's address, so per-client limits and trusted proxies behave as before; rate-limit
+  buckets stay on the main thread. Measured in Docker on 6 cores with 4 workers: get-one
+  38.6k → 112k req/s, list pages (38 KB) 7.2k → 29.7k, writes alone −3%, an 80/20 mix on a
+  270k-row table under constant writes 16.6k → 50.8k (with the stored row counts below). On
+  by default on Linux; macOS and Windows don't spread connections and keep the old path.
+  `VAULTBASE_WORKER_LISTENERS=0` turns it off. A slow request on a worker (a search, a filter
+  on an unindexed field) now holds up the other requests on its connections, as in cluster
+  mode.
 - **A list with no filter reads its total from a stored row count** instead of counting the
   table. Each record table keeps its count in `vaultbase_row_counts`, updated by triggers in
   the same transaction as every insert and delete (API, hooks or raw SQL), so totals stay
@@ -26,6 +44,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   start of this version (one count per table). SQLite only.
 
 ### Fixed
+
+- **Reads served by read workers skipped the rate limiter.** Since read workers became the
+  default (0.22.0), list and get-one requests answered by a worker were never counted, so no
+  rate-limit rule applied to them. They are counted on the main thread before forwarding, like
+  every other request.
 
 - **A search's `totalItems` is counted on the search index** instead of joining every match
   to the table: ~30 ms → 1.5–3.4 ms for a word in 100k records. With a filter or list rule

@@ -18,9 +18,12 @@ export interface WorkerStats {
   type: "stats";
   steps: Record<string, { counts: number[]; count: number; sum_us: number; max_us: number }>;
   queries: unknown[];
+  /** Requests the worker accepted on its own listener (core/worker-listeners.ts). */
+  requests?: RequestParts;
 }
 
 import { sendToPeers } from "./peers.ts";
+import type { RequestParts } from "./perf-metrics.ts";
 
 let sender: ((m: BusMessage) => void) | null = null;
 

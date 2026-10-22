@@ -1,13 +1,16 @@
 import Elysia, { t } from "elysia";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { INTERNAL_HEADER, PEER_HEADER } from "./core/worker-listeners.ts";
 import { runsSingletonDuties } from "./core/cluster-role.ts";
 import { configureSetupKey } from "./core/setup-key.ts";
 import type { Config } from "./config.ts";
 import { verifyHs256 } from "./core/jwt-hs256.ts";
 import { forwardRead, readPoolSize, readTarget } from "./core/read-pool.ts";
-import { dataPrincipal, extractBearer, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
+import { dataPrincipal, extractBearer, peerAddress, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
+import { customInnerPath } from "./core/api-paths.ts";
 import { setUploadDir } from "./core/storage.ts";
 import { setSandboxDir, pruneStaleSandboxes } from "./core/sql-sandbox.ts";
 import { makeAuthPlugin } from "./api/auth.ts";
@@ -20,7 +23,7 @@ import { makeLogsPlugin } from "./api/logs.ts";
 import { makeAdminsPlugin } from "./api/admins.ts";
 import { makeBackupPlugin } from "./api/backup.ts";
 import { makeOpenApiPlugin } from "./api/openapi.ts";
-import { makeRateLimitPlugin } from "./api/ratelimit.ts";
+import { checkRateLimit, makeRateLimitPlugin, rateLimitedResponse } from "./api/ratelimit.ts";
 import { makeIndexesPlugin } from "./api/indexes.ts";
 import { makeSettingsPlugin } from "./api/settings.ts";
 import { makeHooksPlugin } from "./api/hooks.ts";
@@ -177,6 +180,149 @@ function startFileTokenUsesPrune(): void {
   setInterval(prune, HOUR_MS).unref?.();
 }
 
+/**
+ * The realtime WebSocket's handlers: the `/realtime` route's, and the main
+ * thread's internal listener's for connections a read worker accepted (see
+ * startInternalListener). `ws.data.peer`, when present, is the client's
+ * socket peer; otherwise it is the socket's own remote address.
+ */
+type RealtimeSocket = { data: unknown; send(data: string): void; close(): void };
+
+function realtimeSocket(jwtSecret: string) {
+  return {
+    async open(ws: RealtimeSocket) {
+      const req = (ws.data as { request?: Request } | undefined)?.request;
+      if (req) {
+        const origin = req.headers.get("origin");
+        // Same policy as SSE: present Origin must be allow-listed, missing
+        // Origin (non-browser client) is allowed and authenticates by token.
+        if (!isOriginAllowed(origin, req)) {
+          ws.send(JSON.stringify({ type: "error", reason: "origin_not_allowed" }));
+          ws.close();
+          return;
+        }
+      }
+      // Mint a stable per-connection id and stash it in Bun's persistent
+      // `ws.data` slot. The realtime manager keys subscriptions by this
+      // id, not by the `ws` object reference — Bun/Elysia hands different
+      // wrappers to `open` vs `message`, so identity-based keying drops
+      // unsubscribe + disconnectAll on the floor.
+      const wsAny = ws as unknown as { data: { connId?: string } | undefined };
+      const newId = crypto.randomUUID();
+      if (!wsAny.data || typeof wsAny.data !== "object") {
+        (wsAny as { data: object }).data = { connId: newId };
+      } else {
+        wsAny.data.connId = newId;
+      }
+      const data = ws.data as { peer?: string | null } | undefined;
+      const peer = data && "peer" in data ? data.peer ?? null : (ws as unknown as { remoteAddress?: string }).remoteAddress ?? null;
+      if (!admitConnection(newId, perClientLimitIp(req ?? null, peer))) {
+        ws.send(JSON.stringify({ type: "error", reason: "too_many_connections" }));
+        ws.close();
+        return;
+      }
+      // Auth via {type:"auth", token} message. Tokens in the URL query are
+      // no longer accepted (logs/Referer leak risk).
+      ws.send(JSON.stringify({ type: "connected" }));
+    },
+    async message(ws: RealtimeSocket, message: unknown) {
+      let msg: ClientMessage;
+      try {
+        msg = (typeof message === "string" ? JSON.parse(message) : message) as ClientMessage;
+      } catch {
+        return;
+      }
+      // Auth ad-hoc — lets clients refresh credentials over an open connection.
+      if (msg.type === "auth") {
+        if (typeof msg.token !== "string") return;
+        const auth = await verifyTokenForWS(msg.token, jwtSecret);
+        setWSAuth(ws, auth);
+        return;
+      }
+      // The SDK's 30 s keepalive. Answered, so it isn't an invalid_topics error.
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong" }));
+        return;
+      }
+      // Debug introspection: tell the client which topics THIS connection
+      // is subscribed to. Useful when unsubscribe returns an empty array
+      // and the client wants to confirm what's actually attached.
+      if (msg.type === "list-subs") {
+        ws.send(JSON.stringify({ type: "subs", topics: listSubsFor(ws) }));
+        return;
+      }
+      const topics = msg.topics ?? msg.collections;
+      if (!Array.isArray(topics)) {
+        ws.send(JSON.stringify({ type: "error", code: "invalid_topics", message: "topics must be a string array" }));
+        return;
+      }
+      if (msg.type === "subscribe") {
+        const accepted = subscribe(ws, topics);
+        ws.send(JSON.stringify({ type: "subscribed", topics: accepted }));
+      } else if (msg.type === "unsubscribe") {
+        const removed = unsubscribe(ws, topics);
+        ws.send(JSON.stringify({ type: "unsubscribed", topics: removed }));
+      }
+    },
+    close(ws: RealtimeSocket) {
+      disconnectAll(ws);
+    },
+  };
+}
+
+/** The answer to a realtime connection over the cap, before the upgrade. */
+function realtimeFull(): Response {
+  return new Response(JSON.stringify({ error: "Too many realtime connections; retry later", code: 503 }), {
+    status: 503,
+    headers: { "content-type": "application/json", "retry-after": "5" },
+  });
+}
+
+/**
+ * The main thread's internal listener for requests read workers accepted
+ * but don't serve themselves (core/worker-listeners.ts). Loopback only, and
+ * only requests carrying `secret`; the client's socket peer comes in a
+ * header and is recorded as the request's peer, so the app treats the
+ * request as if this thread had accepted it. A realtime WebSocket is
+ * upgraded here, with the `/realtime` route's handlers.
+ */
+export function startInternalListener(app: { handle(request: Request): Promise<Response> }, config: Config, idleTimeout: number): { port: number; secret: string; stop(): void } {
+  const secret = randomBytes(32).toString("hex");
+  const expected = Buffer.from(secret);
+  const realtime = realtimeSocket(config.jwtSecret);
+  const server = Bun.serve<{ request: Request; peer: string | null }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout,
+    fetch(request, srv) {
+      const given = Buffer.from(request.headers.get(INTERNAL_HEADER) ?? "");
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) return new Response("Forbidden", { status: 403 });
+      const peer = request.headers.get(PEER_HEADER) || null;
+      // Removed in place. Copying the request to drop them piped the body
+      // through a second stream, which only moved when this thread's loop
+      // turned: under load a proxied write waited ~15 ms (p50) for its body.
+      request.headers.delete(INTERNAL_HEADER);
+      request.headers.delete(PEER_HEADER);
+      rememberPeer(request, peer);
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        if (new URL(request.url).pathname !== "/realtime") return new Response("Not Found", { status: 404 });
+        if (!hasRoom(perClientLimitIp(request, peer))) return realtimeFull();
+        return srv.upgrade(request, { data: { request, peer } }) ? undefined : new Response("Upgrade failed", { status: 400 });
+      }
+      return app.handle(request);
+    },
+    websocket: {
+      maxPayloadLength: 64 * 1024,
+      backpressureLimit: MAX_WS_QUEUED_BYTES,
+      closeOnBackpressureLimit: true,
+      open: (ws) => realtime.open(ws),
+      message: (ws, message) => realtime.message(ws, message),
+      close: (ws) => realtime.close(ws),
+    },
+  });
+  return { port: server.port!, secret, stop: () => { void server.stop(true); } };
+}
+
 export interface ServerOptions {
   /**
    * "main" (default) runs the schedulers and owns writes, rate limits,
@@ -188,16 +334,54 @@ export interface ServerOptions {
   role?: "main" | "reader";
 }
 
+type PeerServer = { requestIP?: (r: Request) => { address: string } | null } | null;
+
 /** Record last-used for a request bearing a `vbat_` API token. Off the response path; failures are ignored. */
-function recordUsageFor(request: Request, server: { requestIP?: (r: Request) => { address: string } | null } | null, jwtSecret: string): void {
+function recordUsageFor(request: Request, server: PeerServer, jwtSecret: string): void {
   const auth = request.headers.get("authorization") ?? "";
   const m = /^Bearer\s+vbat_([A-Za-z0-9._\-]+)/i.exec(auth);
   if (!m) return;
   // The auth step verified this same token, so this is a cache hit.
   const payload = verifyHs256(m[1] ?? "", jwtSecret, { issuer: "vaultbase", audience: "api" });
   if (!payload || typeof payload["jti"] !== "string") return;
-  const peerIp = server?.requestIP?.(request)?.address ?? null;
+  const peerIp = peerAddress(request, server);
   recordApiTokenUsage(payload["jti"], trustedClientIp(request, peerIp), request.headers.get("user-agent"));
+}
+
+/**
+ * Serve a record read on a read worker (core/read-pool.ts): rate limit,
+ * forward, then finish the request timer and record API-token usage.
+ * Undefined when the request isn't one (no pool, another route, a custom
+ * route), and the caller serves it as usual.
+ *
+ * Called from the Bun routes for record reads, ahead of the Elysia
+ * pipeline, which cost the main thread more than the forward itself; and
+ * from the forward hook for requests that reach Elysia (`app.handle`).
+ * Rate limiting is here because the limiter's own hook runs after
+ * `onRequest`, so forwarded reads used to skip it.
+ */
+async function serveForwardedRead(request: Request, server: PeerServer, jwtSecret: string): Promise<Response | undefined> {
+  if (readPoolSize() === 0) return undefined;
+  const pathname = new URL(request.url).pathname;
+  if (customInnerPath(pathname) !== null || !readTarget(request.method, pathname)) return undefined;
+  const timer = detachTimer(request) ?? new RequestTimer();
+  const peerIp = peerAddress(request, server);
+  let status = 500;
+  try {
+    const limited = await checkRateLimit(request, peerIp, jwtSecret);
+    if (limited) {
+      status = 429;
+      return rateLimitedResponse(request, limited);
+    }
+    const res = await forwardRead(request, peerIp);
+    status = res.status;
+    return res;
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 503 }), { status: (status = 503), headers: { "content-type": "application/json" } });
+  } finally {
+    timer.finish(request.method, status);
+    recordUsageFor(request, server, jwtSecret);
+  }
 }
 
 export function createServer(config: Config, opts: ServerOptions = {}) {
@@ -245,7 +429,15 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   // a limit on the .ws() route is ignored.
   // A socket more than MAX_WS_QUEUED_BYTES behind is also closed by Bun
   // itself, a backstop for the check in realtime/manager.ts.
-  return new Elysia({ websocket: { maxPayloadLength: 64 * 1024, backpressureLimit: MAX_WS_QUEUED_BYTES, closeOnBackpressureLimit: true } })
+  // Record reads take Bun routes of their own, which replace Elysia's for
+  // GET on these two paths (Elysia merges `serve.routes` over its own), so a
+  // forwarded read skips the Elysia pipeline on the main thread. Anything
+  // else on them goes to Elysia.
+  let elysiaFetch: ((request: Request) => Response | Promise<Response>) | null = null;
+  const readRoute = async (request: Request, server: PeerServer) =>
+    (await serveForwardedRead(request, server, config.jwtSecret)) ?? elysiaFetch!(request);
+  const serve = reader ? {} : { serve: { routes: { "/api/v1/:collection": { GET: readRoute }, "/api/v1/:collection/:id": { GET: readRoute } } } as never };
+  const app = new Elysia({ websocket: { maxPayloadLength: 64 * 1024, backpressureLimit: MAX_WS_QUEUED_BYTES, closeOnBackpressureLimit: true }, ...serve })
     // Phase 0: register a per-request timer. WeakMap-keyed by Request, so
     // any handler / records-core call site can record steps via `timeFor`.
     .onRequest(({ request, server }) => {
@@ -253,19 +445,16 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       // Record the socket peer so every client-IP reader applies the
       // trusted-proxy rule (sec.ts clientIp) instead of trusting headers.
       // A read worker has no socket; its entry remembers the forwarded peer.
-      if (!reader) rememberPeer(request, (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null);
+      if (!reader) rememberPeer(request, peerAddress(request, server));
     })
     // A realtime connection over the cap is refused before the upgrade (see
     // hasRoom); admitConnection in `open` still decides a race.
     .onRequest(({ request, server }) => {
       if (reader || request.headers.get("upgrade")?.toLowerCase() !== "websocket") return;
       if (new URL(request.url).pathname !== "/realtime") return;
-      const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      const peer = peerAddress(request, server);
       if (hasRoom(perClientLimitIp(request, peer))) return;
-      return new Response(JSON.stringify({ error: "Too many realtime connections; retry later", code: 503 }), {
-        status: 503,
-        headers: { "content-type": "application/json", "retry-after": "5" },
-      });
+      return realtimeFull();
     })
     // CORS preflight short-circuit — must run before any normal route.
     .onRequest(({ request }) => {
@@ -314,26 +503,11 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
     .use(reader ? new Elysia({ name: "rate-limit-off" }) : makeRateLimitPlugin(config.jwtSecret))
     // ── Read worker pool ─────────────────────────────────────────────
     // Record list / get-one of a known collection go to a worker thread
-    // when a pool is running (VAULTBASE_READ_WORKERS). Returning a Response
-    // here ends the pipeline, so the request timer and the token telemetry
-    // are finished by hand.
-    .onRequest(async ({ request, server }) => {
-      if (reader || readPoolSize() === 0) return;
-      const target = readTarget(request.method, new URL(request.url).pathname);
-      if (!target) return;
-      const srv = server as { requestIP?: (r: Request) => { address: string } | null } | null;
-      const peerIp = srv?.requestIP?.(request)?.address ?? null;
-      let status = 500;
-      try {
-        const res = await forwardRead(request, peerIp);
-        status = res.status;
-        return res;
-      } catch (e) {
-        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 503 }), { status: (status = 503), headers: { "content-type": "application/json" } });
-      } finally {
-        detachTimer(request)?.finish(request.method, status);
-        recordUsageFor(request, srv, config.jwtSecret);
-      }
+    // when a pool is running (VAULTBASE_READ_WORKERS). Over HTTP the Bun
+    // routes above take them first; this covers `app.handle` and anything
+    // that reaches Elysia (see serveForwardedRead).
+    .onRequest(({ request, server }) => {
+      if (!reader) return serveForwardedRead(request, server as PeerServer, config.jwtSecret);
     })
     // ── API-token usage telemetry ────────────────────────────────────
     // Fires AFTER the handler so we don't add latency to the hot path.
@@ -344,7 +518,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
     // let a forged token overwrite a real token's last-used IP / UA.
     .onAfterHandle({ as: "global" }, ({ request, server }) => {
       if (reader) return;
-      recordUsageFor(request, server as { requestIP?: (r: Request) => { address: string } | null } | null, config.jwtSecret);
+      recordUsageFor(request, server as PeerServer, config.jwtSecret);
     })
     // ── Versioned API surface ───────────────────────────────────────────
     // Every plugin route is declared without the `/api/...` prefix; the
@@ -424,7 +598,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
         set.status = 403;
         return { error: "Origin not allowed", code: 403 };
       }
-      const peer = (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+      const peer = peerAddress(request, server);
       const sse = openSSEStream(perClientLimitIp(request, peer));
       if (!sse) { set.status = 503; return { error: "Too many realtime connections", code: 503 }; }
       set.headers["content-type"] = "text/event-stream; charset=utf-8";
@@ -465,82 +639,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       unregisterSSEClient(params.clientId);
       return { data: null };
     })
-    .ws("/realtime", {
-      async open(ws) {
-        const req = (ws.data as { request?: Request } | undefined)?.request;
-        if (req) {
-          const origin = req.headers.get("origin");
-          // Same policy as SSE: present Origin must be allow-listed, missing
-          // Origin (non-browser client) is allowed and authenticates by token.
-          if (!isOriginAllowed(origin, req)) {
-            ws.send(JSON.stringify({ type: "error", reason: "origin_not_allowed" }));
-            ws.close();
-            return;
-          }
-        }
-        // Mint a stable per-connection id and stash it in Bun's persistent
-        // `ws.data` slot. The realtime manager keys subscriptions by this
-        // id, not by the `ws` object reference — Bun/Elysia hands different
-        // wrappers to `open` vs `message`, so identity-based keying drops
-        // unsubscribe + disconnectAll on the floor.
-        const wsAny = ws as unknown as { data: { connId?: string } | undefined };
-        const newId = crypto.randomUUID();
-        if (!wsAny.data || typeof wsAny.data !== "object") {
-          (wsAny as { data: object }).data = { connId: newId };
-        } else {
-          wsAny.data.connId = newId;
-        }
-        const peer = (ws as unknown as { remoteAddress?: string }).remoteAddress ?? null;
-        if (!admitConnection(newId, perClientLimitIp(req ?? null, peer))) {
-          ws.send(JSON.stringify({ type: "error", reason: "too_many_connections" }));
-          ws.close();
-          return;
-        }
-        // Auth via {type:"auth", token} message. Tokens in the URL query are
-        // no longer accepted (logs/Referer leak risk).
-        ws.send(JSON.stringify({ type: "connected" }));
-      },
-      async message(ws, message) {
-        let msg: ClientMessage;
-        try {
-          msg = (typeof message === "string" ? JSON.parse(message) : message) as ClientMessage;
-        } catch {
-          return;
-        }
-        // Auth ad-hoc — lets clients refresh credentials over an open connection.
-        if (msg.type === "auth") {
-          if (typeof msg.token !== "string") return;
-          const auth = await verifyTokenForWS(msg.token, config.jwtSecret);
-          setWSAuth(ws, auth);
-          return;
-        }
-        // The SDK's 30 s keepalive. Answered, so it isn't an invalid_topics error.
-        if (msg.type === "ping") {
-          ws.send(JSON.stringify({ type: "pong" }));
-          return;
-        }
-        // Debug introspection: tell the client which topics THIS connection
-        // is subscribed to. Useful when unsubscribe returns an empty array
-        // and the client wants to confirm what's actually attached.
-        if (msg.type === "list-subs") {
-          ws.send(JSON.stringify({ type: "subs", topics: listSubsFor(ws) }));
-          return;
-        }
-        const topics = msg.topics ?? msg.collections;
-        if (!Array.isArray(topics)) {
-          ws.send(JSON.stringify({ type: "error", code: "invalid_topics", message: "topics must be a string array" }));
-          return;
-        }
-        if (msg.type === "subscribe") {
-          const accepted = subscribe(ws, topics);
-          ws.send(JSON.stringify({ type: "subscribed", topics: accepted }));
-        } else if (msg.type === "unsubscribe") {
-          const removed = unsubscribe(ws, topics);
-          ws.send(JSON.stringify({ type: "unsubscribed", topics: removed }));
-        }
-      },
-      close(ws) {
-        disconnectAll(ws);
-      },
-    });
+    .ws("/realtime", realtimeSocket(config.jwtSecret) as never);
+  elysiaFetch = (request) => app.fetch(request);
+  return app;
 }

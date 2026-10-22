@@ -443,6 +443,19 @@ export function rememberPeer(request: Request, ip: string | null): void {
 }
 
 /**
+ * The socket peer of `request`: the one recorded for it, otherwise Bun's
+ * `server.requestIP()`. A request a read worker hands to the main thread
+ * (core/worker-listeners.ts) arrives over loopback with its client's peer
+ * recorded, so readers of the peer go through here, not `requestIP()`.
+ */
+export function peerAddress(request: Request, server: unknown): string | null {
+  if (requestPeers.has(request)) return requestPeers.get(request) ?? null;
+  try {
+    return (server as { requestIP?: (r: Request) => { address: string } | null } | null)?.requestIP?.(request)?.address ?? null;
+  } catch { return null; }
+}
+
+/**
  * Whether the client reached us over HTTPS: the request URL itself, or a
  * trusted proxy saying so in X-Forwarded-Proto (a TLS-terminating proxy, the
  * deployment the guide recommends, hands us plain http).

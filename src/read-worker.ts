@@ -22,10 +22,12 @@ import { invalidateStorageCache } from "./core/storage.ts";
 import { globalMetrics } from "./core/perf-metrics.ts";
 import { exportShapes, resetQueryStats } from "./core/query-stats.ts";
 import type { WorkerStats } from "./core/thread-bus.ts";
+import { directMetrics, listenOnWorker, type ListenMessage, type TokenReply, type TokenRequest } from "./core/worker-listeners.ts";
 
 /** Post this thread's step histograms and query shapes to the main thread. */
 function postStats(): void {
   const m: WorkerStats = { type: "stats", steps: globalMetrics.exportSteps() as WorkerStats["steps"], queries: exportShapes() };
+  if (listener) m.requests = directMetrics.exportRequests();
   scope.postMessage(m);
 }
 
@@ -36,7 +38,7 @@ interface WorkerScope {
 }
 const scope = globalThis as unknown as WorkerScope;
 
-type Incoming = { type: "start"; config: Config } | { type: "stop" } | ForwardRequest | BusMessage;
+type Incoming = { type: "start"; config: Config } | { type: "stop" } | { type: "unlisten" } | ListenMessage | TokenReply | ForwardRequest | BusMessage;
 
 /** What the main thread tells us changed (core/thread-bus.ts). */
 function dispatchBus(m: BusMessage): void {
@@ -49,6 +51,7 @@ function dispatchBus(m: BusMessage): void {
       break;
     case "metrics-reset":
       globalMetrics.reset();
+      directMetrics.reset();
       resetQueryStats();
       postStats();
       break;
@@ -66,10 +69,36 @@ function dispatchBus(m: BusMessage): void {
 
 const WORKER_ID = process.env["VAULTBASE_READ_WORKER"] ?? "";
 let app: { handle: (req: Request) => Promise<Response> } | null = null;
+let jwtSecret = "";
+/** This worker's public listener (core/worker-listeners.ts), when it has one. */
+let listener: { stop(closeActive?: boolean): unknown } | null = null;
+let tokenSeq = 0;
+const tokenWaits = new Map<number, (ok: boolean) => void>();
+
+function takeToken(charge: { key: string; max: number; windowMs: number }): Promise<boolean> {
+  const id = ++tokenSeq;
+  return new Promise((resolve) => {
+    tokenWaits.set(id, resolve);
+    const m: TokenRequest = { type: "rl", id, key: charge.key, max: charge.max, windowMs: charge.windowMs };
+    scope.postMessage(m);
+  });
+}
+
+function listen(spec: ListenMessage): void {
+  if (listener || !app) return;
+  try {
+    listener = listenOnWorker(spec, { app, jwtSecret, workerId: WORKER_ID, takeToken, post: (m) => scope.postMessage(m) });
+  } catch (e) {
+    // The main thread still accepts every connection; this worker keeps
+    // serving what it forwards.
+    process.stderr.write(`vaultbase: read worker ${WORKER_ID} could not listen: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+}
 
 async function start(config: Config): Promise<void> {
   await initDb(config.dbPath === ":memory:" ? config.dbPath : `file:${config.dbPath}`);
   await loadSettings();
+  jwtSecret = config.jwtSecret;
   const { createServer } = await import("./server.ts");
   app = createServer(config, { role: "reader" }) as unknown as { handle: (req: Request) => Promise<Response> };
   const timer = setInterval(postStats, 1_000);
@@ -107,6 +136,20 @@ scope.onmessage = (e: MessageEvent) => {
   }
   if (m.type === "stop") {
     scope.close();
+    return;
+  }
+  if (m.type === "listen") {
+    listen(m);
+    return;
+  }
+  if (m.type === "unlisten") {
+    void listener?.stop(false);
+    listener = null;
+    return;
+  }
+  if (m.type === "rl-reply") {
+    tokenWaits.get(m.id)?.(m.ok);
+    tokenWaits.delete(m.id);
     return;
   }
   if (m.type === "bus") {

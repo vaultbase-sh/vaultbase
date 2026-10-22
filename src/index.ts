@@ -496,6 +496,23 @@ async function main() {
     idleTimeout: IDLE_TIMEOUT_S,
   });
 
+  // Read workers listen on the public port too (core/worker-listeners.ts;
+  // Linux by default), passing what they don't serve to the main thread's
+  // internal listener.
+  let internalListener: { stop(): void } | null = null;
+  {
+    const { readPoolSize, setWorkerListen } = await import("./core/read-pool.ts");
+    const { workerListenersEnabled } = await import("./core/worker-listeners.ts");
+    const port = (server.server as { port?: number } | null)?.port;
+    if (readPoolSize() > 0 && port && workerListenersEnabled(process.env, process.platform)) {
+      const { startInternalListener } = await import("./server.ts");
+      const internal = startInternalListener(server, config, IDLE_TIMEOUT_S);
+      internalListener = internal;
+      setWorkerListen({ type: "listen", port, ...(hostname ? { hostname } : {}), idleTimeout: IDLE_TIMEOUT_S, internalPort: internal.port, secret: internal.secret });
+      process.stderr.write("vaultbase: read workers listen on the public port\n");
+    }
+  }
+
   // Graceful shutdown: stop taking connections, let in-flight requests
   // finish (up to 10 s), stop background work, flush logs, close the
   // database. A second signal exits at once. The sync drain on `exit` is a
@@ -506,7 +523,11 @@ async function main() {
     shuttingDown = true;
     process.stderr.write(`\nvaultbase: ${reason}, finishing in-flight requests...\n`);
     const outcome = await shutdownGracefully({
-      stopServer: () => (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false),
+      stopServer: async () => {
+        const { setWorkerListen } = await import("./core/read-pool.ts");
+        setWorkerListen(null);
+        return (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false);
+      },
       cleanup: [
         stopScheduler, stopQueueScheduler, stopWebhookDispatcher, stopBackupScheduler, stopUpdateCheckScheduler,
         // Jobs already running finish (bounded) rather than being re-run after restart.
@@ -515,6 +536,7 @@ async function main() {
         () => flushGroupCommit(),
         () => stopCheckpointer(),
         async () => { const { stopReadPool } = await import("./core/read-pool.ts"); await stopReadPool(); },
+        () => internalListener?.stop(),
         () => closeDb(),
       ],
       timeoutMs: 10_000,

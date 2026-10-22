@@ -2,7 +2,8 @@ import Elysia from "elysia";
 import { getAllSettings } from "./settings.ts";
 import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { isIPv6 } from "node:net";
-import { trustedClientIp } from "../core/sec.ts";
+import { peerAddress, securityHeaders, trustedClientIp } from "../core/sec.ts";
+import { applyCorsHeaders } from "../core/cors.ts";
 import { embeddedIPv4 } from "../core/hook-egress.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 
@@ -284,15 +285,21 @@ function trimBuckets(): void {
   }
 }
 
+/** The bucket a request is charged to: the client address and the rule it matched. */
+export interface RateLimitCharge {
+  key: string;
+  max: number;
+  windowMs: number;
+  label: string;
+}
+
 /**
- * Charge `request` against the matching rate-limit rule. Returns null when
- * it may proceed, or what to answer with when it is over the limit.
+ * The bucket `request` is charged to, or null when no rule applies (the
+ * limiter is off, the path is skipped, no rule matches). Read workers that
+ * serve requests themselves call this, then take the token from the main
+ * thread's buckets (core/worker-listeners.ts), so there is one set.
  */
-export async function checkRateLimit(
-  request: Request,
-  peerIp: string | null,
-  jwtSecret?: string,
-): Promise<{ retryAfter: number; body: { error: string; code: number } } | null> {
+export async function rateLimitCharge(request: Request, peerIp: string | null, jwtSecret?: string): Promise<RateLimitCharge | null> {
   const path = normalizeApiPath(new URL(request.url).pathname);
   if (shouldSkip(path)) return null;
   const cfg = loadConfig();
@@ -303,24 +310,46 @@ export async function checkRateLimit(
   if (!match) return null;
 
   const ip = ipFromRequest(request, peerIp);
-  const key = `${ip}|${match.index}`;
-  if (consumeToken(key, match.rule.max, match.rule.windowMs)) return null;
+  return { key: `${ip}|${match.index}`, max: match.rule.max, windowMs: match.rule.windowMs, label: match.rule.label };
+}
+
+/** Take one token from the charge's bucket; false when it is empty. */
+export function takeRateLimitToken(charge: Pick<RateLimitCharge, "key" | "max" | "windowMs">): boolean {
+  return consumeToken(charge.key, charge.max, charge.windowMs);
+}
+
+/** What a request over its limit is answered with. */
+export function rateLimitRefusal(charge: RateLimitCharge): { retryAfter: number; body: { error: string; code: number } } {
   return {
-    retryAfter: Math.ceil(match.rule.windowMs / 1000),
-    body: { error: `Rate limit exceeded (rule: ${match.rule.label})`, code: 429 },
+    retryAfter: Math.ceil(charge.windowMs / 1000),
+    body: { error: `Rate limit exceeded (rule: ${charge.label})`, code: 429 },
   };
+}
+
+/** The 429 for a refused request answered outside the Elysia pipeline: security and CORS headers included. */
+export function rateLimitedResponse(request: Request, refusal: ReturnType<typeof rateLimitRefusal>): Response {
+  const set = { headers: { "content-type": "application/json", ...securityHeaders({ isApi: true }), "Retry-After": String(refusal.retryAfter) } as Record<string, string | undefined> };
+  applyCorsHeaders(request, set);
+  return new Response(JSON.stringify(refusal.body), { status: 429, headers: set.headers as Record<string, string> });
+}
+
+/**
+ * Charge `request` against the matching rate-limit rule. Returns null when
+ * it may proceed, or what to answer with when it is over the limit.
+ */
+export async function checkRateLimit(
+  request: Request,
+  peerIp: string | null,
+  jwtSecret?: string,
+): Promise<{ retryAfter: number; body: { error: string; code: number } } | null> {
+  const charge = await rateLimitCharge(request, peerIp, jwtSecret);
+  if (!charge || takeRateLimitToken(charge)) return null;
+  return rateLimitRefusal(charge);
 }
 
 export function makeRateLimitPlugin(jwtSecret?: string) {
   return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
-    // Bun exposes the peer IP via `server.requestIP(request)`. Elysia surfaces
-    // `server` on the handler context.
-    let peerIp: string | null = null;
-    try {
-      const s = server as unknown as { requestIP?: (r: Request) => { address: string } | null };
-      peerIp = s?.requestIP?.(request)?.address ?? null;
-    } catch { /* not all runtimes expose this */ }
-    const limited = await checkRateLimit(request, peerIp, jwtSecret);
+    const limited = await checkRateLimit(request, peerAddress(request, server), jwtSecret);
     if (limited) {
       set.status = 429;
       set.headers["Retry-After"] = String(limited.retryAfter);

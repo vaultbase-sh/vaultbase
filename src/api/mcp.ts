@@ -17,7 +17,7 @@
  */
 
 import Elysia from "elysia";
-import { verifyAuthToken, extractBearer, trustedClientIp } from "../core/sec.ts";
+import { verifyAuthToken, extractBearer, peerAddress, trustedClientIp } from "../core/sec.ts";
 import { hasScope } from "../core/api-tokens.ts";
 import { buildRegistry, createDispatcher } from "../mcp/server.ts";
 import { RPC_ERR, type JsonRpcRequest, type JsonRpcResponse } from "../mcp/types.ts";
@@ -145,12 +145,7 @@ export function makeMcpPlugin(jwtSecret: string) {
         // Honor VAULTBASE_TRUSTED_PROXIES: only consult X-Forwarded-For when
         // the immediate peer is in the trust list. Otherwise the peer IP is
         // authoritative — non-proxied clients can't spoof the origin field.
-        let peerIp: string | null = null;
-        try {
-          const s = server as { requestIP?: (r: Request) => { address: string } | null };
-          peerIp = s?.requestIP?.(request)?.address ?? null;
-        } catch { /* requestIP unsupported in tests */ }
-        const ip = trustedClientIp(request, peerIp);
+        const ip = trustedClientIp(request, peerAddress(request, server));
         const ua = request.headers.get("user-agent");
 
         const stream = new ReadableStream<Uint8Array>({

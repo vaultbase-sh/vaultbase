@@ -35,6 +35,7 @@ import {
   isAllowedUploadMime,
   isSafeToRenderInline,
   isValidStorageFilename,
+  peerAddress,
   signAuthToken,
   trustedClientIp,
   verifyAuthToken,
@@ -71,10 +72,7 @@ async function fileMetaOf(filename: string) {
 
 /** Pull the peer-IP off the Bun.serve `server` object that Elysia exposes. */
 function peerIpOf(server: unknown, request: Request): string | null {
-  try {
-    const s = server as { requestIP?: (r: Request) => { address: string } | null };
-    return s?.requestIP?.(request)?.address ?? null;
-  } catch { return null; }
+  return peerAddress(request, server);
 }
 
 /** Build the file-context object exposed to per-field rules. */

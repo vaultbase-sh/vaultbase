@@ -11,6 +11,7 @@ import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, createCollection, getCollection, updateCollection } from "../core/collections.ts";
 import { setSetting } from "../api/settings.ts";
+import { invalidateRateLimitCache } from "../api/ratelimit.ts";
 import { getDb } from "../db/client.ts";
 import { admin as adminTable } from "../db/schema.ts";
 import { signAuthToken } from "../core/sec.ts";
@@ -205,6 +206,66 @@ describe("forwarding", () => {
     await Bun.sleep(1_300);
     const after = (await (await app.handle(new Request("http://localhost/api/v1/_/metrics", { headers }))).json()) as { steps: Record<string, { count: number }> };
     expect(after.steps["db_exec"]!.count).toBe(0);
+  });
+
+  it("over HTTP, record reads go to a worker and every other request still reaches its route", async () => {
+    // A listening server answers record reads from its own Bun routes, ahead
+    // of Elysia; what they don't forward has to fall through to Elysia.
+    app.listen({ port: 0, hostname: "127.0.0.1" });
+    try {
+      const base = `http://127.0.0.1:${app.server!.port}`;
+      const list = await fetch(`${base}/api/v1/posts?perPage=2`);
+      expect(list.status).toBe(200);
+      expect(fromWorker(list)).not.toBeNull();
+      const id = ((await list.json()) as { data: Array<{ id: string }> }).data[0]!.id;
+      const one = await fetch(`${base}/api/v1/posts/${id}`);
+      expect(one.status).toBe(200);
+      expect(fromWorker(one)).not.toBeNull();
+      const unknown = await fetch(`${base}/api/v1/no_such_collection`);
+      expect(unknown.status).toBe(404);
+      expect(fromWorker(unknown)).toBeNull();
+      const history = await fetch(`${base}/api/v1/posts/${id}/history`);
+      expect(fromWorker(history)).toBeNull();
+      const created = await fetch(`${base}/api/v1/posts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "over http" }) });
+      expect(created.status).toBe(200);
+      expect(fromWorker(created)).toBeNull();
+      const collections = await fetch(`${base}/api/v1/collections`);
+      expect(collections.status).toBe(401);
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("forwarded reads are rate-limited like reads on the main thread", async () => {
+    // The limiter's hook runs after the forward hook, so forwarded reads used
+    // to be answered without ever being counted.
+    setSetting("rate_limit.enabled", "1");
+    setSetting("rate_limit.rules", JSON.stringify([{ label: "/api/posts*", max: 2, windowMs: 60_000, audience: "all" }]));
+    invalidateRateLimitCache();
+    app.listen({ port: 0, hostname: "127.0.0.1" });
+    try {
+      const statuses = async (send: () => Promise<Response>) => {
+        const out: Array<[number, string | null, string | null]> = [];
+        for (let i = 0; i < 3; i++) { const r = await send(); out.push([r.status, fromWorker(r), r.headers.get("retry-after")]); }
+        return out;
+      };
+      // Through Elysia (app.handle) and through the Bun routes (HTTP).
+      for (const send of [() => get("/api/v1/posts?perPage=1"), () => fetch(`http://127.0.0.1:${app.server!.port}/api/v1/posts?perPage=1`)]) {
+        invalidateRateLimitCache();
+        const out = await statuses(send);
+        expect(out[0]![0]).toBe(200);
+        expect(out[0]![1]).not.toBeNull();
+        expect(out[1]![0]).toBe(200);
+        expect(out[2]![0]).toBe(429);
+        expect(out[2]![1]).toBeNull();
+        expect(out[2]![2]).toBe("60");
+      }
+    } finally {
+      await app.stop();
+      setSetting("rate_limit.rules", "[]");
+      setSetting("rate_limit.enabled", process.env["VAULTBASE_RATE_ENABLED"] === "0" ? "0" : "1");
+      invalidateRateLimitCache();
+    }
   });
 
   it("leaves other routes on the main thread and stops cleanly", async () => {

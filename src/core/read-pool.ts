@@ -26,6 +26,9 @@ import type { Config } from "../config.ts";
 import { setBusSender, type WorkerStats } from "./thread-bus.ts";
 import { globalMetrics, type HistogramParts, type Step } from "./perf-metrics.ts";
 import { setExternalShapes, type ExportedShape } from "./query-stats.ts";
+import { takeRateLimitToken } from "../api/ratelimit.ts";
+import { recordApiTokenUsage } from "./api-tokens.ts";
+import type { ListenMessage, TokenRequest, TokenReply, UsageMessage } from "./worker-listeners.ts";
 
 export interface ForwardRequest {
   type: "request";
@@ -76,6 +79,8 @@ let starting = 0;
 /** Workers in a row that died within {@link YOUNG_MS} of starting, or failed to start. */
 let failures = 0;
 let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+/** Where workers listen (core/worker-listeners.ts); null when they don't. Kept across a suspend. */
+let listenSpec: ListenMessage | null = null;
 
 /** How long a worker may take to answer one request, or to start. */
 export const FORWARD_TIMEOUT_MS = 30_000;
@@ -206,8 +211,37 @@ export async function forwardRead(request: Request, peerIp: string | null): Prom
 function onStats(slot: Slot, m: WorkerStats): void {
   const id = `w${slots.indexOf(slot)}:${slot.born}`;
   globalMetrics.setExternalSteps(id, m.steps as Partial<Record<Step, HistogramParts>>);
+  globalMetrics.setExternalRequests(id, m.requests ?? null);
   setExternalShapes(id, m.queries as ExportedShape[]);
   slot.statsId = id;
+}
+
+function forgetStats(id: string): void {
+  globalMetrics.setExternalSteps(id, null);
+  globalMetrics.setExternalRequests(id, null);
+  setExternalShapes(id, null);
+}
+
+/** A listening worker's requests to the main thread (core/worker-listeners.ts). */
+function onListenerMessage(slot: Slot, m: TokenRequest | UsageMessage): void {
+  if (m.type === "rl") {
+    const reply: TokenReply = { type: "rl-reply", id: m.id, ok: takeRateLimitToken(m) };
+    slot.worker.postMessage(reply);
+  } else {
+    recordApiTokenUsage(m.jti, m.ip, m.ua);
+  }
+}
+
+/**
+ * Have every worker, and each one started later, listen on the public port
+ * (core/worker-listeners.ts). `null` stops them listening; requests they
+ * are serving finish.
+ */
+export function setWorkerListen(spec: ListenMessage | null): void {
+  listenSpec = spec;
+  for (const s of slots) {
+    try { s.worker.postMessage(spec ?? { type: "unlisten" }); } catch { /* dropped */ }
+  }
 }
 
 function onReply(slot: Slot, e: MessageEvent): void {
@@ -237,7 +271,7 @@ function dropWorker(slot: Slot, reason: string): void {
   const i = slots.indexOf(slot);
   if (i >= 0) slots.splice(i, 1);
   dropped++;
-  if (slot.statsId) { globalMetrics.setExternalSteps(slot.statsId, null); setExternalShapes(slot.statsId, null); }
+  if (slot.statsId) forgetStats(slot.statsId);
   failSlot(slot, reason);
   try { slot.worker.terminate(); } catch { /* gone */ }
   process.stderr.write(`vaultbase: read worker dropped (${reason}); ${slots.length} left\n`);
@@ -261,6 +295,7 @@ async function respawnOne(): Promise<void> {
     const slot = await spawnSlot(s);
     if (spec !== s) { try { slot.worker.terminate(); } catch { /* gone */ } return; } // stopped meanwhile
     slots.push(slot);
+    if (listenSpec) slot.worker.postMessage(listenSpec);
     restarted++;
     process.stderr.write(`vaultbase: read worker restarted; ${slots.length} running\n`);
   } catch (e) {
@@ -297,6 +332,7 @@ function spawnSlot(s: PoolSpec): Promise<Slot> {
         resolve(slot);
       } else if (m.type === "error") fail(new Error(m.message ?? "read worker error"));
       else if (m.type === "stats") onStats(slot, m as unknown as WorkerStats);
+      else if (m.type === "rl" || m.type === "usage") onListenerMessage(slot, m as unknown as TokenRequest | UsageMessage);
       else onReply(slot, e);
     };
     worker.onerror = (e) => {
@@ -329,6 +365,7 @@ export async function startReadPool(n: number, env: Record<string, string>, conf
   spec = s;
   failures = 0;
   slots.push(...started);
+  if (listenSpec) for (const slot of started) slot.worker.postMessage(listenSpec);
   setBusSender((m) => { for (const s of slots) { try { s.worker.postMessage(m); } catch { /* dropped */ } } });
 }
 
@@ -338,7 +375,7 @@ export async function stopReadPool(): Promise<void> {
   setBusSender(null);
   const all = slots.splice(0);
   for (const s of all) {
-    if (s.statsId) { globalMetrics.setExternalSteps(s.statsId, null); setExternalShapes(s.statsId, null); }
+    if (s.statsId) forgetStats(s.statsId);
     failSlot(s, "pool stopped");
     try { s.worker.postMessage({ type: "stop" }); } catch { /* gone */ }
     s.worker.terminate();

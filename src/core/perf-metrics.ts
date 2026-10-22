@@ -286,6 +286,18 @@ export interface MetricsSnapshot {
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/** A registry's request figures, as a read worker posts them for the requests it accepted itself. */
+export interface RequestParts {
+  requests_total: number;
+  rps_1min: number;
+  total: HistogramParts;
+  reads: HistogramParts;
+  writes: HistogramParts;
+  status: MetricsSnapshot["status"];
+  methods: Record<string, number>;
+  series: SecondSample[];
+}
+
 export class MetricsRegistry {
   private readonly histograms: Record<Step, Histogram> = Object.create(null);
   /**
@@ -294,6 +306,12 @@ export class MetricsRegistry {
    * the steps come from the worker; its own totals are not added.
    */
   private readonly external = new Map<string, Partial<Record<Step, HistogramParts>>>();
+  /**
+   * Request figures reported by read workers for the connections they
+   * accepted themselves (core/worker-listeners.ts), latest per worker.
+   * Those requests never reach this thread, so these are added in full.
+   */
+  private readonly externalRequests = new Map<string, RequestParts>();
   private readonly rps = new RpsTracker();
   private readonly total = new Histogram();
   private readonly reads = new Histogram();
@@ -325,6 +343,25 @@ export class MetricsRegistry {
     if (steps) this.external.set(id, steps); else this.external.delete(id);
   }
 
+  /** The request figures as parts, for a worker to post. */
+  exportRequests(): RequestParts {
+    return {
+      requests_total: this.requestsTotal,
+      rps_1min: this.rps.rps1min(),
+      total: this.total.export_(),
+      reads: this.reads.export_(),
+      writes: this.writes.export_(),
+      status: { ...this.status },
+      methods: { ...this.methods },
+      series: this.series.snapshot(),
+    };
+  }
+
+  /** Replace the request figures one worker last reported. `null` forgets them. */
+  setExternalRequests(id: string, parts: RequestParts | null): void {
+    if (parts) this.externalRequests.set(id, parts); else this.externalRequests.delete(id);
+  }
+
   finalizeRequest(totalUs?: number, method?: string, status?: number): void {
     this.requestsTotal++;
     this.rps.bump();
@@ -345,6 +382,7 @@ export class MetricsRegistry {
   reset(): void {
     for (const s of STEPS) this.histograms[s]!.reset();
     this.external.clear();
+    this.externalRequests.clear();
     this.total.reset();
     this.reads.reset();
     this.writes.reset();
@@ -362,18 +400,49 @@ export class MetricsRegistry {
       for (const ext of this.external.values()) { const parts = ext[s]; if (parts) h = h.plus(parts); }
       stepsOut[s] = h.snapshot();
     }
+    let requestsTotal = this.requestsTotal;
+    let rps1min = this.rps.rps1min();
+    let total = this.total, reads = this.reads, writes = this.writes;
+    const status = { ...this.status };
+    const methods: Record<string, number> = { ...this.methods };
+    const series = this.series.snapshot();
+    for (const ext of this.externalRequests.values()) {
+      requestsTotal += ext.requests_total;
+      rps1min += ext.rps_1min;
+      total = total.plus(ext.total);
+      reads = reads.plus(ext.reads);
+      writes = writes.plus(ext.writes);
+      for (const k of Object.keys(status) as Array<keyof typeof status>) status[k] += ext.status[k];
+      for (const [m, n] of Object.entries(ext.methods)) methods[m] = (methods[m] ?? 0) + n;
+      mergeSeries(series, ext.series);
+    }
     return {
       uptime_seconds: Math.floor((Date.now() - this.startedAt) / 1000),
-      requests_total: this.requestsTotal,
-      rps_1min: this.rps.rps1min(),
+      requests_total: requestsTotal,
+      rps_1min: rps1min,
       steps: stepsOut,
-      total: this.total.snapshot(),
-      reads: this.reads.snapshot(),
-      writes: this.writes.snapshot(),
-      status: { ...this.status },
-      methods: { ...this.methods },
-      series: this.series.snapshot(),
+      total: total.snapshot(),
+      reads: reads.snapshot(),
+      writes: writes.snapshot(),
+      status,
+      methods,
+      series,
     };
+  }
+}
+
+/** Add `other`'s seconds into `into`, matched on `t` (both oldest → newest). */
+function mergeSeries(into: SecondSample[], other: SecondSample[]): void {
+  const byT = new Map(into.map((x) => [x.t, x]));
+  for (const o of other) {
+    const x = byT.get(o.t);
+    if (!x || o.reqs === 0) continue;
+    const n = x.reqs + o.reqs;
+    x.mean_us = Math.round((x.mean_us * x.reqs + o.mean_us * o.reqs) / n);
+    x.reqs = n;
+    x.writes += o.writes;
+    x.errors += o.errors;
+    x.max_us = Math.max(x.max_us, o.max_us);
   }
 }
 
