@@ -157,8 +157,16 @@ describe("a worker's own listener", () => {
     setSetting("rate_limit.rules", JSON.stringify([{ label: "/api/posts*", max: 2, windowMs: 60_000, audience: "all" }]));
     invalidateRateLimitCache();
     try {
-      const statuses: number[] = [];
-      for (let i = 0; i < 3; i++) statuses.push((await fetch(`${workerBase}/api/v1/posts?perPage=1`)).status);
+      // The worker hears about the new rule over the thread bus, which can
+      // land after the first reads: start over with empty buckets until it has.
+      let statuses: number[] = [];
+      for (let attempt = 0; attempt < 50; attempt++) {
+        invalidateRateLimitCache();
+        statuses = [];
+        for (let i = 0; i < 3; i++) statuses.push((await fetch(`${workerBase}/api/v1/posts?perPage=1`)).status);
+        if (statuses[2] === 429) break;
+        await Bun.sleep(20);
+      }
       expect(statuses).toEqual([200, 200, 429]);
       // One set of buckets: the main thread's own listener is out of tokens too.
       expect((await fetch(`http://127.0.0.1:${app.server!.port}/api/v1/posts?perPage=1`)).status).toBe(429);

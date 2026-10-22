@@ -56,13 +56,17 @@ function dispatchBus(m: BusMessage): void {
       postStats();
       break;
     case "settings":
-      void invalidateSetting(m.key);
-      // The same caches the settings PATCH drops on the main thread.
-      invalidateRateLimitCache();
-      invalidateEmailCache();
-      invalidateStorageCache();
-      invalidateEgressCache();
-      invalidateCorsCache();
+      // The same caches the settings PATCH drops on the main thread, dropped
+      // once the new value is in this thread's store: dropped before it, a
+      // request in between rebuilt them from the old value, and the rate
+      // limits kept it for their 5 s cache.
+      void invalidateSetting(m.key).catch(() => { /* closing */ }).then(() => {
+        invalidateRateLimitCache();
+        invalidateEmailCache();
+        invalidateStorageCache();
+        invalidateEgressCache();
+        invalidateCorsCache();
+      });
       break;
   }
 }

@@ -7,6 +7,15 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **A read worker could keep the old rate limits for up to 5 seconds after a settings
+  change.** It dropped its rate-limit, CORS, email, storage and egress caches before the new
+  value reached it, so a request in between rebuilt them from the old one. They are dropped
+  once the new value is in.
+
 ## [0.27.0] — 2026-10-22
 
 ### Changed
