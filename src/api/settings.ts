@@ -178,9 +178,16 @@ export async function loadSettings(): Promise<void> {
  */
 const reloadsInFlight = new Set<Set<string>>();
 
+/**
+ * Keys whose `setSetting` write hasn't finished. A reload that starts while
+ * one is in flight keeps this thread's value too: on Postgres its read runs
+ * on another connection and can see the row from before the write.
+ */
+const writesInFlight = new Map<string, number>();
+
 /** The background refresh: a no-op when the database is closed or was reopened since the store was filled. */
 export async function _reloadSettings(): Promise<void> {
-  const written = new Set<string>();
+  const written = new Set<string>(writesInFlight.keys());
   reloadsInFlight.add(written);
   try {
     if (!driverOpen() || !store || store.driver !== getDriver()) return;
@@ -245,12 +252,18 @@ export async function setSetting(key: string, value: string): Promise<void> {
   const stored = maybeEncrypt(key, value);
   values().set(key, stored);
   for (const written of reloadsInFlight) written.add(key);
-  // Tracked: callers may not await, and closing must not drop the table under it.
-  await trackPendingWrite(Promise.resolve(db.run(
-    `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, ${db.dialect.epochNow})
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = ${db.dialect.epochNow}`,
-    [key, stored],
-  )));
+  writesInFlight.set(key, (writesInFlight.get(key) ?? 0) + 1);
+  try {
+    // Tracked: callers may not await, and closing must not drop the table under it.
+    await trackPendingWrite(Promise.resolve(db.run(
+      `INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, ${db.dialect.epochNow})
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = ${db.dialect.epochNow}`,
+      [key, stored],
+    )));
+  } finally {
+    const n = (writesInFlight.get(key) ?? 1) - 1;
+    if (n > 0) writesInFlight.set(key, n); else writesInFlight.delete(key);
+  }
   broadcast({ type: "bus", kind: "settings", key });
 }
 

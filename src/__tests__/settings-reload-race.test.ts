@@ -25,3 +25,16 @@ it("keeps a value written while a reload was reading", async () => {
   await _reloadSettings();
   expect(getSetting("app.name", "")).toBe("new");
 });
+
+it("keeps a value whose write was still in flight when a reload started", async () => {
+  // The other order: on Postgres the reload's read runs on another
+  // connection and missed a setting being written for the first time.
+  for (let i = 0; i < 20; i++) {
+    const write = setSetting(`app.fresh_${i}`, "new");
+    await _reloadSettings();
+    expect(getSetting(`app.fresh_${i}`, "")).toBe("new");
+    await write;
+  }
+  await _reloadSettings();
+  expect(getSetting("app.fresh_19", "")).toBe("new");
+});

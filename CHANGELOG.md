@@ -7,6 +7,17 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **On Postgres, a setting written for the first time could read as unset for up to 2
+  seconds.** The background refresh of the settings store (every 2 s) reads the table on
+  another connection; one that started while the write was in flight didn't see the new row
+  and dropped the value from memory until the next refresh. A refresh now keeps the values
+  whose writes were in flight when it started. Found as an intermittent OAuth test failure
+  in CI.
+
 ## [0.27.1] — 2026-10-22
 
 ### Fixed
