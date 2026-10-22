@@ -80,3 +80,15 @@ CREATE TRIGGER "vb_gold_fts_au" AFTER UPDATE OF "title", "body" ON "vb_gold" BEG
          INSERT INTO "vb_gold_fts"(rowid, "title", "body") VALUES (new.rowid, new."title", new."body");
        END;
 
+-- trigger vb_rowcount_del_vb_gold
+CREATE TRIGGER "vb_rowcount_del_vb_gold" AFTER DELETE ON "vb_gold" BEGIN UPDATE vaultbase_row_counts SET n = n - 1 WHERE table_name = 'vb_gold'; END;
+
+-- trigger vb_rowcount_del_vb_gold_people
+CREATE TRIGGER "vb_rowcount_del_vb_gold_people" AFTER DELETE ON "vb_gold_people" BEGIN UPDATE vaultbase_row_counts SET n = n - 1 WHERE table_name = 'vb_gold_people'; END;
+
+-- trigger vb_rowcount_ins_vb_gold
+CREATE TRIGGER "vb_rowcount_ins_vb_gold" AFTER INSERT ON "vb_gold" BEGIN UPDATE vaultbase_row_counts SET n = n + 1 WHERE table_name = 'vb_gold'; END;
+
+-- trigger vb_rowcount_ins_vb_gold_people
+CREATE TRIGGER "vb_rowcount_ins_vb_gold_people" AFTER INSERT ON "vb_gold_people" BEGIN UPDATE vaultbase_row_counts SET n = n + 1 WHERE table_name = 'vb_gold_people'; END;
+

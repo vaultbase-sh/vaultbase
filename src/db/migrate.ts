@@ -85,6 +85,15 @@ async function runMigrationsNow() {
     try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
 
+  // ── v0.26.6: stored row counts for list totals (core/row-counts.ts) ──
+  // Every start: cheap when the triggers are in place, and a table that lost
+  // them (rebuilt outside the server) gets them back with a fresh count.
+  const { ensureRowCount } = await import("../core/row-counts.ts");
+  const { userTableName } = await import("../core/collections.ts");
+  for (const { name } of tables) {
+    try { await ensureRowCount(userTableName(name)); } catch { /* table missing — skip */ }
+  }
+
   // ── v0.26.5: an index on every relation field ──
   // New fields get one in createUserTable / alterUserTable. Once, so an
   // index an admin dropped stays dropped.

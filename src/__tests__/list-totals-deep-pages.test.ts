@@ -128,13 +128,14 @@ describe.skipIf(!onSqlite)("list totals cache", () => {
   });
 
   it("a write nobody reported (raw SQL) empties every collection's totals", async () => {
+    // Filtered: an unfiltered total is the stored row count, not cached.
     await createPublicCollection({ name: "other", fields });
-    expect(await total()).toBe(30);
-    expect((await listRecords("other", { perPage: 1 })).totalItems).toBe(0);
+    expect(await total("n>=0")).toBe(30);
+    expect((await listRecords("other", { perPage: 1, filter: "n>=0" })).totalItems).toBe(0);
     getRawClient().exec(`INSERT INTO vb_other ("id", "n", "status") VALUES ('x', 1, 'draft')`);
     const before = _countCacheStats();
-    expect(await total()).toBe(30);
-    expect((await listRecords("other", { perPage: 1 })).totalItems).toBe(1);
+    expect(await total("n>=0")).toBe(30);
+    expect((await listRecords("other", { perPage: 1, filter: "n>=0" })).totalItems).toBe(1);
     expect(_countCacheStats().misses).toBe(before.misses + 2);
   });
 

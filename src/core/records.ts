@@ -16,6 +16,7 @@ import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
+import { storedRowCount } from "./row-counts.ts";
 import { hasFts, isSearchSyntaxError, newestSelect, rankedSelect, searchCountSql, searchPredicate, searchQuery, SEARCH_COLUMN } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
 import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges } from "./table-writes.ts";
@@ -707,7 +708,11 @@ export async function listRecords(
       // that reads another table (@collection, _via_, view-rule guards) can
       // change its answer without a write to this table, which is all the
       // cache watches: those are always counted fresh.
-      totalItems = col.type === "view" || /strftime\(/i.test(whereSql) || readsOtherTables(whereSql, tname)
+      // No filter, no rule clause, no search: the stored row count
+      // (core/row-counts.ts), when the table keeps one.
+      const stored = !ftsCount && whereSql === "" && col.type !== "view" ? await storedRowCount(tname) : null;
+      totalItems = stored !== null ? stored
+        : col.type === "view" || /strftime\(/i.test(whereSql) || readsOtherTables(whereSql, tname)
         ? (await db.get<{ c: number }>(countSql, countParams))?.c ?? 0
         : await cachedCount(countSql, countParams, tname);
       totalPages = Math.ceil(totalItems / perPage);

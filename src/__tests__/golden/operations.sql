@@ -9,13 +9,12 @@ INSERT INTO "vb_gold" ("id", "title", "price", "active", "stamp", "tags", "autho
 SELECT * FROM "vb_gold" WHERE "id" = ?;
 COMMIT;
 SELECT * FROM "vb_gold" ORDER BY "vb_gold"."created_at" DESC, "vb_gold".rowid DESC LIMIT ? OFFSET ?;
-SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s;
-SELECT COUNT(*) AS c FROM "vb_gold";
+SELECT n FROM vaultbase_row_counts WHERE table_name = ?;
 SELECT * FROM "vb_gold" WHERE ("vb_gold"."active" = ? AND coalesce("vb_gold"."title" LIKE ?, 0)) ORDER BY "vb_gold"."price" DESC, "vb_gold"."title" ASC, "vb_gold".rowid ASC LIMIT ? OFFSET ?;
 SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s;
 SELECT COUNT(*) AS c FROM "vb_gold" WHERE ("vb_gold"."active" = ? AND coalesce("vb_gold"."title" LIKE ?, 0));
 SELECT * FROM "vb_gold" ORDER BY "vb_gold"."created_at" DESC, "vb_gold".rowid DESC LIMIT ? OFFSET ?;
-SELECT total_changes() AS t, (SELECT data_version FROM pragma_data_version) AS d, (SELECT schema_version FROM pragma_schema_version) AS s;
+SELECT n FROM vaultbase_row_counts WHERE table_name = ?;
 SELECT * FROM "vb_gold_people" WHERE "id" IN (?);
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?;
 PRAGMA table_info("vb_gold_fts");

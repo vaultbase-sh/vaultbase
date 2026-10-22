@@ -17,6 +17,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `sort` a search now returns the newest matches first and stops at the page (a word in every
   record: 3.3 ms over HTTP, from 67 ms); pass `sort=@rank` for relevance order as before. On
   Postgres, newest first is `-created`.
+- **A list with no filter reads its total from a stored row count** instead of counting the
+  table. Each record table keeps its count in `vaultbase_row_counts`, updated by triggers in
+  the same transaction as every insert and delete (API, hooks or raw SQL), so totals stay
+  exact. The cached total was dropped on every write, so under steady writes every list
+  counted the whole table again, blocking the thread serving it. Filtered lists, rules that
+  add a condition and searches count as before. Existing tables get their count at the first
+  start of this version (one count per table). SQLite only.
 
 ### Fixed
 

@@ -7,6 +7,7 @@ import type { ColumnSpec } from "../db/ddl.ts";
 import { scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts, SEARCH_COLUMN } from "./fts.ts";
+import { ensureRowCount, forgetRowCount } from "./row-counts.ts";
 import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
 import { ruleSyntaxError } from "./expression.ts";
@@ -392,6 +393,7 @@ export async function createUserTable(collectionName: string, fields: FieldDef[]
   await ensureTimestampIndexes(collectionName);
   await ensureRelationIndexes(collectionName, fields);
   await syncFts(collectionName, fields);
+  await ensureRowCount(userTableName(collectionName));
 }
 
 /**
@@ -485,6 +487,7 @@ export async function dropUserTable(collectionName: string): Promise<void> {
   const tname = quoteIdent(userTableName(collectionName));
   await dropFts(collectionName);
   await db.exec(`DROP TABLE IF EXISTS ${tname}`);
+  await forgetRowCount(userTableName(collectionName));
 }
 
 /**
@@ -1230,6 +1233,9 @@ async function renameCollectionStorage(
         if (!next) continue;
         for (const stmt of db.dialect.renameIndex(name, next, sql)) await db.exec(stmt);
       }
+      // The count triggers keep the old name inside their body: replace them.
+      await forgetRowCount(oldTable);
+      await ensureRowCount(newTable);
     }
     for (const u of relationUpdates) await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [u.fields, u.id]);
     await db.run(`UPDATE vaultbase_hooks SET collection_name = ? WHERE collection_name = ?`, [newName, oldName]);
