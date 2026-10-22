@@ -134,7 +134,10 @@ describe("search", () => {
     // Since 0.26.6: relevance (the old default) scores every match before it
     // can return a page; newest first stops at the page.
     await notes();
-    await createRecord("notes", { title: "b apple apple apple", body: "" });           // most relevant, older
+    const older = await createRecord("notes", { title: "b apple apple apple", body: "" }); // most relevant, older
+    // created_at has one-second resolution, and Postgres orders newest first
+    // by it: two records made in the same second would tie.
+    await db.run(`UPDATE vb_notes SET created_at = created_at - 10 WHERE id = ?`, [older.id]);
     await createRecord("notes", { title: "a apple banana cherry date elder fig grape", body: "" }); // newer
     expect((await ids("apple"))[0]).toStartWith("a ");
     expect((await ids("apple", { sort: "@rank" }))[0]).toStartWith("b ");
