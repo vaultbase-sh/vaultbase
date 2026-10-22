@@ -243,6 +243,32 @@ export function searchPredicate(collection: string, tableRef: string): string {
 }
 
 /**
+ * Newest first (FTS5): the search index drives the query in reverse rowid
+ * (insertion) order and stops at the page, so a word in every row costs no
+ * more than a rare one. `whereSql` (filter, list rule; may be empty) is
+ * checked per row; params are the query (first `?`), then its params, then
+ * `LIMIT ? OFFSET ?`.
+ */
+export function newestSelect(collection: string, tableRef: string, whereSql: string): string {
+  const fts = q(ftsTableName(collection));
+  const and = whereSql ? `AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : "";
+  return `SELECT ${tableRef}.* FROM ${fts} JOIN ${tableRef} ON ${tableRef}.rowid = ${fts}.rowid
+         WHERE ${fts} MATCH ? ${and} ORDER BY ${fts}.rowid DESC LIMIT ? OFFSET ?`;
+}
+
+/**
+ * The number of rows matching the query (FTS5), with the same `whereSql`
+ * as the page. With nothing else to check it is counted on the search index
+ * alone (about 20× cheaper than joining every match to the table).
+ */
+export function searchCountSql(collection: string, tableRef: string, whereSql: string): string {
+  const fts = q(ftsTableName(collection));
+  if (!whereSql) return `SELECT COUNT(*) AS c FROM ${fts} WHERE ${fts} MATCH ?`;
+  return `SELECT COUNT(*) AS c FROM ${fts} JOIN ${tableRef} ON ${tableRef}.rowid = ${fts}.rowid
+         WHERE ${fts} MATCH ? AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})`;
+}
+
+/**
  * A ranked page: the rows of `tableRef` matching the query (first `?`),
  * filtered by `whereSql`, best first, then `LIMIT ? OFFSET ?`.
  */

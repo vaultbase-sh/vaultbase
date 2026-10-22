@@ -16,7 +16,7 @@ import { parseFilter, type CollectionLookup } from "./filter.ts";
 import { tableColumns } from "./users-table.ts";
 import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
-import { hasFts, isSearchSyntaxError, rankedSelect, searchPredicate, searchQuery, SEARCH_COLUMN } from "./fts.ts";
+import { hasFts, isSearchSyntaxError, newestSelect, rankedSelect, searchCountSql, searchPredicate, searchQuery, SEARCH_COLUMN } from "./fts.ts";
 import { recordListQuery } from "./query-stats.ts";
 import { discardTableReports, flushTableReports, tableVersion, takeReportedChanges } from "./table-writes.ts";
 import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
@@ -613,11 +613,20 @@ export async function listRecords(
     throw new FilterError(`page is too deep: at most ${MAX_LIST_OFFSET} records can be skipped; narrow the query with a filter`);
   }
 
-  const { whereSql, whereParams } = await compileListWhere(col, opts);
-  // A search with no explicit sort orders by relevance (bm25): the SELECT
-  // joins the match set itself, so it skips the search clause in WHERE.
-  const match = opts.sort === undefined ? await searchMatch(col, opts.search) : null;
+  // `sort=@rank` orders a search by relevance (bm25). With no sort a search
+  // is newest first (since 0.26.6; relevance before): ranking scores every
+  // match before it can return the best, ~130 ms for a word in 100k rows,
+  // where newest first stops at the page. On SQLite the search index drives
+  // newest first; Postgres takes the default -created path below.
+  const byRank = opts.sort === "@rank";
+  const sortGiven = opts.sort !== undefined && !byRank;
+  const listOpts = byRank ? { ...opts, sort: undefined } : opts;
+  const { whereSql, whereParams } = await compileListWhere(col, listOpts);
+  const match = !sortGiven && (byRank || db.capabilities.fts === "fts5") ? await searchMatch(col, opts.search) : null;
+  // These SELECTs join the match set themselves, so they skip the search
+  // clause in WHERE.
   const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
+  const newest = match !== null && !byRank;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
   // updated_at, so skip the default sort there — caller can opt in by passing
@@ -640,7 +649,7 @@ export async function listRecords(
     return viewCols;
   };
   const sortPrivate = privateFieldNames(col);
-  const sortSpec = opts.sort ?? (col.type === "view" ? "" : "-created_at");
+  const sortSpec = listOpts.sort ?? (col.type === "view" ? "" : "-created_at");
   const orderClauses: string[] = [];
   const sortCols: string[] = [];
   for (const s of sortSpec.split(",").map((x) => x.trim()).filter(Boolean)) {
@@ -673,7 +682,7 @@ export async function listRecords(
   const orderSql = orderClauses.length > 0 ? `ORDER BY ${orderClauses.join(", ")}` : "";
 
   const selectSql = match && rankedWhere
-    ? rankedSelect(col.name, tableRef, rankedWhere.whereSql)
+    ? (newest ? newestSelect : rankedSelect)(col.name, tableRef, rankedWhere.whereSql)
     : rowid && orderSql && offset >= ROWID_FIRST_OFFSET
       ? `SELECT * FROM ${tableRef} WHERE ${rowid} IN (SELECT ${rowid} FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?) ${orderSql}`
       : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
@@ -689,14 +698,18 @@ export async function listRecords(
     // Execute SELECT — prepared statement cached by SQL string shape.
     rows = await db.all<Record<string, unknown>>(selectSql, selectParams);
     if (!opts.skipTotal) {
-      const countSql = `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
+      // A search on SQLite counts from the search index (searchCountSql),
+      // not by joining every match into a WHERE ... IN on the table.
+      const ftsCount = match && rankedWhere && db.capabilities.fts === "fts5";
+      const countSql = ftsCount ? searchCountSql(col.name, tableRef, rankedWhere.whereSql) : `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
+      const countParams = ftsCount ? [match.query, ...rankedWhere.whereParams] : whereParams;
       // A view's SELECT, strftime('now', …) in a filter, or a rule or filter
       // that reads another table (@collection, _via_, view-rule guards) can
       // change its answer without a write to this table, which is all the
       // cache watches: those are always counted fresh.
       totalItems = col.type === "view" || /strftime\(/i.test(whereSql) || readsOtherTables(whereSql, tname)
-        ? (await db.get<{ c: number }>(countSql, whereParams))?.c ?? 0
-        : await cachedCount(countSql, whereParams, tname);
+        ? (await db.get<{ c: number }>(countSql, countParams))?.c ?? 0
+        : await cachedCount(countSql, countParams, tname);
       totalPages = Math.ceil(totalItems / perPage);
     }
   } catch (e) {

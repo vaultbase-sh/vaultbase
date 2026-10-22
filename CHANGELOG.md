@@ -7,6 +7,23 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **Search is newest first unless you ask for relevance.** A `?search=` with no `sort` was
+  ordered by relevance (bm25), which scores every match before it can return a page: about
+  130 ms for a word in 100k records, and the slowest request in a mixed load test. With no
+  `sort` a search now returns the newest matches first and stops at the page (a word in every
+  record: 3.3 ms over HTTP, from 67 ms); pass `sort=@rank` for relevance order as before. On
+  Postgres, newest first is `-created`.
+
+### Fixed
+
+- **A search's `totalItems` is counted on the search index** instead of joining every match
+  to the table: ~30 ms → 1.5–3.4 ms for a word in 100k records. With a filter or list rule
+  the matches are joined to check them, as before.
+
 ## [0.26.5] — 2026-10-20
 
 ### Fixed

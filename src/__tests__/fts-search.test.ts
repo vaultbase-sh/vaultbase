@@ -130,12 +130,31 @@ describe("search", () => {
     expect(await ids("bread missing")).toEqual([]);
   });
 
-  it("orders by relevance unless a sort is given", async () => {
+  it("orders newest first, by relevance with sort=@rank, or by the sort given", async () => {
+    // Since 0.26.6: relevance (the old default) scores every match before it
+    // can return a page; newest first stops at the page.
     await notes();
-    await createRecord("notes", { title: "a apple banana cherry date elder fig grape", body: "" });
-    await createRecord("notes", { title: "b apple apple apple", body: "" });
-    expect((await ids("apple"))[0]).toStartWith("b ");
-    expect((await ids("apple", { sort: "title" }))[0]).toStartWith("a ");
+    await createRecord("notes", { title: "b apple apple apple", body: "" });           // most relevant, older
+    await createRecord("notes", { title: "a apple banana cherry date elder fig grape", body: "" }); // newer
+    expect((await ids("apple"))[0]).toStartWith("a ");
+    expect((await ids("apple", { sort: "@rank" }))[0]).toStartWith("b ");
+    expect((await ids("apple", { sort: "-title" }))[0]).toStartWith("b ");
+    // @rank without a search is the usual order, not an error.
+    const plain = await listRecords("notes", { sort: "@rank" });
+    expect(plain.data.length).toBe(2);
+  });
+
+  it("counts a search exactly, with and without a filter, on every path", async () => {
+    await notes();
+    for (let i = 0; i < 7; i++) await createRecord("notes", { title: `gamma ${i}`, status: i < 3 ? "x" : "y" });
+    await createRecord("notes", { title: "delta" });
+    for (const sort of [undefined, "@rank", "-created"]) {
+      const all = await listRecords("notes", { search: "gamma", perPage: 2, ...(sort ? { sort } : {}) });
+      expect(all.totalItems).toBe(7);
+      expect(all.data.length).toBe(2);
+      const some = await listRecords("notes", { search: "gamma", filter: `status = "x"`, ...(sort ? { sort } : {}) });
+      expect(some.totalItems).toBe(3);
+    }
   });
 
   it("tracks updates and deletes", async () => {
