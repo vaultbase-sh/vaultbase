@@ -10,7 +10,7 @@
 #
 #   # With options: pin a version, pick a folder, verify the cosign signature
 #   # (needs `cosign` on PATH)
-#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.26.5
+#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.27.0
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -InstallDir C:\tools\vaultbase -VerifySig
 #
 # Re-running the script upgrades the binary in place. Stop any running
