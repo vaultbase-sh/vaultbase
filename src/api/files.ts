@@ -23,7 +23,8 @@ import {
   type ThumbFormat,
   type ThumbSpec,
 } from "../core/image.ts";
-import { getRecord } from "../core/records.ts";
+import { getRecord, updateRecord } from "../core/records.ts";
+import { ValidationError } from "../core/validate.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
@@ -369,6 +370,47 @@ export function maxUploadBytes(): number {
 
 /** This file's thumbnail variants are used up. */
 class ThumbLimitError extends Error {}
+
+/**
+ * Takes deleted file names out of the record's field, through the normal
+ * update path (hooks, realtime, history), before the files themselves go: a
+ * field left naming them pointed at files that answered 404. A required
+ * field can't lose its last file, so that delete is refused (422).
+ */
+async function unlinkFromRecord(
+  collection: string,
+  recordId: string,
+  field: FieldDef | undefined,
+  removed: string[],
+  auth: AuthContext,
+  set: { status?: number | string },
+): Promise<{ error: string; code: number; details?: Record<string, string> } | null> {
+  if (!field || field.type !== "file") return null;
+  const record = await getRecord(collection, recordId);
+  if (!record) return null;
+  const value = (record as Record<string, unknown>)[field.name];
+  const gone = new Set(removed);
+  let next: unknown;
+  if (Array.isArray(value)) {
+    const kept = value.filter((f) => !gone.has(String(f)));
+    if (kept.length === value.length) return null;
+    next = kept;
+  } else if (typeof value === "string" && gone.has(value)) {
+    next = null;
+  } else {
+    return null;
+  }
+  try {
+    await updateRecord(collection, recordId, { [field.name]: next }, auth);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      set.status = 422;
+      return { error: "Validation failed", code: 422, details: e.details };
+    }
+    throw e;
+  }
+  return null;
+}
 
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
@@ -782,6 +824,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
           )
         );
       if (rows.length === 0) { set.status = 404; return { error: "File not found", code: 404 }; }
+      const fieldDef = parseFields(col.fields).find((f) => f.name === params.field);
+      const refused = await unlinkFromRecord(col.name, params.recordId, fieldDef, rows.map((r) => r.filename), auth, set);
+      if (refused) return refused;
       for (const meta of rows) {
         await deleteFile(meta.filename);
         deleteThumbsFor(uploadDir, meta.filename);
@@ -821,6 +866,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         .limit(1);
       const meta = rows[0];
       if (!meta) { set.status = 404; return { error: "File not found", code: 404 }; }
+      const fieldDef = parseFields(col.fields).find((f) => f.name === params.field);
+      const refused = await unlinkFromRecord(col.name, params.recordId, fieldDef, [meta.filename], auth, set);
+      if (refused) return refused;
       await deleteFile(meta.filename);
       deleteThumbsFor(uploadDir, meta.filename);
       await db.delete(files).where(eq(files.id, meta.id));

@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Deleting a file left the record's field naming it.** `DELETE /api/v1/files/{collection}/{id}/{field}/{filename}`
+  (and the whole-field delete) removed the stored file but not its name from the record, so
+  the record pointed at a file that answered 404. The name is now taken out of the field
+  first, through the normal update path (hooks, realtime, history see the change). The last
+  file of a required field can't be deleted (422). Found while writing the Dart SDK.
+
 ## [0.27.2] — 2026-10-24
 
 ### Fixed
