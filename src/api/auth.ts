@@ -2062,8 +2062,10 @@ export function makeAuthPlugin(jwtSecret: string) {
     // Native sign-in (Sign in with Apple, Google sign-in on the device): the
     // app gets a nonce here, hands it to the platform's sign-in sheet, and
     // sends the ID token it gets back to /oauth2/id-token. The nonce is
-    // single-use and bound to the provider, so a token works once, and a
-    // token minted for someone else's sign-in is refused.
+    // single-use and bound to the provider, so a token minted for someone
+    // else's sign-in is refused. Apple requires it; Google's Flutter plugin
+    // fixes the nonce once per app launch, so for Google it is optional, and
+    // every ID token is accepted once whatever the nonce.
     .post("/auth/:collection/oauth2/id-token/nonce", async ({ params, body, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -2094,18 +2096,23 @@ export function makeAuthPlugin(jwtSecret: string) {
         set.status = 422; return { error: `ID-token sign-in with '${provider}' is not enabled`, code: 422 };
       }
 
-      // The nonce must be one this server issued for this provider and
-      // collection; it is spent now, whatever happens next.
       const now = Math.floor(Date.now() / 1000);
-      const nonceRow = (await findOneTimeToken(body.nonce))[0];
-      let stored: { provider?: string } = {};
-      try { stored = JSON.parse(nonceRow?.payload ?? "{}"); } catch { /* invalid below */ }
-      if (
-        !nonceRow || nonceRow.purpose !== "oauth2_id_nonce" || nonceRow.collection_id !== col.id ||
-        nonceRow.used_at || nonceRow.expires_at < now || stored.provider !== provider ||
-        !(await consumeToken(nonceRow.id, now))
-      ) {
-        set.status = 400; return { error: "Invalid or expired nonce", code: 400 };
+      if (!body.nonce && provider === "apple") {
+        set.status = 400; return { error: "nonce is required for Apple", code: 400 };
+      }
+      // A nonce must be one this server issued for this provider and
+      // collection; it is spent now, whatever happens next.
+      if (body.nonce) {
+        const nonceRow = (await findOneTimeToken(body.nonce))[0];
+        let stored: { provider?: string } = {};
+        try { stored = JSON.parse(nonceRow?.payload ?? "{}"); } catch { /* invalid below */ }
+        if (
+          !nonceRow || nonceRow.purpose !== "oauth2_id_nonce" || nonceRow.collection_id !== col.id ||
+          nonceRow.used_at || nonceRow.expires_at < now || stored.provider !== provider ||
+          !(await consumeToken(nonceRow.id, now))
+        ) {
+          set.status = 400; return { error: "Invalid or expired nonce", code: 400 };
+        }
       }
 
       let verified;
@@ -2116,12 +2123,28 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
       // The sign-in sheet puts the nonce in the token as given, or (the usual
       // way with Sign in with Apple) its SHA-256 in hex.
-      const hashed = new Bun.CryptoHasher("sha256").update(body.nonce).digest("hex");
-      if (
-        verified.nonce === null ||
-        !(timingSafeEqualStr(verified.nonce, body.nonce) || timingSafeEqualStr(verified.nonce, hashed))
-      ) {
-        set.status = 401; return { error: "ID token nonce mismatch", code: 401 };
+      if (body.nonce) {
+        const hashed = new Bun.CryptoHasher("sha256").update(body.nonce).digest("hex");
+        if (
+          verified.nonce === null ||
+          !(timingSafeEqualStr(verified.nonce, body.nonce) || timingSafeEqualStr(verified.nonce, hashed))
+        ) {
+          set.status = 401; return { error: "ID token nonce mismatch", code: 401 };
+        }
+      }
+      // Each token signs in once: recorded until it expires, so a copied
+      // token can't be replayed.
+      try {
+        await getDb().insert(authTokens).values({
+          id: storedTokenId(`id_token:${body.id_token}`),
+          user_id: "",
+          collection_id: col.id,
+          purpose: "oauth2_id_token_used",
+          expires_at: verified.expiresAt,
+          used_at: now,
+        });
+      } catch {
+        set.status = 401; return { error: "ID token already used", code: 401 };
       }
 
       const profile = verified.profile;
@@ -2140,7 +2163,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       body: t.Object({
         provider: t.String(),
         id_token: t.String(),
-        nonce: t.String(),
+        nonce: t.Optional(t.String()),
         name: t.Optional(t.String()),
       }),
     })

@@ -428,12 +428,12 @@ export function isIdTokenProviderEnabled(provider: string): provider is IdTokenP
 /**
  * Verify a native ID token: signature against the provider's published
  * keys, issuer, audience (one of [idTokenAudiences]) and expiry. Returns the
- * profile and the token's `nonce` claim (null when it has none).
+ * profile, the token's `nonce` claim (null when it has none) and its expiry.
  */
 export async function verifyNativeIdToken(
   provider: IdTokenProvider,
   idToken: string,
-): Promise<{ profile: NormalizedProfile; nonce: string | null }> {
+): Promise<{ profile: NormalizedProfile; nonce: string | null; expiresAt: number }> {
   const audience = idTokenAudiences(provider);
   if (audience.length === 0) throw new Error(`${provider} sign-in has no client IDs configured`);
   const { payload } = await jose.jwtVerify(idToken, idTokenKeys(provider), {
@@ -441,6 +441,7 @@ export async function verifyNativeIdToken(
     audience,
     algorithms: ["RS256"],
     clockTolerance: 60,
+    requiredClaims: ["exp"],
   });
   if (typeof payload.sub !== "string" || !payload.sub) throw new Error("ID token has no subject");
   const profile: NormalizedProfile = {
@@ -450,7 +451,12 @@ export async function verifyNativeIdToken(
     emailVerified: payload["email_verified"] === true || payload["email_verified"] === "true",
   };
   if (typeof payload["name"] === "string" && payload["name"]) profile.name = payload["name"] as string;
-  return { profile, nonce: typeof payload["nonce"] === "string" ? (payload["nonce"] as string) : null };
+  return {
+    profile,
+    nonce: typeof payload["nonce"] === "string" ? (payload["nonce"] as string) : null,
+    // Required above, and checked to be in the future.
+    expiresAt: payload.exp!,
+  };
 }
 
 // ── Apple-specific helpers ──────────────────────────────────────────────────

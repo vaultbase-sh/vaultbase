@@ -64,7 +64,7 @@ async function nonceFor(provider: string, collection = "users"): Promise<string>
 }
 
 function idToken(provider: "apple" | "google", over: {
-  sub?: string; aud?: string; iss?: string; nonce?: string | null; exp?: string | number;
+  sub?: string; aud?: string; iss?: string; nonce?: string | null; exp?: string | number | null;
   key?: jose.KeyLike; claims?: Record<string, unknown>;
 } = {}) {
   const claims: Record<string, unknown> = {
@@ -73,14 +73,14 @@ function idToken(provider: "apple" | "google", over: {
     ...over.claims,
   };
   if (over.nonce !== null && over.nonce !== undefined) claims["nonce"] = over.nonce;
-  return new jose.SignJWT(claims)
+  const jwt = new jose.SignJWT(claims)
     .setProtectedHeader({ alg: "RS256", kid: "k1" })
     .setIssuer(over.iss ?? (provider === "apple" ? "https://appleid.apple.com" : "https://accounts.google.com"))
     .setAudience(over.aud ?? (provider === "apple" ? APPLE_APP : GOOGLE_IOS))
     .setSubject(over.sub ?? `${provider}-user-1`)
-    .setIssuedAt()
-    .setExpirationTime(over.exp ?? "5m")
-    .sign(over.key ?? key);
+    .setIssuedAt();
+  if (over.exp !== null) jwt.setExpirationTime(over.exp ?? "5m");
+  return jwt.sign(over.key ?? key);
 }
 
 const sha256hex = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
@@ -183,9 +183,13 @@ describe("the token is refused", () => {
     expect((await signIn("google", { exp: Math.floor(Date.now() / 1000) - 3600 })).status).toBe(401);
   });
 
-  it("without the nonce, or with another one", async () => {
+  it("without the nonce that was sent, or with another one", async () => {
     expect((await signIn("google", { nonce: null })).status).toBe(401);
     expect((await signIn("google", { nonce: "someone-elses" })).status).toBe(401);
+  });
+
+  it("without an expiry", async () => {
+    expect((await signIn("google", { exp: null })).status).toBe(401);
   });
 
   it("without an email", async () => {
@@ -203,11 +207,25 @@ describe("the nonce", () => {
     expect((await post("/auth/users/oauth2/id-token", { provider: "google", id_token: good, nonce })).status).toBe(400);
   });
 
-  it("a replayed token is refused", async () => {
+  it("a replayed token is refused, with or without its nonce", async () => {
     const first = await signIn("google");
     expect(first.status).toBe(200);
-    const replay = await post("/auth/users/oauth2/id-token", { provider: "google", id_token: first.token, nonce: first.nonce });
-    expect(replay.status).toBe(400);
+    const withNonce = await post("/auth/users/oauth2/id-token", { provider: "google", id_token: first.token, nonce: first.nonce });
+    expect(withNonce.status).toBe(400);
+    const without = await post("/auth/users/oauth2/id-token", { provider: "google", id_token: first.token });
+    expect(without.status).toBe(401);
+  });
+
+  it("Google: optional (its Flutter plugin fixes it per launch); the token still works once", async () => {
+    const token = await idToken("google", { nonce: "client-chosen-at-launch" });
+    expect((await post("/auth/users/oauth2/id-token", { provider: "google", id_token: token })).status).toBe(200);
+    expect((await post("/auth/users/oauth2/id-token", { provider: "google", id_token: token })).status).toBe(401);
+  });
+
+  it("Apple: required", async () => {
+    const token = await idToken("apple", { nonce: null });
+    const res = await post("/auth/users/oauth2/id-token", { provider: "apple", id_token: token });
+    expect(res.status).toBe(400);
   });
 
   it("must be issued by this server, for this provider", async () => {
