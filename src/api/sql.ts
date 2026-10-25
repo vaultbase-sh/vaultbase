@@ -197,7 +197,7 @@ export function makeSqlPlugin(jwtSecret: string, dbPath: string) {
     // hover providers. Read-only — no schema mutation here.
     .get("/admin/sql/schema", async ({ set }) => {
       try {
-        return { data: introspectSchema(dbPath) };
+        return { data: db.name === "sqlite" ? introspectSchema(dbPath) : await introspectPostgresSchema() };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         set.status = 500;
@@ -253,6 +253,94 @@ function tableKind(name: string): SchemaTable["kind"] {
   if (name.startsWith("vb_")) return "collection";
   if (name.startsWith("vaultbase_")) return "system";
   return "user";
+}
+
+/**
+ * The same schema description on Postgres, from the catalog, for the
+ * server's own schema (current_schema()): four queries for the whole
+ * schema rather than four per table.
+ */
+async function introspectPostgresSchema(): Promise<SchemaResponse> {
+  const objs = await db.all<{ name: string; kind: string }>(
+    `SELECT c.relname AS name, c.relkind AS kind
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'v', 'm') AND NOT c.relispartition
+      ORDER BY c.relname`,
+  );
+  const cols = await db.all<{ tbl: string; name: string; type: string; notnull: boolean; dflt: string | null }>(
+    `SELECT c.relname AS tbl, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,
+            a.attnotnull AS notnull, pg_get_expr(d.adbin, d.adrelid) AS dflt
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
+      ORDER BY c.relname, a.attnum`,
+  );
+  // Each key of an index as Postgres prints it: the column name, or the
+  // expression for an expression index.
+  const idx = await db.all<{ tbl: string; name: string; uniq: boolean; pk: boolean; partial: boolean; cols: string[] }>(
+    `SELECT t.relname AS tbl, i.relname AS name, x.indisunique AS uniq, x.indisprimary AS pk,
+            x.indpred IS NOT NULL AS partial,
+            ARRAY(SELECT pg_get_indexdef(x.indexrelid, k, true) FROM generate_series(1, x.indnkeyatts) AS k) AS cols
+       FROM pg_index x
+       JOIN pg_class i ON i.oid = x.indexrelid
+       JOIN pg_class t ON t.oid = x.indrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = current_schema()
+      ORDER BY t.relname, i.relname`,
+  );
+  const fks = await db.all<{ tbl: string; col: string; ref_table: string; ref_col: string }>(
+    `SELECT t.relname AS tbl, a.attname AS col, rt.relname AS ref_table, ra.attname AS ref_col
+       FROM pg_constraint con
+       JOIN pg_class t ON t.oid = con.conrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       JOIN pg_class rt ON rt.oid = con.confrelid
+       CROSS JOIN LATERAL unnest(con.conkey, con.confkey) AS k(col, ref)
+       JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col
+       JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref
+      WHERE n.nspname = current_schema() AND con.contype = 'f'
+      ORDER BY t.relname, con.conname`,
+  );
+
+  const tables: SchemaTable[] = [];
+  let tCount = 0, vCount = 0;
+  for (const o of objs) {
+    const type: SchemaTable["type"] = o.kind === "v" || o.kind === "m" ? "view" : "table";
+    if (type === "table") tCount++; else vCount++;
+    const indexes = idx.filter((i) => i.tbl === o.name);
+    const indexedCols = new Set(indexes.flatMap((i) => i.cols));
+    const pkCols = new Set(indexes.filter((i) => i.pk).flatMap((i) => i.cols));
+    // A capped count, as on SQLite: past the cap the table isn't scanned.
+    let rowCount: number | undefined;
+    if (type === "table") {
+      try {
+        const r = await db.get<{ n: number }>(
+          `SELECT count(*) AS n FROM (SELECT 1 FROM ${db.dialect.quoteIdent(o.name)} LIMIT ${ROW_COUNT_CAP + 1}) AS capped`,
+        );
+        if (typeof r?.n === "number") rowCount = Math.min(r.n, ROW_COUNT_CAP);
+      } catch { /* not readable: no count */ }
+    }
+    const kind = tableKind(o.name);
+    tables.push({
+      name: o.name,
+      type,
+      kind,
+      ...(kind === "collection" ? { collectionName: o.name.slice(3) } : {}),
+      columns: cols.filter((c) => c.tbl === o.name).map((c) => ({
+        name: c.name,
+        type: c.type,
+        notnull: c.notnull,
+        pk: pkCols.has(c.name),
+        dflt: c.dflt,
+        indexed: indexedCols.has(c.name),
+      })),
+      indexes: indexes.map((i) => ({ name: i.name, cols: i.cols, unique: i.uniq, partial: i.partial })),
+      foreignKeys: fks.filter((f) => f.tbl === o.name).map((f) => ({ col: f.col, refTable: f.ref_table, refCol: f.ref_col })),
+      ...(rowCount !== undefined ? { rowCount } : {}),
+    });
+  }
+  return { tables, totals: { tables: tCount, views: vCount } };
 }
 
 function introspectSchema(dbPath: string): SchemaResponse {
