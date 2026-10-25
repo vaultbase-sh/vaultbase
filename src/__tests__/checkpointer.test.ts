@@ -84,14 +84,14 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     expect(s.restarts).toBeGreaterThan(0);
     expect(peak).toBeLessThan(100_000);
     // Writes stopped: once the worker has copied what was left (a pass over
-    // tens of thousands of frames takes seconds on a loaded machine) it
-    // rewinds, and the WAL is small again.
-    for (let i = 0; i < 600 && s.wal_frames >= 40_000; i++) {
+    // tens of thousands of frames takes seconds on a loaded machine, and over
+    // 30 s on a slow CI runner's disk) it rewinds, and the WAL is small again.
+    for (let i = 0; i < 1_800 && s.wal_frames >= 40_000; i++) {
       await Bun.sleep(50);
       s = checkpointStats()!;
     }
     expect(s.wal_frames).toBeLessThan(40_000);
-  }, 60_000);
+  }, 120_000);
 
   test("stop hands checkpointing back to SQLite", async () => {
     db = open();
