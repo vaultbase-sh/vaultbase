@@ -2677,7 +2677,16 @@ interface OAuthProviderRow {
 }
 
 const OAUTH_PROVIDERS: OAuthProviderRow[] = [
-  { name: "google",    displayName: "Google",    helpUrl: "https://console.cloud.google.com/apis/credentials",            redirectHint: "Add your callback URL to the OAuth client's Authorized redirect URIs." },
+  {
+    name: "google",
+    displayName: "Google",
+    helpUrl: "https://console.cloud.google.com/apis/credentials",
+    redirectHint: "Add your callback URL to the OAuth client's Authorized redirect URIs. For sign-in inside a mobile app, list the app's client IDs below; the client ID above is accepted too.",
+    extraFields: [
+      { key: "oauth2.google.native_client_ids", label: "App client IDs (native sign-in)",
+        placeholder: "iOS and Android client IDs, comma-separated" },
+    ],
+  },
   { name: "github",    displayName: "GitHub",    helpUrl: "https://github.com/settings/developers",                        redirectHint: "Set the OAuth App's Authorization callback URL to your callback URL." },
   { name: "gitlab",    displayName: "GitLab",    helpUrl: "https://gitlab.com/-/profile/applications",                     redirectHint: "Add your callback URL to the application's Redirect URIs and grant the read_user scope." },
   { name: "facebook",  displayName: "Facebook",  helpUrl: "https://developers.facebook.com/apps",                          redirectHint: "Configure the Facebook Login product with your callback URL as a Valid OAuth Redirect URI." },
@@ -2702,6 +2711,8 @@ const OAUTH_PROVIDERS: OAuthProviderRow[] = [
       { key: "oauth2.apple.key_id",      label: "Key ID",      placeholder: "10-char Key ID for your .p8" },
       { key: "oauth2.apple.private_key", label: "Private key (PEM)", type: "textarea",
         placeholder: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----" },
+      { key: "oauth2.apple.native_client_ids", label: "App bundle IDs (native sign-in)",
+        placeholder: "com.example.app, comma-separated" },
     ],
   },
   // Twitter v2 OAuth2 — PKCE is auto-engaged server-side.

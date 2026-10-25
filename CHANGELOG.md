@@ -7,6 +7,20 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Native sign-in with Apple and Google.** A mobile app that signs in with the
+  platform's own sheet sends the ID token it gets to
+  `POST /api/v1/auth/{collection}/oauth2/id-token`, with a single-use nonce from
+  `POST /api/v1/auth/{collection}/oauth2/id-token/nonce`. The token's signature
+  (the provider's published keys), issuer, expiry, audience and nonce are
+  checked; accounts, links, merges and MFA work as in the browser flow. The
+  accepted audiences are the provider's `client_id` plus the new
+  `oauth2.apple.native_client_ids` / `oauth2.google.native_client_ids` (an app's
+  bundle ID; iOS and Android client IDs), also in the admin's OAuth settings.
+
 ## [0.27.3] — 2026-10-25
 
 ### Fixed

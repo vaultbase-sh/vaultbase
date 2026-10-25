@@ -373,6 +373,86 @@ async function appleProfileFromTokenResponse(
   return profile;
 }
 
+// ── Native ID-token sign-in (Apple, Google) ─────────────────────────────────
+//
+// A mobile app that signs in with the platform's own sheet (Sign in with
+// Apple, Google sign-in) ends up holding an ID token, not an authorization
+// code. POST /auth/:collection/oauth2/id-token verifies it here.
+
+/** The providers whose ID tokens the id-token endpoint accepts. */
+export const ID_TOKEN_PROVIDERS = ["apple", "google"] as const;
+export type IdTokenProvider = (typeof ID_TOKEN_PROVIDERS)[number];
+
+const ID_TOKEN_ISSUERS: Record<IdTokenProvider, string[]> = {
+  apple: [APPLE_ISSUER],
+  google: ["https://accounts.google.com", "accounts.google.com"],
+};
+
+const ID_TOKEN_JWKS: Record<IdTokenProvider, string> = {
+  apple: `${APPLE_ISSUER}/auth/keys`,
+  google: "https://www.googleapis.com/oauth2/v3/certs",
+};
+
+let googleKeys: jose.JWTVerifyGetKey | null = null;
+
+/** Test hook: verify Google ID tokens against these keys instead of Google's JWKS. */
+export function _setGoogleKeysForTests(keys: jose.JWTVerifyGetKey | null): void {
+  googleKeys = keys;
+}
+
+function idTokenKeys(provider: IdTokenProvider): jose.JWTVerifyGetKey {
+  if (provider === "apple") return (appleKeys ??= jose.createRemoteJWKSet(new URL(ID_TOKEN_JWKS.apple)));
+  return (googleKeys ??= jose.createRemoteJWKSet(new URL(ID_TOKEN_JWKS.google)));
+}
+
+/**
+ * The client IDs an ID token for [provider] may be issued to: the web
+ * client ID (`oauth2.<p>.client_id`) plus the app's own
+ * (`oauth2.<p>.native_client_ids`, comma-separated: an iOS bundle ID for
+ * Apple; the iOS, Android and server client IDs for Google).
+ */
+export function idTokenAudiences(provider: IdTokenProvider): string[] {
+  const s = getAllSettings();
+  const list = [s[`oauth2.${provider}.client_id`] ?? "", ...(s[`oauth2.${provider}.native_client_ids`] ?? "").split(",")];
+  return [...new Set(list.map((v) => v.trim()).filter(Boolean))];
+}
+
+/** Enabled, with at least one client ID to check tokens against. */
+export function isIdTokenProviderEnabled(provider: string): provider is IdTokenProvider {
+  if (!(ID_TOKEN_PROVIDERS as readonly string[]).includes(provider)) return false;
+  const s = getAllSettings();
+  const enabled = s[`oauth2.${provider}.enabled`] === "1" || s[`oauth2.${provider}.enabled`] === "true";
+  return enabled && idTokenAudiences(provider as IdTokenProvider).length > 0;
+}
+
+/**
+ * Verify a native ID token: signature against the provider's published
+ * keys, issuer, audience (one of [idTokenAudiences]) and expiry. Returns the
+ * profile and the token's `nonce` claim (null when it has none).
+ */
+export async function verifyNativeIdToken(
+  provider: IdTokenProvider,
+  idToken: string,
+): Promise<{ profile: NormalizedProfile; nonce: string | null }> {
+  const audience = idTokenAudiences(provider);
+  if (audience.length === 0) throw new Error(`${provider} sign-in has no client IDs configured`);
+  const { payload } = await jose.jwtVerify(idToken, idTokenKeys(provider), {
+    issuer: ID_TOKEN_ISSUERS[provider],
+    audience,
+    algorithms: ["RS256"],
+    clockTolerance: 60,
+  });
+  if (typeof payload.sub !== "string" || !payload.sub) throw new Error("ID token has no subject");
+  const profile: NormalizedProfile = {
+    id: payload.sub,
+    email: typeof payload["email"] === "string" ? (payload["email"] as string) : "",
+    // Apple sends "true" as a string; Google a boolean.
+    emailVerified: payload["email_verified"] === true || payload["email_verified"] === "true",
+  };
+  if (typeof payload["name"] === "string" && payload["name"]) profile.name = payload["name"] as string;
+  return { profile, nonce: typeof payload["nonce"] === "string" ? (payload["nonce"] as string) : null };
+}
+
 // ── Apple-specific helpers ──────────────────────────────────────────────────
 
 interface AppleConfig {

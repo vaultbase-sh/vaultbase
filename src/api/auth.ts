@@ -44,11 +44,14 @@ import {
   fetchProviderProfileFromExchange,
   generateCodeVerifier,
   idTokenNonce,
+  isIdTokenProviderEnabled,
   isProviderEnabled,
   listEnabledProviders,
   providerRequiresPkce,
   providerUsesNonce,
   PROVIDERS,
+  verifyNativeIdToken,
+  type NormalizedProfile,
 } from "../core/oauth2.ts";
 import {
   buildOtpauthUrl,
@@ -104,6 +107,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OTP_TTL_SECONDS = 10 * 60;   // 10 minutes
 const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
 const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
+/** How long a nonce from /oauth2/id-token/nonce stays usable. */
+const ID_TOKEN_NONCE_TTL_SECONDS = 10 * 60;
 
 async function hashPassword(plaintext: string): Promise<string> {
   return await Bun.password.hash(plaintext, HASH_OPTS);
@@ -584,6 +589,130 @@ async function findUserByEmailAnyCase(col: Parameters<typeof findUserById>[0], e
     [email],
   );
   return row ? await findUserById(col, row.id) : null;
+}
+
+/**
+ * Sign in with a profile a provider vouched for (an authorization-code
+ * exchange or a verified ID token):
+ *  1. an existing link for (provider, provider user id) signs into that user;
+ *  2. otherwise a verified email that matches an account returns
+ *     `merge_required` (linking needs the account owner's consent);
+ *  3. otherwise a new user is created (subject to sign-up being open) and
+ *     linked.
+ * An account with TOTP on gets an MFA ticket instead of a token.
+ */
+async function providerSignIn(
+  col: NonNullable<Awaited<ReturnType<typeof getCollection>>>,
+  provider: string,
+  profile: NormalizedProfile,
+  request: Request,
+  jwtSecret: string,
+): Promise<{ status?: number; body: unknown }> {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+
+  // 1. Existing link?
+  const linked = await db
+    .select()
+    .from(oauthLinks)
+    .where(and(eq(oauthLinks.provider, provider), eq(oauthLinks.provider_user_id, profile.id)))
+    .limit(1);
+  let userId: string | null = null;
+  if (linked.length > 0 && linked[0]!.collection_id === col.id) {
+    userId = linked[0]!.user_id;
+  }
+
+  // 2. Email-match (only if provider verified the email).
+  //    Instead of auto-linking, return a 200 with `merge_required: true`
+  //    and a single-use `merge_token`. The caller must call
+  //    `/oauth2/merge-confirm` with the user's existing password (or a
+  //    valid user token for that user) to consent before we link.
+  if (!userId && profile.emailVerified) {
+    const existing = await findUserByEmailAnyCase(col, profile.email);
+    if (existing) {
+      const matchedUserId = existing.id;
+      const mergeToken = crypto.randomUUID();
+      await db.insert(authTokens).values({
+        id: storedTokenId(mergeToken),
+        user_id: matchedUserId,
+        collection_id: col.id,
+        purpose: "oauth2_merge",
+        code: JSON.stringify({
+          provider,
+          provider_user_id: profile.id,
+          email: profile.email,
+          name: profile.name ?? null,
+        }),
+        expires_at: now + 15 * 60,
+        used_at: null,
+        created_at: now,
+      });
+      return { body: {
+        data: {
+          merge_required: true,
+          merge_token: mergeToken,
+          email: profile.email,
+          provider,
+          message:
+            "An account with this email already exists. Confirm with your existing password (or a valid user token) at POST /api/v1/auth/:collection/oauth2/merge-confirm to link this provider.",
+        },
+      } };
+    }
+  }
+
+  // 3. Create new user — fires afterCreate on the auth collection.
+  //    An address the provider didn't verify isn't claimed for the new
+  //    account: it gets a placeholder (the provider's address stays on the
+  //    link). Otherwise the provider could reserve an address for someone
+  //    else's future account, or collide with an existing one.
+  const accountEmail = profile.emailVerified && !await findUserByEmailAnyCase(col, profile.email)
+    ? profile.email
+    // Random, so nobody can register the placeholder ahead of the owner.
+    : `${provider}_${newToken().slice(0, 24)}@oauth.invalid`;
+  if (!userId) {
+    const signupFields: Record<string, unknown> = profile.name ? { email: accountEmail, name: profile.name } : { email: accountEmail };
+    if (!(await signupAllowed(request, jwtSecret, col, signupFields))) {
+      return { status: 403, body: { error: "Forbidden", code: 403 } };
+    }
+    const randomPw = crypto.randomUUID() + crypto.randomUUID();
+    const hash = await hashPassword(randomPw);
+    userId = crypto.randomUUID();
+    await insertUser(col, {
+      id: userId,
+      email: accountEmail,
+      password_hash: hash,
+      email_verified: accountEmail === profile.email ? 1 : 0,
+      custom: profile.name ? { name: profile.name } : {},
+      legacyDataJson: JSON.stringify(profile.name ? { name: profile.name } : {}),
+      created_at: now,
+      updated_at: now,
+    });
+    await db.insert(oauthLinks).values({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      collection_id: col.id,
+      provider,
+      provider_user_id: profile.id,
+      provider_email: profile.email,
+    });
+    // afterCreate hook on OAuth-provisioned new user.
+    const created = await getRecord(col.name, userId);
+    if (created) emitSignup(col, created, "oauth2");
+  }
+
+  // A linked account with TOTP on still needs its second factor: the
+  // provider vouches for who the user is at the provider, not for this
+  // account's MFA.
+  const signedIn = await findUserById(col, userId);
+  if (signedIn?.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId) } };
+  const email = signedIn?.email ?? accountEmail;
+  const { token } = await signAuthToken({
+    payload: { id: userId, email, collection: col.name },
+    audience: "user",
+    expiresInSeconds: tokenWindowSeconds("user"),
+    jwtSecret,
+  });
+  return { body: { data: { token, record: { id: userId, email } } } };
 }
 
 /** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
@@ -1916,108 +2045,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         return { error: "Provider returned an incomplete profile (missing id or email)", code: 400 };
       }
 
-      // 1. Existing link?
-      const linked = await db
-        .select()
-        .from(oauthLinks)
-        .where(and(eq(oauthLinks.provider, body.provider), eq(oauthLinks.provider_user_id, profile.id)))
-        .limit(1);
-      let userId: string | null = null;
-      if (linked.length > 0 && linked[0]!.collection_id === col.id) {
-        userId = linked[0]!.user_id;
-      }
-
-      // 2. Email-match (only if provider verified the email).
-      //    Instead of auto-linking, return a 200 with `merge_required: true`
-      //    and a single-use `merge_token`. The caller must call
-      //    `/oauth2/merge-confirm` with the user's existing password (or a
-      //    valid user token for that user) to consent before we link.
-      if (!userId && profile.emailVerified) {
-        const existing = await findUserByEmailAnyCase(col, profile.email);
-        if (existing) {
-          const matchedUserId = existing.id;
-          const mergeToken = crypto.randomUUID();
-          await db.insert(authTokens).values({
-            id: storedTokenId(mergeToken),
-            user_id: matchedUserId,
-            collection_id: col.id,
-            purpose: "oauth2_merge",
-            code: JSON.stringify({
-              provider: body.provider,
-              provider_user_id: profile.id,
-              email: profile.email,
-              name: profile.name ?? null,
-            }),
-            expires_at: now + 15 * 60,
-            used_at: null,
-            created_at: now,
-          });
-          return {
-            data: {
-              merge_required: true,
-              merge_token: mergeToken,
-              email: profile.email,
-              provider: body.provider,
-              message:
-                "An account with this email already exists. Confirm with your existing password (or a valid user token) at POST /api/v1/auth/:collection/oauth2/merge-confirm to link this provider.",
-            },
-          };
-        }
-      }
-
-      // 3. Create new user — fires afterCreate on the auth collection.
-      //    An address the provider didn't verify isn't claimed for the new
-      //    account: it gets a placeholder (the provider's address stays on the
-      //    link). Otherwise the provider could reserve an address for someone
-      //    else's future account, or collide with an existing one.
-      const accountEmail = profile.emailVerified && !await findUserByEmailAnyCase(col, profile.email)
-        ? profile.email
-        // Random, so nobody can register the placeholder ahead of the owner.
-        : `${body.provider}_${newToken().slice(0, 24)}@oauth.invalid`;
-      if (!userId) {
-        const signupFields: Record<string, unknown> = profile.name ? { email: accountEmail, name: profile.name } : { email: accountEmail };
-        if (!(await signupAllowed(request, jwtSecret, col, signupFields))) {
-          set.status = 403; return { error: "Forbidden", code: 403 };
-        }
-        const randomPw = crypto.randomUUID() + crypto.randomUUID();
-        const hash = await hashPassword(randomPw);
-        userId = crypto.randomUUID();
-        await insertUser(col, {
-          id: userId,
-          email: accountEmail,
-          password_hash: hash,
-          email_verified: accountEmail === profile.email ? 1 : 0,
-          custom: profile.name ? { name: profile.name } : {},
-          legacyDataJson: JSON.stringify(profile.name ? { name: profile.name } : {}),
-          created_at: now,
-          updated_at: now,
-        });
-        await db.insert(oauthLinks).values({
-          id: crypto.randomUUID(),
-          user_id: userId,
-          collection_id: col.id,
-          provider: body.provider,
-          provider_user_id: profile.id,
-          provider_email: profile.email,
-        });
-        // afterCreate hook on OAuth-provisioned new user.
-        const created = await getRecord(col.name, userId);
-        if (created) emitSignup(col, created, "oauth2");
-      }
-
-      // A linked account with TOTP on still needs its second factor: the
-      // provider vouches for who the user is at the provider, not for this
-      // account's MFA.
-      const signedIn = await findUserById(col, userId);
-      if (signedIn?.totp_enabled === 1) return { data: await mfaTicketFor(col.id, userId) };
-      const email = signedIn?.email ?? accountEmail;
-      const { token } = await signAuthToken({
-        payload: { id: userId, email, collection: col.name },
-        audience: "user",
-        expiresInSeconds: tokenWindowSeconds("user"),
-        jwtSecret,
-      });
-      return { data: { token, record: { id: userId, email } } };
+      const result = await providerSignIn(col, body.provider, profile, request, jwtSecret);
+      if (result.status) set.status = result.status;
+      return result.body;
     }, {
       body: t.Object({
         provider: t.String(),
@@ -2027,6 +2057,91 @@ export function makeAuthPlugin(jwtSecret: string) {
         state: t.Optional(t.String()),
         state_secret: t.Optional(t.String()),
         code_verifier: t.Optional(t.String()),
+      }),
+    })
+    // Native sign-in (Sign in with Apple, Google sign-in on the device): the
+    // app gets a nonce here, hands it to the platform's sign-in sheet, and
+    // sends the ID token it gets back to /oauth2/id-token. The nonce is
+    // single-use and bound to the provider, so a token works once, and a
+    // token minted for someone else's sign-in is refused.
+    .post("/auth/:collection/oauth2/id-token/nonce", async ({ params, body, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+      if (!isIdTokenProviderEnabled(body.provider)) {
+        set.status = 422; return { error: `ID-token sign-in with '${body.provider}' is not enabled`, code: 422 };
+      }
+      const nonce = newToken();
+      const expiresAt = Math.floor(Date.now() / 1000) + ID_TOKEN_NONCE_TTL_SECONDS;
+      await getDb().insert(authTokens).values({
+        id: storedTokenId(nonce),
+        user_id: "",       // pre-auth, no user yet
+        collection_id: col.id,
+        purpose: "oauth2_id_nonce",
+        payload: JSON.stringify({ provider: body.provider }),
+        expires_at: expiresAt,
+      });
+      return { data: { nonce, expires_at: expiresAt } };
+    }, {
+      body: t.Object({ provider: t.String() }),
+    })
+    .post("/auth/:collection/oauth2/id-token", async ({ params, body, request, set }) => {
+      const col = await getCollection(params.collection);
+      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+      const provider = body.provider;
+      if (!isIdTokenProviderEnabled(provider)) {
+        set.status = 422; return { error: `ID-token sign-in with '${provider}' is not enabled`, code: 422 };
+      }
+
+      // The nonce must be one this server issued for this provider and
+      // collection; it is spent now, whatever happens next.
+      const now = Math.floor(Date.now() / 1000);
+      const nonceRow = (await findOneTimeToken(body.nonce))[0];
+      let stored: { provider?: string } = {};
+      try { stored = JSON.parse(nonceRow?.payload ?? "{}"); } catch { /* invalid below */ }
+      if (
+        !nonceRow || nonceRow.purpose !== "oauth2_id_nonce" || nonceRow.collection_id !== col.id ||
+        nonceRow.used_at || nonceRow.expires_at < now || stored.provider !== provider ||
+        !(await consumeToken(nonceRow.id, now))
+      ) {
+        set.status = 400; return { error: "Invalid or expired nonce", code: 400 };
+      }
+
+      let verified;
+      try {
+        verified = await verifyNativeIdToken(provider, body.id_token);
+      } catch {
+        set.status = 401; return { error: "Invalid ID token", code: 401 };
+      }
+      // The sign-in sheet puts the nonce in the token as given, or (the usual
+      // way with Sign in with Apple) its SHA-256 in hex.
+      const hashed = new Bun.CryptoHasher("sha256").update(body.nonce).digest("hex");
+      if (
+        verified.nonce === null ||
+        !(timingSafeEqualStr(verified.nonce, body.nonce) || timingSafeEqualStr(verified.nonce, hashed))
+      ) {
+        set.status = 401; return { error: "ID token nonce mismatch", code: 401 };
+      }
+
+      const profile = verified.profile;
+      if (!profile.email) {
+        set.status = 400;
+        return { error: "The ID token has no email; ask for the email scope", code: 400 };
+      }
+      // Apple gives the user's name to the app once, on the first sign-in,
+      // never in the token: the app may pass it on for a new account.
+      if (!profile.name && body.name?.trim()) profile.name = body.name.trim().slice(0, 200);
+
+      const result = await providerSignIn(col, provider, profile, request, jwtSecret);
+      if (result.status) set.status = result.status;
+      return result.body;
+    }, {
+      body: t.Object({
+        provider: t.String(),
+        id_token: t.String(),
+        nonce: t.String(),
+        name: t.Optional(t.String()),
       }),
     })
     // Confirm a pending OAuth2 → existing-user merge. The exchange step
