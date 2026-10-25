@@ -171,6 +171,36 @@ function isStalePlan(e: unknown): boolean {
     /cached plan must not change result type/.test(String((e as { message?: unknown }).message));
 }
 
+/**
+ * The vb_ table a raw write touched, for the list totals cache: SQLite sees
+ * every write through its change counter, Postgres only through these
+ * reports. `"*"` when it is a write that reaches some vb_ table but not one
+ * this can name (a CTE, a join): every cached count is then retired. Null
+ * for anything else (reads, writes to vaultbase_ tables).
+ */
+export function rawWriteTarget(sql: string): string | null {
+  const writesSomeVbTable = () => (/\b(?:INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b/i.test(sql) && /\bvb_/i.test(sql) ? "*" : null);
+  // A script of several statements: no single table to name.
+  if (sql.replace(/[\s;]+$/, "").includes(";")) return writesSomeVbTable();
+  const head = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(INSERT\s+INTO|UPDATE|DELETE\s+FROM|MERGE\s+INTO|TRUNCATE(?:\s+TABLE)?|WITH|EXPLAIN|COPY)\b/i.exec(sql);
+  if (!head) return null;
+  const kind = head[1]!.toUpperCase();
+  // EXPLAIN ANALYZE runs the write it explains; COPY ... FROM writes rows.
+  if (kind === "EXPLAIN") return writesSomeVbTable();
+  if (kind === "COPY") return /\bFROM\b/i.test(sql) && /\bvb_/i.test(sql) ? "*" : null;
+  if (kind !== "WITH") {
+    const rest = sql.slice(head.index + head[0].length);
+    // A quoted name keeps its case (collection names may have capitals); an unquoted one folds to lower case, as Postgres does.
+    const target = /^\s*(?:ONLY\s+)?(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)\.)?(?:"(vb_[^"]+)"|(vb_[A-Za-z0-9_]+))/i.exec(rest);
+    if (target) {
+      // TRUNCATE a, b names several; CASCADE reaches others.
+      if (/^TRUNCATE/i.test(head[1]!) && (/^\s*,/.test(rest.slice(target[0].length)) || /\bCASCADE\b/i.test(rest))) return "*";
+      return target[1] ?? target[2]!.toLowerCase();
+    }
+  }
+  return writesSomeVbTable();
+}
+
 export class PostgresDriver implements DbDriver {
   readonly name = "postgres" as const;
   readonly dialect = POSTGRES_DIALECT;
@@ -263,6 +293,12 @@ export class PostgresDriver implements DbDriver {
   async all<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T[]> {
     this.traceFn?.(sql);
     const rows = await this.query(toPositional(sql, params.length > 0), params as unknown[], false);
+    // INSERT ... RETURNING and writes in a CTE come back as rows.
+    const table = rawWriteTarget(sql);
+    if (table) {
+      noteTableWrite(table, (rows as Rows).count ?? 0);
+      if (!this.inTransaction) flushTableReports();
+    }
     return plainRows<T>(rows as Rows);
   }
 
@@ -275,8 +311,9 @@ export class PostgresDriver implements DbDriver {
     this.traceFn?.(sql);
     const rows = (await this.query(toPositional(sql, params.length > 0), params as unknown[], false)) as Rows;
     const changes = rows.count ?? 0;
-    if (opts?.table) {
-      noteTableWrite(opts.table, changes);
+    const table = opts?.table ?? rawWriteTarget(sql);
+    if (table) {
+      noteTableWrite(table, changes);
       if (!this.inTransaction) flushTableReports();
     }
     return { changes, lastInsertRowid: 0, trackedChanges: changes };
@@ -286,6 +323,12 @@ export class PostgresDriver implements DbDriver {
     this.traceFn?.(sql);
     await this.conn().unsafe(sql).simple();
     if (DDL_RE.test(sql)) this.token++;
+    // rawWriteTarget gives "*" for a script of several statements.
+    const table = rawWriteTarget(sql);
+    if (table) {
+      noteTableWrite(table, 0);
+      if (!this.inTransaction) flushTableReports();
+    }
   }
 
   /**

@@ -133,7 +133,8 @@ async function cachedCount(sql: string, params: unknown[], table: string): Promi
   const count = async () => (await db.get<{ c: number }>(sql, params))?.c ?? 0;
   const inTransaction = db.inTransaction;
   await syncCountCache();
-  const tv = tableVersion(table);
+  // "*" moves for a raw write the driver couldn't tie to one table.
+  const tv = tableVersion(table) + tableVersion("*");
   const key = countKey(sql, params);
   const hit = COUNT_CACHE.get(key);
   if (hit !== undefined && hit.tv === tv) { countCacheStats.hits++; return hit.c; }
