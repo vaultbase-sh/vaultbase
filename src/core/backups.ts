@@ -96,6 +96,51 @@ function pgDumpBinary(): string | null {
 }
 
 /**
+ * The connection for a Postgres client tool (pg_dump, pg_restore): the URL
+ * without its password, and the password in PGPASSWORD. Any user on the
+ * host can read a command line (`ps`); a process's environment only its
+ * owner. The query string is edited as text: re-encoding it would turn
+ * `%20` in `options=-c%20search_path%3D…` into `+`, which libpq doesn't read
+ * as a space.
+ */
+export function pgToolConnection(url: string): { dbname: string; env: Record<string, string> } {
+  const decode = (v: string) => { try { return decodeURIComponent(v); } catch { return v; } };
+  let password = "";
+  let dbname = url;
+  // user:password@ in the authority. The authority runs from :// to the
+  // first / ? or #, and its user part to the last @ (a password may hold an
+  // unencoded @); the password is percent-decoded, as libpq does.
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(url);
+  if (scheme) {
+    const from = scheme[0].length;
+    const rest = url.slice(from);
+    const authEnd = rest.search(/[/?#]/);
+    const authority = authEnd < 0 ? rest : rest.slice(0, authEnd);
+    const at = authority.lastIndexOf("@");
+    if (at >= 0) {
+      const userinfo = authority.slice(0, at);
+      const colon = userinfo.indexOf(":");
+      if (colon >= 0) {
+        password = decode(userinfo.slice(colon + 1));
+        dbname = url.slice(0, from) + userinfo.slice(0, colon) + authority.slice(at) + rest.slice(authority.length);
+      }
+    }
+  }
+  // password=… in the query string. libpq reads the query after the
+  // authority, so it wins; percent-decoded, and + stays +.
+  dbname = dbname.replace(/([?&])password=([^&#]*)(&?)/, (_m, sep: string, pw: string, amp: string) => {
+    password = decode(pw);
+    return amp ? sep : "";
+  });
+  return { dbname, env: password ? { PGPASSWORD: password } : {} };
+}
+
+/** A schema name as a pg_dump pattern: quoted, so case and `*` `?` `.` are taken literally. */
+export function pgDumpSchemaPattern(schema: string): string {
+  return `"${schema.replace(/"/g, '""')}"`;
+}
+
+/**
  * How this server takes a backup: SQLite copies its file (VACUUM INTO);
  * Postgres runs pg_dump over the server's schema when the binary is there.
  * Null when neither applies; the backups API then says so.
@@ -129,10 +174,11 @@ export async function snapshotTo(path: string): Promise<void> {
   }
   if (engine !== "pg_dump") throw new Error(`backups are not available on ${getDriver().name}`);
   const schema = (await db.get<{ s: string }>(`SELECT current_schema() AS s`))!.s;
-  const url = (getDriver() as unknown as { url: string }).url;
-  const proc = Bun.spawn([pgDumpBinary()!, "--format=custom", "--no-owner", `--schema=${schema}`, `--dbname=${url}`], {
+  const conn = pgToolConnection((getDriver() as unknown as { url: string }).url);
+  const proc = Bun.spawn([pgDumpBinary()!, "--format=custom", "--no-owner", `--schema=${pgDumpSchemaPattern(schema)}`, `--dbname=${conn.dbname}`], {
     stdout: Bun.file(path),
     stderr: "pipe",
+    env: { ...process.env, ...conn.env },
   });
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   if (code !== 0) {
