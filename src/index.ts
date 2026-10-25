@@ -375,6 +375,9 @@ async function main() {
   // names another (postgres://…). The URL is environment, never a setting:
   // the database has to be open before any setting can be read.
   await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${config.dbPath}`);
+  // Postgres read-only SQL derives its login's password from the JWT secret,
+  // which every server of an install shares.
+  (await import("./core/pg-readonly.ts")).configureReadOnlyLogin(config.jwtSecret);
   await runMigrations();
   const { loadSettings } = await import("./api/settings.ts");
   await loadSettings();

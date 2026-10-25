@@ -14,7 +14,8 @@
 import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm/sql";
 import { getDb, getRawClient } from "../db/client.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
+import { PostgresDriver } from "../db/postgres.ts";
 import { hooks, routes, jobs, webhooks } from "../db/schema.ts";
 import {
   createCollection,
@@ -685,11 +686,19 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
           await audit(403, "refused: allow_write needs mcp:admin");
           throw new Error("allow_write requires the mcp:admin (or admin) scope; mcp:sql alone is read-only");
         }
-        const r = await db.run(q, params);
+        // On Postgres on a connection of its own, so a SET or a lock the SQL
+        // leaves behind doesn't stay on one of the server's pooled
+        // connections; outside a transaction, as on the pool, so VACUUM and
+        // CREATE INDEX CONCURRENTLY still run.
+        const driver = getDriver();
+        const r = driver instanceof PostgresDriver
+          ? await driver.isolated(async () => db.run(q, params), { tx: "none" })
+          : await db.run(q, params);
         await audit(200, `changes=${r.changes}`);
         return asJsonText({ changes: r.changes, lastInsertRowid: String(r.lastInsertRowid) });
       }
-      if (!/^\s*(WITH|SELECT|EXPLAIN|PRAGMA)\b/i.test(q)) {
+      const reads = db.name === "postgres" ? /^\s*\(*\s*(WITH|SELECT|EXPLAIN|SHOW|VALUES|TABLE)\b/i : /^\s*(WITH|SELECT|EXPLAIN|PRAGMA)\b/i;
+      if (!reads.test(q)) {
         await audit(400, "refused: not a read");
         throw new Error("non-SELECT requires allow_write: true (and the mcp:admin scope); prefer the typed tools");
       }
@@ -717,7 +726,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       }
       await audit(200, `rows=${res.rowCount}`);
       const rows = res.rows.slice(0, 100).map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
-      return asJsonText({ rowCount: res.rowCount, truncatedTo: rows.length, rows });
+      // rowCountExact: false means "more than rowCount" (Postgres stops reading past the cap).
+      return asJsonText({ rowCount: res.rowCount, ...(res.rowCountExact === false ? { rowCountExact: false } : {}), truncatedTo: rows.length, rows });
     },
   });
 

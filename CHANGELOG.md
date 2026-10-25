@@ -7,6 +7,39 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Security
+
+- **Read-only SQL on Postgres could do more than read.** The admin SQL page and
+  MCP `run_sql` without `allow_write` (which needs only the `mcp:sql` scope)
+  ran their SQL on one of the server's pooled connections, as the server's own
+  database role. A setting a query made stayed on that pooled connection and
+  broke later queries landing there, and when the server's role was a
+  superuser (the default with the official Postgres image) a query could
+  reach programs and files on the database host. Read-only SQL now runs over
+  a login of its own that can only read this install's schema: made by the
+  server when its role may create roles, or named in the new
+  `VAULTBASE_PG_READONLY_URL`. Each run gets a connection of its own, a
+  read-only transaction that is rolled back, one statement (enforced by
+  Postgres), its time limit, and at most 1,001 rows fetched through a cursor.
+  A login that can do more than read is refused. SQLite was not affected.
+- **`pg_dump` got the database password on its command line**, visible to
+  other users of the host. It now gets it in `PGPASSWORD`.
+
+### Fixed
+
+- **Postgres: backups of a schema with capital letters in its name** dumped
+  another schema, or nothing: `pg_dump` read the name as a pattern. It is
+  quoted now.
+- **Postgres: the SQL page's schema panel** read a SQLite file (failing, or
+  showing a stale schema). It reads the Postgres catalog now.
+- **Postgres: list totals after raw SQL writes** (a hook's `helpers.sql`, MCP
+  `allow_write`) kept their old value until the next write through the API.
+  Raw writes now report the table they touched.
+- **MCP `allow_write` on Postgres** runs on a connection of its own, so a
+  setting it changes doesn't stay on a pooled one.
+
 ## [0.28.0] — 2026-10-25
 
 ### Added

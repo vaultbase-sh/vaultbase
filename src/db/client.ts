@@ -91,7 +91,16 @@ async function openTestSchema(base: string): Promise<DB> {
   const url = `${base}${base.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${name}`)}`;
   return openPostgres(url, async () => {
     const a = new PostgresDriver(base, { max: 1 });
-    try { await a.exec(`DROP SCHEMA ${name} CASCADE`); } finally { a.close(); }
+    try {
+      await a.exec(`DROP SCHEMA ${name} CASCADE`);
+      // The read-only login a test made for this schema (src/core/pg-readonly.ts).
+      const ro = await a.get<{ r: string }>(`SELECT 'vb_ro_' || left(md5(current_database() || '/' || '${name}'), 16) AS r`);
+      if (ro) {
+        const exists = await a.get(`SELECT 1 FROM pg_roles WHERE rolname = '${ro.r}'`);
+        // DROP OWNED revokes what it was granted (CONNECT, default privileges).
+        if (exists) await a.exec(`DROP OWNED BY "${ro.r}"; DROP ROLE "${ro.r}"`).catch(() => { /* still in use */ });
+      }
+    } finally { a.close(); }
   });
 }
 

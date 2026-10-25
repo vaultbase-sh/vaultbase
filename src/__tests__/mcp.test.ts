@@ -19,6 +19,7 @@ import { createCollection, type FieldDef } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 import { buildRegistry, createDispatcher } from "../mcp/server.ts";
 import type { ToolContext } from "../mcp/tools.ts";
+import { configureReadOnlyLogin } from "../core/pg-readonly.ts";
 import { MCP_PROTOCOL_VERSION, type JsonRpcRequest, type JsonRpcSuccess, type JsonRpcError, type CallToolResult } from "../mcp/types.ts";
 
 const SECRET = "test-secret-mcp";
@@ -35,6 +36,8 @@ function mkCtx(scopes: string[], opts: Partial<ToolContext> = {}): ToolContext {
 }
 
 beforeEach(async () => {
+  // As the server does at boot: Postgres read-only SQL derives its login from it.
+  configureReadOnlyLogin("test-secret-mcp");
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-mcp-"));
   setLogsDir(tmpDir);
   setUploadDir(tmpDir);

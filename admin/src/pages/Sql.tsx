@@ -51,6 +51,8 @@ interface RunResult {
   columns: string[];
   rows: unknown[][];
   rowCount: number;
+  /** False when rowCount is a lower bound (Postgres, past the row cap). */
+  rowCountExact?: boolean;
   truncated: boolean;
   durationMs: number;
   error?: string;
@@ -226,7 +228,7 @@ function ResultPane({ result, mode }: { result: RunResult | null; mode: Mode }) 
         fontSize: 12, color: "var(--vb-fg-3)",
         display: "flex", alignItems: "center", gap: 12,
       }}>
-        <VbPill tone="success" dot>{result.rowCount} row{result.rowCount === 1 ? "" : "s"}</VbPill>
+        <VbPill tone="success" dot>{result.rowCount}{result.rowCountExact === false ? "+" : ""} row{result.rowCount === 1 && result.rowCountExact !== false ? "" : "s"}</VbPill>
         <span>{result.durationMs}ms</span>
         <span>{result.columns.length} columns</span>
         {result.truncated && (

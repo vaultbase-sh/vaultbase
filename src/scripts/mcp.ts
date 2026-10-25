@@ -93,6 +93,10 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
     process.exit(2);
   }
 
+  // Postgres read-only SQL derives its login's password from the JWT secret,
+  // as the server does; without it the two would keep resetting each other's.
+  (await import("../core/pg-readonly.ts")).configureReadOnlyLogin(jwtSecret);
+
   // Wire shared state — readLogs needs logs dir; storage needs upload dir
   // even though MCP doesn't serve file content (some admin tools probe).
   setLogsDir(logsDir);

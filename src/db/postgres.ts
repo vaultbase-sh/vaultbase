@@ -201,6 +201,11 @@ export function rawWriteTarget(sql: string): string | null {
   return writesSomeVbTable();
 }
 
+/** An isolated() call outlived its deadline; its connection was closed. */
+export class DeadlineExceeded extends Error {
+  constructor() { super("the run outlived its time budget and its connection was closed"); }
+}
+
 export class PostgresDriver implements DbDriver {
   readonly name = "postgres" as const;
   readonly dialect = POSTGRES_DIALECT;
@@ -300,6 +305,16 @@ export class PostgresDriver implements DbDriver {
       if (!this.inTransaction) flushTableReports();
     }
     return plainRows<T>(rows as Rows);
+  }
+
+  /**
+   * Rows of `text`, already in Postgres's `$n` form, with `params`; no `?`
+   * conversion. With at least one parameter the statement goes over the
+   * extended protocol, which takes exactly one statement.
+   */
+  async allPositional<T = Record<string, unknown>>(text: string, params: unknown[]): Promise<T[]> {
+    this.traceFn?.(text);
+    return plainRows<T>((await this.query(text, params, false)) as Rows);
   }
 
   async get<T = Record<string, unknown>>(sql: string, params: ReadonlyArray<unknown> = []): Promise<T | null> {
@@ -406,6 +421,88 @@ export class PostgresDriver implements DbDriver {
       conn.release();
     }
   }
+
+  /**
+   * Run `fn` on a connection opened for this call and closed after it, never
+   * one from the pool. Session state the SQL inside leaves behind (settings,
+   * advisory locks, prepared statements) goes with the connection instead of
+   * reaching later queries on a pooled one.
+   *
+   * `tx`: "rollback" runs `fn` in a transaction that is always rolled back,
+   * "commit" in one committed when `fn` resolves, "none" without a
+   * transaction (for statements Postgres refuses inside one, like VACUUM).
+   * `url` connects as another login (the read-only one). `deadlineMs` closes
+   * the connection if `fn` is still running then, and `fn`'s promise rejects
+   * with DeadlineExceeded. Not for use inside
+   * an open transaction: a second connection waiting on that transaction's
+   * locks would wait forever.
+   */
+  async isolated<T>(fn: () => Promise<T>, opts: { tx: "rollback" | "commit" | "none"; url?: string; deadlineMs?: number }): Promise<T> {
+    if (this.als.getStore()) throw new Error("isolated() can't run inside an open transaction");
+    // A commit can succeed after the deadline fired, and the caller would be told it failed.
+    if (opts.deadlineMs !== undefined && opts.tx === "commit") throw new Error("isolated(): a deadline can't be combined with tx: \"commit\"");
+    const Client = SQL as unknown as new (url: string, options: Record<string, unknown>) => SQL;
+    const url = opts.url ?? this.url;
+    const conn = new Client(url, { max: 1, bigint: true, connectionTimeout: 10 });
+    const rollback = Symbol("rollback");
+    let backend: number | null = null;
+    const run = async (c: SQL) => {
+      if (opts.deadlineMs !== undefined) backend = Number(((await c.unsafe(`SELECT pg_backend_pid() AS p`)) as Array<{ p: unknown }>)[0]!.p);
+      return this.als.run(c, fn);
+    };
+    const work = (async (): Promise<T> => {
+      let out: T | undefined;
+      try {
+        if (opts.tx === "none") {
+          const reserved = await conn.reserve();
+          try {
+            out = await run(reserved as unknown as SQL);
+          } finally {
+            reserved.release();
+          }
+          flushTableReports();
+        } else {
+          await conn.begin(async (tx) => {
+            out = await run(tx as unknown as SQL);
+            if (opts.tx === "rollback") throw rollback;
+          });
+          flushTableReports({ bump: true });
+        }
+      } catch (e) {
+        if (e !== rollback) throw e;
+      }
+      return out as T;
+    })();
+    if (opts.deadlineMs === undefined) {
+      try { return await work; } finally { await conn.close().catch(() => { /* already gone */ }); }
+    }
+    // Past the deadline the caller gets DeadlineExceeded at once. The backend
+    // is ended from a second connection as the same login (a role may always
+    // end its own backends; matching the login too, so a reused process id
+    // can't be hit), and the client is dropped without waiting for its query.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new DeadlineExceeded());
+        const pid = backend;
+        if (pid !== null) {
+          const killer = new Client(url, { max: 1, connectionTimeout: 5 });
+          void killer.unsafe(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = ${pid} AND usename = current_user`)
+            .catch(() => { /* gone already */ })
+            .finally(() => killer.close().catch(() => { /* gone */ }));
+        }
+        void conn.close({ timeout: 0 }).catch(() => { /* gone */ });
+      }, opts.deadlineMs);
+    });
+    work.catch(() => { /* reported through the race, or after the deadline: nobody waits */ });
+    try {
+      return await Promise.race([work, expired]);
+    } finally {
+      clearTimeout(timer);
+      void conn.close({ timeout: 0 }).catch(() => { /* gone */ });
+    }
+  }
+
 
   /** Another server changed the schema: caches keyed on the token rebuild. */
   noteForeignSchemaChange(): void {
