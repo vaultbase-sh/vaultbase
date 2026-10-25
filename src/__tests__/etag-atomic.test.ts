@@ -51,7 +51,18 @@ describe("If-Match is atomic with the write", () => {
       })),
       app().handle(new Request(`http://localhost/posts/${r.id}`, { method: "DELETE", headers: { "if-match": etag } })),
     ]);
-    expect([patch.status, del.status].filter((s) => s === 412)).toHaveLength(1);
+    // Whichever runs second is refused: a PATCH after the DELETE finds no
+    // record (404), a DELETE after the PATCH has a stale ETag (412).
+    const won = [patch.status, del.status].filter((s) => s >= 200 && s < 300);
+    expect(won).toHaveLength(1);
+    const after = await app().handle(new Request(`http://localhost/posts/${r.id}`));
+    if (patch.status === 200) {
+      expect(del.status).toBe(412);
+      expect(((await after.json()) as { data: { title: string } }).data.title).toBe("edited");
+    } else {
+      expect(patch.status === 404 || patch.status === 412).toBe(true);
+      expect(after.status).toBe(404);
+    }
   });
 
   it("a single conditional PATCH still works (legitimate path)", async () => {
