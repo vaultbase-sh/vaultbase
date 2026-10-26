@@ -90,7 +90,9 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
       await Bun.sleep(50);
       s = checkpointStats()!;
     }
-    expect(s.wal_frames).toBeLessThan(40_000);
+    // With the worker's numbers, so a failure shows whether it stalled
+    // (passes stopped) or its rewinds were refused (passes go on).
+    if (s.wal_frames >= 40_000) throw new Error(`the WAL didn't shrink: ${JSON.stringify(s)}`);
   }, 120_000);
 
   test("stop hands checkpointing back to SQLite", async () => {
