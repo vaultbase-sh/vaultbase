@@ -439,12 +439,18 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
 /**
  * created_at / updated_at indexes for a record table. The default list sort
  * is -created_at; without them every page is a full scan + temp B-tree.
- * Idempotent; also run at boot for tables created before this existed.
+ * Idempotent; also run at boot for tables created before this existed, so
+ * it creates only the missing ones: on Postgres even `IF NOT EXISTS` waits
+ * for a lock behind the table's writers.
  */
 export async function ensureTimestampIndexes(collectionName: string): Promise<void> {
   const table = userTableName(collectionName);
+  const have = new Set((await db.all<{ name: string }>(db.dialect.listIndexesSql(), [table])).map((r) => r.name));
   for (const col of ["created_at", "updated_at"]) {
-    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${col}`), table: quoteIdent(table), columns: [quoteIdent(col), ...db.dialect.indexTail] }));
+    const name = `idx_${table}_${col}`;
+    // Postgres cuts names to 63 bytes (identifiers here are ASCII).
+    if (have.has(name) || have.has(name.slice(0, 63))) continue;
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(name), table: quoteIdent(table), columns: [quoteIdent(col), ...db.dialect.indexTail] }));
   }
 }
 

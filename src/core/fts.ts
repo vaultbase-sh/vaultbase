@@ -17,6 +17,7 @@
  * Either way `syncFts` makes the index match the fields; it rebuilds when
  * the column set changes and is idempotent, run at boot and after DDL.
  */
+import { createHash } from "crypto";
 import { db } from "../db/index.ts";
 import { flushGroupCommit } from "./group-commit.ts";
 
@@ -83,7 +84,7 @@ export async function ftsColumns(collection: string): Promise<string[] | null> {
     const row = await db.get<{ cols: string | null }>(
       `SELECT col_description(c.oid, a.attnum) AS cols
          FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid
-        WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ? AND a.attname = ? AND NOT a.attisdropped`,
+        WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema()) AND c.relname = ? AND a.attname = ? AND NOT a.attisdropped`,
       [`vb_${collection}`, SEARCH_COLUMN],
     );
     if (!row) return null;
@@ -160,6 +161,19 @@ export async function syncFts(collection: string, fields: readonly FieldLike[]):
   }, { immediate: false });
 }
 
+/**
+ * The Postgres search index's name. Postgres cuts names to 63 bytes, and a
+ * long collection's `idx_vb_<name>_search` cut to the same name as its
+ * created_at index: the index failed, and with it every search sync. Long
+ * names get a short hash instead (names here are ASCII).
+ */
+export function searchIndexName(collection: string): string {
+  const name = `idx_vb_${collection}_search`;
+  if (name.length <= 63) return name;
+  const hash = createHash("md5").update(collection).digest("hex").slice(0, 8);
+  return `idx_vb_${collection.slice(0, 40)}_${hash}_search`;
+}
+
 async function syncTsvector(collection: string, cols: string[], current: string[] | null): Promise<void> {
   if (current && current.join(",") === cols.join(",")) return;
   const table = q(`vb_${collection}`);
@@ -169,7 +183,7 @@ async function syncTsvector(collection: string, cols: string[], current: string[
     await db.exec(
       `ALTER TABLE ${table} ADD COLUMN ${SEARCH_COLUMN} tsvector GENERATED ALWAYS AS (to_tsvector('simple', vb_search_text(${doc}))) STORED`,
     );
-    await db.exec(`CREATE INDEX ${q(`idx_vb_${collection}_search`)} ON ${table} USING GIN (${SEARCH_COLUMN})`);
+    await db.exec(`CREATE INDEX ${q(searchIndexName(collection))} ON ${table} USING GIN (${SEARCH_COLUMN})`);
     await db.exec(`COMMENT ON COLUMN ${table}.${SEARCH_COLUMN} IS ${lit(cols.join(","))}`);
   });
 }
@@ -182,13 +196,37 @@ async function syncTsvector(collection: string, cols: string[], current: string[
  */
 export async function ensureSearchFunction(): Promise<void> {
   if (kind() !== "tsvector") return;
-  try { await db.exec(`CREATE EXTENSION IF NOT EXISTS unaccent SCHEMA public`); } catch { /* not allowed here: no folding */ }
-  const ext = await db.get<{ s: string }>(
+  // Only what's missing or changed: this runs at every start.
+  const unaccent = () => db.get<{ s: string }>(
     `SELECT n.nspname AS s FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent'`,
   );
+  let ext = await unaccent();
+  // Tried only when it can work, so a role without the rights doesn't log
+  // an error at every start.
+  let canCreate = false;
+  if (!ext) {
+    try {
+      canCreate = (await db.get<{ ok: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'unaccent')
+            AND has_database_privilege(current_database(), 'CREATE')
+            AND has_schema_privilege('public', 'CREATE') AS ok`,
+      ))?.ok === true;
+    } catch { /* no public schema */ }
+  }
+  if (canCreate) {
+    try { await db.exec(`CREATE EXTENSION IF NOT EXISTS unaccent SCHEMA public`); } catch { /* not allowed here: no folding */ }
+    ext = await unaccent();
+  }
   const body = ext
     ? `SELECT ${q(ext.s)}.unaccent(${lit(`${ext.s}.unaccent`)}::regdictionary, $1)`
     : `SELECT $1`;
+  const current = await db.get<{ src: string }>(
+    `SELECT p.prosrc AS src FROM pg_proc p
+      WHERE p.proname = 'vb_search_text' AND p.pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())
+        AND p.proargtypes = '25'::oidvector AND p.prorettype = 'text'::regtype
+        AND p.provolatile = 'i' AND p.proparallel = 's'`,
+  );
+  if (current?.src.trim() === body) return;
   await db.exec(
     `CREATE OR REPLACE FUNCTION vb_search_text(text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ ${body} $$`,
   );

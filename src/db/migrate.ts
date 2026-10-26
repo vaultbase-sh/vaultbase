@@ -58,8 +58,9 @@ async function runMigrationsNow() {
   await (await import("../core/fts.ts")).ensureSearchFunction();
 
   // Tables of earlier designs: single-table records, DB-backed logs.
-  await db.exec(`DROP TABLE IF EXISTS vaultbase_records`);
-  await db.exec(`DROP TABLE IF EXISTS vaultbase_logs`);
+  for (const t of ["vaultbase_records", "vaultbase_logs"]) {
+    if ((await db.all(db.dialect.listColumnsSql(t))).length > 0) await db.exec(`DROP TABLE IF EXISTS ${t}`);
+  }
 
   if (db.name === "sqlite") {
     const client = getRawClient();

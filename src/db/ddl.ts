@@ -6,10 +6,11 @@
  *
  * `ensureFixedSchema` is the upgrade path: it creates every table that is
  * missing, adds every column that is missing from an existing table, and
- * creates every index, all idempotently. A column with an expression
- * default (the epoch timestamps) cannot be added to an existing table on
- * SQLite; no upgrade path needs that today, and it fails loudly rather
- * than quietly diverging.
+ * creates every index that is missing. It issues no DDL when nothing is
+ * missing: on Postgres even an `IF NOT EXISTS` waits for a lock behind the
+ * table's writers. A column with an expression default (the epoch
+ * timestamps) cannot be added to an existing table on SQLite; no upgrade
+ * path needs that today, and it fails loudly rather than quietly diverging.
  */
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import { SQL } from "drizzle-orm";
@@ -60,14 +61,22 @@ export function tableName(table: SQLiteTable): string {
   return getTableConfig(table).name;
 }
 
-/** Create missing tables, add missing columns, create missing indexes. */
+/**
+ * Create missing tables, add missing columns, create missing indexes. Only
+ * what is missing: on Postgres even an `IF NOT EXISTS` that does nothing is
+ * DDL (it locks the table, and moves the schema token, which re-prepares
+ * every statement), and this runs at every start of every server.
+ */
 export async function ensureFixedSchema(): Promise<void> {
   const d = db.dialect;
   for (const table of FIXED_TABLES) {
     const name = tableName(table);
     const specs = columnSpecs(table);
-    await db.exec(d.createTable(name, specs));
-    const present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
+    let present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
+    if (present.size === 0) {
+      await db.exec(d.createTable(name, specs));
+      present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
+    }
     for (const spec of specs) {
       if (present.has(spec.name)) continue;
       const expression = spec.default?.kind === "epochNow" || spec.default?.kind === "epochMsNow";
@@ -96,5 +105,13 @@ export async function ensureFixedSchema(): Promise<void> {
           OR (o.status = vaultbase_jobs_log.status AND (o.enqueued_at < vaultbase_jobs_log.enqueued_at
             OR (o.enqueued_at = vaultbase_jobs_log.enqueued_at AND o.id < vaultbase_jobs_log.id)))
         ))`);
-  for (const ix of FIXED_INDEXES) await db.exec(d.createIndex(ix));
+  const indexesOf = new Map<string, Set<string>>();
+  for (const ix of FIXED_INDEXES) {
+    let have = indexesOf.get(ix.table);
+    if (!have) {
+      have = new Set((await db.all<{ name: string }>(d.listIndexesSql(), [ix.table])).map((r) => r.name));
+      indexesOf.set(ix.table, have);
+    }
+    if (!have.has(ix.name)) await db.exec(d.createIndex(ix));
+  }
 }
