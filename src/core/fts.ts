@@ -17,7 +17,6 @@
  * Either way `syncFts` makes the index match the fields; it rebuilds when
  * the column set changes and is idempotent, run at boot and after DDL.
  */
-import { createHash } from "crypto";
 import { db } from "../db/index.ts";
 import { flushGroupCommit } from "./group-commit.ts";
 
@@ -162,16 +161,12 @@ export async function syncFts(collection: string, fields: readonly FieldLike[]):
 }
 
 /**
- * The Postgres search index's name. Postgres cuts names to 63 bytes, and a
- * long collection's `idx_vb_<name>_search` cut to the same name as its
- * created_at index: the index failed, and with it every search sync. Long
- * names get a short hash instead (names here are ASCII).
+ * The Postgres search index's name. Fitted: cut to 63 bytes, a long
+ * collection's `idx_vb_<name>_search` was its created_at index's name, so
+ * the index failed, and with it every search sync.
  */
 export function searchIndexName(collection: string): string {
-  const name = `idx_vb_${collection}_search`;
-  if (name.length <= 63) return name;
-  const hash = createHash("md5").update(collection).digest("hex").slice(0, 8);
-  return `idx_vb_${collection.slice(0, 40)}_${hash}_search`;
+  return db.dialect.fitIdent(`idx_vb_${collection}_search`);
 }
 
 async function syncTsvector(collection: string, cols: string[], current: string[] | null): Promise<void> {

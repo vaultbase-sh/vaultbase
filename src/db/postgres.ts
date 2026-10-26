@@ -18,6 +18,7 @@
  */
 import { SQL } from "bun";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { toPositional } from "./placeholders.ts";
@@ -57,6 +58,9 @@ function jsonPathArray(path: string): string {
 
 /** An expression jsonExtract made: `(<expr>::jsonb #>> '{a,b}')`. */
 const JSON_TEXT_RE = /^\((.+)::jsonb #>> ('\{[^']*\}')\)$/s;
+
+/** Postgres cuts identifiers longer than this (NAMEDATALEN - 1). */
+const MAX_IDENT_BYTES = 63;
 
 export const POSTGRES_DIALECT: Dialect = {
   name: "postgres",
@@ -108,6 +112,8 @@ export const POSTGRES_DIALECT: Dialect = {
   indexExistsSql: () => `SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?`,
   listIndexesSql: () => `SELECT indexname AS name, indexdef AS sql FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ?`,
   renameIndex: (name, newName) => [`ALTER INDEX ${quoteIdent(name)} RENAME TO ${quoteIdent(newName)}`],
+  fitIdent: (name) => Buffer.byteLength(name) <= MAX_IDENT_BYTES ? name
+    : `${name.slice(0, MAX_IDENT_BYTES - 9)}_${createHash("md5").update(name).digest("hex").slice(0, 8)}`,
   timeBucket: (format, expr) => `to_char(to_timestamp(${expr}), '${PG_BUCKET[format]}')`,
   isMissingTable: (e) => typeof e === "object" && e !== null && (e as { errno?: unknown }).errno === "42P01",
   isUniqueViolation: (e, column) =>

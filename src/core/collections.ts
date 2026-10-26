@@ -447,9 +447,8 @@ export async function ensureTimestampIndexes(collectionName: string): Promise<vo
   const table = userTableName(collectionName);
   const have = new Set((await db.all<{ name: string }>(db.dialect.listIndexesSql(), [table])).map((r) => r.name));
   for (const col of ["created_at", "updated_at"]) {
-    const name = `idx_${table}_${col}`;
-    // Postgres cuts names to 63 bytes (identifiers here are ASCII).
-    if (have.has(name) || have.has(name.slice(0, 63))) continue;
+    const name = db.dialect.fitIdent(`idx_${table}_${col}`);
+    if (have.has(name)) continue;
     await db.exec(db.dialect.createIndex({ name: quoteIdent(name), table: quoteIdent(table), columns: [quoteIdent(col), ...db.dialect.indexTail] }));
   }
 }
@@ -466,8 +465,17 @@ export async function ensureRelationIndexes(collectionName: string, fields: Fiel
   for (const f of fields) {
     // A multiple relation is a list in one column, which an index can't serve.
     if (f.type !== "relation" || f.system || f.options?.multiple === true) continue;
-    await db.exec(db.dialect.createIndex({ name: quoteIdent(`idx_${table}_${f.name}`), table: quoteIdent(table), columns: [quoteIdent(f.name), ...db.dialect.indexTail] }));
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(db.dialect.fitIdent(`idx_${table}_${f.name}`)), table: quoteIdent(table), columns: [quoteIdent(f.name), ...db.dialect.indexTail] }));
   }
+}
+
+/** The columns of an index, from its definition; empty when it can't be read. */
+function indexColumns(sql: string): string[] {
+  const on = sql.search(/\bON\b/i);
+  const open = on < 0 ? -1 : sql.indexOf("(", on);
+  const close = open < 0 ? -1 : sql.indexOf(")", open);
+  if (open < 0 || close < 0) return [];
+  return sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1"));
 }
 
 /**
@@ -478,12 +486,89 @@ async function dropIndexesOn(table: string, column: string): Promise<void> {
   const rows = await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [table]);
   for (const r of rows) {
     if (!r.sql || !/^(idx|uniq|uq)_/.test(r.name)) continue;
-    const on = r.sql.search(/\bON\b/i);
-    const open = on < 0 ? -1 : r.sql.indexOf("(", on);
-    const close = open < 0 ? -1 : r.sql.indexOf(")", open);
-    if (open < 0 || close < 0) continue;
-    const cols = r.sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1"));
-    if (cols.includes(column)) await db.exec(`DROP INDEX ${quoteIdent(r.name)}`);
+    if (indexColumns(r.sql).includes(column)) await db.exec(`DROP INDEX ${quoteIdent(r.name)}`);
+  }
+}
+
+/**
+ * How one of this server's indexes on a collection's table was named: a
+ * prefix, the table (`idx_`, `uq_`) or the collection (`idx_`, `uniq_`, as
+ * the admin names them), and its columns joined by `_`; or null when `name`
+ * isn't one of these. Read from the index's columns, since a name that went
+ * through fitIdent can't be read back. A name Postgres cut to 63 bytes,
+ * before names were fitted, matches too.
+ */
+type BuiltIndexName = { prefix: string; on: "table" | "collection"; rest: string };
+function builtIndexName(name: string, sql: string, table: string, collection: string): BuiltIndexName | null {
+  const cols = indexColumns(sql);
+  if (cols.length === 0) return null;
+  // With and without the tie-break tail: it is left off the name, unless
+  // the admin listed it as a field.
+  const tail = new Set(db.dialect.indexTail.map((c) => c.replace(/"/g, "")));
+  let lead = cols;
+  while (lead.length > 1 && tail.has(lead[lead.length - 1]!)) lead = lead.slice(0, -1);
+  const rests = new Set([lead.join("_"), cols.join("_")]);
+  // The Postgres search index (core/fts.ts) is on its generated column.
+  if (cols.length === 1 && cols[0] === "vb_search") rests.add("search");
+  for (const rest of rests) {
+    for (const [prefix, on] of [["idx", "table"], ["uq", "table"], ["idx", "collection"], ["uniq", "collection"]] as const) {
+      const base = `${prefix}_${on === "table" ? table : collection}_${rest}`;
+      const fitted = db.dialect.fitIdent(base);
+      if (name === fitted || (fitted !== base && name === base.slice(0, 63))) return { prefix, on, rest };
+    }
+  }
+  return null;
+}
+
+/**
+ * Postgres before 0.29: names past 63 bytes were cut, not fitted. Rename
+ * this collection's indexes to their fitted names, and make the ones a cut
+ * name collided away: on a long collection or field name several built
+ * names cut to one (`idx_vb_<name>_created_at`, `_updated_at`, a relation's,
+ * the auth email index; `uq_vb_<name>_<a>` and `_<b>`), so only the first
+ * of them was made.
+ */
+export async function fitIndexNames(collectionName: string, type: string, fields: FieldDef[]): Promise<void> {
+  const table = userTableName(collectionName);
+  const list = async () => (await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [table]))
+    .filter((r): r is { name: string; sql: string } => !!r.sql);
+  const before = await list();
+  for (const { name, sql } of before) {
+    if (Buffer.byteLength(name) !== 63) continue;
+    const built = builtIndexName(name, sql, table, collectionName);
+    if (!built) continue;
+    const next = db.dialect.fitIdent(`${built.prefix}_${built.on === "table" ? table : collectionName}_${built.rest}`);
+    if (next === name || await db.get(db.dialect.indexExistsSql(), [next])) continue;
+    for (const stmt of db.dialect.renameIndex(name, next, sql)) await db.exec(stmt);
+  }
+
+  // Lost to a collision: its cut name is there, on an index of other columns.
+  // Not there at all, it was dropped (relation indexes may be) and stays so.
+  const lost = (base: string, column: string) => {
+    if (Buffer.byteLength(base) <= 63) return false;
+    const holder = before.find((r) => r.name === base.slice(0, 63));
+    return !!holder && indexColumns(holder.sql)[0] !== column;
+  };
+  await ensureTimestampIndexes(collectionName);
+  const relations = fields.filter((f) => lost(`idx_${table}_${f.name}`, f.name));
+  if (relations.length > 0) await ensureRelationIndexes(collectionName, relations);
+
+  // Unique ones are checked by columns: one may be the table's own constraint.
+  const after = await list();
+  const uniqueOn = (column: string) => after.some((r) =>
+    /^\s*CREATE\s+UNIQUE/i.test(r.sql) && indexColumns(r.sql).join(",") === column);
+  const wanted: Array<[string, string]> = fields
+    .filter((f) => !f.system && f.options?.unique === true)
+    .map((f) => [`uq_${table}_${f.name}`, f.name]);
+  if (type === "auth") wanted.push([`idx_${table}_email`, "email"]);
+  for (const [base, column] of wanted) {
+    if (Buffer.byteLength(base) <= 63 || uniqueOn(column)) continue;
+    try {
+      await db.exec(db.dialect.createIndex({ name: quoteIdent(db.dialect.fitIdent(base)), table: quoteIdent(table), columns: [quoteIdent(column)], unique: true }));
+    } catch (e) {
+      // Duplicates the missing index let in: the operator's to resolve.
+      console.error(`[migrate] unique index on '${collectionName}.${column}':`, e instanceof Error ? e.message : e);
+    }
   }
 }
 
@@ -535,7 +620,7 @@ export async function ensureAuthColumns(collectionName: string): Promise<void> {
   // Unique email index — anonymous users get a synthetic uniqe email so the
   // unconditional UNIQUE works without a partial-index workaround.
   try {
-    await db.exec(db.dialect.createIndex({ name: `"idx_${userTableName(collectionName)}_email"`, table: tname, columns: ["email"], unique: true }));
+    await db.exec(db.dialect.createIndex({ name: quoteIdent(db.dialect.fitIdent(`idx_${userTableName(collectionName)}_email`)), table: tname, columns: ["email"], unique: true }));
   } catch { /* may already exist or fail on duplicates pre-migration */ }
 }
 
@@ -823,9 +908,10 @@ export async function alterUserTable(
   // Unique constraints added after table creation live in a named index
   // (SQLite can't ADD COLUMN ... UNIQUE). Columns created as UNIQUE with the
   // table use SQLite's inline constraint instead, which can't be dropped.
-  const uniqueIndex = (field: string) => quoteIdent(`uq_${table}_${field}`);
+  const uniqueIndexName = (field: string) => db.dialect.fitIdent(`uq_${table}_${field}`);
+  const uniqueIndex = (field: string) => quoteIdent(uniqueIndexName(field));
   const hasUniqueIndex = async (field: string) =>
-    !!(await db.get(db.dialect.indexExistsSql(), [`uq_${table}_${field}`]));
+    !!(await db.get(db.dialect.indexExistsSql(), [uniqueIndexName(field)]));
   const addUniqueIndex = async (field: string) => {
     try {
       await db.exec(db.dialect.createIndex({ name: uniqueIndex(field), table: tname, columns: [quoteIdent(field)], unique: true }));
@@ -1071,9 +1157,24 @@ function ensureImplicitFields(type: string, fields: FieldDef[]): FieldDef[] {
   return [...missing, ...fields];
 }
 
+/**
+ * A name for a new or renamed collection. On Postgres its table `vb_<name>`
+ * must fit in 63 bytes: a longer one is cut, so two names alike in their
+ * first 60 characters were one table, and CREATE TABLE IF NOT EXISTS made
+ * the second collection share the first one's. Existing collections keep
+ * their names.
+ */
+function assertNewCollectionName(name: string): void {
+  assertSqlIdent(name, "collection");
+  if (db.name === "postgres" && Buffer.byteLength(userTableName(name)) > 63) {
+    throw new CollectionValidationError({ name: `On Postgres a collection name is at most ${63 - userTableName("").length} characters` });
+  }
+}
+
 export async function createCollection(
   data: Omit<NewCollection, "id" | "created_at" | "updated_at">
 ): Promise<Collection> {
+  assertNewCollectionName(data.name);
   const db = getDb();
   const type = data.type ?? "base";
   // Checked up front so every caller (MCP too) gets this, not the
@@ -1195,7 +1296,7 @@ async function renameCollectionStorage(
   type: string,
   viewQuery: string | null | undefined,
 ): Promise<void> {
-  assertSqlIdent(newName, "collection");
+  assertNewCollectionName(newName);
   const orm = getDb();
   const clash = await orm.select({ id: collections.id }).from(collections)
     .where(eq(collections.name, newName)).limit(1);
@@ -1230,13 +1331,17 @@ async function renameCollectionStorage(
       // SQLite moves them with the table but keeps their names; recreate each
       // under the new name from its stored definition. (Admin-made ones kept
       // the old name, which a new collection of that name then collided with.)
+      // Matched by their columns: a fitted name (Postgres) can't be edited.
       const indexes = await db.all<{ name: string; sql: string }>(db.dialect.listIndexesSql(), [newTable]);
       for (const { name, sql } of indexes) {
-        const next = name.includes(oldTable) ? name.replace(oldTable, newTable)
-          : name.startsWith(`idx_${oldName}_`) ? `idx_${newName}_${name.slice(`idx_${oldName}_`.length)}`
-          : name.startsWith(`uniq_${oldName}_`) ? `uniq_${newName}_${name.slice(`uniq_${oldName}_`.length)}`
+        const built = sql ? builtIndexName(name, sql, oldTable, oldName) : null;
+        const next = built ? db.dialect.fitIdent(`${built.prefix}_${built.on === "table" ? newTable : newName}_${built.rest}`)
+          : name.includes(oldTable) ? db.dialect.fitIdent(name.replace(oldTable, newTable))
+          : name.startsWith(`idx_${oldName}_`) ? db.dialect.fitIdent(`idx_${newName}_${name.slice(`idx_${oldName}_`.length)}`)
+          : name.startsWith(`uniq_${oldName}_`) ? db.dialect.fitIdent(`uniq_${newName}_${name.slice(`uniq_${oldName}_`.length)}`)
           : null;
-        if (!next) continue;
+        // Taken (an index the old name left behind elsewhere): keep this one's name.
+        if (!next || next === name || await db.get(db.dialect.indexExistsSql(), [next])) continue;
         for (const stmt of db.dialect.renameIndex(name, next, sql)) await db.exec(stmt);
       }
       // The count triggers keep the old name inside their body: replace them.

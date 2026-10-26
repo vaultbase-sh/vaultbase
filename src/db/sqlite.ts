@@ -80,6 +80,7 @@ export const SQLITE_DIALECT: Dialect = {
   listIndexesSql: () => `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`,
   // SQLite keeps an index's name through a table rename; recreate it under the new one.
   renameIndex: (name, newName, sql) => [`DROP INDEX ${quoteIdent(name)}`, sql.replace(name, newName)],
+  fitIdent: (name) => name,
   timeBucket: (format, expr) => `strftime('${SQLITE_BUCKET[format]}', ${expr}, 'unixepoch')`,
   isMissingTable: (e) => e instanceof Error && /no such table/i.test(e.message),
   isUniqueViolation: (e, column) =>

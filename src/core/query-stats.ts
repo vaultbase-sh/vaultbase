@@ -380,7 +380,7 @@ export function suggestIndex(e: Pick<Shape, "collection" | "table" | "view" | "w
   if (fields.length === 1 && range.includes(fields[0]!) && sortLead === fields[0]) fields = [fields[0]!];
   const covered = existing.some((cols) => cols.length >= fields!.length && fields!.every((f, i) => cols[i] === f));
   if (covered) return null;
-  return { fields, name: `idx_${e.collection}_${fields.join("_")}` };
+  return { fields, name: db.dialect.fitIdent(`idx_${e.collection}_${fields.join("_")}`) };
 }
 
 /** Shapes sorted by total time, with plans and suggestions. */

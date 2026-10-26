@@ -127,19 +127,25 @@ function parseGroupBy(col: Collection, fields: FieldDef[], raw: string | undefin
   return out;
 }
 
-function parseSort(raw: string | undefined, aliases: Set<string>, groups: GroupSpec[], aggs: AggSpec[]): string {
+/**
+ * `columns` maps each key the result has to its column in the query: short
+ * positional names, since a key like `sum_<long field>` is longer than
+ * Postgres keeps a name (63 bytes) and came back cut.
+ */
+function parseSort(raw: string | undefined, columns: Map<string, string>, groups: GroupSpec[], aggs: AggSpec[]): string {
   const clauses: string[] = [];
   for (const s of (raw ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
     const desc = s.startsWith("-");
     const key = desc ? s.slice(1) : s;
-    if (!aliases.has(key)) throw new FilterError(`can't sort by '${key}': not a groupBy field or aggregate`);
-    clauses.push(`${q(key)} ${desc ? "DESC" : "ASC"}`);
+    const column = columns.get(key);
+    if (!column) throw new FilterError(`can't sort by '${key}': not a groupBy field or aggregate`);
+    clauses.push(`${column} ${desc ? "DESC" : "ASC"}`);
   }
   if (clauses.length === 0) {
     // Time buckets read naturally oldest-first; other groups biggest-first.
     if (groups.length > 0) {
       const first = aggs[0]!;
-      clauses.push(groups[0]!.bucketed ? `${q(groups[0]!.alias)} ASC` : `${q(first.alias)} DESC`);
+      clauses.push(groups[0]!.bucketed ? `${columns.get(groups[0]!.alias)} ASC` : `${columns.get(first.alias)} DESC`);
     }
   }
   return clauses.length > 0 ? `ORDER BY ${clauses.join(", ")}` : "";
@@ -152,27 +158,27 @@ export async function aggregateRecords(col: Collection, opts: AggregateOptions):
   for (const g of groups) {
     if (aggs.some((a) => a.alias === g.alias)) throw new FilterError(`'${g.alias}' is both a groupBy field and an aggregate`);
   }
-  const aliases = new Set([...groups.map((g) => g.alias), ...aggs.map((a) => a.alias)]);
-  const orderSql = parseSort(opts.sort, aliases, groups, aggs);
+  const keys = [...groups.map((g) => g.alias), ...aggs.map((a) => a.alias)];
+  const columns = new Map(keys.map((k, i) => [k, `c${i}`]));
+  const orderSql = parseSort(opts.sort, columns, groups, aggs);
 
   const limitRaw = opts.limit ?? DEFAULT_GROUP_LIMIT;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_GROUP_LIMIT) : DEFAULT_GROUP_LIMIT;
 
   const where = await compileListWhere(col, opts);
-  const select = [
-    ...groups.map((g) => `${g.sql} AS ${q(g.alias)}`),
-    ...aggs.map((a) => `${a.sql} AS ${q(a.alias)}`),
-  ].join(", ");
+  const select = [...groups.map((g) => g.sql), ...aggs.map((a) => a.sql)]
+    .map((expr, i) => `${expr} AS c${i}`).join(", ");
   const groupSql = groups.length > 0 ? `GROUP BY ${groups.map((_, i) => i + 1).join(", ")}` : "";
   const sql = `SELECT ${select} FROM ${q(userTableName(col.name))} ${where.whereSql} ${groupSql} ${orderSql} LIMIT ?`;
 
-  let rows: Array<Record<string, unknown>>;
+  let raw: Array<Record<string, unknown>>;
   try {
-    rows = await db.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
+    raw = await db.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
   } catch (e) {
     if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
     throw e;
   }
+  const rows = raw.map((r) => Object.fromEntries(keys.map((k, i) => [k, r[`c${i}`]])));
   // Booleans are stored as 0/1; hand them back as booleans in group keys.
   const boolGroups = groups.filter((g) => fields.find((f) => f.name === g.alias)?.type === "bool");
   if (boolGroups.length > 0) {

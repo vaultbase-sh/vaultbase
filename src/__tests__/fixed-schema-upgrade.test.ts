@@ -99,8 +99,8 @@ describe("fixed schema", () => {
       { name: "author", type: "relation", collection: "authors" },
       { name: "published", type: "autodate" },
     ]), list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null });
-    // The longest name: Postgres cuts its index names to 63 bytes.
-    const long = "l".repeat(63);
+    // The longest name Postgres takes; its index names don't fit in 63 bytes.
+    const long = "l".repeat(60);
     await createCollection({ name: long, type: "base", fields: JSON.stringify([
       { name: "body", type: "text", options: { searchable: true } },
     ]), list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null });

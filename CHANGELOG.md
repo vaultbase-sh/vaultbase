@@ -17,11 +17,32 @@ Binaries, checksums, signatures and SBOMs for every version are on
   check. A start now creates only the tables, indexes, search function and
   extension that are missing, and drops tables of earlier designs only when
   they are there.
-- **Postgres: search on a collection with a name of 55 characters or more
-  failed.** Its search index's name, cut to Postgres's 63 bytes, was the same
-  as its `created_at` index's: making the collection searchable failed, and
-  every start retried it, rewriting the table. Long names now get a short
-  hashed index name.
+- **Postgres: long collection and field names lost indexes.** Postgres cuts
+  names to 63 bytes, so index names built from long names could cut to the
+  same one, and only the first of them was made. On a collection name of 55
+  characters or more, every `idx_vb_<name>_…` name was one:
+  - the `updated_at` index, relation indexes and an auth collection's
+    unique email index were silently missing, and so, from 56 characters,
+    were the unique indexes of all but one field made unique later;
+  - making the collection searchable failed, and every start retried it,
+    rewriting the table;
+  - renaming it to a long name failed, or left its indexes under the old
+    name, and a new collection by that name then got none;
+  - two admin indexes over long field lists could become one, the second
+    reported as made under a name that didn't exist.
+
+  Names that don't fit now keep their first 54 characters and end in a short
+  hash. On the first start, indexes made under cut names are renamed and the
+  ones a collision lost are made; a unique index that can't be made because
+  the data already holds duplicates is reported in the log.
+- **Postgres: aggregate keys of long field names came back cut** (`sum_<a
+  long field>`). They are now returned as named.
+- **Postgres: a collection name of 61 to 63 characters shared a table.**
+  Its table `vb_<name>` is cut to 63 bytes, so two such names alike in their
+  first 60 characters were one table, and the second collection silently
+  used the first one's. On Postgres a new or renamed collection's name is now
+  at most 60 characters; existing collections keep theirs. SQLite is
+  unchanged.
 - **Postgres: a schema whose name needs quoting** (capitals, a hyphen) broke
   search, and with this release's start-up checks would have stopped the
   server from starting. The schema is now looked up by its exact name.

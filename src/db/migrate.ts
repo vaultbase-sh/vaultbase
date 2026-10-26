@@ -78,6 +78,20 @@ async function runMigrationsNow() {
     openExistingAuthSignup(client);
   }
 
+  // ── v0.29: index names past 63 bytes, cut by Postgres, are fitted ──
+  // Before the timestamp step below, which looks for the fitted names.
+  if (db.name === "postgres") {
+    await runOnce("v0_29_0_fit_index_names", async () => {
+      const { fitIndexNames, parseFields } = await import("../core/collections.ts");
+      const rows = await db.all<{ name: string; type: string; fields: string }>(`SELECT name, type, fields FROM vaultbase_collections WHERE type != 'view'`);
+      for (const { name, type, fields } of rows) {
+        try { await fitIndexNames(name, type, parseFields(fields)); } catch (e) {
+          console.error(`[migrate] index names of '${name}':`, e instanceof Error ? e.message : e);
+        }
+      }
+    });
+  }
+
   // ── v0.12: created_at / updated_at indexes on record tables ──
   // New tables get them in createUserTable; backfill existing ones.
   const { ensureTimestampIndexes } = await import("../core/collections.ts");

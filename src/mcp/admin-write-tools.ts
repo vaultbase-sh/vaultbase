@@ -56,7 +56,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       inputSchema: {
         type: "object",
         properties: {
-          name:        { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,62}$", description: "SQL-safe identifier; will form `vb_<name>` table" },
+          name:        { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]{0,62}$", description: "SQL-safe identifier; will form `vb_<name>` table. At most 60 characters on Postgres." },
           type:        { type: "string", enum: ["base", "auth", "view", "singleton"] },
           fields:      { type: "array", items: { type: "object" }, description: "FieldDef[]; see /reference/field-types" },
           view_query:  { type: "string", description: "Required + only allowed for type='view' — SELECT statement" },

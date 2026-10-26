@@ -51,9 +51,10 @@ async function listIndexes(tableName: string): Promise<IndexInfo[]> {
   return result;
 }
 
-function indexName(collectionName: string, fields: string[], unique: boolean): string {
+/** Fitted: Postgres cut a long name, so two could become one and the name returned wasn't the index's. */
+export function indexName(collectionName: string, fields: string[], unique: boolean): string {
   const prefix = unique ? "uniq" : "idx";
-  return `${prefix}_${collectionName}_${fields.join("_")}`;
+  return db.dialect.fitIdent(`${prefix}_${collectionName}_${fields.join("_")}`);
 }
 
 /**

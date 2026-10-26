@@ -113,6 +113,14 @@ export interface Dialect {
   listIndexesSql(): string;
   /** Statements that rename an index, given its current definition. */
   renameIndex(name: string, newName: string, sql: string): string[];
+  /**
+   * The name to create an object under, given the name it is built as.
+   * Postgres cuts names to 63 bytes, so two long names could become one, and
+   * the name made was not the name asked for: a longer one keeps its first
+   * 54 characters and ends in a hash of the whole. SQLite keeps names whole.
+   * Built names are ASCII (identifiers are checked against [A-Za-z0-9_]).
+   */
+  fitIdent(name: string): string;
   /** A time bucket of an epoch-seconds expression, in one of the five formats of aggregate.ts. */
   timeBucket(format: TimeBucket, expr: string): string;
   /** Whether `e` is a unique-constraint failure; `column` narrows it to one column. */
