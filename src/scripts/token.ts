@@ -10,7 +10,8 @@
  * cron jobs that rotate tokens without a web round-trip.
  */
 import { eq } from "drizzle-orm";
-import { initDb, getDb, closeDb } from "../db/client.ts";
+import { dirname } from "node:path";
+import { getDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { admin } from "../db/schema.ts";
 import {
@@ -180,7 +181,16 @@ export async function runTokenCli(argv: string[], dbPath: string, jwtSecret: str
     return;
   }
 
-  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
+  // This data directory's install, as the server checks (core/install-marker.ts).
+  const installMarker = await import("../core/install-marker.ts");
+  try {
+    await installMarker.openInstallDatabase(dirname(dbPath), process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
+  } catch (e) {
+    const refused = installMarker.refusal(e, "vaultbase token");
+    if (!refused) throw e;
+    process.stderr.write(refused);
+    process.exit(2);
+  }
   await runMigrations();
   try {
     if (sub === "mint") {

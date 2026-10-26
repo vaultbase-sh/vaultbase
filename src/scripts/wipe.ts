@@ -55,6 +55,7 @@ Wipes:
   <dataDir>/sandboxes/       SQL-runner snapshots
   <dataDir>/.secret          JWT signing secret
   <dataDir>/.encryption-key  Encrypted-at-rest field key
+  <dataDir>/database.json    Which database the install runs on
 
 Flags:
   --yes, -y      Actually perform the wipe. Without it the script is a dry-run.
@@ -167,6 +168,7 @@ const TARGET_NAMES = [
   "sandboxes",
   ".secret",
   ".encryption-key",
+  "database.json",
 ];
 
 /** CLI entry. Returns the exit code. */

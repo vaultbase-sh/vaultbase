@@ -118,6 +118,11 @@
   file_path TEXT
   file_error TEXT
 
+-- table vaultbase_install
+  key TEXT PK
+  id TEXT NOT NULL
+  created_at INTEGER NOT NULL DEFAULT unixepoch()
+
 -- table vaultbase_jobs
   id TEXT PK
   name TEXT NOT NULL DEFAULT ''

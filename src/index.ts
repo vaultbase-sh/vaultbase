@@ -157,6 +157,10 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
       id, email: opts.email, password_hash: hash, password_reset_at: 0, created_at: now,
     });
     process.stdout.write(`vaultbase: admin '${opts.email}' created.\n`);
+    // With its first admin the install is set up: its database is recorded.
+    try { await (await import("./core/install-marker.ts")).recordInstall(); } catch (e) {
+      process.stderr.write(`vaultbase: database record not written: ${e instanceof Error ? e.message : e}\n`);
+    }
   }
 }
 
@@ -374,11 +378,23 @@ async function main() {
   // The database: SQLite at the data directory unless VAULTBASE_DATABASE_URL
   // names another (postgres://…). The URL is environment, never a setting:
   // the database has to be open before any setting can be read.
-  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${config.dbPath}`);
+  // Checked to be this data directory's install (core/install-marker.ts):
+  // the database is chosen at install and is final.
+  const installMarker = await import("./core/install-marker.ts");
+  try {
+    await installMarker.openInstallDatabase(config.dataDir, process.env["VAULTBASE_DATABASE_URL"] || `file:${config.dbPath}`);
+  } catch (e) {
+    const refused = installMarker.refusal(e);
+    if (!refused) throw e;
+    process.stderr.write(refused);
+    process.exit(1);
+  }
   // Postgres read-only SQL derives its login's password from the JWT secret,
   // which every server of an install shares.
   (await import("./core/pg-readonly.ts")).configureReadOnlyLogin(config.jwtSecret);
   await runMigrations();
+  installMarker.configureInstallRecord(config.dataDir);
+  await installMarker.recordInstall();
   const { loadSettings } = await import("./api/settings.ts");
   await loadSettings();
   // Other servers on the same Postgres database (core/peers.ts).

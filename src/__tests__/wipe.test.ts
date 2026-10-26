@@ -43,6 +43,7 @@ function seedDataDir(): void {
   writeFileSync(join(dataDir, "data.db-wal"), "wal");
   writeFileSync(join(dataDir, ".secret"), "jwt-secret-bytes");
   writeFileSync(join(dataDir, ".encryption-key"), "key");
+  writeFileSync(join(dataDir, "database.json"), "{}");
   mkdirSync(join(dataDir, "uploads"), { recursive: true });
   writeFileSync(join(dataDir, "uploads", "x.png"), "image-bytes");
   mkdirSync(join(dataDir, "logs"), { recursive: true });
@@ -93,6 +94,8 @@ describe("vaultbase wipe", () => {
     expect(existsSync(join(dataDir, ".secret"))).toBe(false);
     expect(existsSync(join(dataDir, "uploads"))).toBe(false);
     expect(existsSync(join(dataDir, "logs"))).toBe(false);
+    // A wiped data directory starts a new install, on either database.
+    expect(existsSync(join(dataDir, "database.json"))).toBe(false);
   });
 
   it("refuses --yes when NODE_ENV=production (no --force)", () => {

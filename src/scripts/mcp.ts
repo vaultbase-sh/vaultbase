@@ -14,11 +14,12 @@
  *   3. VAULTBASE_API_TOKEN env
  *
  * Error exit codes:
- *   2 — bad / missing token
+ *   2 — bad / missing token, or the database isn't this data directory's
+ *       install (core/install-marker.ts)
  *   3 — token has no mcp:* scope
  */
 
-import { initDb } from "../db/client.ts";
+import { dirname } from "node:path";
 import { runMigrations } from "../db/migrate.ts";
 import { stripApiTokenPrefix, hasScope } from "../core/api-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
@@ -101,7 +102,16 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
   // even though MCP doesn't serve file content (some admin tools probe).
   setLogsDir(logsDir);
   setUploadDir(uploadDir);
-  await initDb(process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
+  // This data directory's install, as the server checks (core/install-marker.ts).
+  const installMarker = await import("../core/install-marker.ts");
+  try {
+    await installMarker.openInstallDatabase(dirname(dbPath), process.env["VAULTBASE_DATABASE_URL"] || `file:${dbPath}`);
+  } catch (e) {
+    const refused = installMarker.refusal(e, "vaultbase mcp");
+    if (!refused) throw e;
+    process.stderr.write(refused);
+    process.exit(2);
+  }
   await runMigrations();
 
   const ctx = await verifyAuthToken(stripApiTokenPrefix(tokenRaw), jwtSecret, { audience: "api" });

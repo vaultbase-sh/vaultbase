@@ -35,6 +35,7 @@ export const FIXED_TABLES = [
   s.apiTokens,
   s.sqlQueries,
   s.migrations,
+  s.install,
 ] as const;
 
 const ix = (name: string, table: string, columns: string[], extra: Partial<IndexSpec> = {}): IndexSpec => ({ name, table, columns, ...extra });

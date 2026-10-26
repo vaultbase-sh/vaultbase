@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { recordInstall } from "../core/install-marker.ts";
 import { clearSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 import Elysia, { t } from "elysia";
 import * as jose from "jose";
@@ -819,6 +820,11 @@ export function makeAuthPlugin(jwtSecret: string) {
           return { error: "Admin already set up", code: 400 };
         }
         clearSetupKey();
+        // With its first admin the install is set up: its database is recorded
+        // (core/install-marker.ts), and from here on is final.
+        try { await recordInstall(); } catch (e) {
+          process.stderr.write(`vaultbase: database record not written: ${e instanceof Error ? e.message : e}\n`);
+        }
         return { data: { id, email: body.email } };
       },
       { body: t.Object({ email: t.String(), password: t.String(), setup_key: t.Optional(t.String({ maxLength: 512 })) }) }

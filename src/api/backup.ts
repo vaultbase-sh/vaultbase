@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, renameSync, rmSync } from "fs";
+import { recordInstall } from "../core/install-marker.ts";
 import Elysia from "elysia";
 import { closeDb, getRawClient, initDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
@@ -73,6 +74,18 @@ async function swapInDb(dbPath: string, staging: string): Promise<string | null>
  *   serving the replaced schema and code until restart.
  */
 async function restoreDatabase(dbPath: string, staging: string): Promise<string | null> {
+  const err = await swapRestored(dbPath, staging);
+  // The restored database is this install's now, maybe another install's
+  // backup: the data directory's record follows it (core/install-marker.ts).
+  if (!err) {
+    try { await recordInstall(); } catch (e) {
+      process.stderr.write(`[restore] database record not updated: ${e instanceof Error ? e.message : e}\n`);
+    }
+  }
+  return err;
+}
+
+async function swapRestored(dbPath: string, staging: string): Promise<string | null> {
   return withExclusiveWrite(async () => {
     // Every other connection to the file goes first: read workers and the
     // checkpointer each hold one, and would keep using the replaced file

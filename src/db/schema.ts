@@ -16,6 +16,16 @@ export const migrations = sqliteTable("vaultbase_migrations", {
   applied_at: integer("applied_at").notNull().default(EPOCH_NOW),
 });
 
+/**
+ * Which install this database belongs to (core/install-marker.ts): one row,
+ * key 'install'. The data directory records the same id in database.json.
+ */
+export const install = sqliteTable("vaultbase_install", {
+  key: text("key").primaryKey(),
+  id: text("id").notNull(),
+  created_at: integer("created_at").notNull().default(EPOCH_NOW),
+});
+
 export const collections = sqliteTable("vaultbase_collections", {
   id: text("id").primaryKey(),
   name: text("name").notNull().unique(),

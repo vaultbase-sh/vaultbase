@@ -9,6 +9,20 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Changed
+
+- **The database is chosen at install and is final.** Once an install has its
+  first admin, the data directory records its database in `database.json`
+  (SQLite, or Postgres with its host, database and schema; never
+  credentials), and the database carries a matching install id. The server,
+  `vaultbase mcp` and `vaultbase token` refuse to start on the other kind of
+  database, on an empty one (or an empty schema first on the search path),
+  or on another install's, and say how to point them back. Before, a
+  forgotten `VAULTBASE_DATABASE_URL` started an empty SQLite server with the
+  setup wizard open, and a URL pointing at the wrong database got the schema
+  created in it. Before the first admin, switching stays free, and the setup
+  wizard now says the choice becomes final.
+
 ### Fixed
 
 - **Postgres: every start re-ran the schema's CREATE statements.** Even with
@@ -46,6 +60,24 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Postgres: a schema whose name needs quoting** (capitals, a hyphen) broke
   search, and with this release's start-up checks would have stopped the
   server from starting. The schema is now looked up by its exact name.
+
+### Upgrade notes
+
+- An existing install gets its install id and `database.json` at its first
+  start on this release; nothing to do. Make sure that start goes to the
+  database you mean (`VAULTBASE_DATABASE_URL` set as before): it is the one
+  recorded, and from then on the only one the server starts on. If it went
+  to the wrong one, stop the server and remove `database.json` before
+  starting it on the right one.
+- A copy of the database restored on another host or provider carries the
+  id and starts as before, as does a restore from the backups page. A copy
+  made before this release has none: start it once with the
+  `VAULTBASE_DATABASE_MOVED=…` line the refusal prints.
+- The check needs a data directory that persists between starts.
+- A Postgres install whose data directory still holds a SQLite `data.db`
+  with an admin starts as before; it is refused only if the Postgres
+  database has no admin (check the URL, then move `data.db` aside).
+- `vaultbase wipe` removes `database.json` too.
 
 ### Tests
 

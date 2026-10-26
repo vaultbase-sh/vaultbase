@@ -17,6 +17,8 @@ import { admin } from "../db/schema.ts";
 import { getSetting, setSetting, makeSettingsPlugin } from "../api/settings.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { makeBackupPlugin } from "../api/backup.ts";
+import { configureInstallRecord, MARKER_FILE, recordInstall } from "../core/install-marker.ts";
+import { db } from "../db/index.ts";
 import {
   backupTick, getBackupStatus, isBackupName, listBackups, runBackup, setBackupsDir,
 } from "../core/backups.ts";
@@ -39,6 +41,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  configureInstallRecord(null);
   await closeDb();
   // Windows keeps the mmap'd DB locked until GC; leave the tmp dir behind there.
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* EBUSY on Windows */ }
@@ -172,8 +175,14 @@ describe.skipIf(!canBackUp)("admin API", () => {
 
   it("restores a stored backup (Postgres: refused, until restore lands there)", async () => {
     const app = makeBackupPlugin(SECRET, dbPath);
+    configureInstallRecord(tmpDir);
+    await recordInstall();
+    // The backup is of another install, say; the live database is this one.
+    await db.run(`UPDATE vaultbase_install SET id = 'from-backup'`);
     await setSetting("probe", "before");
     const { name } = await runBackup();
+    await db.run(`UPDATE vaultbase_install SET id = 'live'`);
+    await recordInstall();
     await setSetting("probe", "after");
     const res = await app.handle(await adminReq("POST", `/admin/backups/${name}/restore`));
     if (!onSqlite) {
@@ -183,6 +192,9 @@ describe.skipIf(!canBackUp)("admin API", () => {
     }
     expect(await res.text()).toContain("Restore complete");
     expect(getSetting("probe", "")).toBe("before");
+    // The data directory's record follows the restored database.
+    const marker = JSON.parse(readFileSync(join(tmpDir, MARKER_FILE), "utf8")) as { install_id: string };
+    expect(marker.install_id).toBe("from-backup");
     expect(existsSync(join(tmpDir, "backups", name))).toBe(true);
   });
 
