@@ -9,12 +9,16 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  # Weekly, so a change to the runners or to a Postgres image shows up
+  # without waiting for a push.
+  schedule:
+    - cron: "17 5 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -40,12 +44,18 @@ jobs:
         run: bun test
 
   server-postgres:
-    name: Server (tests on Postgres)
+    name: Server (tests on Postgres ${{ matrix.pg }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      # One version failing shouldn't hide how the others did.
+      fail-fast: false
+      matrix:
+        # Every supported major, so a new one is tested before users run it.
+        pg: ["16", "17", "18"]
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:${{ matrix.pg }}-alpine
         env:
           POSTGRES_USER: vaultbase
           POSTGRES_PASSWORD: vaultbase
@@ -67,14 +77,15 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install pg_dump
-        # Backups on Postgres run pg_dump; the client must match the server
-        # (16). From the PostgreSQL apt repo: the runner's own Ubuntu release
-        # may only ship a newer client (Ubuntu 26 has no postgresql-client-16).
+        # Backups on Postgres run pg_dump, which refuses a server newer than
+        # itself: the client matches the server's major. From the PostgreSQL
+        # apt repo: the runner's own Ubuntu release may not ship that client
+        # (Ubuntu 26 has no postgresql-client-16).
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y -qq postgresql-client-16
+          sudo apt-get install -y -qq postgresql-client-${{ matrix.pg }}
 
       - name: Test on Postgres
         # Every initDb(":memory:") opens a fresh schema on the service
