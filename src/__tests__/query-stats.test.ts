@@ -5,6 +5,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import Elysia from "elysia";
 import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
+import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { admin as adminTable } from "../db/schema.ts";
 import { _resetCollectionCache, getCollection } from "../core/collections.ts";
@@ -26,11 +27,12 @@ async function seedPosts(rows: number, name = "posts") {
       { name: "views", type: "number" },
     ]),
   });
-  const c = getRawClient();
-  const ins = c.prepare(`INSERT INTO "vb_${name}" ("id", "title", "status", "views", "created_at", "updated_at") VALUES (?, ?, ?, ?, ?, ?)`);
-  c.exec("BEGIN");
-  for (let i = 0; i < rows; i++) ins.run(crypto.randomUUID(), `post ${i}`, i % 3 ? "published" : "draft", (i * 7919) % 10_000, 1_700_000_000 + i, 1_700_000_000 + i);
-  c.exec("COMMIT");
+  await db.transaction(async () => {
+    for (let i = 0; i < rows; i++) {
+      await db.run(`INSERT INTO "vb_${name}" ("id", "title", "status", "views", "created_at", "updated_at") VALUES (?, ?, ?, ?, ?, ?)`,
+        [crypto.randomUUID(), `post ${i}`, i % 3 ? "published" : "draft", (i * 7919) % 10_000, 1_700_000_000 + i, 1_700_000_000 + i]);
+    }
+  });
 }
 
 const report = () => queryStatsReport();
@@ -191,12 +193,15 @@ describe.skipIf(!onSqlite)("plan analysis", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("composite indexes", () => {
+describe("composite indexes", () => {
   it("creates an index over several fields in order and lists it", async () => {
     await seedPosts(10);
     const col = (await getCollection("posts"))!;
     const made = await createCollectionIndex(col, ["status", "created_at"]);
     expect(made).toEqual({ name: "idx_posts_status_created_at", field: "status,created_at", fields: ["status", "created_at"], unique: false });
+    expect((await db.all<{ name: string }>(db.dialect.listIndexesSql(), ["vb_posts"])).map((i) => i.name)).toContain("idx_posts_status_created_at");
+    // The plan text is SQLite's; Postgres plan reading is in query-stats-postgres.test.ts.
+    if (!onSqlite) return;
     const plan = getRawClient().prepare(`EXPLAIN QUERY PLAN SELECT * FROM "vb_posts" WHERE "status" = ? ORDER BY "created_at" DESC LIMIT 30`).all() as Array<{ detail: string }>;
     expect(plan.map((p) => p.detail).join(" | ")).toContain("idx_posts_status_created_at");
     expect(plan.map((p) => p.detail).join(" | ")).not.toContain("TEMP B-TREE");
@@ -235,7 +240,7 @@ describe.skipIf(!onSqlite)("composite indexes", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("GET /_/metrics/queries", () => {
+describe("GET /_/metrics/queries", () => {
   it("returns the report to admins only", async () => {
     await seedPosts(10);
     await listRecords("posts", {});

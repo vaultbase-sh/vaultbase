@@ -2,7 +2,7 @@
  * Scheduled backups: snapshot, retention, schedule claim, admin API.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { createPublicCollection, onSqlite } from "./_helpers.ts";
+import { createPublicCollection, onSqlite, testDb } from "./_helpers.ts";
 import { createRecord, listRecords } from "../core/records.ts";
 import { queryStatsReport, resetQueryStats } from "../core/query-stats.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
@@ -30,7 +30,7 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-backups-"));
   setLogsDir(tmpDir);
   dbPath = join(tmpDir, "data.db");
-  await initDb(`file:${dbPath}`);
+  await initDb(testDb(`file:${dbPath}`));
   await runMigrations();
   await getDb().insert(admin).values({
     id: "a1", email: "ops@test.local", password_hash: "x", password_reset_at: 0, created_at: 0,
@@ -53,20 +53,30 @@ async function adminReq(method: string, path: string, body?: unknown): Promise<R
   });
 }
 
-describe.skipIf(!onSqlite)("runBackup", () => {
+/** Backups need pg_dump on Postgres (CI installs it; VAULTBASE_PG_DUMP names one). */
+const canBackUp = onSqlite || !!(process.env["VAULTBASE_PG_DUMP"] || Bun.which("pg_dump"));
+
+/** The first bytes of a backup file: SQLite's header, or pg_dump's custom format. */
+const MAGIC = onSqlite ? "SQLite format 3" : "PGDMP";
+
+describe.skipIf(!canBackUp)("runBackup", () => {
   it("writes a restorable snapshot", async () => {
-    setSetting("probe", "hello");
+    await setSetting("probe", "hello");
     const info = await runBackup();
     expect(isBackupName(info.name)).toBe(true);
-    const snap = new Database(join(tmpDir, "backups", info.name), { readonly: true });
-    const row = snap.prepare(`SELECT value FROM vaultbase_settings WHERE key = 'probe'`).get() as { value: string };
-    snap.close();
-    expect(row.value).toBe("hello");
+    const file = join(tmpDir, "backups", info.name);
+    expect(new TextDecoder().decode(readFileSync(file).subarray(0, MAGIC.length))).toBe(MAGIC);
+    if (onSqlite) {
+      const snap = new Database(file, { readonly: true });
+      const row = snap.prepare(`SELECT value FROM vaultbase_settings WHERE key = 'probe'`).get() as { value: string };
+      snap.close();
+      expect(row.value).toBe("hello");
+    }
     expect(getSetting("backups.last_error", "x")).toBe("");
   });
 
   it("keeps only backups.keep snapshots", async () => {
-    setSetting("backups.keep", "2");
+    await setSetting("backups.keep", "2");
     for (let i = 0; i < 4; i++) await runBackup();
     const items = listBackups();
     expect(items.length).toBe(2);
@@ -75,7 +85,7 @@ describe.skipIf(!onSqlite)("runBackup", () => {
   });
 
   it("records the error when S3 is enabled without credentials", async () => {
-    setSetting("backups.s3.enabled", "1");
+    await setSetting("backups.s3.enabled", "1");
     await expect(runBackup()).rejects.toThrow(/credentials/);
     expect(getBackupStatus().last_error).toMatch(/credentials/);
     // The local snapshot still exists.
@@ -97,15 +107,15 @@ describe.skipIf(!onSqlite)("backup after the index-suggestions report", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("backupTick", () => {
+describe.skipIf(!canBackUp)("backupTick", () => {
   it("does nothing while disabled", async () => {
     expect(await backupTick()).toBeNull();
     expect(getSetting("backups.next_run", "")).toBe("");
   });
 
   it("plans, then runs once when due", async () => {
-    setSetting("backups.enabled", "1");
-    setSetting("backups.cron", "0 * * * *");
+    await setSetting("backups.enabled", "1");
+    await setSetting("backups.cron", "0 * * * *");
     const now = 1_800_000_000;
     expect(await backupTick(now)).toBeNull();
     const due = nextRunFromCron("0 * * * *", now);
@@ -119,15 +129,15 @@ describe.skipIf(!onSqlite)("backupTick", () => {
   });
 
   it("re-plans when the cron changes", async () => {
-    setSetting("backups.enabled", "1");
-    setSetting("backups.next_run", "0 3 * * *|1");
-    setSetting("backups.cron", "30 4 * * *");
+    await setSetting("backups.enabled", "1");
+    await setSetting("backups.next_run", "0 3 * * *|1");
+    await setSetting("backups.cron", "30 4 * * *");
     expect(await backupTick(1_800_000_000)).toBeNull();
     expect(getSetting("backups.next_run", "")).toStartWith("30 4 * * *|");
   });
 });
 
-describe.skipIf(!onSqlite)("admin API", () => {
+describe.skipIf(!canBackUp)("admin API", () => {
   it("rejects anonymous callers", async () => {
     const res = await makeBackupPlugin(SECRET, dbPath).handle(new Request("http://localhost/admin/backups"));
     expect(res.status).toBe(401);
@@ -146,7 +156,7 @@ describe.skipIf(!onSqlite)("admin API", () => {
 
     const dl = await app.handle(await adminReq("GET", `/admin/backups/${name}`));
     expect(dl.status).toBe(200);
-    expect(new TextDecoder().decode((await dl.arrayBuffer()).slice(0, 15))).toBe("SQLite format 3");
+    expect(new TextDecoder().decode((await dl.arrayBuffer()).slice(0, MAGIC.length))).toBe(MAGIC);
 
     expect((await app.handle(await adminReq("DELETE", `/admin/backups/${name}`))).status).toBe(200);
     expect(listBackups().length).toBe(0);
@@ -154,28 +164,36 @@ describe.skipIf(!onSqlite)("admin API", () => {
 
   it("refuses names outside the backups directory", async () => {
     const app = makeBackupPlugin(SECRET, dbPath);
-    for (const name of ["..%2Fdata.db", "data.db", "vaultbase-x.db", "vaultbase-20261011-030000.db"]) {
+    const ext = onSqlite ? "db" : "dump";
+    for (const name of [`..%2Fdata.${ext}`, `data.${ext}`, `vaultbase-x.${ext}`, `vaultbase-20261011-030000.${ext}`, "..%2F..%2Fetc%2Fpasswd"]) {
       expect((await app.handle(await adminReq("GET", `/admin/backups/${name}`))).status).toBe(404);
     }
   });
 
-  it("restores a stored backup", async () => {
+  it("restores a stored backup (Postgres: refused, until restore lands there)", async () => {
     const app = makeBackupPlugin(SECRET, dbPath);
-    setSetting("probe", "before");
+    await setSetting("probe", "before");
     const { name } = await runBackup();
-    setSetting("probe", "after");
+    await setSetting("probe", "after");
     const res = await app.handle(await adminReq("POST", `/admin/backups/${name}/restore`));
+    if (!onSqlite) {
+      expect(res.status).toBe(501);
+      expect(getSetting("probe", "")).toBe("after");
+      return;
+    }
     expect(await res.text()).toContain("Restore complete");
     expect(getSetting("probe", "")).toBe("before");
     expect(existsSync(join(tmpDir, "backups", name))).toBe(true);
   });
 
   it("legacy download is a consistent snapshot", async () => {
-    setSetting("probe", "wal-only");
+    await setSetting("probe", "wal-only");
     const res = await makeBackupPlugin(SECRET, dbPath).handle(await adminReq("GET", "/admin/backup"));
     expect(res.status).toBe(200);
     const out = join(tmpDir, "dl.db");
     await Bun.write(out, await res.arrayBuffer());
+    expect(new TextDecoder().decode(readFileSync(out).subarray(0, MAGIC.length))).toBe(MAGIC);
+    if (!onSqlite) return;
     const db = new Database(out, { readonly: true });
     const row = db.prepare(`SELECT value FROM vaultbase_settings WHERE key = 'probe'`).get() as { value: string };
     db.close();
@@ -184,7 +202,7 @@ describe.skipIf(!onSqlite)("admin API", () => {
   });
 });
 
-describe.skipIf(!onSqlite)("settings validation", () => {
+describe("settings validation", () => {
   it("rejects a bad cron or keep", async () => {
     const app = makeSettingsPlugin(SECRET);
     expect((await app.handle(await adminReq("PATCH", "/admin/settings", { "backups.cron": "nope" }))).status).toBe(422);

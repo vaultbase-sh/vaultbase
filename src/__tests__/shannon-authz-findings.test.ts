@@ -16,6 +16,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { onSqlite } from "./_helpers.ts";
 import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
+import { db } from "../db/index.ts";
 import {
   createCollection,
   _resetCollectionCache,
@@ -50,7 +51,7 @@ beforeEach(async () => {
 afterEach(() => closeDb());
 
 // ── 1. DROP INDEX scoping ─────────────────────────────────────────────────────
-describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => {
+describe("DROP INDEX is bound to the named collection", () => {
   async function setup() {
     await createCollection({
       name: "posts", type: "base",
@@ -61,9 +62,8 @@ describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => 
       fields: JSON.stringify([{ name: "body", type: "text" }]),
     });
     _resetCollectionCache();
-    const c = getRawClient();
-    c.exec(`CREATE INDEX idx_posts_title ON "${userTableName("posts")}" ("title")`);
-    c.exec(`CREATE INDEX idx_notes_body  ON "${userTableName("notes")}" ("body")`);
+    await db.exec(`CREATE INDEX idx_posts_title ON "${userTableName("posts")}" ("title")`);
+    await db.exec(`CREATE INDEX idx_notes_body  ON "${userTableName("notes")}" ("body")`);
   }
 
   async function dropIndex(collection: string, indexName: string): Promise<Response> {
@@ -75,14 +75,17 @@ describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => 
     );
   }
 
-  const indexExists = (name: string) =>
-    (getRawClient().prepare(`SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`).get(name)) != null;
+  /** Every index name in the server's database (its schema, on Postgres). */
+  const indexNames = async () => (await db.all<{ name: string }>(db.name === "sqlite"
+    ? `SELECT name FROM sqlite_master WHERE type = 'index'`
+    : `SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema()`)).map((r) => r.name);
+  const indexExists = async (name: string) => (await indexNames()).includes(name);
 
   it("drops an index that belongs to the collection", async () => {
     await setup();
     const res = await dropIndex("posts", "idx_posts_title");
     expect(res.status).toBe(200);
-    expect(indexExists("idx_posts_title")).toBe(false);
+    expect(await indexExists("idx_posts_title")).toBe(false);
   });
 
   it("refuses to drop another collection's index via a mismatched :name", async () => {
@@ -90,19 +93,18 @@ describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => 
     // The old handler would have dropped idx_notes_body here.
     const res = await dropIndex("posts", "idx_notes_body");
     expect(res.status).toBe(404);
-    expect(indexExists("idx_notes_body")).toBe(true);
+    expect(await indexExists("idx_notes_body")).toBe(true);
   });
 
-  it("refuses to drop a system index like uniq_vaultbase_admin_email", async () => {
+  it("refuses to drop a system index like idx_vaultbase_admin_email", async () => {
     await setup();
-    const c = getRawClient();
-    const before = c.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'uniq_%'`).all() as { name: string }[];
-    if (before.length > 0) {
-      const sysIdx = before[0]!.name;
-      const res = await dropIndex("posts", sysIdx);
-      expect(res.status).toBe(404);
-      expect(indexExists(sysIdx)).toBe(true);
-    }
+    // Named "uniq_…" here once and matched nothing, so the test checked
+    // nothing; the unique index on admin emails is this one.
+    const sysIdx = "idx_vaultbase_admin_email";
+    expect(await indexExists(sysIdx)).toBe(true);
+    const res = await dropIndex("posts", sysIdx);
+    expect(res.status).toBe(404);
+    expect(await indexExists(sysIdx)).toBe(true);
   });
 
   it("does not let a quote in the index name break out of the identifier", async () => {
@@ -111,10 +113,8 @@ describe.skipIf(!onSqlite)("DROP INDEX is bound to the named collection", () => 
     // rejected before any SQL runs; the table must survive regardless.
     const res = await dropIndex("posts", `idx_x"; DROP TABLE "${userTableName("notes")}"; --`);
     expect(res.status).toBe(404);
-    const notesTableGone = getRawClient()
-      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`)
-      .get(userTableName("notes")) == null;
-    expect(notesTableGone).toBe(false);
+    // The table is still there: counting its rows works.
+    expect(await db.get(`SELECT count(*) AS n FROM "${userTableName("notes")}"`)).not.toBeNull();
   });
 });
 

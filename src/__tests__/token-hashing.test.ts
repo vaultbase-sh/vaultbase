@@ -50,7 +50,7 @@ async function emailedResetToken(): Promise<string> {
   return tokenFrom(smtp.last("reset"));
 }
 
-describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
+describe("one-time tokens at rest", () => {
   it("the emailed token is not in the database; its hash is", async () => {
     const token = await emailedResetToken();
     const ids = (await getDb().select().from(authTokens)).map((r) => r.id);
@@ -70,7 +70,8 @@ describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
     expect((await post("/auth/users/confirm-password-reset", { token, password: "a-new-password-1" })).status).toBe(200);
   });
 
-  it("a link issued before the upgrade (stored in plaintext) is re-keyed and still works", async () => {
+  // The legacy re-key ran only on SQLite (db/migrate.ts); no Postgres install predates hashing.
+  it.skipIf(!onSqlite)("a link issued before the upgrade (stored in plaintext) is re-keyed and still works", async () => {
     const col = (await getCollection("users"))!;
     const legacy = "b".repeat(64);
     await getDb().insert(authTokens).values({
@@ -86,7 +87,7 @@ describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
 
   it("the OTP code is not stored in a form a database reader can use", async () => {
     const { setSetting } = await import("../api/settings.ts");
-    setSetting("auth.otp.enabled", "1");
+    await setSetting("auth.otp.enabled", "1");
     await post("/auth/users/otp/request", { email: "u@test.local" });
     for (let i = 0; i < 50 && !smtp.last("code"); i++) await Bun.sleep(20);
     const code = /\n\s+(\d{6})\n/.exec(smtp.last("code") ?? "")![1]!;
@@ -97,7 +98,8 @@ describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
     expect((await post("/auth/users/otp/auth", { email: "u@test.local", code })).status).toBe(200);
   });
 
-  it("pre-upgrade OTP rows (plaintext codes) are voided by the migration", async () => {
+  // The legacy re-key ran only on SQLite (db/migrate.ts); no Postgres install predates hashing.
+  it.skipIf(!onSqlite)("pre-upgrade OTP rows (plaintext codes) are voided by the migration", async () => {
     const col = (await getCollection("users"))!;
     await getDb().insert(authTokens).values({
       id: "c".repeat(64), user_id: userId, collection_id: col.id, purpose: "otp", code: "123456",
@@ -109,7 +111,8 @@ describe.skipIf(!onSqlite)("one-time tokens at rest", () => {
     expect(row!.used_at).not.toBeNull();
   });
 
-  it("a pre-upgrade row whose hashed id is already taken doesn't stop the migration", async () => {
+  // The legacy re-key ran only on SQLite (db/migrate.ts); no Postgres install predates hashing.
+  it.skipIf(!onSqlite)("a pre-upgrade row whose hashed id is already taken doesn't stop the migration", async () => {
     const col = (await getCollection("users"))!;
     const x = "state-chosen-by-a-caller";
     const exp = Math.floor(Date.now() / 1000) + 600;

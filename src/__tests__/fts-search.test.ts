@@ -108,10 +108,12 @@ describe("index lifecycle", () => {
     expect(await hasFts("memos")).toBe(false);
   });
 
-  it.skipIf(!onSqlite)("is restored at boot if missing", async () => {
+  it("is restored at boot if missing", async () => {
     await notes();
     await createRecord("notes", { title: "boot check" });
-    getRawClient().exec(`DROP TABLE vb_notes_fts`);
+    // SQLite keeps it in a table of its own, Postgres in a generated column.
+    const { db } = await import("../db/index.ts");
+    await db.exec(onSqlite ? `DROP TABLE vb_notes_fts` : `ALTER TABLE vb_notes DROP COLUMN vb_search`);
     await runMigrations();
     expect(await ids("boot")).toEqual(["boot check"]);
   });

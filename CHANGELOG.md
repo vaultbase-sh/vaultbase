@@ -7,6 +7,35 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Postgres: every start re-ran the schema's CREATE statements.** Even with
+  `IF NOT EXISTS`, creating an index waits for a lock behind the table's
+  writers, so a server starting next to busy ones could stall on its schema
+  check. A start now creates only the tables, indexes, search function and
+  extension that are missing, and drops tables of earlier designs only when
+  they are there.
+- **Postgres: search on a collection with a name of 55 characters or more
+  failed.** Its search index's name, cut to Postgres's 63 bytes, was the same
+  as its `created_at` index's: making the collection searchable failed, and
+  every start retried it, rewriting the table. Long names now get a short
+  hashed index name.
+- **Postgres: a schema whose name needs quoting** (capitals, a hyphen) broke
+  search, and with this release's start-up checks would have stopped the
+  server from starting. The schema is now looked up by its exact name.
+
+### Tests
+
+- Upgrades are tested on Postgres too: fixtures from 0.23.2, 0.24.1, 0.26.5
+  and 0.28.1, each made by that release on Postgres, restored and upgraded.
+- CI runs the Postgres suite on Postgres 16, 17 and 18, and weekly.
+- Suites that skipped on Postgres only because they open a database file now
+  run there: saved queries, index management, settings reload, one-time tokens
+  at rest, scheduled backups, MCP `run_sql`, the fixed-schema upgrade, search
+  index recovery, large CSV exports.
+
 ## [0.28.1] — 2026-10-26
 
 ### Security

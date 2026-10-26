@@ -7,7 +7,7 @@
  * exercised separately in sql-http.test.ts.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { onSqlite } from "./_helpers.ts";
+import { onSqlite, testDb } from "./_helpers.ts";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -56,7 +56,7 @@ beforeEach(async () => {
   setLogsDir(tmpDir);
   setSandboxDir(join(tmpDir, "sandboxes"));
   dbPath = join(tmpDir, "data.db");
-  await initDb(dbPath);
+  await initDb(testDb(dbPath));
   await runMigrations();
 });
 
@@ -71,7 +71,7 @@ afterEach(async () => {
 
 // ── detectMutation ───────────────────────────────────────────────────────
 
-describe.skipIf(!onSqlite)("detectMutation", () => {
+describe("detectMutation", () => {
   it("flags INSERT/UPDATE/DELETE/DROP", () => {
     expect(detectMutation("INSERT INTO t VALUES (1)")).toBe("INSERT");
     expect(detectMutation("update t set x = 1")).toBe("UPDATE");
@@ -258,7 +258,7 @@ describe.skipIf(!onSqlite)("sandbox lifecycle", () => {
 
 // ── saved queries ────────────────────────────────────────────────────────
 
-describe.skipIf(!onSqlite)("saved queries — CRUD", () => {
+describe("saved queries — CRUD", () => {
   it("create + list scoped to owner", async () => {
     const a1 = await seedAdmin("a1");
     const a2 = await seedAdmin("a2");

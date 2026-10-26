@@ -101,3 +101,12 @@ export function hashedTokenId(raw: string): string {
 
 /** The driver the suite runs on: SQLite unless VAULTBASE_TEST_DB names a Postgres server. */
 export const onSqlite = !/^postgres/i.test(process.env["VAULTBASE_TEST_DB"] ?? "");
+
+/**
+ * What to open for a test that keeps its database in a file: the file on
+ * SQLite, a fresh schema on Postgres (":memory:" is redirected there, and a
+ * file path isn't). Lets file-based suites run on both databases.
+ */
+export function testDb(path: string): string {
+  return onSqlite ? path : ":memory:";
+}

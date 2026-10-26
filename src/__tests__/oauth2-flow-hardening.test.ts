@@ -247,13 +247,11 @@ describe("review 14 follow-ups", () => {
     expect(res.status).toBe(409);
   });
 
-  it.skipIf(!onSqlite)("register treats a different-case address as taken", async () => {
+  it("register treats a different-case address as taken", async () => {
     const res = await json("/auth/users/register", { email: "SEED@test.local", password: "another-password-1" });
     expect(res.status).toBe(200);
-    const col = (await getCollection("users"))!;
-    const { getRawClient } = await import("../db/client.ts");
-    const n = (getRawClient().query(`SELECT count(*) AS n FROM vb_users WHERE email = 'SEED@test.local' COLLATE NOCASE`).get() as { n: number }).n;
-    expect(n).toBe(1);
-    void col;
+    const { db } = await import("../db/index.ts");
+    const n = (await db.get<{ n: number }>(`SELECT count(*) AS n FROM vb_users WHERE LOWER(email) = LOWER('SEED@test.local')`))!.n;
+    expect(Number(n)).toBe(1);
   });
 });

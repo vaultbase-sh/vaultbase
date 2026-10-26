@@ -7,11 +7,13 @@
  * database file.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { onSqlite } from "./_helpers.ts";
+import { onSqlite, testDb } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { initDb, closeDb, getRawClient } from "../db/client.ts";
+import { initDb, closeDb } from "../db/client.ts";
+import { db } from "../db/index.ts";
+import { configureReadOnlyLogin } from "../core/pg-readonly.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { listAuditEntries } from "../core/audit-log.ts";
@@ -24,10 +26,11 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-mcpsql-"));
   setLogsDir(tmpDir);
-  await initDb(join(tmpDir, "data.db"));
+  await initDb(testDb(join(tmpDir, "data.db")));
   await runMigrations();
-  getRawClient().exec("CREATE TABLE t (x INTEGER)");
-  getRawClient().exec("INSERT INTO t VALUES (1)");
+  configureReadOnlyLogin("test-secret-mcp-run-sql");
+  await db.exec("CREATE TABLE t (x INTEGER)");
+  await db.exec("INSERT INTO t VALUES (1)");
 });
 
 afterEach(async () => {
@@ -43,19 +46,19 @@ async function runSql(scopes: string[], args: Record<string, unknown>): Promise<
   return r.result as CallToolResult;
 }
 
-const count = () => (getRawClient().query("SELECT count(*) AS n FROM t").get() as { n: number }).n;
+const count = async () => Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM t"))!.n);
 
-describe.skipIf(!onSqlite)("MCP run_sql", () => {
+describe("MCP run_sql", () => {
   it("allow_write needs mcp:admin; mcp:sql alone can't write", async () => {
     const r = await runSql(["mcp:sql"], { query: "DELETE FROM t", allow_write: true });
     expect(r.isError).toBe(true);
-    expect(count()).toBe(1);
+    expect(await count()).toBe(1);
   });
 
   it("an mcp:admin token can still write (legitimate path)", async () => {
     const r = await runSql(["mcp:admin"], { query: "INSERT INTO t VALUES (2)", allow_write: true });
     expect(r.isError).toBeFalsy();
-    expect(count()).toBe(2);
+    expect(await count()).toBe(2);
   });
 
   it("reads work for mcp:sql (legitimate path)", async () => {
@@ -64,11 +67,19 @@ describe.skipIf(!onSqlite)("MCP run_sql", () => {
     expect(JSON.parse((r.content[0] as { text: string }).text).rows).toEqual([{ x: 1 }]);
   });
 
-  it("a read-mode PRAGMA can't change the server's own connection", async () => {
+  it.skipIf(!onSqlite)("a read-mode PRAGMA can't change the server's own connection", async () => {
     // On the server's connection this would make every later write fail.
     await runSql(["mcp:sql"], { query: "PRAGMA query_only = ON" });
-    getRawClient().exec("INSERT INTO t VALUES (3)");
-    expect(count()).toBe(2);
+    await db.exec("INSERT INTO t VALUES (3)");
+    expect(await count()).toBe(2);
+  });
+
+  it.skipIf(onSqlite)("a read or an allow_write SET can't change the server's own connections (Postgres)", async () => {
+    await runSql(["mcp:sql"], { query: "SELECT set_config('search_path', 'nowhere', false)" });
+    await runSql(["mcp:admin"], { query: "SET search_path = nowhere", allow_write: true });
+    const paths = await Promise.all(Array.from({ length: 16 }, () => db.get<{ v: string }>(`SELECT current_setting('search_path') AS v, pg_sleep(0.02)`)));
+    expect(paths.every((p) => p!.v !== "nowhere")).toBe(true);
+    expect(await count()).toBe(1);
   });
 
   it("every call is audited, refused ones included", async () => {

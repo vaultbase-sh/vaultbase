@@ -18,6 +18,9 @@ beforeEach(async () => {
   await initDb(":memory:");
   await runMigrations();
   _resetSettingsCache();
+  // Postgres can't fill the store on first read (that is synchronous on
+  // SQLite); a server loads it at boot, as here.
+  if (!onSqlite) await loadSettings();
   invalidateUserTableColumnCache();
 });
 
@@ -26,8 +29,10 @@ afterEach(async () => {
   await closeDb();
 });
 
-describe.skipIf(!onSqlite)("settings cache", () => {
-  it("a write through setSetting is visible at once, a direct write after the reset hook", async () => {
+describe("settings cache", () => {
+  // The reset hook re-reads synchronously: SQLite only. Postgres relies on
+  // the reload and invalidate paths below, its main settings mechanism.
+  it.skipIf(!onSqlite)("a write through setSetting is visible at once, a direct write after the reset hook", async () => {
     expect(getSetting("app.name", "dflt")).toBe("dflt");
     setSetting("app.name", "one");
     expect(getSetting("app.name", "dflt")).toBe("one");
@@ -38,7 +43,7 @@ describe.skipIf(!onSqlite)("settings cache", () => {
   });
 
   it("the background reload and invalidateSetting pick up a direct write; loadSettings fills the store at boot", async () => {
-    setSetting("app.name", "one");
+    await setSetting("app.name", "one");
     await db.run(`UPDATE vaultbase_settings SET value = 'two' WHERE key = 'app.name'`);
     expect(getSetting("app.name", "dflt")).toBe("one");
     await _reloadSettings();
@@ -49,7 +54,7 @@ describe.skipIf(!onSqlite)("settings cache", () => {
     await db.run(`DELETE FROM vaultbase_settings WHERE key = 'app.name'`);
     await invalidateSetting("app.name");
     expect(getSetting("app.name", "dflt")).toBe("dflt");
-    setSetting("app.name", "four");
+    await setSetting("app.name", "four");
     _resetSettingsCache();
     await loadSettings();
     expect(getSetting("app.name", "dflt")).toBe("four");
@@ -57,7 +62,7 @@ describe.skipIf(!onSqlite)("settings cache", () => {
   });
 
   it("a reopened database never answers from the old connection's cache", async () => {
-    setSetting("app.name", "old-db");
+    await setSetting("app.name", "old-db");
     expect(getSetting("app.name", "")).toBe("old-db");
     await closeDb();
     await initDb(":memory:");
