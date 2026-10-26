@@ -5,17 +5,41 @@
 //
 //   bun scripts/make-upgrade-fixture.ts <version> <path to that release's binary>
 //   bun scripts/make-upgrade-fixture.ts v0.18.0 /tmp/bin/v0.18.0/vaultbase
+//   bun scripts/make-upgrade-fixture.ts v0.23.2 /tmp/bin/v0.23.2/vaultbase --postgres postgres://u:p@host:5432/db
 //
-// Writes src/__tests__/fixtures/upgrade/<version>.db and <version>.json.
+// Writes src/__tests__/fixtures/upgrade/<version>.db and <version>.json; with
+// --postgres (releases from 0.23.0), runs the release on Postgres 16 in a
+// fresh `vbfixture` schema (dropped first if the database has one) and
+// writes fixtures/upgrade-postgres/<version>.sql (a plain pg_dump: INSERTs,
+// no owners or grants, so any Postgres from 16 on restores it) and
+// <version>.json. pg_dump comes from PATH or PG_DUMP and
+// must be version 16: a newer one writes settings Postgres 16 refuses.
 // Each step is tried and recorded; a step an old release doesn't support is
 // left out of the manifest, and the test only checks what the manifest lists.
-import { mkdtempSync, rmSync, copyFileSync, existsSync } from "fs";
+import { mkdtempSync, rmSync, copyFileSync, existsSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const [version, binary] = process.argv.slice(2);
-if (!version || !binary) throw new Error("usage: bun scripts/make-upgrade-fixture.ts <version> <binary>");
-const OUT_DIR = join(import.meta.dir, "..", "src", "__tests__", "fixtures", "upgrade");
+const [version, binary, flag, pgBase] = process.argv.slice(2);
+if (!version || !binary) throw new Error("usage: bun scripts/make-upgrade-fixture.ts <version> <binary> [--postgres <url>]");
+if (flag !== undefined && (flag !== "--postgres" || !pgBase)) throw new Error("the third argument is --postgres <url>");
+/** The schema the release runs in, renamed by the upgrade test when it restores the dump. */
+const PG_SCHEMA = "vbfixture";
+const pgUrl = pgBase ? `${pgBase}${pgBase.includes("?") ? "&" : "?"}options=${encodeURIComponent(`-c search_path=${PG_SCHEMA}`)}` : null;
+const OUT_DIR = join(import.meta.dir, "..", "src", "__tests__", "fixtures", pgUrl ? "upgrade-postgres" : "upgrade");
+const PG_DUMP = process.env["PG_DUMP"] ?? "pg_dump";
+if (pgUrl) {
+  const v = Bun.spawnSync([PG_DUMP, "--version"]).stdout.toString();
+  if (!/\(PostgreSQL\) 16\./.test(v)) throw new Error(`pg_dump must be version 16 (the oldest Postgres supported), got: ${v.trim() || "nothing"}`);
+  const { SQL } = await import("bun");
+  const admin = new SQL(pgBase!);
+  // pg_dump 16 refuses a newer server, but only after the whole run.
+  const [{ v: server }] = await admin.unsafe(`SELECT current_setting('server_version_num')::int AS v`);
+  if (Math.floor(server / 10000) !== 16) throw new Error(`run it against Postgres 16 (pg_dump 16 can't dump ${server}); the database is left untouched`);
+  await admin.unsafe(`DROP SCHEMA IF EXISTS ${PG_SCHEMA} CASCADE`).simple();
+  await admin.unsafe(`CREATE SCHEMA ${PG_SCHEMA}`).simple();
+  await admin.close();
+}
 const PORT = 8190 + Math.floor(Math.random() * 500);
 const BASE = `http://127.0.0.1:${PORT}`;
 const SETUP_KEY = "upgrade-fixture-setup-key-0123456789";
@@ -29,7 +53,7 @@ const USERS = [
 
 const dir = mkdtempSync(join(tmpdir(), `vb-fixture-${version}-`));
 const proc = Bun.spawn([binary], {
-  env: { ...process.env, VAULTBASE_DATA_DIR: dir, VAULTBASE_PORT: String(PORT), VAULTBASE_SETUP_KEY: SETUP_KEY, VAULTBASE_JWT_SECRET: JWT_SECRET, VAULTBASE_READ_WORKERS: "0" },
+  env: { ...process.env, VAULTBASE_DATA_DIR: dir, VAULTBASE_PORT: String(PORT), VAULTBASE_SETUP_KEY: SETUP_KEY, VAULTBASE_JWT_SECRET: JWT_SECRET, VAULTBASE_READ_WORKERS: "0", ...(pgUrl ? { VAULTBASE_DATABASE_URL: pgUrl } : {}) },
   stdout: "pipe", stderr: "pipe",
 });
 
@@ -42,7 +66,7 @@ async function api(method: string, path: string, body?: unknown, token?: string,
 }
 const ok = (s: number) => s >= 200 && s < 300;
 
-const manifest: Record<string, any> = { version, made: new Date().toISOString(), jwtSecret: JWT_SECRET, admin: ADMIN, steps: {} as Record<string, string> };
+const manifest: Record<string, any> = { version, made: new Date().toISOString(), jwtSecret: JWT_SECRET, admin: ADMIN, ...(pgUrl ? { database: "postgres", schema: PG_SCHEMA } : {}), steps: {} as Record<string, string> };
 const step = (name: string, status: number, detail?: unknown) => {
   manifest.steps[name] = ok(status) ? "ok" : `failed ${status}`;
   if (!ok(status)) console.warn(`  ${name}: ${status} ${JSON.stringify(detail).slice(0, 160)}`);
@@ -125,6 +149,22 @@ try {
 } finally {
   proc.kill("SIGTERM");
   await Promise.race([proc.exited, Bun.sleep(10_000)]);
+}
+
+if (pgUrl) {
+  const { pgToolConnection } = await import("../src/core/backups.ts");
+  const conn = pgToolConnection(pgBase!);
+  const dump = Bun.spawn([PG_DUMP, "--format=plain", "--no-owner", "--no-privileges", "--column-inserts", `--schema=${PG_SCHEMA}`, `--dbname=${conn.dbname}`], {
+    env: { ...process.env, ...conn.env }, stdout: "pipe", stderr: "pipe",
+  });
+  const [code, sql, err] = await Promise.all([dump.exited, new Response(dump.stdout).text(), new Response(dump.stderr).text()]);
+  if (code !== 0) throw new Error(`pg_dump failed (${code}): ${err.slice(0, 300)}`);
+  mkdirSync(OUT_DIR, { recursive: true });
+  await Bun.write(join(OUT_DIR, `${version}.sql`), sql);
+  await Bun.write(join(OUT_DIR, `${version}.json`), JSON.stringify(manifest, null, 2) + "\n");
+  rmSync(dir, { recursive: true, force: true });
+  console.log(`${version} (postgres): ${Object.entries(manifest.steps).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+  process.exit(0);
 }
 
 // The database file, after a clean shutdown (WAL checkpointed into it).
