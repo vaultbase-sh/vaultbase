@@ -161,8 +161,9 @@ const FEATURES: { text: string; path: React.ReactNode }[] = [
 
 /**
  * The database is chosen by the environment before the server starts, never
- * here: this says which one is in use and how to switch while switching is
- * free (nothing has been written that would need moving).
+ * here: this says which one is in use, how to switch while switching is
+ * free (nothing has been written that would need moving), and that the
+ * first admin makes it final (the server records it and refuses another).
  */
 function DatabaseNote({ database }: { database: Database }) {
   const sqlite = database === "sqlite";
@@ -182,6 +183,7 @@ function DatabaseNote({ database }: { database: Database }) {
           <>From <span className="mono">VAULTBASE_DATABASE_URL</span>. To use SQLite instead, stop the server,
           remove the variable and start it again, before creating the admin.</>
         )}{" "}
+        Creating the admin makes the choice final: the install can't move to {sqlite ? "Postgres" : "SQLite"} later.{" "}
         <a href={DATABASES_DOC} target="_blank" rel="noreferrer">Choosing a database</a>
       </p>
     </div>
