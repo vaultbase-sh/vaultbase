@@ -73,9 +73,10 @@ describe("setSetting / getSetting with encryption key set", () => {
   beforeEach(() => { process.env["VAULTBASE_ENCRYPTION_KEY"] = TEST_KEY; });
 
   it("encrypts a secret-shaped value at rest, returns plaintext on read", async () => {
-    setSetting("smtp.password", "hunter2");
+    await setSetting("smtp.password", "hunter2");
 
-    // Raw row in SQLite must NOT be the plaintext.
+    // Raw row must NOT be the plaintext. Awaited: on Postgres the read may
+    // run on another connection before the write lands.
     const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, ["smtp.password"]))!;
     expect(raw.value).not.toBe("hunter2");
     expect(isEncrypted(raw.value)).toBe(true);
@@ -85,7 +86,7 @@ describe("setSetting / getSetting with encryption key set", () => {
   });
 
   it("does not encrypt non-secret keys even with key set", async () => {
-    setSetting("theme.accent", "#ff00ff");
+    await setSetting("theme.accent", "#ff00ff");
     const raw = (await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, ["theme.accent"]))!;
     expect(raw.value).toBe("#ff00ff");
     expect(isEncrypted(raw.value)).toBe(false);
