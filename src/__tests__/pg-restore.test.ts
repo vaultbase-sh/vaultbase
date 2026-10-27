@@ -67,6 +67,13 @@ async function setUp(): Promise<void> {
   await createRecord("posts", { title: "Café" });
 }
 
+/** The archive with its middle half zeroed: its contents or its rows, unreadable. */
+function damaged(bytes: Uint8Array): Uint8Array {
+  const out = Uint8Array.from(bytes);
+  out.fill(0, Math.floor(out.length * 0.25), Math.floor(out.length * 0.75));
+  return out;
+}
+
 /** A backup of the data as it is now; its name and path. */
 async function backUp(): Promise<{ name: string; path: string }> {
   const { name } = await runBackup();
@@ -168,8 +175,9 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     const bytes = readFileSync(path);
     const store = (name: string, data: Uint8Array | string) => writeFileSync(join(dir, "backups", name), data);
 
-    // Cut short: the table of contents reads, the data doesn't.
-    store("vaultbase-20200101-000000-000.dump", bytes.subarray(0, Math.floor(bytes.length * 0.8)));
+    // Damaged in the middle (cut short, an archive may still hold all its
+    // rows: what pg_dump writes to stdout ends with a part not needed).
+    store("vaultbase-20200101-000000-000.dump", damaged(bytes));
     const cut = await call("POST", "/admin/backups/vaultbase-20200101-000000-000.dump/restore");
     expect(cut.status).toBe(422);
     // Not an archive at all.
@@ -212,6 +220,17 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     } finally {
       if (before === undefined) delete process.env["VAULTBASE_PG_RESTORE"]; else process.env["VAULTBASE_PG_RESTORE"] = before;
     }
+    expect(await titles()).toEqual(["After", "Café"]);
+    expect(await notedSchemas()).toEqual([]);
+  });
+
+  it("an archive whose rows don't all come through is refused, though pg_restore exits cleanly", async () => {
+    const { name } = await backUp();
+    await createRecord("posts", { title: "After" });
+    // The first table's COPY block left out, everything else as written.
+    const res = await withEditedPgRestore(`/^COPY / && !d { skip = 1; d = 1 } skip { if ($0 == "\\\\.") skip = 0; next } { print }`, () => call("POST", `/admin/backups/${name}/restore`));
+    expect(res.status).toBe(422);
+    expect(res.json.error).toMatch(/incomplete/);
     expect(await titles()).toEqual(["After", "Café"]);
     expect(await notedSchemas()).toEqual([]);
   });
@@ -298,7 +317,7 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     const { path } = await backUp();
     const bytes = readFileSync(path);
     const form = new FormData();
-    form.append("file", new File([bytes.subarray(0, Math.floor(bytes.length * 0.8))], "cut.dump"));
+    form.append("file", new File([damaged(bytes)], "damaged.dump"));
     expect((await call("POST", "/admin/restore", form)).status).toBe(422);
     expect(require("fs").readdirSync(dir).filter((f: string) => f.startsWith(".restore"))).toEqual([]);
   });

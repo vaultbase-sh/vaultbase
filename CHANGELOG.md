@@ -119,7 +119,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   index recovery, large CSV exports.
 - Restore on Postgres: a backup over live data, revocations and resets
   carried over, undo, a damaged archive and one whose pg_restore fails after
-  clean output refused with nothing changed, an archive holding a `psql`
+  clean output refused with nothing changed, one whose rows don't all come
+  through though pg_restore exits cleanly, a client newer than the server
+  (its SETs the server lacks left out), an archive holding a `psql`
   command or a COMMIT, a psql failing early on a large archive (no hang),
   functions of custom types, range types and aggregates moved both ways, a
   failure after the swap, writes during a restore, a second server picking

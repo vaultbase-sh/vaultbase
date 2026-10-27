@@ -324,26 +324,43 @@ async function stage(archive: string, workDir: string, inspected: { schema: stri
     // pg_restore has exited cleanly: psql reads a cut-off stream as a
     // shorter script, and would otherwise commit whatever arrived.
     const settings = new Set((await db.all<{ name: string }>(`SELECT name FROM pg_settings`)).map((r) => r.name));
-    const check = new ScriptCheck(settings);
+    const tables = inspected.toc.filter((l) => /^\d+; \d+ \d+ TABLE DATA /.test(l)).length;
+    const check = new ScriptCheck(settings, tables);
     let refused: string | null = null;
     let piped = true;
+    let streamEnded = false;
+    // A write to a psql that has exited fails, sometimes only after the
+    // call returns: checked before each write, and a late failure caught.
+    let psqlGone = false;
+    void psql.exited.then(() => { psqlGone = true; });
+    const send = async (text: string) => {
+      if (psqlGone) throw new Error("psql exited");
+      const w = psql.stdin.write(text);
+      if (w instanceof Promise) w.catch(() => { psqlGone = true; });
+      await psql.stdin.flush();
+    };
     try {
-      psql.stdin.write(prefix);
+      await send(prefix);
       const reader = restore.stdout.getReader();
       const dec = new TextDecoder();
       for (;;) {
         const { done, value } = await reader.read();
+        if (done) streamEnded = true;
         const fed = check.feed(done ? dec.decode() : dec.decode(value, { stream: true }), done);
         refused = fed.refused;
         if (refused) break;
-        if (fed.out) {
-          psql.stdin.write(fed.out);
-          await psql.stdin.flush();
-        }
+        if (fed.out) await send(fed.out);
         if (done) break;
       }
     } catch {
       piped = false; // psql stopped reading: it failed, and says why
+    }
+    // Refused at the end of the output (rows missing): pg_restore has
+    // closed it and is exiting, and its own error, if it has one, says more.
+    if (refused && streamEnded && (await restore.exited) !== 0) {
+      psql.kill(9);
+      await psql.exited;
+      throw new RestoreRefused(`pg_restore failed: ${toolError(await restoreErr)}`);
     }
     if (refused || !piped) {
       // Killed at once: pg_restore, no longer read, would block on a full
@@ -361,7 +378,7 @@ async function stage(archive: string, workDir: string, inspected: { schema: stri
       throw new RestoreRefused(`pg_restore failed: ${toolError(await restoreErr)}`);
     }
     try {
-      psql.stdin.write(suffix);
+      await send(suffix);
       await psql.stdin.end();
     } catch { /* psql already exited; its code says why */ }
     const psqlCode = await psql.exited;
@@ -604,8 +621,14 @@ async function putBack(hold: string, name: string): Promise<void> {
  * server's role: restore archives you trust, such as this install's backups.
  */
 class ScriptCheck {
-  /** Settings the server has: a newer pg_restore's own SETs it lacks are left out. */
-  constructor(private readonly settings: ReadonlySet<string>) {}
+  /**
+   * `settings`: those the server has (a newer pg_restore's own SETs it
+   * lacks are left out). `tables`: the archive's TABLE DATA entries, each
+   * of which must arrive as a whole COPY block: pg_restore exits cleanly
+   * on some archives cut short, and the missing rows would go unnoticed.
+   */
+  constructor(private readonly settings: ReadonlySet<string>, private readonly tables: number) {}
+  private copied = 0;
   private pending = "";
   private restricted = false;
   private inCopy = false;
@@ -631,12 +654,15 @@ class ScriptCheck {
       out.push(line);
     }
     if (end && !this.restricted) return { out: "", refused: OLD_PG_RESTORE };
+    if (end && (this.inCopy || this.copied !== this.tables)) {
+      return { out: "", refused: `the archive is incomplete: the rows of ${this.copied} of its ${this.tables} tables came through` };
+    }
     return { out: out.length ? `${out.join("\n")}\n` : "", refused: null };
   }
 
   private line(line: string): string | typeof SKIP | null {
     if (this.inCopy) {
-      if (line === "\\.") this.inCopy = false;
+      if (line === "\\.") { this.inCopy = false; this.copied++; }
       return null;
     }
     if (this.dollar === null) {
