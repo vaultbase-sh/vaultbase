@@ -323,7 +323,8 @@ async function stage(archive: string, workDir: string, inspected: { schema: stri
     // by line. The suffix, and with it the COMMIT, is written only once
     // pg_restore has exited cleanly: psql reads a cut-off stream as a
     // shorter script, and would otherwise commit whatever arrived.
-    const check = new ScriptCheck();
+    const settings = new Set((await db.all<{ name: string }>(`SELECT name FROM pg_settings`)).map((r) => r.name));
+    const check = new ScriptCheck(settings);
     let refused: string | null = null;
     let piped = true;
     try {
@@ -332,11 +333,11 @@ async function stage(archive: string, workDir: string, inspected: { schema: stri
       const dec = new TextDecoder();
       for (;;) {
         const { done, value } = await reader.read();
-        const text = done ? dec.decode() : dec.decode(value, { stream: true });
-        refused = check.feed(text, done);
+        const fed = check.feed(done ? dec.decode() : dec.decode(value, { stream: true }), done);
+        refused = fed.refused;
         if (refused) break;
-        if (text) {
-          psql.stdin.write(text);
+        if (fed.out) {
+          psql.stdin.write(fed.out);
           await psql.stdin.flush();
         }
         if (done) break;
@@ -603,6 +604,8 @@ async function putBack(hold: string, name: string): Promise<void> {
  * server's role: restore archives you trust, such as this install's backups.
  */
 class ScriptCheck {
+  /** Settings the server has: a newer pg_restore's own SETs it lacks are left out. */
+  constructor(private readonly settings: ReadonlySet<string>) {}
   private pending = "";
   private restricted = false;
   private inCopy = false;
@@ -610,20 +613,28 @@ class ScriptCheck {
   /** The last statement ended: the next line starts one (not `END AS …` in a view's CASE). */
   private atStart = true;
 
-  /** Feed the next chunk; the reason to stop, or null. */
-  feed(text: string, end: boolean): string | null {
+  /**
+   * Feed the next chunk: the whole lines to pass on, or the reason to stop.
+   * A client newer than the server writes SETs for settings the server
+   * doesn't have (pg_restore 17's `SET transaction_timeout = 0` on a 16
+   * server): those are left out, the rest goes through as it came.
+   */
+  feed(text: string, end: boolean): { out: string; refused: string | null } {
     this.pending += text;
     const lines = this.pending.split("\n");
     this.pending = end ? "" : lines.pop()!;
+    const out: string[] = [];
     for (const line of lines) {
       const why = this.line(line);
-      if (why) return why;
+      if (why === SKIP) { out.push(`-- left out, unknown to this server: ${line.slice(0, 80)}`); continue; }
+      if (why) return { out: "", refused: why };
+      out.push(line);
     }
-    if (end && !this.restricted) return OLD_PG_RESTORE;
-    return null;
+    if (end && !this.restricted) return { out: "", refused: OLD_PG_RESTORE };
+    return { out: out.length ? `${out.join("\n")}\n` : "", refused: null };
   }
 
-  private line(line: string): string | null {
+  private line(line: string): string | typeof SKIP | null {
     if (this.inCopy) {
       if (line === "\\.") this.inCopy = false;
       return null;
@@ -639,6 +650,8 @@ class ScriptCheck {
         return `the archive's SQL controls the transaction (${line.trim().slice(0, 40)}), which a restore doesn't run`;
       }
       if (/^COPY .* FROM stdin;$/.test(line)) { this.inCopy = true; return null; }
+      const set = this.atStart ? /^SET ([a-z_][a-z0-9_]*) = [^;]*;$/.exec(line) : null;
+      if (set && !this.settings.has(set[1]!)) return SKIP;
       const t = line.trim();
       if (t !== "" && !t.startsWith("--")) this.atStart = t.endsWith(";");
     }
@@ -653,6 +666,8 @@ class ScriptCheck {
     return null;
   }
 }
+
+const SKIP = Symbol("skip");
 
 const OLD_PG_RESTORE =
   "pg_restore is too old: restore needs a PostgreSQL client from August 2025 or later (17.6, 16.10, 15.14, 14.19, 18 or later), whose output stops psql from running commands found in an archive";

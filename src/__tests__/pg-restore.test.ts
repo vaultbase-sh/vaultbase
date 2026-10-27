@@ -332,6 +332,11 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     expect(existsSync("/tmp/vb-should-not-exist")).toBe(false);
     expect(await titles()).toEqual(["After", "Café"]);
     expect(await notedSchemas()).toEqual([]);
+    // A client newer than the server sets what the server doesn't have
+    // (pg_restore 17's transaction_timeout on 16): left out, it restores.
+    const newer = await withEditedPgRestore(`{ print } /^SET statement_timeout/ { print "SET vb_setting_from_a_newer_postgres = 0;" }`, () => call("POST", `/admin/backups/${name}/restore`));
+    expect(newer.json?.error ?? null).toBeNull();
+    expect(await titles()).toEqual(["Café"]);
     // Views whose CASE ends on a line of its own (END AS …) restore fine.
     await db.exec(`CREATE VIEW v_kinds AS SELECT CASE WHEN title = 'x' THEN 1\n ELSE 2\n END AS kind FROM vb_posts`);
     const again = await backUp();
