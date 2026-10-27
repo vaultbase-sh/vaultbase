@@ -63,17 +63,20 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     // happen, the WAL never reaches the runaway threshold that hands
     // checkpointing back to SQLite, and it shrinks once the writes stop.
     //
-    // The writer pauses while the WAL is more than two rewinds behind
+    // The writer pauses while the worker is more than two rewinds behind
     // (RESTART_FRAMES is 15,000): unthrottled, a busy machine let it outrun
     // the worker for the whole loop, built a WAL near the runaway threshold,
     // and then needed longer than the test allowed to drain it, which made
     // this test fail now and then in full-suite runs while proving nothing
-    // about the checkpointer.
+    // about the checkpointer. It counts frames not yet copied, not the WAL's
+    // size: a WAL the worker has caught up on keeps its size until the next
+    // write, so pausing on that would wait for nothing.
     const row = "x".repeat(3_000);
     const until = Date.now() + 15_000;
     let peak = 0;
+    const behind = () => { const c = checkpointStats(); return c ? c.wal_frames - c.checkpointed_frames : 0; };
     while (Date.now() < until && (checkpointStats()?.restarts ?? 0) < 3) {
-      if ((checkpointStats()?.wal_frames ?? 0) > 30_000) { await Bun.sleep(20); continue; }
+      if (behind() > 30_000) { await Bun.sleep(20); continue; }
       for (let i = 0; i < 500; i++) ins.run(row);
       await Bun.sleep(1);
       peak = Math.max(peak, checkpointStats()?.wal_frames ?? 0);
@@ -85,11 +88,17 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     expect(peak).toBeLessThan(100_000);
     // Writes stopped: once the worker has copied what was left (a pass over
     // tens of thousands of frames takes seconds on a loaded machine, and over
-    // 30 s on a slow CI runner's disk) it rewinds, and the WAL is small again.
+    // 30 s on a slow CI runner's disk), the next write starts the WAL over.
+    // SQLite rewinds the log at a write, never at the checkpoint itself, so
+    // without one the WAL keeps reporting its old size however long this
+    // waits (what made this test fail now and then in full-suite runs).
+    const one = db.prepare("INSERT INTO t (v) VALUES (?)");
     for (let i = 0; i < 1_800 && s.wal_frames >= 40_000; i++) {
+      if (s.checkpointed_frames === s.wal_frames) one.run("x");
       await Bun.sleep(50);
       s = checkpointStats()!;
     }
+    one.finalize();
     // With the worker's numbers, so a failure shows whether it stalled
     // (passes stopped) or its rewinds were refused (passes go on).
     if (s.wal_frames >= 40_000) throw new Error(`the WAL didn't shrink: ${JSON.stringify(s)}`);

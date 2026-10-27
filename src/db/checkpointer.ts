@@ -50,6 +50,10 @@ let db = null;
 let stmt = null;
 let restartStmt = null;
 let restartFrames = 0;
+// WAL size at the last RESTART that went through. SQLite rewinds the log at
+// the next write, not at the RESTART, so until a write comes the WAL reports
+// the same frames and another RESTART would do nothing.
+let rewoundAt = -1;
 let timer = null;
 function pass() {
   const t0 = performance.now();
@@ -57,15 +61,16 @@ function pass() {
     let r = stmt.get();
     const ms = performance.now() - t0;
     let restartMs = null;
-    if (r.log >= restartFrames) {
+    let rewound = false;
+    if (r.log >= restartFrames && r.log !== rewoundAt) {
       r = stmt.get();
       const t1 = performance.now();
       const rr = restartStmt.get();
       restartMs = performance.now() - t1;
       // busy=1: a reader or writer was mid-transaction; try again next pass.
-      if (!rr.busy) r = rr;
+      if (!rr.busy) { r = rr; rewound = true; rewoundAt = rr.log; }
     }
-    postMessage({ type: "pass", log: r.log, checkpointed: r.checkpointed, ms, restartMs });
+    postMessage({ type: "pass", log: r.log, checkpointed: r.checkpointed, ms, restartMs, rewound });
   } catch (e) {
     postMessage({ type: "error", message: String(e && e.message || e) });
   }
@@ -108,7 +113,11 @@ export interface CheckpointStats {
   /** Slowest pass since boot, ms. */
   max_pass_ms: number;
   passes: number;
-  /** WAL rewinds done by the worker, and how long the last / slowest held the write lock, ms. */
+  /**
+   * WAL rewinds done by the worker (RESTARTs that went through; the log
+   * starts over at the next write), and how long the last / slowest RESTART
+   * attempt held the write lock, ms.
+   */
   restarts: number;
   last_restart_ms: number;
   max_restart_ms: number;
@@ -155,7 +164,7 @@ export function startCheckpointer(client: Database, path: string, journalSizeLim
     };
     w.onmessage = (e: MessageEvent) => {
       const m = e.data as {
-        type: string; log?: number; checkpointed?: number; ms?: number; restartMs?: number | null; message?: string;
+        type: string; log?: number; checkpointed?: number; ms?: number; restartMs?: number | null; rewound?: boolean; message?: string;
       };
       if (m.type === "ready") {
         client.exec("PRAGMA wal_autocheckpoint = 0;");
@@ -167,8 +176,8 @@ export function startCheckpointer(client: Database, path: string, journalSizeLim
         stats.last_pass_ms = Math.round((m.ms ?? 0) * 10) / 10;
         if (stats.last_pass_ms > stats.max_pass_ms) stats.max_pass_ms = stats.last_pass_ms;
         stats.passes++;
+        if (m.rewound) stats.restarts++;
         if (typeof m.restartMs === "number") {
-          stats.restarts++;
           stats.last_restart_ms = Math.round(m.restartMs * 10) / 10;
           if (stats.last_restart_ms > stats.max_restart_ms) stats.max_restart_ms = stats.last_restart_ms;
         }

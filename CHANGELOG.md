@@ -60,6 +60,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Postgres: a schema whose name needs quoting** (capitals, a hyphen) broke
   search, and with this release's start-up checks would have stopped the
   server from starting. The schema is now looked up by its exact name.
+- **SQLite: the Monitoring page's "WAL rewinds" counted attempts.** A rewind
+  refused because a reader was busy counted, and so did a repeat on a WAL
+  already rewound and waiting for its next write, once per pass while the
+  server was idle. Only rewinds that went through count now.
 
 ### Upgrade notes
 
@@ -88,6 +92,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   run there: saved queries, index management, settings reload, one-time tokens
   at rest, scheduled backups, MCP `run_sql`, the fixed-schema upgrade, search
   index recovery, large CSV exports.
+- The background checkpointer test no longer fails now and then in full-suite
+  runs: it waited for the WAL to shrink with no writes, but SQLite starts the
+  log over at the next write.
 
 ## [0.28.1] — 2026-10-26
 
