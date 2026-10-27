@@ -207,6 +207,11 @@ export function rawWriteTarget(sql: string): string | null {
   return writesSomeVbTable();
 }
 
+/** withMigrationLock with `wait: false` found the lock held: another server is migrating or restoring. */
+export class MigrationLockBusy extends Error {
+  constructor() { super("another server is migrating or restoring this database"); }
+}
+
 /** An isolated() call outlived its deadline; its connection was closed. */
 export class DeadlineExceeded extends Error {
   constructor() { super("the run outlived its time budget and its connection was closed"); }
@@ -221,6 +226,7 @@ export class PostgresDriver implements DbDriver {
   /** The connection URL, for tools that open their own connection (pg_dump). */
   readonly url: string;
   private readonly als = new AsyncLocalStorage<SQL>();
+  private readonly migrationLockHeld = new AsyncLocalStorage<true>();
   private token = 1;
   private traceFn: ((sql: string) => void) | null = null;
   private savepointSeq = 0;
@@ -411,15 +417,24 @@ export class PostgresDriver implements DbDriver {
   /**
    * Run `fn` holding this schema's migration lock (a session advisory lock
    * on a connection of its own), so servers booting together migrate one
-   * at a time.
+   * at a time. Re-entrant: a restore holds it throughout and runs the
+   * migrations inside, where a second lock request from another connection
+   * would wait on the first forever. `wait: false` throws MigrationLockBusy
+   * instead of waiting.
    */
-  async withMigrationLock<T>(fn: () => Promise<T>): Promise<T> {
+  async withMigrationLock<T>(fn: () => Promise<T>, opts: { wait?: boolean } = {}): Promise<T> {
+    if (this.migrationLockHeld.getStore()) return fn();
     const lockSql = `hashtext('vaultbase:migrate:' || current_schema())`;
     const conn = await this.pool.reserve();
     try {
-      await conn.unsafe(`SELECT pg_advisory_lock(${lockSql})`);
+      if (opts.wait === false) {
+        const rows = await conn.unsafe(`SELECT pg_try_advisory_lock(${lockSql}) AS ok`) as Array<{ ok: boolean }>;
+        if (!rows[0]?.ok) throw new MigrationLockBusy();
+      } else {
+        await conn.unsafe(`SELECT pg_advisory_lock(${lockSql})`);
+      }
       try {
-        return await fn();
+        return await this.migrationLockHeld.run(true, fn);
       } finally {
         await conn.unsafe(`SELECT pg_advisory_unlock(${lockSql})`).catch(() => { /* released with the connection */ });
       }

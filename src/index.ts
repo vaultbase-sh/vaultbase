@@ -408,6 +408,10 @@ async function main() {
     for (const name of config.secretsFromDataDir ?? []) {
       console.warn(`[vaultbase] ${name} is not set: every server on this database needs the same value`);
     }
+    // Data replaced by a restore, kept 7 days for an undo (core/pg-restore.ts).
+    const restore = await import("./core/pg-restore.ts");
+    restore.sweepRestoreFiles(config.dataDir);
+    restore.startRestoreCleanup();
   }
 
   // CLI sub-command — bootstrap an admin from a script + exit. Skips

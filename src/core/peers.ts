@@ -222,6 +222,11 @@ function resetAll(): void {
   for (const k of resettable) inbound = inbound.then(() => handle({ k }));
 }
 
+/** Drop everything resettable, as after a reconnect (another server swapped the data in). */
+export function resetPeerCaches(): void {
+  resetAll();
+}
+
 function warn(e: unknown): void {
   console.warn(`[peers] ${e instanceof Error ? e.message : String(e)}`);
 }

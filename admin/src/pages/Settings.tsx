@@ -1694,6 +1694,54 @@ function UpdatesSection() {
 
 // ── Backup / restore ─────────────────────────────────────────────────────────
 interface StoredBackup { name: string; size: number; created_at: number }
+/** Data a Postgres restore replaced, kept for an undo. */
+interface PreviousData {
+  schema: string; replaced_by: "restore" | "undo"; source: string | null;
+  at: number; expires_at: number; size_bytes: number;
+}
+type RestorePhase = "checking" | "staging" | "swapping" | "migrating";
+const PHASE_LABEL: Record<RestorePhase, string> = {
+  checking: "checking the file", staging: "loading the backup", swapping: "swapping it in", migrating: "updating",
+};
+
+/**
+ * Run a Postgres restore or undo with `?progress=1`, reporting each phase:
+ * the answer is JSON lines, ending with `done` or `error`.
+ */
+async function streamRestore(url: string, body: BodyInit | undefined, onPhase: (p: RestorePhase) => void): Promise<{ error?: string; message?: string; swapped?: boolean }> {
+  const token = getMemoryToken();
+  const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}progress=1`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    ...(body !== undefined ? { body } : {}),
+  });
+  if (!res.body || !(res.headers.get("content-type") ?? "").includes("ndjson")) {
+    const json = await res.json().catch(() => ({})) as { error?: string; swapped?: boolean };
+    return { error: json.error ?? res.statusText, swapped: json.swapped === true };
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let last: { error?: string; message?: string; done?: boolean; swapped?: boolean } = {};
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      const msg = JSON.parse(line) as { phase?: RestorePhase; error?: string; message?: string; done?: boolean; swapped?: boolean };
+      if (msg.phase) onPhase(msg.phase);
+      else if (msg.done || msg.error) last = msg; // anything else is a keepalive
+    }
+    if (done) break;
+  }
+  if (last.error) return { error: last.error, swapped: last.swapped === true };
+  if (!last.done) return { error: "the connection closed before the restore finished; check this page again in a minute" };
+  return { message: last.message };
+}
 interface BackupStatus {
   enabled: boolean; cron: string; keep: number; s3: boolean;
   next_run_at: number | null; last_run_at: number | null; last_error: string | null;
@@ -1731,6 +1779,14 @@ async function downloadAuthed(url: string, fallbackName: string): Promise<void> 
 function BackupSection() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
+  const [phase, setPhase] = useState<RestorePhase | null>(null);
+  // Postgres: restores keep the data they replace (GET /admin/restores is 404 on SQLite).
+  const [pg, setPg] = useState(false);
+  const [canRestorePg, setCanRestorePg] = useState(true);
+  // Restore stays off until the database is known: the SQLite path would
+  // send a Postgres upload without progress, and with the wrong warnings.
+  const [detected, setDetected] = useState(false);
+  const [previous, setPrevious] = useState<PreviousData[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -1751,6 +1807,58 @@ function BackupSection() {
   async function refresh() {
     const res = await api.get<ApiResponse<{ items: StoredBackup[]; status: BackupStatus }>>("/api/v1/admin/backups");
     if (res.data) { setItems(res.data.items); setStatus(res.data.status); }
+    const kept = await api.get<ApiResponse<{ items: PreviousData[]; can_restore: boolean }>>("/api/v1/admin/restores");
+    if (kept.data) { setPg(true); setPrevious(kept.data.items); setCanRestorePg(kept.data.can_restore); }
+    setDetected(true);
+  }
+
+  /** A Postgres restore or undo, with its phase on the button. */
+  async function runPostgres(url: string, body?: BodyInit): Promise<boolean> {
+    setRestoring(true);
+    setPhase(null);
+    try {
+      const r = await streamRestore(url, body, setPhase);
+      if (r.error) {
+        toast(r.swapped ? r.error : `Restore failed: ${r.error}`, "info");
+        // The data changed even so: everything on screen is from before.
+        if (r.swapped) setTimeout(() => window.location.reload(), 2500);
+        return false;
+      }
+      toast(r.message ?? "Restored", "check");
+      setTimeout(() => window.location.reload(), 1200);
+      return true;
+    } catch (err) {
+      toast(`Restore failed: ${err instanceof Error ? err.message : String(err)}`, "info");
+      return false;
+    } finally {
+      setRestoring(false);
+      setPhase(null);
+      void refresh();
+    }
+  }
+
+  async function undo(p: PreviousData) {
+    const ok = await confirm({
+      title: "Put this data back",
+      message: `Put back the data from before ${p.replaced_by === "restore" ? "the restore" : "the undo"} of ${fmtTime(p.at)}?\n\nIt replaces the current data, which is kept here for 7 days in turn. Sessions revoked since then stay revoked.`,
+      danger: true,
+      confirmLabel: "Put back",
+    });
+    if (!ok) return;
+    await runPostgres(`/api/v1/admin/restores/${encodeURIComponent(p.schema)}/undo`);
+  }
+
+  async function dropPrevious(p: PreviousData) {
+    const ok = await confirm({
+      title: "Delete previous data",
+      message: `Delete the data kept from before ${fmtTime(p.at)}? It can't be put back afterwards.`,
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
+    const res = await api.delete<ApiResponse<unknown>>(`/api/v1/admin/restores/${encodeURIComponent(p.schema)}`);
+    if (res.error) toast(res.error, "info");
+    void refresh();
   }
 
   useEffect(() => {
@@ -1827,11 +1935,14 @@ function BackupSection() {
   async function restoreStored(name: string) {
     const ok = await confirm({
       title: "Restore from backup",
-      message: `Restore from "${name}"?\n\nThis will REPLACE all current data with this snapshot. The current database is kept next to it as a .bak file.`,
+      message: pg
+        ? `Restore from "${name}"?\n\nThis will REPLACE all current data with this backup. The current data is kept for 7 days and can be put back from this page.`
+        : `Restore from "${name}"?\n\nThis will REPLACE all current data with this snapshot. The current database is kept next to it as a .bak file.`,
       danger: true,
       confirmLabel: "Restore",
     });
     if (!ok) return;
+    if (pg) { await runPostgres(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`); return; }
     setRestoring(true);
     const res = await api.post<ApiResponse<unknown>>(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`, {});
     setRestoring(false);
@@ -1845,7 +1956,9 @@ function BackupSection() {
     if (!file) return;
     const ok = await confirm({
       title: "Restore from backup",
-      message: `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the contents of the uploaded SQLite file. This cannot be undone.`,
+      message: pg
+        ? `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the uploaded backup. The current data is kept for 7 days and can be put back from this page.`
+        : `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the contents of the uploaded SQLite file. This cannot be undone.`,
       danger: true,
       confirmLabel: "Restore",
     });
@@ -1853,9 +1966,14 @@ function BackupSection() {
       e.target.value = "";
       return;
     }
-    setRestoring(true);
     const fd = new FormData();
     fd.append("file", file);
+    if (pg) {
+      await runPostgres("/api/v1/admin/restore", fd);
+      e.target.value = "";
+      return;
+    }
+    setRestoring(true);
     const token = getMemoryToken();
     try {
       const res = await fetch("/api/v1/admin/restore", {
@@ -1982,7 +2100,7 @@ function BackupSection() {
                   onClick={() => void downloadAuthed(`/api/v1/admin/backups/${encodeURIComponent(b.name)}`, b.name)}>
                   Download
                 </VbBtn>
-                <VbBtn kind="ghost" size="sm" icon="upload" disabled={restoring}
+                <VbBtn kind="ghost" size="sm" icon="upload" disabled={restoring || !detected || (pg && !canRestorePg)}
                   onClick={() => void restoreStored(b.name)}>
                   Restore
                 </VbBtn>
@@ -1995,27 +2113,64 @@ function BackupSection() {
         )}
       </VbField>
 
+      {pg && (
+        <VbField
+          label="Previous data"
+          hint="What a restore replaced, kept for 7 days in the database, then dropped. Putting it back keeps the data it replaces in turn."
+        >
+          {previous.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>Nothing kept.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 6 }}>
+              {previous.map((p) => (
+                <div key={p.schema} style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", flexWrap: "wrap",
+                  border: "1px solid var(--vb-border)", borderRadius: 6, fontSize: 12,
+                }}>
+                  <span style={{ flex: 1, minWidth: 200 }}>
+                    Before {p.replaced_by === "restore" ? "restoring" : "putting back"}{" "}
+                    <span style={{ fontFamily: "var(--font-mono)" }}>{p.source ?? "a backup"}</span>
+                    <span style={{ color: "var(--vb-fg-3)" }}> · {fmtTime(p.at)} · kept until {fmtTime(p.expires_at)}</span>
+                  </span>
+                  <span style={{ color: "var(--vb-fg-3)", fontVariantNumeric: "tabular-nums" }}>{fmtSize(p.size_bytes)}</span>
+                  <VbBtn kind="ghost" size="sm" icon="upload" disabled={restoring || !canRestorePg} onClick={() => void undo(p)}>
+                    Put back
+                  </VbBtn>
+                  <VbBtn kind="ghost" size="sm" icon="trash" disabled={restoring} onClick={() => void dropPrevious(p)}>
+                    Delete
+                  </VbBtn>
+                </div>
+              ))}
+            </div>
+          )}
+        </VbField>
+      )}
+
       <VbField
         label="Download current database"
         hint="A consistent snapshot of the live database, taken now and not stored on the server."
       >
         <div>
           <VbBtn kind="ghost" size="sm" icon="download"
-            onClick={() => void downloadAuthed("/api/v1/admin/backup", "vaultbase-backup.db")}>
-            Download .db
+            onClick={() => void downloadAuthed("/api/v1/admin/backup", pg ? "vaultbase-backup.dump" : "vaultbase-backup.db")}>
+            {pg ? "Download .dump" : "Download .db"}
           </VbBtn>
         </div>
       </VbField>
 
       <VbField
         label="Restore from file"
-        hint="Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged)."
+        hint={pg && !canRestorePg
+          ? <>Restore on Postgres needs <VbCode>pg_restore</VbCode> and <VbCode>psql</VbCode> on the server, next to <VbCode>pg_dump</VbCode>, or named by <VbCode>VAULTBASE_PG_RESTORE</VbCode> and <VbCode>VAULTBASE_PSQL</VbCode>.</>
+          : pg
+          ? "Replaces all current data with an uploaded .dump from this page. The current data is kept for 7 days. Existing JWTs remain valid (signing key unchanged)."
+          : "Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged)."}
         right={<VbPill tone="warning" dot>destructive</VbPill>}
       >
         <input
           ref={fileInputRef}
           type="file"
-          accept=".db,application/octet-stream"
+          accept={pg ? ".dump,application/octet-stream" : ".db,application/octet-stream"}
           style={{ display: "none" }}
           onChange={handleRestore}
         />
@@ -2025,9 +2180,9 @@ function BackupSection() {
             size="sm"
             icon="upload"
             onClick={() => fileInputRef.current?.click()}
-            disabled={restoring}
+            disabled={restoring || !detected || (pg && !canRestorePg)}
           >
-            {restoring ? "Restoring…" : "Upload .db"}
+            {restoring ? `Restoring…${phase ? ` (${PHASE_LABEL[phase]})` : ""}` : pg ? "Upload .dump" : "Upload .db"}
           </VbBtn>
         </div>
       </VbField>

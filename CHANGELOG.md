@@ -9,6 +9,31 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Added
+
+- **Restore from the backups page on Postgres**, while the server keeps
+  running, from a stored backup or an uploaded `.dump`. The backup is loaded
+  into a schema of its own in one transaction (a damaged file is refused
+  with `422` and nothing changes), then swapped in, in another: writes wait
+  for the swap on every server sharing the database and continue on the
+  restored data. Sessions revoked since the backup stay revoked, grants on
+  the tables carry over, and the restored schema is migrated to this
+  version. Needs `pg_restore` and `psql` next to `pg_dump`
+  (`VAULTBASE_PG_RESTORE`, `VAULTBASE_PSQL`), from a PostgreSQL client of
+  August 2025 or later (17.6, 16.10, 15.14, 14.19, 18): their output keeps
+  `psql` from running commands found in an archive. The archive's SQL is
+  checked on its way (no `psql` commands, nothing that ends the
+  transaction); restore archives you trust. A restore or undo while another
+  runs, on any server, answers `409`, and objects a restore can't move
+  (extended statistics, collations, operators) are refused by name.
+- **The data a Postgres restore replaces is kept for 7 days**, listed under
+  Previous data on the backups page with Put back (an undo) and Delete, and
+  in `GET /api/v1/admin/restores`, `POST /api/v1/admin/restores/<schema>/undo`
+  and `DELETE /api/v1/admin/restores/<schema>`.
+- **`?progress=1` on restore and undo** answers with a JSON line per phase,
+  repeated while a long phase runs, so a large restore isn't cut off by the
+  server's idle timeout. The admin shows the phase on the button.
+
 ### Changed
 
 - **The database is chosen at install and is final.** Once an install has its
@@ -92,6 +117,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
   run there: saved queries, index management, settings reload, one-time tokens
   at rest, scheduled backups, MCP `run_sql`, the fixed-schema upgrade, search
   index recovery, large CSV exports.
+- Restore on Postgres: a backup over live data, revocations and resets
+  carried over, undo, a damaged archive and one whose pg_restore fails after
+  clean output refused with nothing changed, an archive holding a `psql`
+  command or a COMMIT, a psql failing early on a large archive (no hang),
+  functions of custom types, range types and aggregates moved both ways, a
+  failure after the swap, writes during a restore, a second server picking
+  up the restored data, a peer's hold renewed and expiring, and an install
+  in `public`.
 - The background checkpointer test no longer fails now and then in full-suite
   runs: it waited for the WAL to shrink with no writes, but SQLite starts the
   log over at the next write.

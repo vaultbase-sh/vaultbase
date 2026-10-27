@@ -4,7 +4,8 @@
  */
 import { getDriver } from "../db/index.ts";
 import type { PostgresDriver } from "../db/postgres.ts";
-import { onPeerMessage, type PeerMessage } from "./peers.ts";
+import { onPeerMessage, resetPeerCaches, type PeerMessage } from "./peers.ts";
+import { withExclusiveWrite } from "./write-gate.ts";
 import type { BusMessage } from "./thread-bus.ts";
 import { applyTableReport } from "./table-writes.ts";
 import { _resetCollectionCache, getCollection, invalidateSensitiveSchema, invalidateUserTableColumnCache } from "./collections.ts";
@@ -82,4 +83,41 @@ onPeerMessage("rec", async (msg: PeerMessage) => {
 
 onPeerMessage("sys", (msg) => {
   broadcastSystem(msg["topic"] as string, msg["message"] as object);
+});
+
+/**
+ * Another server is about to swap restored data in (core/pg-restore.ts):
+ * writes here wait, so none lands on a table being moved or from a cache
+ * about to go stale, until it says it's done or `ms` runs out. It repeats
+ * the message while it works, each repeat moving the deadline; one that
+ * stops repeating has died, and writes carry on once the last deadline
+ * passes, with every cache dropped, since the swap may have committed.
+ * Reads go on; they wait on the swap's locks and then read the restored
+ * tables.
+ */
+const MAX_HOLD_MS = 120_000;
+let hold: { renew: (ms: number) => void; release: () => void } | null = null;
+onPeerMessage("restore:begin", (msg) => {
+  const ms = Math.min(Math.max(Number(msg["ms"]) || 0, 0), MAX_HOLD_MS);
+  if (hold) { hold.renew(ms); return; }
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let timer: ReturnType<typeof setTimeout>;
+  const expire = () => { if (hold === current) { hold = null; release(); resetPeerCaches(); } };
+  const current = {
+    renew: (next: number) => { clearTimeout(timer); timer = setTimeout(expire, next); },
+    // Cleared here, not once the gate is let go: a hold asked for right
+    // after this one ends must not be taken for this one.
+    release: () => { clearTimeout(timer); if (hold === current) hold = null; release(); },
+  };
+  hold = current;
+  current.renew(ms);
+  // Not awaited: the messages after this one must still be handled.
+  void withExclusiveWrite(async (tx) => { await released; tx.commit(); }).catch(() => { /* nothing ran inside */ });
+});
+
+/** The swap is done, or failed: everything cached goes, and writes carry on. */
+onPeerMessage("cache:restored", () => {
+  hold?.release();
+  resetPeerCaches();
 });

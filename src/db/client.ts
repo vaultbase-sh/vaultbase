@@ -93,6 +93,11 @@ async function openTestSchema(base: string): Promise<DB> {
     const a = new PostgresDriver(base, { max: 1 });
     try {
       await a.exec(`DROP SCHEMA ${name} CASCADE`);
+      // Previous data and staging schemas a restore test left (core/pg-restore.ts).
+      const kept = await a.all<{ n: string }>(
+        `SELECT nspname AS n FROM pg_namespace WHERE obj_description(oid, 'pg_namespace') LIKE 'vaultbase:%"schema":"${name}"%'`,
+      );
+      for (const { n } of kept) await a.exec(`DROP SCHEMA "${n}" CASCADE`).catch(() => { /* in use */ });
       // The read-only login a test made for this schema (src/core/pg-readonly.ts).
       const ro = await a.get<{ r: string }>(`SELECT 'vb_ro_' || left(md5(current_database() || '/' || '${name}'), 16) AS r`);
       if (ro) {

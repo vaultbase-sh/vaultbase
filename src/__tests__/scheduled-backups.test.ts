@@ -23,6 +23,7 @@ import {
   backupTick, getBackupStatus, isBackupName, listBackups, runBackup, setBackupsDir,
 } from "../core/backups.ts";
 import { nextRunFromCron } from "../core/jobs.ts";
+import { restoreTools } from "../core/pg-restore.ts";
 
 const SECRET = "test-secret-backups";
 let tmpDir: string;
@@ -173,7 +174,7 @@ describe.skipIf(!canBackUp)("admin API", () => {
     }
   });
 
-  it("restores a stored backup (Postgres: refused, until restore lands there)", async () => {
+  it("restores a stored backup (Postgres: 501 without pg_restore and psql)", async () => {
     const app = makeBackupPlugin(SECRET, dbPath);
     configureInstallRecord(tmpDir);
     await recordInstall();
@@ -185,7 +186,7 @@ describe.skipIf(!canBackUp)("admin API", () => {
     await recordInstall();
     await setSetting("probe", "after");
     const res = await app.handle(await adminReq("POST", `/admin/backups/${name}/restore`));
-    if (!onSqlite) {
+    if (!onSqlite && !restoreTools()) {
       expect(res.status).toBe(501);
       expect(getSetting("probe", "")).toBe("after");
       return;

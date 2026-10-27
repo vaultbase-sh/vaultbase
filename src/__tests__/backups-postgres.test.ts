@@ -2,7 +2,8 @@
  * Backups on Postgres: pg_dump archives of the server's schema, through the
  * same pipeline as SQLite's (local copies, keep count, download). Runs when
  * VAULTBASE_TEST_DB is Postgres and VAULTBASE_PG_DUMP (or pg_dump on the
- * PATH) is there; restore from the admin stays SQLite-only (501 on both routes).
+ * PATH) is there. Restore itself is in pg-restore.test.ts; here, the 501
+ * a server without pg_restore and psql answers on both routes.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
@@ -59,7 +60,10 @@ describe.skipIf(onSqlite)("restore on Postgres", () => {
     await closeDb();
   });
 
-  it("answers 501 with pg_restore guidance, for a stored backup and an upload", async () => {
+  it("without pg_restore, answers 501 with guidance, for a stored backup and an upload", async () => {
+    const before = process.env["VAULTBASE_PG_RESTORE"];
+    process.env["VAULTBASE_PG_RESTORE"] = "/nonexistent/pg_restore";
+    try {
     const SECRET = "test-secret-pg-restore";
     const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
     const plugin = makeBackupPlugin(SECRET, join(tmpdir(), `vb-pg-restore-${Date.now()}.db`));
@@ -72,6 +76,9 @@ describe.skipIf(onSqlite)("restore on Postgres", () => {
       const res = await plugin.handle(req);
       expect(res.status).toBe(501);
       expect(((await res.json()) as { error: string }).error).toContain("pg_restore");
+    }
+    } finally {
+      if (before === undefined) delete process.env["VAULTBASE_PG_RESTORE"]; else process.env["VAULTBASE_PG_RESTORE"] = before;
     }
   });
 });

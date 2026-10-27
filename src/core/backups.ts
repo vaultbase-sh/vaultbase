@@ -89,7 +89,7 @@ function stampName(ms: number, ext: string): string {
 }
 
 /** The pg_dump binary: `VAULTBASE_PG_DUMP`, or `pg_dump` on the PATH. Null when there is none. */
-function pgDumpBinary(): string | null {
+export function pgDumpBinary(): string | null {
   const named = process.env["VAULTBASE_PG_DUMP"];
   if (named) return existsSync(named) ? named : Bun.which(named);
   return Bun.which("pg_dump");
