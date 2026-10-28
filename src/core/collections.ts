@@ -1018,13 +1018,16 @@ export async function alterUserTable(
  * A schema change that awaits between its statements runs in one
  * transaction with the write gate held, so no record write can join it
  * and be lost with its rollback. Inside an already gated call (a batch, a
- * hook) the transaction alone is enough: the caller holds the gate.
+ * hook) the transaction alone is enough: the caller holds the gate. The
+ * transaction takes SQLite's write lock up front: it reads before it
+ * writes, and a read transaction can't wait for another connection's write
+ * lock (the background checkpointer's), it fails with "database is locked".
  */
 async function schemaChange<T>(fn: () => Promise<T>): Promise<T> {
-  if (gateMode() !== null) return db.transaction(fn, { immediate: false });
+  if (gateMode() !== null) return db.transaction(fn);
   return withExclusiveWrite(async (tx) => {
     try {
-      const out = await db.transaction(fn, { immediate: false });
+      const out = await db.transaction(fn);
       tx.commit();
       return out;
     } catch (e) {

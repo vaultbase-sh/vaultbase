@@ -41,7 +41,7 @@ SELECT "id" FROM "vb_gold_people" WHERE "id" = ? LIMIT 1;
 INSERT INTO "vb_gold" ("id", "title", "stamp", "author", "created_at", "updated_at") VALUES (?, ?, ?, ?, ?, ?);
 SELECT * FROM "vb_gold" WHERE "id" = ?;
 COMMIT;
-BEGIN;
+BEGIN IMMEDIATE;
 SELECT * FROM "vb_gold_people" WHERE "id" = ?;
 SELECT "id" FROM "vb_gold" WHERE "author" = ?;
 SELECT * FROM "vb_gold" WHERE "id" = ?;

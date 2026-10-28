@@ -242,7 +242,11 @@ export function makeBatchPlugin(jwtSecret: string) {
       // Atomic: one transaction, committed or rolled back as a whole. It
       // lives on the shared connection and spans awaits, so the write gate
       // keeps every other record write (and other batches) out until it
-      // finishes. The lock is taken at the first write, as it always was.
+      // finishes. SQLite's write lock is taken up front: started deferred,
+      // the transaction read first (a table's columns, a relation), and its
+      // first write then failed at once with "database is locked" whenever
+      // another connection held the lock, the background checkpointer
+      // among them; a read can't wait for a writer and keep its snapshot.
       return withExclusiveWrite(async (tx) => {
         const results: BatchResult[] = [];
         try {
@@ -254,7 +258,7 @@ export function makeBatchPlugin(jwtSecret: string) {
               if (result.status >= 400) throw new BatchOpError(result);
               results.push(result);
             }
-          }, { immediate: false });
+          });
           flushTableReports();
           tx.commit(); // realtime / webhooks / after-hooks for the committed writes
           return { data: results };

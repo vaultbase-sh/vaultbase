@@ -120,7 +120,10 @@ jobs:
           curl -fsS localhost:8091/_/ready
           docker logs vb 2>&1 | grep -q "Setup key:" || { echo "::error::no setup key in the log"; docker logs vb; exit 1; }
           docker rm -f vb
-          # Backups and restore on Postgres run these.
-          for platform in linux/amd64 linux/arm64; do
-            docker run --rm --platform "$platform" --entrypoint sh "$img" -c 'pg_dump --version && pg_restore --version && psql --version'
-          done
+          # Backups and restore on Postgres run these; images of releases
+          # before 0.29.0 (built from their own Dockerfile) don't have them.
+          if grep -q pg_dump deploy/docker/Dockerfile; then
+            for platform in linux/amd64 linux/arm64; do
+              docker run --rm --platform "$platform" --entrypoint sh "$img" -c 'pg_dump --version && pg_restore --version && psql --version'
+            done
+          fi

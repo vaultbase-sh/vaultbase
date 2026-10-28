@@ -88,6 +88,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Fixed
 
+- **SQLite: batches failed with `500 database is locked` under steady
+  writes.** A batch's transaction started without SQLite's write lock and
+  read first (a table's columns, a relation), and SQLite refuses at once,
+  without waiting, to turn a read into a write while another connection
+  holds the lock. The background checkpointer holds it for a moment each
+  time it rewinds the WAL. Seeding about 4,000 records a second through
+  `/batch` hit it within a minute. Field changes, renames, deletes that
+  cascade, and the first search index on a collection had the same flaw.
+  All of them now take the lock up front and wait for it.
 - **Postgres: every start re-ran the schema's CREATE statements.** Even with
   `IF NOT EXISTS`, creating an index waits for a lock behind the table's
   writers, so a server starting next to busy ones could stall on its schema
@@ -165,6 +174,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   failure after the swap, writes during a restore, a second server picking
   up the restored data, a peer's hold renewed and expiring, and an install
   in `public`.
+- Batches, field changes, cascading deletes and new search indexes while a
+  worker thread checkpoints the WAL nonstop, as the background checkpointer
+  does under load: none fails with `database is locked`.
 - `vaultbase doctor`, `backup` and `wipe` on Postgres, on the test schema and
   through the CLI in a subprocess: client tool versions checked, no file left
   by a failed dump, a dry run changing nothing, objects outside Vaultbase

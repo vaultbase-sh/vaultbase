@@ -1518,8 +1518,9 @@ async function deleteRecordOwned(
 
   return withExclusiveWrite(async (tx) => {
     try {
-      // The lock is taken at the first write, as it always was here.
-      await db.transaction(run, { immediate: false });
+      // SQLite's write lock up front: the cascade reads before it deletes,
+      // and a read transaction can't wait for another connection's lock.
+      await db.transaction(run);
       flushTableReports();
       tx.commit();
     } catch (e) {

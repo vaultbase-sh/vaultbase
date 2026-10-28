@@ -132,7 +132,10 @@ export async function syncFts(collection: string, fields: readonly FieldLike[]):
   const vals = (p: "new" | "old") => cols.map((c) => `${p}.${q(c)}`).join(", ");
 
   // Commit open record writes first; this schema change runs on its own,
-  // synchronously, so no other write can join it.
+  // synchronously, so no other write can join it. The write lock is taken
+  // up front: the DROP ... IF EXISTS statements only read when there is
+  // nothing to drop, and a read transaction can't wait for another
+  // connection's write lock (the checkpointer's) when it comes to write.
   flushGroupCommit();
   db.sync.transaction(() => {
     for (const t of triggerNames(collection)) db.sync.exec(`DROP TRIGGER IF EXISTS ${q(t)}`);
@@ -157,7 +160,7 @@ export async function syncFts(collection: string, fields: readonly FieldLike[]):
        END`,
     );
     db.sync.exec(`INSERT INTO ${fts}(${fts}) VALUES ('rebuild')`);
-  }, { immediate: false });
+  });
 }
 
 /**
