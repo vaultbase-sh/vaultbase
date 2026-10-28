@@ -278,7 +278,9 @@ export function startQueueScheduler(): void {
   leaseInterval = setInterval(() => { void renewLeases().catch(() => { /* next renewal */ }); }, LEASE_RENEW_MS);
   leaseInterval.unref?.();
   schedulerInterval = setInterval(() => { void tick().catch(() => { /* next tick */ }); }, POLL_INTERVAL_MS);
-  void tick();
+  // Like every tick: a failure (the database closing under it at shutdown)
+  // waits for the next one instead of going unhandled.
+  void tick().catch(() => { /* next tick */ });
 }
 
 export function queueSchedulerRunning(): boolean {
