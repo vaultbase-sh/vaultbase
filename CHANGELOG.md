@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.29.0] — 2026-10-28
 
 ### Added
 
@@ -154,6 +154,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   with an admin starts as before; it is refused only if the Postgres
   database has no admin (check the URL, then move `data.db` aside).
 - `vaultbase wipe` removes `database.json` too.
+- Postgres: run `vaultbase doctor` after upgrading. It lists enabled hooks,
+  routes, jobs and workers that use `helpers.db`; they already failed when
+  they ran, and now can't be saved or re-enabled until they use
+  `helpers.sql`. A hooks-folder file that uses it no longer loads.
 
 ### Tests
 
