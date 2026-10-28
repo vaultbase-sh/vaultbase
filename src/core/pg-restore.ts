@@ -177,6 +177,11 @@ async function notedSchemas(live: string): Promise<Array<{ schema: string; note:
   return out;
 }
 
+/** Every schema a restore made for this install: previous data and staging (`vaultbase wipe`). */
+export async function restoreSchemas(): Promise<string[]> {
+  return (await notedSchemas(await liveSchema())).map((s) => s.schema);
+}
+
 /** Previous data kept for this install, newest first. */
 export async function listPreviousData(): Promise<PreviousData[]> {
   const live = await liveSchema();

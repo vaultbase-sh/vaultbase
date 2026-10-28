@@ -226,14 +226,14 @@ Subcommands:
   token                           API-token management (mint / list / revoke).
                                   vaultbase token --help for subcommands.
 
-  doctor                          Pre-flight DB checks for v0.11 auth migration.
-                                  Read-only; exits non-zero on blockers.
+  doctor                          Read-only checks of the install's database.
+                                  Exits non-zero on blockers. --help for details.
 
-  wipe                            Hard-reset the install (delete data dir).
+  wipe                            Hard-reset the install (database and data dir).
                                   --yes (perform) [--force] (override prod refusal).
 
-  backup                          Take a snapshot of the SQLite DB.
-                                  --to <path>
+  backup                          Snapshot the database (SQLite file, or pg_dump
+                                  archive on Postgres). --to <path|s3://…>
 
   update                          Print update status against GitHub releases.
 
@@ -258,6 +258,36 @@ Environment:
 
 Docs: https://docs.vaultbase.dev
 `;
+
+/**
+ * Before doctor, wipe or backup: on Postgres (VAULTBASE_DATABASE_URL), open
+ * the database, checked to be this data directory's install as the server
+ * checks it. On SQLite the command opens the file itself; only the check
+ * that the data directory isn't a Postgres install's runs. Exits 2 on a
+ * refusal or a database that can't be opened. `--help` opens nothing.
+ */
+async function openForCommand(command: string, dataDir: string, argv: readonly string[]): Promise<"sqlite" | "postgres" | "help"> {
+  if (argv.includes("--help") || argv.includes("-h")) return "help";
+  const url = process.env["VAULTBASE_DATABASE_URL"];
+  const installMarker = await import("./core/install-marker.ts");
+  const { isPostgresUrl } = await import("./db/client.ts");
+  if (url && !isPostgresUrl(url)) {
+    process.stderr.write(`vaultbase ${command}: VAULTBASE_DATABASE_URL isn't a postgres:// URL; unset it to use the data directory's SQLite database\n`);
+    process.exit(2);
+  }
+  try {
+    if (!url) {
+      installMarker.checkDataDir(dataDir, "sqlite");
+      return "sqlite";
+    }
+    await installMarker.openInstallDatabase(dataDir, url);
+    return "postgres";
+  } catch (e) {
+    const refused = installMarker.refusal(e, `vaultbase ${command}`);
+    process.stderr.write(refused ?? `vaultbase ${command}: can't open the database: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+  }
+}
 
 async function main() {
   // Top-level help — fast path, no DB / config load.
@@ -295,32 +325,48 @@ async function main() {
     }
   }
 
-  // `vaultbase doctor` — pre-flight checks for the v0.11 auth-collection
-  // migration. Read-only DB inspection; reports blockers + warnings and
-  // exits non-zero on blockers so CI / scripts can guard.
-  // The file tools work on the SQLite file; on another database the
-  // provider's own tools do these jobs.
-  if (process.env["VAULTBASE_DATABASE_URL"] && ["doctor", "wipe", "backup"].includes(process.argv[2] ?? "")) {
-    process.stderr.write(`vaultbase ${process.argv[2]}: not available with VAULTBASE_DATABASE_URL set (use pg_dump, DROP SCHEMA or your provider's tools)\n`);
-    process.exit(1);
-  }
+  // `vaultbase doctor` — read-only checks. SQLite: pre-flight for the v0.11
+  // auth-collection migration. Postgres: version, schema, search path,
+  // client tools, helpers.db hooks (scripts/doctor.ts). Exits non-zero on
+  // blockers so CI / scripts can guard.
   if (process.argv[2] === "doctor") {
     // Read-only: no loadConfig(), which creates the data directory and its
     // key files on a path that may not be an install at all.
     const { join } = await import("node:path");
-    const dbPath = join(process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data", "data.db");
-    const { runDoctorCli } = await import("./scripts/doctor.ts");
-    const code = runDoctorCli(process.argv.slice(3), dbPath);
-    process.exit(code);
+    const dataDir = process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data";
+    const doctor = await import("./scripts/doctor.ts");
+    const opened = await openForCommand("doctor", dataDir, process.argv.slice(3));
+    if (opened === "help") {
+      process.stdout.write(doctor.DOCTOR_HELP);
+      process.exit(0);
+    }
+    if (opened === "postgres") {
+      try {
+        process.exit(await doctor.runPostgresDoctorCli());
+      } catch (e) {
+        process.stderr.write(`vaultbase doctor: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      }
+    }
+    process.exit(doctor.runDoctorCli(process.argv.slice(3), join(dataDir, "data.db")));
   }
 
   // `vaultbase wipe` — hard-reset the install. Dry-run by default;
   // refuses on production signals unless `--force`. See scripts/wipe.ts.
   if (process.argv[2] === "wipe") {
+    const wipe = await import("./scripts/wipe.ts");
+    // Before loadConfig(), which creates the data directory and its keys.
+    if (process.argv.includes("--help") || process.argv.includes("-h")) process.exit(wipe.runWipeCli(process.argv.slice(3), ""));
     const config = await loadConfig();
-    const { runWipeCli } = await import("./scripts/wipe.ts");
-    const code = runWipeCli(process.argv.slice(3), config.dataDir);
-    process.exit(code);
+    if ((await openForCommand("wipe", config.dataDir, process.argv.slice(3))) === "postgres") {
+      try {
+        process.exit(await wipe.runPostgresWipeCli(process.argv.slice(3), config.dataDir));
+      } catch (e) {
+        process.stderr.write(`vaultbase wipe: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(1);
+      }
+    }
+    process.exit(wipe.runWipeCli(process.argv.slice(3), config.dataDir));
   }
 
   // `vaultbase token <subcmd>` — local API-token management. Reads + writes
@@ -351,12 +397,14 @@ async function main() {
     }
   }
 
-  // `vaultbase backup --to <dest>` — atomic SQLite snapshot + push.
+  // `vaultbase backup --to <dest>` — atomic snapshot + push.
   // Skips server boot entirely so cron / one-shot ops can run alongside
   // a live `vaultbase` daemon (VACUUM INTO is concurrent-safe).
   if (process.argv[2] === "backup") {
     const config = await loadConfig();
     const { runBackup } = await import("./scripts/backup.ts");
+    // Postgres: pg_dump of the server's schema (scripts/backup.ts).
+    await openForCommand("backup", config.dataDir, process.argv.slice(3));
     try {
       await runBackup(config.dbPath, process.argv.slice(3));
       process.exit(0);

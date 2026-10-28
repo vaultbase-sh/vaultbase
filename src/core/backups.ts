@@ -19,7 +19,7 @@
  * Cluster mode: every worker runs the ticker, but a run is claimed with a
  * conditional UPDATE on `backups.next_run`, so exactly one worker wins.
  */
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { getRawClient } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
@@ -174,6 +174,8 @@ export async function snapshotTo(path: string): Promise<void> {
   }
   if (engine !== "pg_dump") throw new Error(`backups are not available on ${getDriver().name}`);
   const schema = (await db.get<{ s: string }>(`SELECT current_schema() AS s`))!.s;
+  // Owner-only from the start: the archive holds password hashes and secrets.
+  closeSync(openSync(path, "w", 0o600));
   const conn = pgToolConnection((getDriver() as unknown as { url: string }).url);
   const proc = Bun.spawn([pgDumpBinary()!, "--format=custom", "--no-owner", `--schema=${pgDumpSchemaPattern(schema)}`, `--dbname=${conn.dbname}`], {
     stdout: Bun.file(path),

@@ -26,11 +26,20 @@
  *   --gzip          gzip the snapshot before upload (`.db.gz` extension)
  *   --quiet         suppress progress output
  *
+ * On Postgres (VAULTBASE_DATABASE_URL set; the caller opens the database)
+ * the snapshot is a pg_dump archive of the server's schema in the custom
+ * format, as the backups page takes, which is compressed already: `--gzip`
+ * is refused. A local destination is written next to itself and renamed
+ * into place, so a failed dump leaves no partial file and no copy in the
+ * data directory.
+ *
  * Exit code: 0 on success, 1 on user-facing error, 2 on internal error.
  */
 import { resolve, basename, dirname, extname } from "node:path";
-import { existsSync, mkdirSync, copyFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { gzipSync } from "node:zlib";
+import { db, driverOpen } from "../db/index.ts";
+import { pgDumpBinary, snapshotTo } from "../core/backups.ts";
 
 interface BackupOpts {
   to: string;
@@ -200,6 +209,7 @@ async function pushS3(snapPath: string, dest: DestSpec, client: S3Writer, opts: 
 export async function runBackup(dbPath: string, argv: string[]): Promise<void> {
   const opts = parseBackupArgs(argv);
   const dest = parseDestination(opts.to);
+  if (driverOpen() && db.name === "postgres") return runPostgresBackup(dirname(dbPath), dest, opts);
 
   const client = dest.kind === "file" ? null : s3Client(dest);
 
@@ -213,6 +223,58 @@ export async function runBackup(dbPath: string, argv: string[]): Promise<void> {
     }
   } finally {
     try { unlinkSync(snap); } catch { /* best-effort cleanup */ }
+  }
+}
+
+/** A pg_dump archive of the open Postgres database's schema, to `dest`. */
+async function runPostgresBackup(dataDir: string, dest: DestSpec, opts: BackupOpts): Promise<void> {
+  if (opts.gzip) die("--gzip: a pg_dump archive is compressed already; leave the flag out");
+  if (!pgDumpBinary()) {
+    die("pg_dump not found. Install a PostgreSQL client of the server's major version or newer, or set VAULTBASE_PG_DUMP to its path");
+  }
+  const client = dest.kind === "file" ? null : s3Client(dest);
+  // Interrupted, the finally blocks below don't run: remove the dump here.
+  let temp = "";
+  const interrupted = (signal: NodeJS.Signals) => {
+    if (temp) rmSync(temp, { force: true });
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
+  try {
+    await postgresBackupTo(dataDir, dest, opts, client, (p) => { temp = p; });
+  } finally {
+    process.off("SIGINT", interrupted);
+    process.off("SIGTERM", interrupted);
+  }
+}
+
+async function postgresBackupTo(
+  dataDir: string, dest: DestSpec, opts: BackupOpts, client: S3Writer | null, tempFile: (path: string) => void,
+): Promise<void> {
+  if (!client) {
+    const dir = dirname(dest.bucket);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const partial = `${dest.bucket}.partial-${process.pid}`;
+    tempFile(partial);
+    log(opts, "running pg_dump");
+    try {
+      await snapshotTo(partial);
+      renameSync(partial, dest.bucket);
+    } finally {
+      rmSync(partial, { force: true });
+    }
+    log(opts, `wrote ${dest.bucket} (${statSync(dest.bucket).size.toLocaleString()} bytes)`);
+    return;
+  }
+  const snap = `${dataDir}/.vaultbase-snap-${process.pid}-${Date.now()}.dump`;
+  tempFile(snap);
+  log(opts, "running pg_dump");
+  try {
+    await snapshotTo(snap);
+    await pushS3(snap, dest, client, opts);
+  } finally {
+    rmSync(snap, { force: true });
   }
 }
 

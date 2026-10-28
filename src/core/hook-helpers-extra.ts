@@ -773,6 +773,9 @@ function makeCron(): CronHelpers {
       const { validateCron, nextRunFromCron, invalidateJobsCache } = await import("./jobs.ts");
       const err = validateCron(opts.schedule);
       if (err) throw new Error(`cron.add: invalid schedule — ${err}`);
+      const { databaseCodeError } = await import("./code-loader.ts");
+      const unsupported = databaseCodeError(opts.code ?? "");
+      if (unsupported) throw new Error(`cron.add: ${unsupported}`);
       const { getDb } = await import("../db/client.ts");
       const { jobs } = await import("../db/schema.ts");
       const { eq } = await import("drizzle-orm");

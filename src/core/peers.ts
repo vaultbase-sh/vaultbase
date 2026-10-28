@@ -231,6 +231,11 @@ function warn(e: unknown): void {
   console.warn(`[peers] ${e instanceof Error ? e.message : String(e)}`);
 }
 
+/** The channel the servers on `schema` share. */
+export function peerChannel(schema: string): string {
+  return `vaultbase_${schema}`.slice(0, 63);
+}
+
 /**
  * Start listening. Postgres only: on SQLite there is one server per
  * database file. The channel is named after the schema, so servers on
@@ -239,7 +244,7 @@ function warn(e: unknown): void {
 export async function startPeers(d: PeerDriver): Promise<void> {
   if (d.name !== "postgres" || channel) return;
   const schema = (await d.get<{ s: string }>(`SELECT current_schema() AS s`))?.s ?? "public";
-  const name = `vaultbase_${schema}`.slice(0, 63);
+  const name = peerChannel(schema);
   let first = true;
   driver = d;
   subscription = await d.listen(name, receive, () => {

@@ -24,7 +24,7 @@ import { dirname, extname, join, relative, resolve, sep } from "path";
 import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, jobs, routes, workers } from "../db/schema.ts";
-import { registerCodeLoader, type CompiledCode } from "./code-loader.ts";
+import { databaseCodeError, registerCodeLoader, type CompiledCode } from "./code-loader.ts";
 import { HOOK_EVENTS, invalidateHookCache } from "./hooks.ts";
 import { ROUTE_METHODS, invalidateRoutesCache, validatePath } from "./routes.ts";
 import { invalidateJobsCache, nextRunFromCron, validateCron, validateMode } from "./jobs.ts";
@@ -163,6 +163,8 @@ async function loadFile(abs: string, root: string): Promise<Loaded> {
     throw new CodeFileError(out.logs.map((l) => formatBuildLog(l, root)).join("\n") || "build failed");
   }
   const code = await out.outputs[0].text();
+  const unsupported = databaseCodeError(code, true);
+  if (unsupported) throw new CodeFileError(unsupported);
   const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
   let mod: { default?: Record<string | symbol, unknown> };
   try {

@@ -61,6 +61,30 @@ export function tableName(table: SQLiteTable): string {
   return getTableConfig(table).name;
 }
 
+/** What {@link ensureFixedSchema} would add, as `table`, `table.column` and `index name`. Reads only. */
+export async function missingFixedSchema(): Promise<string[]> {
+  const d = db.dialect;
+  const missing: string[] = [];
+  const absent = new Set<string>();
+  for (const table of FIXED_TABLES) {
+    const name = tableName(table);
+    const present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
+    if (present.size === 0) { missing.push(name); absent.add(name); continue; }
+    for (const spec of columnSpecs(table)) if (!present.has(spec.name)) missing.push(`${name}.${spec.name}`);
+  }
+  const indexesOf = new Map<string, Set<string>>();
+  for (const ix of FIXED_INDEXES) {
+    if (absent.has(ix.table)) continue;
+    let have = indexesOf.get(ix.table);
+    if (!have) {
+      have = new Set((await db.all<{ name: string }>(d.listIndexesSql(), [ix.table])).map((r) => r.name));
+      indexesOf.set(ix.table, have);
+    }
+    if (!have.has(ix.name)) missing.push(`index ${ix.name}`);
+  }
+  return missing;
+}
+
 /**
  * Create missing tables, add missing columns, create missing indexes. Only
  * what is missing: on Postgres even an `IF NOT EXISTS` that does nothing is

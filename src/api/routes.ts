@@ -1,5 +1,5 @@
 import { checkRateLimit } from "./ratelimit.ts";
-import { inlineCompileError } from "../core/code-loader.ts";
+import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import { applyCorsHeaders } from "../core/cors.ts";
 import { rememberedPeer, securityHeaders } from "../core/sec.ts";
 import { eq } from "drizzle-orm";
@@ -78,6 +78,8 @@ export function makeRoutesPlugin(jwtSecret: string) {
         {
           const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
           if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
+          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
         }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
@@ -139,6 +141,9 @@ export function makeRoutesPlugin(jwtSecret: string) {
         {
           const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
           if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+          // Enabling checks the stored code: it may predate this check.
+          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
+          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
         }
         await getDb().update(routes).set(update).where(eq(routes.id, params.id));
         invalidateRoutesCache();

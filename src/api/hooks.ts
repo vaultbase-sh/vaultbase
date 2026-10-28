@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { inlineCompileError } from "../core/code-loader.ts";
+import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { hooks } from "../db/schema.ts";
@@ -28,6 +28,8 @@ export function makeHooksPlugin(jwtSecret: string) {
         {
           const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
           if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
+          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
         }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
@@ -81,6 +83,9 @@ export function makeHooksPlugin(jwtSecret: string) {
         {
           const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
           if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
+          // Enabling checks the stored code: it may predate this check.
+          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
+          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
         }
         await getDb().update(hooks).set(update).where(eq(hooks.id, params.id));
         invalidateHookCache();

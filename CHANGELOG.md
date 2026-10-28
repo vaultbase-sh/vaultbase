@@ -33,8 +33,46 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **`?progress=1` on restore and undo** answers with a JSON line per phase,
   repeated while a long phase runs, so a large restore isn't cut off by the
   server's idle timeout. The admin shows the phase on the button.
+- **`vaultbase backup`, `doctor` and `wipe` on Postgres.** Before, they
+  refused to run with `VAULTBASE_DATABASE_URL` set. Each opens the database
+  as the server does, so it refuses another install's database.
+  - `backup --to <path|s3://…>` writes a `pg_dump` archive of the server's
+    schema, the same as the backups page makes. A local file appears only
+    once complete. `--gzip` is refused, because the archive is compressed
+    already.
+  - `doctor` checks the server version and the schema. It warns when the
+    search path names other schemas, the schema is behind this version,
+    `pg_dump`, `pg_restore` or `psql` is missing or too old for the server
+    or for restore, the role can't create schemas (restore needs to), or
+    enabled code uses `helpers.db`.
+  - `wipe` drops Vaultbase's objects from the schema: tables, views and
+    sequences named `vaultbase_*` or `vb_*`, and its `vb_*` functions. It
+    also drops the schemas restores kept and the read-only login. Anything
+    else in the schema stays and is listed, as does the schema itself. It
+    has the same dry run and `--yes` / `--force` as on SQLite. Without
+    `--force` it changes nothing while a server is running on the schema, or
+    when the data directory has no `database.json` and the schema has an
+    admin. It changes nothing in any case when another server holds the
+    migration lock, the role doesn't own an object, something outside
+    Vaultbase depends on one of them (a view or a foreign key, in any
+    schema), or something that isn't Vaultbase's would go with one (a
+    partition, a sequence owned by its column).
+- **The Docker image includes `pg_dump`, `pg_restore` and `psql`** (PostgreSQL
+  18 client), so backups and restore work on Postgres in a container. The
+  image is about 4 MB larger.
+- **Postgres backups are owner-only files** (mode `0600`) from the moment
+  `pg_dump` starts writing them: they hold password hashes and secrets.
 
 ### Changed
+
+- **Postgres: code that uses `helpers.db` is refused when saved or enabled**:
+  hooks, routes, jobs and workers, from the admin, MCP, `helpers.cron.add`
+  or the hooks folder. The answer is a `422` naming `helpers.sql`. Before,
+  it saved and then failed every time it ran. A mention in a comment is
+  allowed. Code stored before this version is named by `vaultbase doctor`
+  and refused when re-enabled, and a hooks-folder file that uses it no
+  longer loads, with the reason in the hooks folder's errors. SQLite is
+  unchanged.
 
 - **The database is chosen at install and is final.** Once an install has its
   first admin, the data directory records its database in `database.json`
@@ -127,6 +165,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   failure after the swap, writes during a restore, a second server picking
   up the restored data, a peer's hold renewed and expiring, and an install
   in `public`.
+- `vaultbase doctor`, `backup` and `wipe` on Postgres, on the test schema and
+  through the CLI in a subprocess: client tool versions checked, no file left
+  by a failed dump, a dry run changing nothing, objects outside Vaultbase
+  kept, refusals with nothing dropped (a dependent view, a running server,
+  the migration lock, production signals), and the schema usable again
+  after a wipe. `helpers.db` refused on Postgres and saved on SQLite.
 - The background checkpointer test no longer fails now and then in full-suite
   runs: it waited for the WAL to shrink with no writes, but SQLite starts the
   log over at the next write.
