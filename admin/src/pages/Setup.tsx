@@ -172,7 +172,7 @@ function DatabaseNote({ database }: { database: Database }) {
       <div className="vb-auth__urls">
         <div className="vb-auth__url">
           <span className="vb-auth__urlkey">DATABASE</span>
-          <span className="vb-auth__urlval"><span>{sqlite ? "SQLite" : "Postgres (beta)"}</span></span>
+          <span className="vb-auth__urlval"><span>{sqlite ? "SQLite" : "Postgres"}</span></span>
         </div>
       </div>
       <p className="vb-auth__note">

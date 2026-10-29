@@ -15,7 +15,7 @@ import { admin, hooks } from "../db/schema.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
 import { peerChannel } from "../core/peers.ts";
-import { runPostgresDoctor } from "../scripts/doctor.ts";
+import { isLocalUrl, runPostgresDoctor } from "../scripts/doctor.ts";
 import { runPostgresWipeCli } from "../scripts/wipe.ts";
 import { runBackup } from "../scripts/backup.ts";
 import { createPublicCollection, onSqlite } from "./_helpers.ts";
@@ -68,6 +68,19 @@ function fakeTool(name: string, version: string, exit = 0): string {
 const relations = async (s: string) =>
   (await db.all<{ n: string }>(`SELECT relname AS n FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = ?) ORDER BY 1`, [s])).map((r) => r.n);
 
+describe("doctor: which database URLs are on this machine", () => {
+  it("loopback names and Unix sockets are; anything else isn't", () => {
+    for (const url of [
+      "postgres://u:p@localhost:5432/db", "postgres://u:p@127.0.0.1/db", "postgres://u:p@[::1]:5432/db",
+      "postgres://u:p@/db?host=/var/run/postgresql", "postgres://u:p@/db?host=%2Fvar%2Frun",
+    ]) expect(isLocalUrl(url)).toBe(true);
+    for (const url of [
+      "postgres://u:p@db.example.com:5432/db", "postgres://u:p@10.0.0.5/db", "postgres://u:p@localhost.example.com/db",
+      "postgres://u:p@db.example.com/db?sslmode=require", "not a url",
+    ]) expect(isLocalUrl(url)).toBe(false);
+  });
+});
+
 describe.skipIf(onSqlite)("CLI on Postgres", () => {
   beforeEach(async () => {
     savedEnv = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
@@ -99,6 +112,8 @@ describe.skipIf(onSqlite)("CLI on Postgres", () => {
       expect(r.ok).toBe(true);
       expect(r.about).toContain(`schema ${schema}`);
       expect(r.warnings.filter((w) => !/pg_dump|pg_restore|psql|create schemas/.test(w))).toEqual([]);
+      // The test server is on loopback: an unencrypted connection there isn't flagged.
+      expect(r.warnings.some((w) => w.includes("isn't encrypted"))).toBe(false);
     });
 
     it("names enabled code that uses helpers.db, and a schema behind this version", async () => {

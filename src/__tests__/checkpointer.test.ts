@@ -104,6 +104,38 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     if (s.wal_frames >= 40_000) throw new Error(`the WAL didn't shrink: ${JSON.stringify(s)}`);
   }, 120_000);
 
+  // A writer that holds the lock almost all the time, as group commit does
+  // under steady load: each transaction stays open across a few awaits,
+  // commits, and the next begins after one turn of the event loop. The worker's RESTART polls for the lock and
+  // loses every time, and the WAL used to grow until checkpointing fell back
+  // to SQLite's own. Now the worker asks, and the main thread rewinds in
+  // that turn of the loop.
+  test("rewinds from the main thread when the worker keeps losing the write lock", async () => {
+    db = open();
+    await startCheckpointer(db, join(dir, "data.db"), 67_108_864);
+    const ins = db.prepare("INSERT INTO t (v) VALUES (?)");
+    const row = "x".repeat(3_000);
+    const until = Date.now() + 30_000;
+    let peak = 0;
+    while (Date.now() < until && (checkpointStats()?.main_restarts ?? 0) < 2) {
+      // The lock is held across awaits, as a group commit's window is.
+      db.exec("BEGIN IMMEDIATE");
+      for (let j = 0; j < 4; j++) {
+        for (let i = 0; i < 25; i++) ins.run(row);
+        await Bun.sleep(2);
+      }
+      db.exec("COMMIT");
+      await new Promise((r) => setImmediate(r));
+      peak = Math.max(peak, checkpointStats()?.wal_frames ?? 0);
+      if (peak > 90_000) break; // heading for the runaway fallback: failed
+    }
+    ins.finalize();
+    const s = checkpointStats()!;
+    expect(s.mode).toBe("worker");
+    expect(s.main_restarts).toBeGreaterThanOrEqual(2);
+    expect(peak).toBeLessThan(90_000);
+  }, 60_000);
+
   test("stop hands checkpointing back to SQLite", async () => {
     db = open();
     await startCheckpointer(db, join(dir, "data.db"), 67_108_864);

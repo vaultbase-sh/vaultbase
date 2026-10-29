@@ -69,7 +69,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 - **Server-side logic** — hooks, custom routes, cron, queue workers, webhooks, feature flags and push notifications, edited live in the admin UI with Monaco autocomplete, or kept as TypeScript files in a `vb_hooks/` folder (with imports and npm packages) that the admin UI edits too
 - **MCP for AI agents** — built-in Model Context Protocol server; tools generated per collection, scope-gated tokens, every tool call written to the audit log
 - **Operations** — request logs, admin audit log, record history with point-in-time restore, encrypted fields (AES-GCM), scheduled backups (a file copy on SQLite, `pg_dump` on Postgres), Prometheus metrics
-- **Database** — SQLite by default: one file, read worker threads on spare cores. Postgres in beta (`VAULTBASE_DATABASE_URL`), including several servers on one database. See [Databases](https://docs.vaultbase.dev/concepts/databases/)
+- **Database** — SQLite by default: one file, read worker threads on spare cores. Postgres (`VAULTBASE_DATABASE_URL`), including several servers on one database. See [Databases](https://docs.vaultbase.dev/concepts/databases/)
 - **Security** — brute-force lockout, CORS allow-list, password policy with optional HIBP check, SSRF egress guard for hooks
 - **One binary** — no native deps, admin UI embedded; releases are cosign-signed with CycloneDX SBOMs
 
@@ -77,7 +77,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 
 - **Runtime**: Bun
 - **Framework**: Elysia
-- **DB**: SQLite (`bun:sqlite`), or Postgres (`Bun.sql`, beta)
+- **DB**: SQLite (`bun:sqlite`), or Postgres (`Bun.sql`)
 - **ORM**: Drizzle
 - **Admin UI**: React 19 + Vite + React Router v7 + Zustand + PrimeReact + Monaco + Quill
 
@@ -87,7 +87,7 @@ bun run build           # admin UI + binary → ./vaultbase[.exe]
 |---|---|---|
 | `VAULTBASE_PORT` | `8091` | Listen port |
 | `VAULTBASE_DATA_DIR` | `./vaultbase_data` | DB, uploads, logs, secrets |
-| `VAULTBASE_DATABASE_URL` | none | A `postgres://…` URL to run on Postgres (beta) instead of the SQLite file |
+| `VAULTBASE_DATABASE_URL` | none | A `postgres://…` URL to run on Postgres instead of the SQLite file |
 | `VAULTBASE_READ_WORKERS` | cores − 2 | Read worker threads for list and get-one requests on SQLite (at least 1 on two cores or more, at most 8; `0` keeps one thread) |
 | `VAULTBASE_JWT_SECRET` | auto-generated | Persisted in `<dataDir>/.secret` |
 | `VAULTBASE_ENCRYPTION_KEY` | auto-generated | Persisted in `<dataDir>/.encryption-key`. Encrypts secret settings and encrypted fields. Base64 / hex / 32-char string (32 bytes) |
@@ -206,7 +206,7 @@ backup is the records, schema and settings: uploaded files, the hooks folder,
 ## Cluster mode (multi-process, deprecated)
 
 Cluster mode is deprecated. Read worker threads (on by default) spread SQLite reads over
-spare cores in one process, and several servers can share one Postgres database (beta);
+spare cores in one process, and several servers can share one Postgres database;
 use those. Cluster mode remains for existing setups, without online restore and with
 If-Match checked per process.
 

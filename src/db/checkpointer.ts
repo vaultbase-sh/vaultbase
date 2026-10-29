@@ -41,6 +41,23 @@ const RESTART_FRAMES = 15_000; // ~60 MB at 4 KB pages
  */
 const RUNAWAY_FRAMES = 100_000; // ~400 MB at 4 KB pages
 
+/**
+ * RESTARTs in a row the worker may lose to back-to-back writes before it
+ * asks the main thread to rewind instead. Its busy handler polls for the
+ * write lock, and a writer that commits again within a millisecond of
+ * releasing it can win every time, so under nonstop writes the WAL grew
+ * until it reached RUNAWAY_FRAMES. The main connection is the process's
+ * only writer: a RESTART run there, between its writes, can't lose that race.
+ */
+const STARVED_AFTER = 8; // 2 s of passes
+
+/**
+ * Most frames left to copy for main to take a rewind over: what it copies
+ * holds its thread (16 MB at 4 KB pages). Further behind, the worker's own
+ * passes catch up first.
+ */
+const STARVED_MAX_BEHIND = 4_096;
+
 /** What main sets autocheckpoint back to when the worker isn't running. */
 const FALLBACK_AUTOCHECKPOINT = 10_000;
 
@@ -54,6 +71,10 @@ let restartFrames = 0;
 // the next write, not at the RESTART, so until a write comes the WAL reports
 // the same frames and another RESTART would do nothing.
 let rewoundAt = -1;
+// RESTARTs lost in a row, and the threshold for asking main to rewind.
+let busyRestarts = 0;
+let starvedAfter = 0;
+let starvedMaxBehind = 0;
 let timer = null;
 function pass() {
   const t0 = performance.now();
@@ -68,7 +89,12 @@ function pass() {
       const rr = restartStmt.get();
       restartMs = performance.now() - t1;
       // busy=1: a reader or writer was mid-transaction; try again next pass.
-      if (!rr.busy) { r = rr; rewound = true; rewoundAt = rr.log; }
+      if (!rr.busy) { r = rr; rewound = true; rewoundAt = rr.log; busyRestarts = 0; }
+      else if (++busyRestarts >= starvedAfter && rr.log - rr.checkpointed <= starvedMaxBehind) {
+        // Nearly everything is copied, only the rewind is missing: main does it.
+        busyRestarts = 0;
+        postMessage({ type: "starved" });
+      }
     }
     postMessage({ type: "pass", log: r.log, checkpointed: r.checkpointed, ms, restartMs, rewound });
   } catch (e) {
@@ -77,7 +103,11 @@ function pass() {
 }
 onmessage = (e) => {
   const m = e.data;
-  if (m.type === "start") {
+  if (m.type === "rewound") {
+    // Main rewound the log; the WAL reports this size until the next write.
+    rewoundAt = m.log;
+    busyRestarts = 0;
+  } else if (m.type === "start") {
     try {
       db = new Database(m.path);
       // PASSIVE doesn't wait on locks; a short timeout only covers opening.
@@ -86,6 +116,8 @@ onmessage = (e) => {
       stmt = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
       restartStmt = db.prepare("PRAGMA wal_checkpoint(RESTART)");
       restartFrames = m.restartFrames;
+      starvedAfter = m.starvedAfter;
+      starvedMaxBehind = m.starvedMaxBehind;
       timer = setInterval(pass, m.intervalMs);
       postMessage({ type: "ready" });
     } catch (err) {
@@ -119,6 +151,8 @@ export interface CheckpointStats {
    * attempt held the write lock, ms.
    */
   restarts: number;
+  /** Of those, rewinds the main thread ran because the worker kept losing the write lock. */
+  main_restarts: number;
   last_restart_ms: number;
   max_restart_ms: number;
   /** "worker" when running in the background, "inline" when SQLite's autocheckpoint is in charge. */
@@ -146,7 +180,7 @@ export function startCheckpointer(client: Database, path: string, journalSizeLim
   if (worker) return Promise.resolve();
   started = { path, journalSizeLimit };
   mainClient = client;
-  stats = { wal_frames: 0, checkpointed_frames: 0, last_pass_ms: 0, max_pass_ms: 0, passes: 0, restarts: 0, last_restart_ms: 0, max_restart_ms: 0, mode: "inline" };
+  stats = { wal_frames: 0, checkpointed_frames: 0, last_pass_ms: 0, max_pass_ms: 0, passes: 0, restarts: 0, main_restarts: 0, last_restart_ms: 0, max_restart_ms: 0, mode: "inline" };
   const url = URL.createObjectURL(new Blob([WORKER_CODE], { type: "application/javascript" }));
   const w = new Worker(url);
   worker = w;
@@ -182,14 +216,49 @@ export function startCheckpointer(client: Database, path: string, journalSizeLim
           if (stats.last_restart_ms > stats.max_restart_ms) stats.max_restart_ms = stats.last_restart_ms;
         }
         if (stats.wal_frames > RUNAWAY_FRAMES) fallBackToInline(`WAL at ${stats.wal_frames} frames`);
+      } else if (m.type === "starved") {
+        rewindOnMain(w);
       } else if (m.type === "error") {
         fallBackToInline(m.message ?? "worker error");
         settle();
       }
     };
     w.onerror = (e) => { fallBackToInline(e.message); settle(); };
-    w.postMessage({ type: "start", path, intervalMs: INTERVAL_MS, restartFrames: RESTART_FRAMES, journalSizeLimit });
+    w.postMessage({ type: "start", path, intervalMs: INTERVAL_MS, restartFrames: RESTART_FRAMES, starvedAfter: STARVED_AFTER, starvedMaxBehind: STARVED_MAX_BEHIND, journalSizeLimit });
   });
+}
+
+/**
+ * The worker kept losing RESTART to back-to-back writes: rewind on the main
+ * connection, at the first moment with no transaction open (a group commit
+ * or a batch may be mid-way now), looked for every millisecond for about
+ * half a second. At most STARVED_MAX_BEHIND
+ * frames were left to copy, so this holds the thread for that, the rewind
+ * and an fsync, as SQLite's own autocheckpoint would; its busy timeout
+ * waits out read transactions.
+ */
+function rewindOnMain(w: Worker, tries = 500): void {
+  setTimeout(() => {
+    const client = mainClient;
+    if (!client || worker !== w || stats?.mode !== "worker") return;
+    // Between two transactions, then: they leave gaps of a turn or so.
+    if (client.inTransaction) {
+      if (tries > 0) rewindOnMain(w, tries - 1);
+      return;
+    }
+    try {
+      const t0 = performance.now();
+      const r = client.query("PRAGMA wal_checkpoint(RESTART)").get() as { busy: number; log: number };
+      const ms = Math.round((performance.now() - t0) * 10) / 10;
+      if (stats) {
+        stats.last_restart_ms = ms;
+        if (ms > stats.max_restart_ms) stats.max_restart_ms = ms;
+      }
+      if (r.busy) return; // a reader held on past the busy timeout; asked again later
+      if (stats) { stats.restarts++; stats.main_restarts++; }
+      w.postMessage({ type: "rewound", log: r.log });
+    } catch { /* closed under us; the worker asks again */ }
+  }, 1);
 }
 
 /** Stop the worker and hand checkpointing back to the main connection. */

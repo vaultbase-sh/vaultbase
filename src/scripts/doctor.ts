@@ -22,7 +22,7 @@
 
 import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
 import { missingFixedSchema } from "../db/ddl.ts";
 import { pgDumpBinary } from "../core/backups.ts";
 import { restoreSchemas, restoreTools } from "../core/pg-restore.ts";
@@ -219,6 +219,27 @@ export interface PostgresDoctorReport {
   ok: boolean;
 }
 
+/**
+ * Whether a connection URL points at this machine: localhost, a loopback
+ * address, or a Unix socket (`host=/path`), where an unencrypted connection
+ * never crosses a network.
+ */
+export function isLocalUrl(url: string): boolean {
+  // A socket URL has no host before the path (`user:pass@/db?host=/run`),
+  // which URL refuses; its host= parameter says where it connects.
+  const param = /[?&]host=([^&#]*)/i.exec(url)?.[1];
+  let host = param ? decodeURIComponent(param) : "";
+  if (!host) {
+    try {
+      host = decodeURIComponent(new URL(url).hostname);
+    } catch {
+      return false;
+    }
+  }
+  host = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "" || host.startsWith("/") || host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
 /** Oldest Postgres the server runs on. */
 const MIN_SERVER_MAJOR = 16;
 
@@ -266,6 +287,13 @@ export async function runPostgresDoctor(): Promise<PostgresDoctorReport> {
   if (!info.s) {
     blockers.push("the search path names no schema that exists: create the schema, or fix search_path in VAULTBASE_DATABASE_URL (options=-c search_path=...).");
     return { about, blockers, warnings, ok: false };
+  }
+  const tls = await db.get<{ ssl: boolean | null }>(`SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()`);
+  if (tls && tls.ssl === false && !isLocalUrl((getDriver() as unknown as { url: string }).url)) {
+    warnings.push(
+      "the connection to the database isn't encrypted. Add ?sslmode=require to VAULTBASE_DATABASE_URL "
+      + "(or sslmode=verify-full to also check the certificate); without sslmode, Bun's driver doesn't use TLS even when the server offers it.",
+    );
   }
   const others = (info.path ?? []).filter((n) => n !== info.s);
   if (others.length > 0) {

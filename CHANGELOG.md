@@ -7,6 +7,33 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **Postgres is out of beta.** The whole product runs on it, backups and
+  restore included, and the full test suite runs on Postgres 16, 17 and 18
+  on every change. The docs gain Postgres setups (on one machine, a managed
+  database, several servers behind a load balancer, TLS), and the
+  Performance page compares the two databases on the same box.
+
+### Added
+
+- **`vaultbase doctor` warns when the connection to a database on another
+  machine isn't encrypted.** Without `sslmode` in `VAULTBASE_DATABASE_URL`,
+  Bun's driver doesn't use TLS even when the server offers it (libpq tries
+  TLS first), so a URL copied without it ran in plain text.
+
+### Fixed
+
+- **SQLite: under nonstop writes the WAL could grow to hundreds of
+  megabytes.** The background checkpointer rewinds the log with a RESTART,
+  which needs the write lock for a moment, and a writer that commits again
+  within a millisecond of releasing it could win every time: the WAL grew
+  until checkpointing fell back to SQLite's own. After 2 seconds of lost
+  attempts, the main thread now rewinds the log itself between two of its
+  writes. The Monitoring page counts these rewinds with the others.
+
 ## [0.29.0] — 2026-10-28
 
 ### Added
