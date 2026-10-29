@@ -7,14 +7,15 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.31.0] — 2026-10-29
 
 ### Added
 
 - **`exclude` leaves fields out of record responses**, the opposite of
   `fields`: `?exclude=body,meta` returns every field but those. It applies
   after `fields`, `id` is always returned, and it works on lists, get-one,
-  singletons, batches and the MCP list tool. Both SDKs take it as an option.
+  singletons, batches and the MCP list tool. The JS and Dart SDKs take it as
+  an option from their next releases.
   ([#6](https://github.com/vaultbase-sh/vaultbase/issues/6))
 
 ### Fixed
