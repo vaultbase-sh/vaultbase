@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, SingletonRecordError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -110,12 +110,15 @@ async function dispatchOp(
       if (q.get("sort"))    opts.sort = q.get("sort")!;
       if (q.get("expand"))  opts.expand = q.get("expand")!;
       if (q.get("fields"))  opts.fields = q.get("fields")!;
+      if (q.get("exclude")) opts.exclude = q.get("exclude")!;
       if (q.get("skipTotal") === "1") opts.skipTotal = true;
       opts.auth = auth;
+      // Rules see the request, as on the REST list: the list rule here, and
+      // the related collections' view rules when expanding.
+      opts.request = buildRequestContext(request);
       // Apply expression rule as access filter (admins bypass)
       if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
         opts.accessRule = col.list_rule;
-        opts.request = buildRequestContext(request);
       }
       const result = await listRecords(op.collection, opts);
       return { status: 200, body: result };
@@ -124,7 +127,11 @@ async function dispatchOp(
       const rec = await getRecord(op.collection, op.id!);
       if (!rec) return { status: 404, body: { error: "Record not found", code: 404 } };
       checkRuleOrThrow(request, "view_rule", col.name, col.view_rule, auth, rec as unknown as Record<string, unknown>);
-      return { status: 200, body: rec };
+      const q = op.query ?? new URLSearchParams();
+      const expand = q.get("expand") ?? undefined, fields = q.get("fields") ?? undefined, exclude = q.get("exclude") ?? undefined;
+      if (!expand && !fields && !exclude) return { status: 200, body: rec };
+      const [shaped] = await shapeRecords(col, [rec], { expand, fields, exclude, auth, request: buildRequestContext(request) });
+      return { status: 200, body: shaped };
     }
     case "update": {
       const existing = await getRecord(op.collection, op.id!);

@@ -96,7 +96,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
       [base]: {
         get: {
           tags, operationId: `get${T}`, summary: `Get the ${col.name} singleton`,
-          parameters: [qp("expand", "Relation fields to expand"), qp("fields", "Fields to return")],
+          parameters: [qp("expand", "Relation fields to expand"), qp("fields", "Fields to return"), qp("exclude", "Fields to leave out")],
           responses: { "200": ok(dataOf(ref(T))), ...ERRORS },
         },
         patch: {
@@ -119,6 +119,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
           qp("sort", "Comma-separated fields; '-' prefix for descending"),
           qp("expand", "Comma-separated relation fields to expand"),
           qp("fields", "Comma-separated fields to return"),
+          qp("exclude", "Comma-separated fields to leave out; applied after fields, id always returned"),
           qp("skipTotal", "Skip the total count", { type: "boolean" }),
           qp("search", "Full-text search over searchable fields"),
         ],
@@ -160,7 +161,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
     [`${base}/{id}`]: {
       get: {
         tags, operationId: `get${T}`, summary: `Get a ${col.name} record`,
-        parameters: [ID, qp("expand", "Relation fields to expand"), qp("fields", "Fields to return")],
+        parameters: [ID, qp("expand", "Relation fields to expand"), qp("fields", "Fields to return"), qp("exclude", "Fields to leave out")],
         responses: { "200": ok(dataOf(ref(T))), ...ERRORS },
       },
       ...(col.type === "view" ? {} : {

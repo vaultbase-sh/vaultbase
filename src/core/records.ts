@@ -385,6 +385,7 @@ export interface ListOptions {
   sort?: string;
   expand?: string;
   fields?: string;
+  exclude?: string;
   skipTotal?: boolean;
   /** Full-text query over the collection's `searchable` fields. */
   search?: string;
@@ -752,15 +753,17 @@ export interface ShapeOptions {
   expand?: string | undefined;
   /** Comma-separated fields to return; `id` always is. */
   fields?: string | undefined;
+  /** Comma-separated fields to leave out, applied after `fields`; `id` stays. */
+  exclude?: string | undefined;
   /** Who's asking: related records are expanded under their view rule. */
   auth?: AuthContext | null | undefined;
   request?: RequestContextLike | null | undefined;
 }
 
 /**
- * `expand` then `fields`, as list and get-one both apply them. Expanded
- * relations respect the related collection's view rule. A projection keeps
- * `expand` when expanding was asked for.
+ * `expand`, then `fields`, then `exclude`, as list and get-one both apply
+ * them. Expanded relations respect the related collection's view rule. A
+ * projection keeps `expand` when expanding was asked for.
  */
 export async function shapeRecords(col: Collection, items: RecordWithMeta[], opts: ShapeOptions): Promise<RecordWithMeta[]> {
   const expandPaths = (opts.expand ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -770,9 +773,17 @@ export async function shapeRecords(col: Collection, items: RecordWithMeta[], opt
   const keep = (opts.fields ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   if (keep.length) {
     if (expandPaths.length && !keep.includes("expand")) keep.push("expand");
-    return items.map((it) => projectFields(it, keep));
+    items = items.map((it) => projectFields(it, keep));
   }
+  const drop = (opts.exclude ?? "").split(",").map((s) => s.trim()).filter((s) => s && s !== "id");
+  if (drop.length) items = items.map((it) => omitFields(it, drop));
   return items;
+}
+
+function omitFields(item: RecordWithMeta, drop: string[]): RecordWithMeta {
+  const out: Record<string, unknown> = { ...item };
+  for (const k of drop) delete out[k];
+  return out as RecordWithMeta;
 }
 
 function projectFields(item: RecordWithMeta, keep: string[]): RecordWithMeta {

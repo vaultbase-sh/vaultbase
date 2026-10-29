@@ -7,6 +7,26 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **`exclude` leaves fields out of record responses**, the opposite of
+  `fields`: `?exclude=body,meta` returns every field but those. It applies
+  after `fields`, `id` is always returned, and it works on lists, get-one,
+  singletons, batches and the MCP list tool. Both SDKs take it as an option.
+  ([#6](https://github.com/vaultbase-sh/vaultbase/issues/6))
+
+### Fixed
+
+- **A `GET` of one record in a batch ignored `expand` and `fields`.** It
+  now shapes the record as the REST get-one does.
+- **A batch list on a collection with a public list rule expanded
+  relations without the request,** so a related collection's view rule
+  that reads `@request.headers` or `@request.query` could decide
+  differently than the same REST list. It now sees the request, as the
+  REST list does.
+
 ## [0.30.0] — 2026-10-29
 
 ### Changed

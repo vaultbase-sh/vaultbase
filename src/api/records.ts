@@ -196,9 +196,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
     const q = new URL(request.url).searchParams;
     const expand = q.get("expand") ?? undefined;
     const fields = q.get("fields") ?? undefined;
-    if (!expand && !fields) return { data: record };
+    const exclude = q.get("exclude") ?? undefined;
+    if (!expand && !fields && !exclude) return { data: record };
     const [shaped] = await timeFor(request, "db_exec", () =>
-      shapeRecords(col, [record], { expand, fields, auth, request: buildRequestContext(request) }));
+      shapeRecords(col, [record], { expand, fields, exclude, auth, request: buildRequestContext(request) }));
     return { data: shaped };
   }
 
@@ -269,6 +270,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.sort) opts.sort = query.sort;
         if (query.expand) opts.expand = query.expand;
         if (query.fields) opts.fields = query.fields;
+        if (query.exclude) opts.exclude = query.exclude;
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
         // Apply expression rule as access filter (admins bypass)
@@ -382,6 +384,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           sort: t.Optional(t.String()),
           expand: t.Optional(t.String()),
           fields: t.Optional(t.String()),
+          exclude: t.Optional(t.String()),
           skipTotal: t.Optional(t.String()),
           search: t.Optional(t.String()),
           nearVector: t.Optional(t.String()),

@@ -3,7 +3,7 @@
  *
  * For every collection, we mint five tools:
  *
- *   vaultbase.list_<collection>(filter?, sort?, page?, perPage?, fields?)
+ *   vaultbase.list_<collection>(filter?, sort?, page?, perPage?, fields?, exclude?)
  *   vaultbase.get_<collection>(id)
  *   vaultbase.create_<collection>(data)        — write scope
  *   vaultbase.update_<collection>(id, data)    — write scope
@@ -173,6 +173,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
             page:      { type: "integer", minimum: 1 },
             perPage:   { type: "integer", minimum: 1, maximum: HARD_PER_PAGE_CAP, description: `Default 30, max ${HARD_PER_PAGE_CAP}` },
             fields:    { type: "string",  description: "Comma-separated projection, e.g. 'id,title,created'" },
+            exclude:   { type: "string",  description: "Comma-separated fields to leave out, applied after fields; id is always returned" },
             skipTotal: { type: "boolean", description: "Skip COUNT(*) for huge tables. Default false." },
           },
           additionalProperties: false,
@@ -185,6 +186,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         if (typeof args.page      === "number")  opts.page      = args.page;
         if (typeof args.perPage   === "number")  opts.perPage   = Math.min(args.perPage, HARD_PER_PAGE_CAP);
         if (typeof args.fields    === "string")  opts.fields    = args.fields;
+        if (typeof args.exclude   === "string")  opts.exclude   = args.exclude;
         if (typeof args.skipTotal === "boolean") opts.skipTotal = args.skipTotal;
         const r = await listRecords(slug, opts);
         return asUntrustedJsonText(`${slug} list`, r);

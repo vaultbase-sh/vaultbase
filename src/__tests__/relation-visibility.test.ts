@@ -92,6 +92,22 @@ describe("review 10 follow-ups", () => {
     }));
     const body = await listed.json() as { data: Array<{ expand?: { team?: { id: string } } }> };
     expect(body.data[0]?.expand?.team?.id).toBe(team);
+
+    // A batch list expands under the same request, with a public list rule
+    // too, and a batch get-one shapes as the REST one does.
+    const member = (body.data[0] as { id: string }).id;
+    const batch = await makeBatchPlugin(SECRET).handle(new Request("http://localhost/batch", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${jwt}`, "x-team": "red" },
+      body: JSON.stringify({ requests: [
+        { method: "GET", url: "/api/v1/members?expand=team" },
+        { method: "GET", url: `/api/v1/members/${member}?expand=team` },
+      ] }),
+    }));
+    expect(batch.status).toBe(200);
+    const [list, one] = (await batch.json() as { data: Array<{ body: any }> }).data;
+    expect(list!.body.data[0]?.expand?.team?.id).toBe(team);
+    expect(one!.body.expand?.team?.id).toBe(team);
   });
 
   it("sign-up can't point a relation at a record the caller can't see", async () => {
