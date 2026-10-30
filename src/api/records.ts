@@ -29,6 +29,7 @@ import {
   type HistoryListResponse,
 } from "../core/record-history.ts";
 import { parseFields } from "../core/collections.ts";
+import { shapeGroupValue } from "../core/group-fields.ts";
 import { parseVectorParam, VectorParseError } from "../core/vector.ts";
 import { searchVectors } from "../core/vector-search.ts";
 import { aggregateRecords, type AggregateOptions } from "../core/aggregate.ts";
@@ -621,6 +622,12 @@ export function makeRecordsPlugin(jwtSecret: string) {
       delete snap["id"];
       delete snap["created_at"];
       delete snap["updated_at"];
+      // A group's items as the schema has them now: a snapshot from before a
+      // subfield was renamed or removed carries keys the group refuses.
+      const restoreCol = await getCollection(params.collection);
+      for (const f of restoreCol ? parseFields(restoreCol.fields) : []) {
+        if (f.type === "group" && snap[f.name] != null) snap[f.name] = shapeGroupValue(snap[f.name], f);
+      }
 
       const live = await getRecord(params.collection, params.id);
       if (!live) {

@@ -49,6 +49,7 @@ const BUILTIN: Array<[string, SqlColumnType]> = [
   ["relation", "TEXT"], ["select", "TEXT"], ["autodate", "INTEGER"], ["email", "TEXT"],
   ["url", "TEXT"], ["date", "INTEGER"], ["json", "TEXT"], ["password", "TEXT"],
   ["editor", "TEXT"], ["geoPoint", "TEXT"], ["vector", "TEXT"], ["color", "TEXT"],
+  ["group", "TEXT"],
 ];
 
 const registry = new Map<string, RegisteredFieldType>(

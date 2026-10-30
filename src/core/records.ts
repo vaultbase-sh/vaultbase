@@ -254,6 +254,7 @@ async function warmReferencedCollections(exprs: (string | undefined)[]): Promise
 import type { AuthContext } from "./rules.ts";
 import { emit } from "./events.ts";
 import { customFieldType } from "./field-types.ts";
+import { shapeGroupValue } from "./group-fields.ts";
 import "./event-listeners.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
@@ -262,7 +263,7 @@ import { validateRecord, type CanSeeRecord } from "./validate.ts";
 import { getActiveHookRequest, makeHookHelpers, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
 
-const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json"]);
+const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json", "group"]);
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
   // Password: bcrypt-hash via Bun. Empty/null leaves column null.
@@ -464,6 +465,7 @@ function quoteIdent(name: string): string {
 
 function isJsonField(field: FieldDef): boolean {
   return field.type === "json"
+    || field.type === "group"
     || field.type === "geoPoint"
     || field.type === "vector"
     || (field.type === "select" && field.options?.multiple === true)
@@ -518,6 +520,12 @@ function decoderFor(field: FieldDef): ((v: unknown) => unknown) | null {
   let d: ((v: unknown) => unknown) | null;
   if (custom?.decode) { const decode = custom.decode; d = (v) => decode(v, field); }
   else if (field.type === "bool") d = (v) => v === 1 || v === true || v === "1" || v === "true";
+  else if (field.type === "group") {
+    d = (v) => {
+      if (typeof v !== "string") return shapeGroupValue(v, field);
+      try { return shapeGroupValue(JSON.parse(v), field); } catch { return v; }
+    };
+  }
   else if (isJsonField(field)) d = (v) => { if (typeof v !== "string") return v; try { return JSON.parse(v); } catch { return v; } };
   else d = null;
   decoders.set(field, d);

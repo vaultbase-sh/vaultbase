@@ -11,11 +11,13 @@ import { ensureRowCount, forgetRowCount } from "./row-counts.ts";
 import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
 import { ruleSyntaxError } from "./expression.ts";
+import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, withoutRenames } from "./group-fields.ts";
+import { decryptValue, encryptValue, isEncrypted } from "./encryption.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
   | "select" | "autodate" | "email" | "url" | "date" | "json"
-  | "password" | "editor" | "geoPoint" | "vector" | "color";
+  | "password" | "editor" | "geoPoint" | "vector" | "color" | "group";
 
 /** A built-in type, or one an extension registered (see field-types.ts). */
 export type FieldType = BuiltinFieldType | (string & {});
@@ -96,6 +98,12 @@ export interface FieldOptions {
    * size is allowed, up to a per-file cap on generated variants.
    */
   thumbs?: string[];
+  /**
+   * Group-only. The subfields each item holds (see group-fields.ts). With
+   * `multiple` (default on) the value is a list of items, `min`/`max` items;
+   * with `multiple: false`, one object.
+   */
+  fields?: FieldDef[];
 }
 
 export type CascadeMode = NonNullable<FieldOptions["cascade"]>;
@@ -270,7 +278,16 @@ export function cachedFields(raw: string): FieldDef[] {
   if (hit) return hit;
   const fields = parseFields(raw);
   for (const f of fields) {
-    if (f.options && typeof f.options === "object") Object.freeze(f.options);
+    if (f.options && typeof f.options === "object") {
+      if (Array.isArray(f.options.fields)) {
+        for (const sub of f.options.fields) {
+          if (sub?.options && typeof sub.options === "object") Object.freeze(sub.options);
+          Object.freeze(sub);
+        }
+        Object.freeze(f.options.fields);
+      }
+      Object.freeze(f.options);
+    }
     Object.freeze(f);
   }
   Object.freeze(fields);
@@ -457,6 +474,16 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
   for (const f of fields) {
     if (f.system || isKnownFieldType(f.type) || before.get(f.name) === f.type) continue;
     errors[f.name] = `'${f.name}': unknown field type '${String(f.type)}'`;
+  }
+  const previousByName = new Map(previous.map((f) => [f.name, f]));
+  for (const f of fields) {
+    if (f.type !== "group" || f.system) continue;
+    // The field this one was, as alterUserTable decides it: its own name, or
+    // the one it is renamed from when that name leaves the schema.
+    const renamedFrom = f.renamedFrom && !fields.some((o) => o.name === f.renamedFrom) ? f.renamedFrom : undefined;
+    const prev = previousByName.get(f.name) ?? (renamedFrom ? previousByName.get(renamedFrom) : undefined);
+    const err = groupSchemaError(f, prev?.type === "group" ? prev : undefined);
+    if (err) errors[f.name] = err;
   }
   for (const f of fields) {
     const thumbs = f.options?.thumbs;
@@ -992,6 +1019,15 @@ export async function alterUserTable(
     oldByName.delete(from);
   }
 
+  // Renamed or removed subfields: rewrite the stored items, as a column
+  // rename keeps its data and a dropped column's data is gone.
+  for (const [name, f] of newByName) {
+    const prev = oldByName.get(name);
+    if (f.type !== "group" || prev?.type !== "group") continue;
+    const renames = subfieldRenames(f, prev);
+    if (groupNeedsRewrite(f, prev, renames)) await rewriteGroupRows(tname, name, f, renames);
+  }
+
   // Drop fields removed in new
   for (const oldName of oldByName.keys()) {
     if (!newByName.has(oldName)) {
@@ -1047,6 +1083,43 @@ export async function alterUserTable(
 
   await syncFts(collectionName, newFields);
   });
+}
+
+/**
+ * Rewrite one group column's stored items for its new subfields (renamed,
+ * removed), a page of rows at a time. `updated_at` is left alone: the
+ * records didn't change. A value stays encrypted if it was: whether it is
+ * is read from the value, so turning `encrypted` off in the same update
+ * doesn't skip it. A value that won't decrypt reads as null already and is
+ * left as it is.
+ */
+async function rewriteGroupRows(
+  tname: string,
+  column: string,
+  field: FieldDef,
+  renames: ReadonlyMap<string, string>,
+): Promise<void> {
+  const col = quoteIdent(column);
+  let after = "";
+  for (;;) {
+    const rows = await db.all<{ id: string; v: unknown }>(
+      `SELECT "id" AS id, ${col} AS v FROM ${tname} WHERE "id" > ? AND ${col} IS NOT NULL ORDER BY "id" LIMIT 500`,
+      [after],
+    );
+    if (rows.length === 0) return;
+    for (const r of rows) {
+      after = r.id;
+      if (typeof r.v !== "string" || r.v === "") continue;
+      const sealed = isEncrypted(r.v);
+      let text: string;
+      try { text = sealed ? await decryptValue(r.v) : r.v; } catch { continue; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { continue; }
+      const next = JSON.stringify(rewriteGroupValue(parsed, field, renames));
+      if (next === text) continue;
+      await db.run(`UPDATE ${tname} SET ${col} = ? WHERE "id" = ?`, [sealed ? await encryptValue(next) : next, r.id]);
+    }
+  }
 }
 
 /**
@@ -1255,7 +1328,7 @@ export async function createCollection(
     create_rule: data.create_rule === undefined ? "" : data.create_rule,
     update_rule: data.update_rule === undefined ? "" : data.update_rule,
     delete_rule: data.delete_rule === undefined ? "" : data.delete_rule,
-    fields: JSON.stringify(fields),
+    fields: JSON.stringify(withoutRenames(fields)),
     created_at: now,
     updated_at: now,
   };
@@ -1494,7 +1567,7 @@ export async function updateCollection(
       newFields.filter((f) => !f.implicit)
     );
     // `renamedFrom` is an instruction for the DDL above, not part of the schema.
-    data = { ...data, fields: JSON.stringify(newFields.map(({ renamedFrom: _r, ...f }) => f)) };
+    data = { ...data, fields: JSON.stringify(withoutRenames(newFields)) };
   }
 
   await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));

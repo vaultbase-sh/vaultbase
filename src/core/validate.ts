@@ -7,6 +7,7 @@ import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
 import { sanitizeHtml } from "./html-sanitize.ts";
 import { isValidStorageFilename } from "./sec.ts";
+import { groupItemBounds, isGroupList, ITEM_ID_RE, newItemId, subfieldsOf } from "./group-fields.ts";
 
 export class ValidationError extends Error {
   details: Record<string, string>;
@@ -85,6 +86,13 @@ export async function validateRecord(
       continue;
     }
 
+    if (field.type === "group") {
+      const r = validateGroup(field, value);
+      if ("error" in r) errors[field.name] = r.error;
+      else data[field.name] = r.value;
+      continue;
+    }
+
     const err = validateValue(field, value);
     if (err) { errors[field.name] = err; continue; }
 
@@ -124,6 +132,84 @@ export async function validateRecord(
   }
 
   if (Object.keys(errors).length > 0) throw new ValidationError(errors);
+}
+
+const TEXT_LIKE = new Set(["text", "editor", "email", "url"]);
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Check a group value and return its stored form: each item's subfields
+ * validated as top-level fields are (errors name the item, `items[2].qty`),
+ * unknown keys refused, values normalised, and every list item given an id.
+ */
+export function validateGroup(field: FieldDef, value: unknown): { error: string } | { value: unknown } {
+  const subs = subfieldsOf(field);
+  if (subs.length === 0) return { error: `${field.name}: group has no subfields configured` };
+  const byName = new Map(subs.map((s) => [s.name, s]));
+
+  const checkItem = (item: unknown, at: string, list: boolean): { error: string } | { value: Record<string, unknown> } => {
+    if (!isPlainObject(item)) return { error: `${at} must be an object` };
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(item)) {
+      if (key === "id" && list) continue;
+      if (!byName.has(key)) return { error: `${at}.${key} is not a field of ${field.name}` };
+    }
+    for (const sub of subs) {
+      const path = `${at}.${sub.name}`;
+      const v = Object.prototype.hasOwnProperty.call(item, sub.name) ? item[sub.name] : undefined;
+      if (v === undefined || v === null || v === "") {
+        if (sub.required) return { error: `${path} is required` };
+        // An empty string is a value for text; for a number or a date it is no value.
+        if (v === "" && TEXT_LIKE.has(sub.type)) out[sub.name] = v;
+        continue;
+      }
+      const err = validateValue({ ...sub, name: path }, v);
+      if (err) return { error: err };
+      out[sub.name] = normalizeSubfield(sub, v);
+    }
+    return { value: out };
+  };
+
+  if (!isGroupList(field)) {
+    const r = checkItem(value, field.name, false);
+    return r;
+  }
+
+  if (!Array.isArray(value)) return { error: `${field.name} must be a list of items` };
+  const { min, max } = groupItemBounds(field);
+  if (value.length < min) return { error: `${field.name} needs at least ${min} item${min === 1 ? "" : "s"}` };
+  if (value.length > max) return { error: `${field.name} can have at most ${max} items` };
+  const ids = new Set<string>();
+  const items: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < value.length; i++) {
+    const at = `${field.name}[${i}]`;
+    const r = checkItem(value[i], at, true);
+    if ("error" in r) return r;
+    const given = (value[i] as Record<string, unknown>)["id"];
+    let id: string;
+    if (given === undefined || given === null || given === "") id = newItemId();
+    else if (typeof given !== "string" || !ITEM_ID_RE.test(given)) {
+      return { error: `${at}.id must be 1 to 64 letters, digits, _ or -` };
+    } else id = given;
+    if (ids.has(id)) return { error: `${at}.id '${id}' is used by another item` };
+    ids.add(id);
+    items.push({ id, ...r.value });
+  }
+  return { value: items };
+}
+
+/** A valid subfield value in its stored form, as the top-level field would store it. */
+function normalizeSubfield(sub: FieldDef, v: unknown): unknown {
+  switch (sub.type) {
+    case "editor": return typeof v === "string" ? sanitizeHtml(v) : v;
+    case "color": return normalizeColor(v, sub.options?.alpha === true);
+    case "date": return typeof v === "number" ? v : Math.floor(Date.parse(v as string) / 1000);
+    // A top-level select is a text column; store the same strings here, so filters agree.
+    case "select": return Array.isArray(v) ? v.map(String) : String(v);
+    default: return v;
+  }
 }
 
 /** The stored file names in a file field's value: one name, an array, or a multi field's JSON string. */

@@ -22,7 +22,7 @@ import { decryptValue, encryptValue, isEncrypted, isEncryptionAvailable } from "
  * Field types whose `options.encrypted` flag drives at-rest encryption. Must
  * match the `ENCRYPTABLE_TYPES` set in `core/records.ts`.
  */
-const ENCRYPTABLE_TYPES = new Set<string>(["text", "email", "url", "json", "editor"]);
+const ENCRYPTABLE_TYPES = new Set<string>(["text", "email", "url", "json", "editor", "group"]);
 
 /**
  * Walk the snapshot and re-encrypt any value belonging to an encrypted field.
