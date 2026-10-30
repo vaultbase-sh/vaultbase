@@ -287,6 +287,34 @@ async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown>
 
 
 /**
+ * The custom fields of an auth-collection write (sign-up, invite, guest
+ * upgrade) in their stored form, as a record write stores them: JSON
+ * values serialised, `encrypted` fields encrypted, password fields hashed,
+ * autodate set by the server (the client's value dropped). Those paths
+ * write `vb_<name>` directly, and handed raw values a JSON or array field
+ * failed to bind (500) and an encrypted one was stored in the clear. Keys
+ * that aren't declared fields are passed through for the caller to filter.
+ */
+export async function encodeUserFields(
+  col: Pick<Collection, "fields">,
+  data: Record<string, unknown>,
+  mode: "create" | "update",
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = { ...data };
+  const now = Math.floor(Date.now() / 1000);
+  for (const f of parseFields(col.fields)) {
+    if (f.system || f.implicit) continue;
+    if (f.type === "autodate") {
+      delete out[f.name];
+      if (mode === "create" ? f.onCreate : f.onUpdate) out[f.name] = now;
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(out, f.name)) out[f.name] = await encodeForStorage(out[f.name], f);
+  }
+  return out;
+}
+
+/**
  * Auth-system columns on `vb_<auth-col>` that must never appear in API
  * responses. Stripped on every row projection regardless of caller.
  * Mirrors the contract enforced by /admin/users/:col in v0.10.

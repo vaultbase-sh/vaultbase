@@ -127,6 +127,25 @@ export function runDoctor(dbPath: string): DoctorReport {
         }
       }
 
+      // 2b. Own fields that are NOT NULL in the table (made required with
+      // the collection, before 0.31.1): users made without them (guest and
+      // OAuth sign-up, invitations) fail. SQLite can't drop the constraint
+      // in place, so the field has to be moved to a new column.
+      if (tblExists) {
+        // Not autodate: sign-up sets one made on create.
+        const own = new Set(fields.filter((f) => typeof f.name === "string" && !f.implicit && !f.system && f.type !== "autodate").map((f) => f.name as string));
+        const strict = (db.prepare(`PRAGMA table_info("${tbl.replace(/"/g, '""')}")`).all() as Array<{ name: string; notnull: number }>)
+          .filter((c) => c.notnull === 1 && own.has(c.name))
+          .map((c) => c.name);
+        if (strict.length > 0) {
+          warnings.push({
+            level: "warning",
+            collection: col.name,
+            message: `${strict.map((n) => `'${n}'`).join(", ")} can't be empty in ${tbl}, so guest sign-up, OAuth sign-up and invitations fail with an error. Move each to a new field (see "Required fields made before 0.31.1" in the authentication docs).`,
+          });
+        }
+      }
+
       // 3. Duplicate emails in vaultbase_users for this collection.
       if (usersExists) {
         const dups = (db.prepare(

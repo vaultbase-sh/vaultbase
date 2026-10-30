@@ -12,7 +12,7 @@ import { runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
 import { emit } from "../core/events.ts";
 import "../core/event-listeners.ts";
 import type { Collection } from "../db/schema.ts";
-import { canSeeAs, getRecord } from "../core/records.ts";
+import { canSeeAs, encodeUserFields, getRecord } from "../core/records.ts";
 import { validateRecord, ValidationError } from "../core/validate.ts";
 import { sessionMaxSeconds, tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
@@ -333,7 +333,8 @@ async function signupAllowed(
 
 async function validateAuthRegister(
   col: { id: string; name: string; type: string; fields: string; created_at: number; updated_at: number; view_query: string | null; list_rule: string | null; view_rule: string | null; create_rule: string | null; update_rule: string | null; delete_rule: string | null; },
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  by: "visitor" | "admin" = "visitor",
 ): Promise<void> {
   // Email uniqueness is left to the caller's own lookup: as a validation error
   // it would answer "email must be unique" and tell anyone which addresses
@@ -347,8 +348,12 @@ async function validateAuthRegister(
   // checks options on email/verified just like any other field.
   const synthetic = { ...col, fields: JSON.stringify(fields) };
   // Relations set at sign-up point at records an anonymous caller can see,
-  // the same check the records API applies to non-admin writes.
-  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, "create", undefined, canSeeAs(null));
+  // the same check the records API applies to non-admin writes. An admin's
+  // invitation is checked as an admin's write, and only for the fields it
+  // sets: the admin UI invites with an email alone, and the invitee can't
+  // fill in a required field later (accept-invite takes a password only).
+  const asAdmin = by === "admin";
+  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, asAdmin ? "update" : "create", undefined, asAdmin ? undefined : canSeeAs(null));
   // validateRecord's "email" branch only checks regex, not min/max length —
   // enforce admin-set length constraints here so register matches the rest of
   // the API surface (text-typed fields already get min/max from validateRecord).
@@ -683,7 +688,7 @@ async function providerSignIn(
       email: accountEmail,
       password_hash: hash,
       email_verified: accountEmail === profile.email ? 1 : 0,
-      custom: profile.name ? { name: profile.name } : {},
+      custom: await encodeUserFields(col, profile.name ? { name: profile.name } : {}, "create"),
       legacyDataJson: JSON.stringify(profile.name ? { name: profile.name } : {}),
       created_at: now,
       updated_at: now,
@@ -968,6 +973,16 @@ export function makeAuthPlugin(jwtSecret: string) {
           }
           throw e;
         }
+        // What the hook returns is stored, so it is checked as the body was.
+        try {
+          await validateAuthRegister(col, hookData);
+        } catch (e) {
+          if (e instanceof ValidationError) {
+            set.status = 422;
+            return { error: "Validation failed", code: 422, details: e.details };
+          }
+          throw e;
+        }
         const finalExtra: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
         delete finalExtra.email; // already a top-level column
 
@@ -975,7 +990,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           id,
           email,
           password_hash: hash,
-          custom: finalExtra,
+          custom: await encodeUserFields(col, finalExtra, "create"),
           legacyDataJson: JSON.stringify(finalExtra),
           created_at: now,
           updated_at: now,
@@ -1433,6 +1448,12 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
           throw e;
         }
+        try {
+          await validateAuthRegister(col, hookData, "admin");
+        } catch (e) {
+          if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
+          throw e;
+        }
         const custom: Record<string, unknown> = { ...hookData };
         delete custom["email"];
         const id = crypto.randomUUID();
@@ -1443,7 +1464,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           id,
           email,
           password_hash: await hashPassword(crypto.randomUUID() + crypto.randomUUID()),
-          custom,
+          custom: await encodeUserFields(col, custom, "create"),
           legacyDataJson: JSON.stringify(custom),
           created_at: now,
           updated_at: now,
@@ -1748,6 +1769,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         email,
         password_hash: hash,
         is_anonymous: 1,
+        custom: await encodeUserFields(col, {}, "create"),
         legacyDataJson: "{}",
         created_at: now,
         updated_at: now,
@@ -1838,9 +1860,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         const declared = new Set(
           parseFields(col.fields).filter((f) => !f.system && !f.implicit).map((f) => f.name),
         );
+        const custom: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(extra)) {
-          if (declared.has(k) && !(AUTH_USER_COLUMNS as readonly string[]).includes(k)) update[k] = v;
+          if (declared.has(k) && !(AUTH_USER_COLUMNS as readonly string[]).includes(k)) custom[k] = v;
         }
+        Object.assign(update, await encodeUserFields(col, custom, "update"));
         // Ending the guest's sessions: the anonymous token (and any copy of
         // it) stops working once the account has a real owner.
         update["password_reset_at"] = now;

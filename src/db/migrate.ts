@@ -100,6 +100,30 @@ async function runMigrationsNow() {
     try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
 
+  // ── v0.31.1: no NOT NULL on an auth collection's own fields ──
+  // Postgres drops it. SQLite can't in place, so the log says which fields
+  // have it. Every start: one catalog query per auth collection, and a
+  // server still on an older version may have made a new one.
+  {
+    const { relaxAuthFieldColumns, strictAuthFieldColumns, parseFields } = await import("../core/collections.ts");
+    const auth = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type = 'auth'`);
+    for (const { name, fields } of auth) {
+      try {
+        if (db.name === "postgres") {
+          const changed = await relaxAuthFieldColumns(name, parseFields(fields));
+          if (changed.length > 0) console.log(`[migrate] ${name}: ${changed.join(", ")} may now be empty in the table (required is checked on sign-up)`);
+        } else {
+          const strict = await strictAuthFieldColumns(name, parseFields(fields));
+          if (strict.length > 0) {
+            console.warn(`[migrate] ${name}: ${strict.join(", ")} can't be empty in the table, so guest sign-up, OAuth sign-up and invitations fail. See "Required fields made before 0.31.1" in the authentication docs.`);
+          }
+        }
+      } catch (e) {
+        console.error(`[migrate] NOT NULL on '${name}':`, e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
   // ── v0.26.6: stored row counts for list totals (core/row-counts.ts) ──
   // Every start: cheap when the triggers are in place, and a table that lost
   // them (rebuilt outside the server) gets them back with a fresh count.

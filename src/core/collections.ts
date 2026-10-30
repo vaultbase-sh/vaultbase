@@ -377,6 +377,41 @@ function fieldColumn(field: FieldDef): ColumnSpec {
   };
 }
 
+/**
+ * Postgres: drop NOT NULL from an auth collection's own field columns.
+ * Before 0.31.1 a field marked required when the collection was made got
+ * the constraint, and every user made without that field (guest and OAuth
+ * sign-up, invitations) failed with a 500. Returns the columns changed.
+ * SQLite can't drop the constraint in place; `doctor` names those columns.
+ */
+export async function relaxAuthFieldColumns(collectionName: string, fields: FieldDef[]): Promise<string[]> {
+  if (db.name !== "postgres") return [];
+  const changed = await strictAuthFieldColumns(collectionName, fields);
+  for (const name of changed) {
+    // Only the catalog changes, but the lock waits behind any long
+    // transaction on the table (a backup's dump) and every user read would
+    // queue behind it. Give up after a few seconds; the next start retries.
+    await db.transaction(async () => {
+      await db.exec(`SET LOCAL lock_timeout = '5s'`);
+      await db.exec(`ALTER TABLE ${quoteIdent(userTableName(collectionName))} ALTER COLUMN ${quoteIdent(name)} DROP NOT NULL`);
+    });
+  }
+  return changed;
+}
+
+/** An auth collection's own field columns that can't be empty in its table. */
+export async function strictAuthFieldColumns(collectionName: string, fields: FieldDef[]): Promise<string[]> {
+  const own = new Set(fields.filter((f) => !f.system && !f.implicit && f.type !== "autodate").map((f) => f.name));
+  const table = userTableName(collectionName);
+  const rows = db.name === "postgres"
+    ? await db.all<{ name: string }>(
+      `SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND is_nullable = 'NO'`,
+      [table],
+    )
+    : await db.all<{ name: string }>(`SELECT name FROM pragma_table_info(?) WHERE "notnull" = 1`, [table]);
+  return rows.map((r) => r.name).filter((n) => own.has(n));
+}
+
 /** Create the per-collection user table. */
 export async function createUserTable(collectionName: string, fields: FieldDef[]): Promise<void> {
   assertSqlIdent(collectionName, "collection");
@@ -1246,7 +1281,10 @@ export async function createCollection(
       await ensureSingletonRecord(row.name);
     } else {
       // Per-collection real table excludes implicit fields — those live on vaultbase_users.
-      await createUserTable(row.name, fields.filter((f) => !f.implicit));
+      // An auth collection's users are also made without its fields (guest
+      // and OAuth sign-up, invitations), so no NOT NULL there either:
+      // `required` is enforced where a body is validated.
+      await createUserTable(row.name, fields.filter((f) => !f.implicit).map((f) => (type === "auth" ? { ...f, required: false } : f)));
       if (type === "auth") {
         // v0.11+: auth columns (email/password_hash/...) live on `vb_<name>`
         // alongside the per-collection custom fields. Existing v0.10 installs
