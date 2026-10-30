@@ -94,3 +94,19 @@ describe("an encrypted editor field", () => {
     expect((await getRecord("pages", r.id))!["body"]).toBe("<p>old</p>");
   });
 });
+
+describe("unique and encrypted", () => {
+  it("can't be set together on a field (ciphertext never repeats), but a schema that has them still saves", async () => {
+    const { db } = await import("../db/index.ts");
+    for (const type of ["text", "editor", "email"]) {
+      const e = await createCollection({ name: `u_${type}`, fields: JSON.stringify([{ name: "v", type, options: { unique: true, encrypted: true } }]) }).catch((x: unknown) => x);
+      expect(JSON.stringify((e as { details?: unknown }).details)).toContain("can't be unique");
+    }
+    const c = await createCollection({ name: "legacy", fields: JSON.stringify([{ name: "v", type: "text" }]) });
+    // As an older version could save it.
+    await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [JSON.stringify([{ name: "v", type: "text", options: { unique: true, encrypted: true } }]), c.id]);
+    const { _resetCollectionCache } = await import("../core/collections.ts");
+    _resetCollectionCache();
+    await updateCollection(c.id, { fields: JSON.stringify([{ name: "v", type: "text", options: { unique: true, encrypted: true } }, { name: "w", type: "text" }]) });
+  });
+});

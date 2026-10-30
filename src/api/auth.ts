@@ -963,8 +963,20 @@ export function makeAuthPlugin(jwtSecret: string) {
           }
           throw e;
         }
-        // The address the account gets: the hook's, when it changed it.
-        const email = hookData.email as string;
+        // The address the account gets: the hook's, when it changed it. An
+        // email field made optional, or a hook that removed the address, left
+        // it empty, and sign-up made accounts without one.
+        const email = hookData.email;
+        if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+          set.status = 422;
+          return { error: "Validation failed", code: 422, details: { email: "email is required" } };
+        }
+        const finalExtra: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
+        delete finalExtra.email; // already a top-level column
+        // Stored form before the lookup, on both branches, as the hash is:
+        // custom password fields are hashed here too, and a taken address
+        // answered without that work.
+        const custom = await encodeUserFields(col, finalExtra, "create");
 
         // v0.11: per-collection email uniqueness via vb_<col> + legacy
         // fallback. Earlier versions enforced GLOBAL email uniqueness across
@@ -988,14 +1000,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
-        const finalExtra: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
-        delete finalExtra.email; // already a top-level column
-
         await insertUser(col, {
           id,
           email,
           password_hash: hash,
-          custom: await encodeUserFields(col, finalExtra, "create"),
+          custom,
           legacyDataJson: JSON.stringify(finalExtra),
           created_at: now,
           updated_at: now,
@@ -1460,9 +1469,9 @@ export function makeAuthPlugin(jwtSecret: string) {
           throw e;
         }
         // The address the account gets: the hook's, when it set another one.
-        const email = typeof hookData["email"] === "string" && hookData["email"].trim() !== "" ? hookData["email"].trim() : given;
+        const email = typeof hookData["email"] === "string" ? hookData["email"].trim() : "";
+        if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
         if (email.toLowerCase() !== given.toLowerCase()) {
-          if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
           if (await findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
         }
         const custom: Record<string, unknown> = { ...hookData };

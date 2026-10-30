@@ -14,7 +14,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Sign-up answered differently for a taken address when a
   `beforeCreate` hook refused the payload.** The hook ran only for a new
   address, so its `422` showed which addresses had accounts. It now runs,
-  and what it returns is validated, before the address is looked up.
+  and what it returns is validated, before the address is looked up. The
+  collection's own password and encrypted fields are also prepared on both
+  branches, so a taken address no longer answers faster.
+- **Sign-up could make accounts without an email** when the email field
+  was made optional, or a hook removed the address. It answers `422`.
 - **An email set by a `beforeCreate` hook was ignored** at sign-up and on
   invitations: the account got the address from the request. It now gets
   the hook's, which is validated and checked for an existing account.
@@ -26,6 +30,21 @@ Binaries, checksums, signatures and SBOMs for every version are on
   history encrypted it. It is encrypted in the table now; values stored
   before stay readable and are encrypted when next written. The admin
   offers the option on editor fields.
+
+### Changed
+
+- **A field can't be both `unique` and `encrypted`.** Encrypted values are
+  ciphertext with a random IV, so uniqueness was never enforced on them.
+  A schema saved with both keeps them.
+
+### Upgrade notes
+
+- `beforeCreate` hooks on auth collections now run for every sign-up,
+  including one whose address already has an account (which is then
+  dropped without telling the caller). Put side effects, such as creating
+  records or sending mail, in `afterCreate`.
+- Filters and rules on an `encrypted` `editor` field match only values
+  stored before this release, as on other encrypted fields.
 
 ## [0.32.0] — 2026-10-30
 

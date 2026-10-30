@@ -12,7 +12,7 @@ import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
 import { ruleSyntaxError } from "./expression.ts";
 import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, subfieldsOf, withoutRenames } from "./group-fields.ts";
-import { decryptValue, encryptValue, isEncrypted } from "./encryption.ts";
+import { decryptValue, encryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -476,6 +476,14 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
     errors[f.name] = `'${f.name}': unknown field type '${String(f.type)}'`;
   }
   const previousByName = new Map(previous.map((f) => [f.name, f]));
+  for (const f of fields) {
+    // An encrypted value is ciphertext with a random IV: a unique index or
+    // check never sees two equal values. Kept where a schema has it already.
+    if (f.system || !f.options?.unique || !f.options?.encrypted || !ENCRYPTABLE_TYPES.has(f.type)) continue;
+    const prev = previousByName.get(f.renamedFrom ?? f.name) ?? previousByName.get(f.name);
+    if (prev?.options?.unique && prev.options.encrypted) continue;
+    errors[f.name] = `'${f.name}': an encrypted field can't be unique (only ciphertext is stored)`;
+  }
   for (const f of fields) {
     // Renaming onto a name this change removes: the column of that name is
     // still there when the rename runs. Two saves do it.

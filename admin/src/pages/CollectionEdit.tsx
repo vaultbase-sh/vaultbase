@@ -1176,13 +1176,13 @@ function FieldOptionsBody({
                 title="Unique"
                 hint="Disallow duplicate values"
                 on={!!sel.options?.["unique"]}
-                onChange={(v) => updateSelOptions({ unique: v })}
+                onChange={(v) => updateSelOptions(v ? { unique: true, encrypted: undefined } : { unique: false })}
               />
               <OptionRow
                 title="Encrypt at rest"
                 hint={<>AES-GCM. Disables filtering &amp; uniqueness on this field. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
                 on={!!sel.options?.["encrypted"]}
-                onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined } : { encrypted: false })}
+                onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined, unique: undefined } : { encrypted: false })}
               />
             </>
           )}

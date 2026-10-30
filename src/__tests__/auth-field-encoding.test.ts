@@ -168,6 +168,17 @@ describe("sign-up stores field values as a record write does", () => {
     expect((await post("/auth/users/register", { email: "x@test.local", password: "a-good-password-1" })).status).toBe(422);
   });
 
+  it("register makes no account without an address, even with the email field optional", async () => {
+    const users = (await getCollection("users"))!;
+    const fields = JSON.parse(users.fields).map((f: { name: string }) => f.name === "email" ? { ...f, required: false } : f);
+    await updateCollection("users", { fields: JSON.stringify(fields) });
+    _resetCollectionCache();
+    expect((await post("/auth/users/register", { email: "", password: "a-good-password-1" })).status).toBe(422);
+    await installHook("beforeCreate", "delete ctx.record.email;");
+    expect((await post("/auth/users/register", { email: "gone@test.local", password: "a-good-password-1" })).status).toBe(422);
+    expect((await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM vb_users WHERE email IS NULL OR email = ''`))!.n).toBe(0);
+  });
+
   it("invite gives the account the address a hook sets, and refuses a taken one", async () => {
     smtp = startSmtpSink();
     await installHook("beforeCreate", "ctx.record.email = String(ctx.record.email).replace('@raw.', '@test.');");
