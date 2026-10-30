@@ -16,13 +16,7 @@ import { recordHistory } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 import type { Collection } from "../db/schema.ts";
 import { parseFields, type FieldDef } from "./collections.ts";
-import { decryptValue, encryptValue, isEncrypted, isEncryptionAvailable } from "./encryption.ts";
-
-/**
- * Field types whose `options.encrypted` flag drives at-rest encryption. Must
- * match the `ENCRYPTABLE_TYPES` set in `core/records.ts`.
- */
-const ENCRYPTABLE_TYPES = new Set<string>(["text", "email", "url", "json", "editor", "group"]);
+import { decryptValue, encryptValue, isEncrypted, isEncryptionAvailable, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
 /**
  * Walk the snapshot and re-encrypt any value belonging to an encrypted field.

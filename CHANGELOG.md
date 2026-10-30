@@ -7,6 +7,26 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Sign-up answered differently for a taken address when a
+  `beforeCreate` hook refused the payload.** The hook ran only for a new
+  address, so its `422` showed which addresses had accounts. It now runs,
+  and what it returns is validated, before the address is looked up.
+- **An email set by a `beforeCreate` hook was ignored** at sign-up and on
+  invitations: the account got the address from the request. It now gets
+  the hook's, which is validated and checked for an existing account.
+- **A `password` field stored a value that looked like a hash as sent.**
+  A value starting with `$argon2`, `$2a$` or `$2b$` skipped hashing, so a
+  client could store a hash of its choosing and skip the field's length
+  rules. Every value is hashed now.
+- **An `encrypted` `editor` field was stored in the clear.** Only record
+  history encrypted it. It is encrypted in the table now; values stored
+  before stay readable and are encrypted when next written. The admin
+  offers the option on editor fields.
+
 ## [0.32.0] — 2026-10-30
 
 ### Added

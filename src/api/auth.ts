@@ -934,35 +934,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         // response time, and skipping it for a taken address made that branch
         // measurably faster.
         const hash = await hashPassword(body.password);
-        // v0.11: per-collection email uniqueness via vb_<col> + legacy
-        // fallback. Earlier versions enforced GLOBAL email uniqueness across
-        // every auth collection — pre-existing rows still work via the
-        // helper's fallback to vaultbase_users.
-        // Any case: `ALICE@x` must not become a second account beside `alice@x`.
-        const existing = await findUserByEmailAnyCase(col, body.email);
-        // No-enumeration: always return a generic success. If the email is
-        // taken, queue a "complete account / reset password" email instead so
-        // the legitimate owner can recover, and refuse silently.
-        if (existing) {
-          if (isSmtpConfigured()) {
-            issueAndSend("reset", { id: existing.id, email: existing.email }, col.id, col.name).catch((e) => {
-              console.error("[auth] reset email failed for", redactEmail(existing.email), "—", e instanceof Error ? e.message : e);
-            });
-          }
-          // Return the same shape as a fresh-success path so a network observer
-          // can't tell the two cases apart. `id` is the existing user's id —
-          // not a leak: knowing the id alone gives no access without auth.
-          return { data: { id: existing.id, email: body.email } };
-        }
-        const id = crypto.randomUUID();
-        const now = Math.floor(Date.now() / 1000);
-        const { email, password, ...extra } = body;
+        const { email: _bodyEmail, password, ...extra } = body;
         void password;
 
         // Hook lifecycle — auth signup gets the same beforeCreate /
         // afterCreate semantics as the records flow. beforeCreate can
-        // mutate `extra` (custom fields) or throw to abort.
-        const hookData: Record<string, unknown> = { email, ...extra };
+        // mutate the email and custom fields, or throw to abort. It runs
+        // before the address is looked up, as the hash is: a payload the
+        // hook refuses gets its 422 whether or not the address is taken.
+        const hookData: Record<string, unknown> = { email: body.email, ...extra };
         const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
         try {
           await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
@@ -983,6 +963,31 @@ export function makeAuthPlugin(jwtSecret: string) {
           }
           throw e;
         }
+        // The address the account gets: the hook's, when it changed it.
+        const email = hookData.email as string;
+
+        // v0.11: per-collection email uniqueness via vb_<col> + legacy
+        // fallback. Earlier versions enforced GLOBAL email uniqueness across
+        // every auth collection — pre-existing rows still work via the
+        // helper's fallback to vaultbase_users.
+        // Any case: `ALICE@x` must not become a second account beside `alice@x`.
+        const existing = await findUserByEmailAnyCase(col, email);
+        // No-enumeration: always return a generic success. If the email is
+        // taken, queue a "complete account / reset password" email instead so
+        // the legitimate owner can recover, and refuse silently.
+        if (existing) {
+          if (isSmtpConfigured()) {
+            issueAndSend("reset", { id: existing.id, email: existing.email }, col.id, col.name).catch((e) => {
+              console.error("[auth] reset email failed for", redactEmail(existing.email), "—", e instanceof Error ? e.message : e);
+            });
+          }
+          // Return the same shape as a fresh-success path so a network observer
+          // can't tell the two cases apart. `id` is the existing user's id —
+          // not a leak: knowing the id alone gives no access without auth.
+          return { data: { id: existing.id, email } };
+        }
+        const id = crypto.randomUUID();
+        const now = Math.floor(Date.now() / 1000);
         const finalExtra: Record<string, unknown> = { ...(hookData as Record<string, unknown>) };
         delete finalExtra.email; // already a top-level column
 
@@ -1433,15 +1438,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
-        const email = body.email.trim();
-        if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
-        if (await findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
+        const given = body.email.trim();
+        if (!EMAIL_RE.test(given)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        if (await findUserByEmailAnyCase(col, given)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
 
         const data: Record<string, unknown> = { ...(body.data ?? {}) };
         delete data["email"];
         delete data["password"];
         const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
-        const hookData: Record<string, unknown> = { email, ...data };
+        const hookData: Record<string, unknown> = { email: given, ...data };
         try {
           await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
         } catch (e) {
@@ -1453,6 +1458,12 @@ export function makeAuthPlugin(jwtSecret: string) {
         } catch (e) {
           if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
           throw e;
+        }
+        // The address the account gets: the hook's, when it set another one.
+        const email = typeof hookData["email"] === "string" && hookData["email"].trim() !== "" ? hookData["email"].trim() : given;
+        if (email.toLowerCase() !== given.toLowerCase()) {
+          if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+          if (await findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
         }
         const custom: Record<string, unknown> = { ...hookData };
         delete custom["email"];

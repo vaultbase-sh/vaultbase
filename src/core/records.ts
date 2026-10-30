@@ -261,17 +261,16 @@ import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { validateRecord, type CanSeeRecord } from "./validate.ts";
 import { getActiveHookRequest, makeHookHelpers, runBeforeHook } from "./hooks.ts";
-import { encryptValue, decryptValue, isEncrypted } from "./encryption.ts";
-
-const ENCRYPTABLE_TYPES = new Set(["text", "email", "url", "json", "group"]);
+import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
   // Password: bcrypt-hash via Bun. Empty/null leaves column null.
   if (field.type === "password") {
     if (val === null || val === undefined || val === "") return null;
     if (typeof val !== "string") return null;
-    // Skip if already a hash (idempotent re-save). Bun emits $argon2 by default.
-    if (val.startsWith("$argon2") || val.startsWith("$2a$") || val.startsWith("$2b$")) return val;
+    // Every value is hashed, one that looks like a hash too: passed through,
+    // a client could store a hash of its choosing and skip the field's
+    // length rules. Reads never return the stored hash, so nothing sends it back.
     return await Bun.password.hash(val);
   }
   const encoded = encodeValue(val, field);

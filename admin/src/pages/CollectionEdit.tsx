@@ -1196,6 +1196,14 @@ function FieldOptionsBody({
           onChange={(v) => updateSelOptions(v ? { searchable: true, encrypted: undefined } : { searchable: undefined })}
         />
       )}
+      {topLevel && sel.type === "editor" && (
+        <OptionRow
+          title="Encrypt at rest"
+          hint={<>AES-GCM. Disables filtering on this field. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
+          on={!!sel.options?.["encrypted"]}
+          onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined } : { encrypted: false })}
+        />
+      )}
       {topLevel && (sel.type === "json" || sel.type === "group") && (
         <OptionRow
           title="Encrypt at rest"

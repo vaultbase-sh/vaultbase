@@ -78,3 +78,19 @@ describe("N-6a: encrypted-field values are encrypted at rest in history rows", (
     expect(r["secret"]).toBe("shh");
   });
 });
+
+describe("an encrypted editor field", () => {
+  it("is encrypted in the table as in history, and an older plaintext value still reads", async () => {
+    const { db } = await import("../db/index.ts");
+    const { getRecord } = await import("../core/records.ts");
+    await createCollection({ name: "pages", fields: JSON.stringify([{ name: "body", type: "editor", options: { encrypted: true } }]) });
+    const r = await createRecord("pages", { body: "<p>private</p>" }, null);
+    const raw = await db.get<{ body: string }>(`SELECT body FROM vb_pages WHERE id = ?`, [r.id]);
+    expect(isEncrypted(raw!.body)).toBe(true);
+    expect(raw!.body).not.toContain("private");
+    expect((await getRecord("pages", r.id))!["body"]).toBe("<p>private</p>");
+    // Stored before this was fixed: in the clear.
+    await db.run(`UPDATE vb_pages SET body = ? WHERE id = ?`, ["<p>old</p>", r.id]);
+    expect((await getRecord("pages", r.id))!["body"]).toBe("<p>old</p>");
+  });
+});

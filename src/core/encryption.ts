@@ -12,6 +12,13 @@
 
 import { createCipheriv, createDecipheriv, randomBytes as nodeRandomBytes } from "node:crypto";
 
+/**
+ * Field types whose `options.encrypted` flag encrypts the stored value, in
+ * the table and in record history alike. One list: two copies disagreed,
+ * and an encrypted `editor` field was stored in the clear.
+ */
+export const ENCRYPTABLE_TYPES: ReadonlySet<string> = new Set(["text", "email", "url", "json", "editor", "group"]);
+
 const PREFIX = "vbenc:1:";
 const TAG_BYTES = 16;
 

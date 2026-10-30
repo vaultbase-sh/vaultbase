@@ -136,6 +136,47 @@ describe("sign-up stores field values as a record write does", () => {
     expect(JSON.parse(String((await rawRow("h2@test.local"))["prefs"]))).toEqual({ from: "hook" });
   });
 
+  it("register refuses what a hook refuses whether or not the address is taken", async () => {
+    expect((await post("/auth/users/register", { email: "taken@test.local", password: "a-good-password-1" })).status).toBe(200);
+    await installHook("beforeCreate", "if (ctx.record.level === 7) throw new Error('no sevens');");
+    for (const email of ["taken@test.local", "free@test.local"]) {
+      const res = await post("/auth/users/register", { email, password: "a-good-password-1", level: 7 });
+      expect({ email, status: res.status }).toEqual({ email, status: 422 });
+    }
+  });
+
+  it("hashes a password field's value that already looks like a hash", async () => {
+    const looksHashed = "$argon2id$v=19$m=65536,t=2,p=1$c2FsdA$aGFzaA";
+    expect((await post("/auth/users/register", { email: "ph@test.local", password: "a-good-password-1", pin: looksHashed })).status).toBe(200);
+    const stored = String((await rawRow("ph@test.local"))["pin"]);
+    expect(stored).not.toBe(looksHashed);
+    expect(await Bun.password.verify(looksHashed, stored)).toBe(true);
+  });
+
+  it("register gives the account the address a hook sets, and checks it", async () => {
+    await installHook("beforeCreate", "ctx.record.email = String(ctx.record.email).replace('@raw.', '@test.');");
+    const res = await post("/auth/users/register", { email: "moved@raw.local", password: "a-good-password-1" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { data: { email: string } }).data.email).toBe("moved@test.local");
+    const users = (await getCollection("users"))!;
+    expect(await findUserByEmail(users, "moved@test.local")).not.toBeNull();
+    expect(await findUserByEmail(users, "moved@raw.local")).toBeNull();
+    // The new address is looked up: a second sign-up landing on it makes no account.
+    const again = await post("/auth/users/register", { email: "moved@raw.local", password: "a-good-password-1" });
+    expect(again.status).toBe(200);
+    await installHook("beforeCreate", "ctx.record.email = 'not an address';");
+    expect((await post("/auth/users/register", { email: "x@test.local", password: "a-good-password-1" })).status).toBe(422);
+  });
+
+  it("invite gives the account the address a hook sets, and refuses a taken one", async () => {
+    smtp = startSmtpSink();
+    await installHook("beforeCreate", "ctx.record.email = String(ctx.record.email).replace('@raw.', '@test.');");
+    const res = await post("/admin/users/users/invite", { email: "inv@raw.local" }, await adminToken());
+    expect(res.status).toBe(200);
+    expect(await findUserByEmail((await getCollection("users"))!, "inv@test.local")).not.toBeNull();
+    expect((await post("/admin/users/users/invite", { email: "inv@raw.local" }, await adminToken())).status).toBe(409);
+  });
+
   it("invite", async () => {
     smtp = startSmtpSink();
     const res = await post("/admin/users/users/invite", { email: "i@test.local", data: BODY }, await adminToken());
@@ -209,6 +250,23 @@ describe("a field made required with an auth collection", () => {
     expect(await nullable("vb_members", "email_verified")).toBe("NO");
     expect(await nullable("vb_notes", "title")).toBe("NO");
     expect(await relaxAuthFieldColumns("members", JSON.parse(REQUIRED))).toEqual([]);
+  });
+
+  it.skipIf(onSqlite)("loses NOT NULL on Postgres for a collection whose table name Postgres cut short", async () => {
+    // Before 0.29 a name could be longer than Postgres keeps: its table got
+    // the first 63 bytes. The catalog compares names as Postgres's `name`
+    // type, which cuts the full name the same way.
+    const long = "members_with_a_name_much_longer_than_postgres_keeps_for_a_table";
+    await createCollection({ name: "members", type: "auth", create_rule: null, fields: REQUIRED });
+    await db.exec(`ALTER TABLE "vb_members" RENAME TO "vb_${long}"`);
+    await db.exec(`UPDATE vaultbase_collections SET name = '${long}' WHERE name = 'members'`);
+    _resetCollectionCache();
+    const stored = `vb_${long}`.slice(0, 63);
+    await db.exec(`ALTER TABLE "${stored}" ALTER COLUMN "name" SET NOT NULL`);
+    expect(await strictAuthFieldColumns(long, JSON.parse(REQUIRED))).toEqual(["name"]);
+    expect(await relaxAuthFieldColumns(long, JSON.parse(REQUIRED))).toEqual(["name"]);
+    const n = await db.get<{ n: string }>(`SELECT is_nullable AS n FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = 'name'`, [stored]);
+    expect(n!.n).toBe("YES");
   });
 
   it.skipIf(!onSqlite)("can be moved to a column that takes no value on SQLite, keeping its values", async () => {
