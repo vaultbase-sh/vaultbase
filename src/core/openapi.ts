@@ -10,6 +10,7 @@ import type { Collection } from "../db/schema.ts";
 import { parseFields, type FieldDef } from "./collections.ts";
 import { VAULTBASE_VERSION } from "./version.ts";
 import { customFieldType } from "./field-types.ts";
+import { groupItemBounds, isGroupList, subfieldsOf } from "./group-fields.ts";
 
 type Schema = Record<string, unknown>;
 
@@ -18,7 +19,7 @@ function typeName(collection: string): string {
   return collection.split(/[^A-Za-z0-9]+/).filter(Boolean).map((p) => p[0]!.toUpperCase() + p.slice(1)).join("") || "Collection";
 }
 
-function fieldSchema(f: FieldDef): Schema {
+function fieldSchema(f: FieldDef, mode: "read" | "input" = "read"): Schema {
   const many = f.options?.multiple === true;
   const list = (s: Schema): Schema => (many ? { type: "array", items: s } : s);
   switch (f.type) {
@@ -28,10 +29,14 @@ function fieldSchema(f: FieldDef): Schema {
     case "url": return { type: "string", format: "uri" };
     case "color": return {
       type: "string",
-      pattern: f.options?.alpha ? "^#[0-9a-f]{6}([0-9a-f]{2})?$" : "^#[0-9a-f]{6}$",
+      pattern: mode === "input"
+        ? (f.options?.alpha ? "^#([0-9A-Fa-f]{3,4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$" : "^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$")
+        : (f.options?.alpha ? "^#[0-9a-f]{6}([0-9a-f]{2})?$" : "^#[0-9a-f]{6}$"),
       description: "Hex color; #rgb / #RRGGBB accepted on write and stored lowercase",
     };
-    case "date":
+    case "date": return mode === "input"
+      ? { type: ["integer", "string"], description: "Unix seconds, or a date string such as 2024-01-31T12:00:00Z" }
+      : { type: "integer", description: "Unix seconds" };
     case "autodate": return { type: "integer", description: "Unix seconds" };
     case "select": return list(f.options?.values?.length ? { type: "string", enum: f.options.values } : { type: "string" });
     case "relation": return list({ type: "string", description: `Record id in '${f.collection ?? "?"}'` });
@@ -43,8 +48,54 @@ function fieldSchema(f: FieldDef): Schema {
     };
     case "vector": return { type: "array", items: { type: "number" }, ...(f.options?.dimensions ? { minItems: f.options.dimensions, maxItems: f.options.dimensions } : {}) };
     case "password": return { type: "string", writeOnly: true };
+    case "group": return groupSchema(f, mode);
     default: return customFieldType(f.type)?.openapi?.(f) ?? { type: "string" };
   }
+}
+
+const TEXT_LIKE = new Set(["text", "editor", "email", "url"]);
+
+/** The schema, also allowing null. */
+function orNull(s: Schema): Schema {
+  const t = s["type"];
+  if (t === undefined) return s; // any value already
+  const out: Schema = { ...s, type: [...(Array.isArray(t) ? t : [t]), "null"] };
+  if (Array.isArray(s["enum"])) out["enum"] = [...(s["enum"] as unknown[]), null];
+  return out;
+}
+
+/**
+ * A group's items. On write, unknown keys are refused and required subfields
+ * must be there; on read, an item made before a subfield became required may
+ * lack it, so only the item id is promised.
+ */
+function groupSchema(f: FieldDef, mode: "read" | "input"): Schema {
+  const list = isGroupList(f);
+  const props: Record<string, Schema> = {};
+  if (list) {
+    props["id"] = mode === "read"
+      ? { type: "string", description: "Item id, assigned by the server" }
+      : { type: ["string", "null"], pattern: "^[A-Za-z0-9_-]{1,64}$", description: "Send it back to keep the item's id; leave it out (or null) for a new item" };
+  }
+  const required: string[] = mode === "read" && list ? ["id"] : [];
+  for (const sub of subfieldsOf(f)) {
+    const s = fieldSchema(sub, mode);
+    if (mode === "read") props[sub.name] = s;
+    else if (sub.required) {
+      // A required value can't be empty: "" counts as missing.
+      props[sub.name] = TEXT_LIKE.has(sub.type) ? { ...s, minLength: 1 } : s;
+      required.push(sub.name);
+    } else props[sub.name] = orNull(s); // null is no value
+  }
+  const item: Schema = {
+    type: "object",
+    properties: props,
+    ...(required.length ? { required } : {}),
+    ...(mode === "input" ? { additionalProperties: false } : {}),
+  };
+  if (!list) return item;
+  const { min, max } = groupItemBounds(f);
+  return { type: "array", items: item, ...(min > 0 ? { minItems: min } : {}), maxItems: max };
 }
 
 function recordSchemas(col: Collection): { record: Schema; input: Schema } {
@@ -59,11 +110,10 @@ function recordSchemas(col: Collection): { record: Schema; input: Schema } {
   const inputProps: Record<string, Schema> = {};
   const required: string[] = [];
   for (const f of fields) {
-    const s = fieldSchema(f);
-    if (f.type !== "password") props[f.name] = s;
+    if (f.type !== "password") props[f.name] = fieldSchema(f);
     // autodate is set by the server; file fields are written via /files.
     if (f.type !== "autodate" && f.type !== "file" && !(col.type === "auth" && f.implicit)) {
-      inputProps[f.name] = s;
+      inputProps[f.name] = fieldSchema(f, "input");
       if (f.required) required.push(f.name);
     }
   }

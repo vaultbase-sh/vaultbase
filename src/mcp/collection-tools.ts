@@ -27,6 +27,7 @@ import {
   type ListOptions,
 } from "../core/records.ts";
 import { ensureSingletonRecord, listCollections, parseFields, type FieldDef } from "../core/collections.ts";
+import { groupItemBounds, isGroupList, subfieldsOf } from "../core/group-fields.ts";
 import { ToolRegistry, asJsonText, asUntrustedJsonText } from "./tools.ts";
 
 const HARD_PER_PAGE_CAP = 100;
@@ -84,6 +85,27 @@ function fieldTypeSchema(f: FieldDef): Record<string, unknown> {
       return { type: "string", format: "uri", description: hint(f) };
     case "color":
       return { type: "string", description: `${hint(f)} (hex color, e.g. #e85a4f${f.options?.alpha ? " or #e85a4f80" : ""})` };
+    case "group": {
+      const list = isGroupList(f);
+      const properties: Record<string, unknown> = list
+        ? { id: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$", description: "keep an item's id when updating; omit it for a new item" } }
+        : {};
+      const required: string[] = [];
+      for (const sub of subfieldsOf(f)) {
+        properties[sub.name] = fieldTypeSchema(sub);
+        if (sub.required) required.push(sub.name);
+      }
+      const item = { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false };
+      if (!list) return { ...item, description: `${hint(f)} (one object)` };
+      const { min, max } = groupItemBounds(f);
+      return {
+        type: "array",
+        items: item,
+        ...(min > 0 ? { minItems: min } : {}),
+        maxItems: max,
+        description: `${hint(f)} (list of items; send the whole list, it replaces the stored one)`,
+      };
+    }
     default:
       return { type: "string", description: hint(f) };
   }

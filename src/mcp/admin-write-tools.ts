@@ -37,6 +37,8 @@ import { invalidateRoutesCache, ROUTE_METHODS } from "../core/routes.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
 import { applySettingsPatch, getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK, validateSettingsPatch } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
+import { ValidationError } from "../core/validate.ts";
+import { groupItemBounds, isGroupList, subfieldsOf } from "../core/group-fields.ts";
 import { ToolRegistry, asJsonText } from "./tools.ts";
 import { hasScope } from "../core/api-tokens.ts";
 import { recordAuditEvent } from "../core/audit-log.ts";
@@ -746,7 +748,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     requiredScope: "mcp:write",
     definition: {
       name: "vaultbase.seed",
-      description: "Generate fake records for a collection. Per-field-type defaults: text → Lorem-ipsum, number → bounded random, bool → coin flip, email → fake address, date/autodate → recent random, geoPoint → random world coords, select → random from values, relation → random existing target. Hard cap: 1000 records per call.",
+      description: "Generate fake records for a collection. Per-field-type defaults: text → Lorem-ipsum, number → bounded random, bool → coin flip, email → fake address, date/autodate → recent random, geoPoint → random world coords, select → random from values, group → 1 to 3 items of fake subfield values, relation → random existing target. Hard cap: 1000 records per call.",
       inputSchema: {
         type: "object",
         properties: {
@@ -772,13 +774,16 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         for (const f of fields) {
           if (f.system || f.implicit || f.type === "autodate") continue;
           if (f.name in overrides) { data[f.name] = overrides[f.name]; continue; }
-          data[f.name] = generateFakeValue(f, i);
+          const v = generateFakeValue(f, i);
+          if (v !== undefined) data[f.name] = v;
         }
         try {
           await createRecord(slug, data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
           created++;
         } catch (e) {
-          errors.push(e instanceof Error ? e.message : String(e));
+          errors.push(e instanceof ValidationError
+            ? `${e.message}: ${Object.entries(e.details).map(([k, v]) => `${k}: ${v}`).join("; ")}`
+            : e instanceof Error ? e.message : String(e));
           if (errors.length > 5) break;
         }
       }
@@ -803,16 +808,23 @@ function generateFakeValue(f: FieldDef, idx: number): unknown {
   switch (f.type) {
     case "text":
     case "editor": {
-      const min = (f.options?.min as number | undefined) ?? 3;
-      const max = (f.options?.max as number | undefined) ?? 30;
-      const wordCount = Math.max(1, Math.min(15, Math.floor((min + max) / 2 / 6)));
-      const words = Array.from({ length: wordCount }, () => pick(LOREM));
-      return words.join(" ").replace(/^./, (c) => c.toUpperCase());
+      // Lorem can't be made to fit a pattern: leave the field out.
+      if (f.options?.pattern) return undefined;
+      const min = (f.options?.min as number | undefined) ?? 0;
+      const max = (f.options?.max as number | undefined) ?? Math.max(min, 30);
+      const target = Math.max(min, Math.min(max, 3 + Math.floor(Math.random() * 28)));
+      let s = pick(LOREM).replace(/^./, (c) => c.toUpperCase());
+      while (s.length < target) s += ` ${pick(LOREM)}`;
+      return s.slice(0, max);
     }
     case "number": {
-      const min = (f.options?.min as number | undefined) ?? 0;
-      const max = (f.options?.max as number | undefined) ?? 1000;
-      return Math.floor(min + Math.random() * (max - min));
+      const lo = f.options?.min as number | undefined;
+      const hi = f.options?.max as number | undefined;
+      const min = lo ?? (hi !== undefined ? Math.min(0, hi) : 0);
+      const max = hi ?? min + 1000;
+      const v = min + Math.random() * (max - min);
+      // Whole numbers when the bounds are whole; a fraction between fractional bounds.
+      return Number.isInteger(min) && Number.isInteger(max) ? Math.floor(v) : v;
     }
     case "bool":
       return Math.random() < 0.5;
@@ -848,6 +860,18 @@ function generateFakeValue(f: FieldDef, idx: number): unknown {
     }
     case "json":
       return { idx, sample: pick(LOREM) };
+    case "group": {
+      const item = () => {
+        const out: Record<string, unknown> = {};
+        // A subfield left undefined counts as missing.
+        for (const sub of subfieldsOf(f)) out[sub.name] = generateFakeValue(sub, idx);
+        return out;
+      };
+      if (!isGroupList(f)) return item();
+      const { min, max } = groupItemBounds(f);
+      const n = Math.min(max, Math.max(min, 1 + Math.floor(Math.random() * 3)));
+      return Array.from({ length: n }, item);
+    }
     case "relation":
     case "file":
       return ""; // best-effort — relations need lookup, files need uploads

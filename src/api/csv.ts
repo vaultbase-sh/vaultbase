@@ -23,7 +23,7 @@ function decodeCell(raw: string, type: string): unknown {
   if (type === "bool") {
     return raw === "true" || raw === "1";
   }
-  if (type === "json" || type === "geoPoint" || type === "vector") {
+  if (type === "json" || type === "group" || type === "geoPoint" || type === "vector") {
     try { return JSON.parse(raw); } catch { return raw; }
   }
   if (type === "select") {
