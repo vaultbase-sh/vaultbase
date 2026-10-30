@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { FieldDef } from "../api.ts";
 import {
-  groupCellText, groupItemBounds, groupSchemaProblem, isBlankItem, itemSummary, itemsOf, moveItem,
+  groupCellText, groupItemBounds, groupSchemaProblem, isBlankItem, itemSummary, itemsOf, moveItem, newItem,
   singleGroupValue, subfieldsForSave, withStoredSubfieldNames,
 } from "./group.ts";
 
@@ -129,5 +129,16 @@ describe("schema editing", () => {
     expect(groupSchemaProblem(address)).toBeNull();
     expect(groupSchemaProblem({ ...address, options: { ...address.options, max: 2 } })).toContain("only apply to a list");
     expect(groupSchemaProblem({ name: "g", type: "group", options: { fields: Array.from({ length: 51 }, (_, i) => ({ name: `f${i}`, type: "text" })) } })).toContain("at most 50");
+  });
+});
+
+describe("newItem", () => {
+  it("starts required bool subfields off, and nothing else", () => {
+    const field = { name: "items", type: "group", options: { fields: [
+      { name: "gift", type: "bool", required: true },
+      { name: "wrap", type: "bool" },
+      { name: "sku", type: "text", required: true },
+    ] } } as FieldDef;
+    expect(newItem(field)).toEqual({ gift: false });
   });
 });

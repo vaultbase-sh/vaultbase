@@ -450,8 +450,13 @@ function compiled(op: Operand, ctx: CompileCtx): Compiled {
  */
 function typedCmp(a: Compiled, op: string, b: Compiled, ctx: CompileCtx, item = false): string {
   const d = dialect();
+  if (item && !isBound(a) && !isBound(b)) {
+    // Two values of the item: typed against each other.
+    const pair = d.itemPair(a.sql, op, b.sql);
+    if (pair) { ctx.params.push(...a.params, ...b.params); return pair; }
+  }
   const t = d.typedCompare;
-  if (t) [a, b] = [lineUp(a, b, t), lineUp(b, a, t)];
+  if (t) [a, b] = [lineUp(a, b, t, item), lineUp(b, a, t, item)];
   else if (item && d.itemCompare) [a, b] = [lineUpItem(a, b, d.itemCompare), lineUpItem(b, a, d.itemCompare)];
   ctx.params.push(...a.params, ...b.params);
   return `${a.sql} ${op} ${b.sql}`;
@@ -468,7 +473,7 @@ function lineUpItem(side: Compiled, other: Compiled, as: NonNullable<Dialect["it
 const isBound = (c: Compiled): boolean => c.sql === "?" && c.params.length === 1;
 
 /** `side` adjusted for being compared with `other` (see typedCmp). */
-function lineUp(side: Compiled, other: Compiled, t: NonNullable<Dialect["typedCompare"]>): Compiled {
+function lineUp(side: Compiled, other: Compiled, t: NonNullable<Dialect["typedCompare"]>, item = false): Compiled {
   if (isBound(side)) {
     // Untyped against an expression the server types; a JSON path is typed
     // from this value instead (the other branch), and two bound values keep
@@ -480,7 +485,8 @@ function lineUp(side: Compiled, other: Compiled, t: NonNullable<Dialect["typedCo
   if (!isBound(other)) return side;
   const kind = boundKind(other.params[0]);
   const j = kind ? t.jsonb(side.sql) : null;
-  return j && kind ? { sql: t.as(j, kind), params: side.params } : side;
+  if (!j || !kind) return side;
+  return { sql: item && kind === "text" ? `${t.as(j, kind)} ${t.itemTextOrder}` : t.as(j, kind), params: side.params };
 }
 
 function boundKind(v: unknown): "number" | "text" | null {
@@ -593,6 +599,21 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
     }
   }
   return { cmp: typedCmp({ sql: "value", params: [] }, sqlOpFor(op), right, ctx), from: d.jsonEach(arraySql) };
+}
+
+/** Whether this operand reads JSON: a JSON path, or a value of the item inside :any(...). */
+function readsJson(op: Operand, ctx: CompileCtx): boolean {
+  return isJsonPath(op) || (!!ctx.element && op.kind === "field");
+}
+
+/**
+ * A value read from JSON as a number for arithmetic. Postgres reads it as
+ * text, and casting text that isn't a number fails the query: NULL instead.
+ */
+function jsonNumber(sql: string): string {
+  return dialect().name === "sqlite"
+    ? `CAST(${sql} AS DOUBLE PRECISION)`
+    : `(CASE WHEN pg_input_is_valid(${sql}, 'double precision') THEN CAST(${sql} AS DOUBLE PRECISION) END)`;
 }
 
 /** Whether this operand reads a JSON path. */
@@ -907,7 +928,7 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
     // statement one value short.
     // A coordinate read from a JSON path is text on some databases; the
     // arithmetic needs a number.
-    const c = (a: Operand) => isJsonPath(a) ? `CAST(${compileOperand(a, ctx)} AS DOUBLE PRECISION)` : compileOperand(a, ctx);
+    const c = (a: Operand) => readsJson(a, ctx) ? jsonNumber(compileOperand(a, ctx)) : compileOperand(a, ctx);
     const latB1 = c(latB), latA1 = c(latA), latA2 = c(latA), latB2 = c(latB), lonB1 = c(lonB), lonA1 = c(lonA);
     // Haversine in km. Earth radius 6371.
     return `(2 * 6371 * asin(sqrt(` +
@@ -959,7 +980,10 @@ function compilePgStrftime(args: Operand[], ctx: CompileCtx): string {
   flush();
   let time: string;
   if (timeArg.kind === "literal" && timeArg.value === "now" && modValues.length === 0) time = "now()";
-  else if (modValues.length === 1) time = `to_timestamp(CAST(${compileOperand(timeArg, ctx)} AS DOUBLE PRECISION))`;
+  else if (modValues.length === 1) {
+    const t = compileOperand(timeArg, ctx);
+    time = `to_timestamp(${readsJson(timeArg, ctx) ? jsonNumber(t) : `CAST(${t} AS DOUBLE PRECISION)`})`;
+  }
   else if (timeArg.kind === "literal" && typeof timeArg.value === "string") time = `CAST(${compileOperand(timeArg, ctx)} AS TIMESTAMPTZ)`;
   else throw new Error("strftime() needs the 'unixepoch' modifier for a stored date on this database");
   ctx.params.push(pattern);
@@ -972,7 +996,7 @@ function applyModifierToSql(expr: string, m?: FieldModifier): string {
     case "lower":  return `LOWER(${expr})`;
     // items.length: NULL unless a JSON array, without failing on other text
     // (json_array_length fails on "A" and gives 0 for "10").
-    case "length": return `COALESCE(${dialect().items.length(expr)}, length(${dialect().asText(expr)}))`;
+    case "length": return dialect().jsonPathLength(expr) ?? `COALESCE(${dialect().items.length(expr)}, length(${dialect().asText(expr)}))`;
     case "isset":
     case "changed":
     case "each":

@@ -477,7 +477,15 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
   }
   const previousByName = new Map(previous.map((f) => [f.name, f]));
   for (const f of fields) {
-    if (f.type !== "group" || f.system) continue;
+    // Renaming onto a name this change removes: the column of that name is
+    // still there when the rename runs. Two saves do it.
+    const from = f.renamedFrom;
+    if (from && from !== f.name && previousByName.has(from) && !fields.some((o) => o.name === from) && previousByName.has(f.name)) {
+      errors[f.name] = `Can't rename '${from}' to '${f.name}' while removing '${f.name}' in the same change: save the removal first`;
+    }
+  }
+  for (const f of fields) {
+    if (f.type !== "group" || f.system || errors[f.name]) continue;
     // The field this one was, as alterUserTable decides it: its own name, or
     // the one it is renamed from when that name leaves the schema.
     const renamedFrom = f.renamedFrom && !fields.some((o) => o.name === f.renamedFrom) ? f.renamedFrom : undefined;

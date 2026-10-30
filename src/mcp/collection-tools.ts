@@ -96,7 +96,14 @@ function fieldTypeSchema(f: FieldDef): Record<string, unknown> {
         if (sub.required) required.push(sub.name);
       }
       const item = { type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false };
-      if (!list) return { ...item, description: `${hint(f)} (one object)` };
+      if (!list) {
+        const atLeastOne = f.required && required.length === 0;
+        return {
+          ...item,
+          ...(atLeastOne ? { minProperties: 1 } : {}),
+          description: `${hint(f)} (one object${atLeastOne ? "; at least one field must hold a value" : ""})`,
+        };
+      }
       const { min, max } = groupItemBounds(f);
       return {
         type: "array",

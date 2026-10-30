@@ -276,7 +276,9 @@ export default function CollectionEdit() {
     const storedFields = new Map(parseFields(collection.fields).map((f) => [f.name, f]));
     for (const f of fields) {
       if (f.system || f.type !== "group") continue;
-      const before = f.renamedFrom ? storedFields.get(f.renamedFrom) : undefined;
+      // A group removed and added back under its name is the same field to
+      // the server (same column): check it against the stored one too.
+      const before = (f.renamedFrom ? storedFields.get(f.renamedFrom) : undefined) ?? storedFields.get(f.name);
       const problem = groupSchemaProblem(f, before ? subfieldsOf(before).map((s) => s.name) : []);
       if (problem) { toast(problem); return; }
     }
@@ -1792,7 +1794,7 @@ function IndexesSection({
 
   const indexable = [
     ...fields
-      .filter((f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "json" && f.type !== "file")
+      .filter((f) => !f.system && !f.implicit && f.type !== "autodate" && f.type !== "json" && f.type !== "group" && f.type !== "file")
       .map((f) => f.name),
     ...BUILT_IN_INDEXABLE,
   ].filter((name) => !newFields.includes(name));

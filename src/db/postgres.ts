@@ -58,8 +58,15 @@ function jsonPathArray(path: string): string {
 
 /** JSON `expr` as jsonb when it is an array, else NULL; text that isn't JSON still fails. */
 function pgArray(expr: string): string {
-  // A JSON path as jsonb (`#>`): `#>>` gives a string value as plain text, which doesn't cast back.
+  // A JSON path read as jsonb by a jsonpath, parsed once: a CASE naming the
+  // value twice parsed the whole column twice per row. `#>>` gives a string
+  // value as plain text, which doesn't cast back.
   const m = JSON_TEXT_RE.exec(expr);
+  const segs = m ? m[2]!.slice(2, -2).split(",") : [];
+  if (m && segs.every((s) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(s))) {
+    const path = segs.map((s) => `."${s}"`).join("");
+    return `jsonb_path_query_first(${m[1]}::jsonb, 'strict $${path} ? (@.type() == "array")', '{}', true)`;
+  }
   const j = m ? `(${m[1]}::jsonb #> ${m[2]})` : `(${expr})::jsonb`;
   return `(CASE WHEN jsonb_typeof(${j}) = 'array' THEN ${j} END)`;
 }
@@ -67,6 +74,12 @@ function pgArray(expr: string): string {
 /** `expr` as jsonb when it is a JSON array, else NULL. */
 function pgItems(expr: string): string {
   return `(CASE WHEN (${expr})::text LIKE '[%' AND pg_input_is_valid((${expr})::text, 'jsonb') THEN (${expr})::text::jsonb END)`;
+}
+
+/** The jsonb form (`#>`) of an expression jsonExtract made, or null. */
+function pgJsonb(expr: string): string | null {
+  const m = JSON_TEXT_RE.exec(expr);
+  return m ? `(${m[1]}::jsonb #> ${m[2]})` : null;
 }
 
 /** An expression jsonExtract made: `(<expr>::jsonb #>> '{a,b}')`. */
@@ -83,14 +96,28 @@ export const POSTGRES_DIALECT: Dialect = {
   tieBreak: `"id"`,
   indexTail: [`"id"`],
   typedCompare: {
-    jsonb: (expr) => {
-      const m = JSON_TEXT_RE.exec(expr);
-      return m ? `(${m[1]}::jsonb #> ${m[2]})` : null;
-    },
+    jsonb: (expr) => pgJsonb(expr),
     as: (j, kind) => kind === "number"
       ? `(CASE jsonb_typeof(${j}) WHEN 'number' THEN (${j})::numeric WHEN 'boolean' THEN (CASE WHEN (${j})::boolean THEN 1 ELSE 0 END) END)`
       : `(CASE WHEN jsonb_typeof(${j}) = 'string' THEN ${j} #>> '{}' END)`,
     eachJsonb: (expr) => `jsonb_array_elements(${pgArray(expr)})`,
+    itemTextOrder: `COLLATE "C"`,
+  },
+  jsonPathLength: (expr) => {
+    const j = pgJsonb(expr);
+    if (!j) return null;
+    return `(CASE jsonb_typeof(${j}) WHEN 'array' THEN jsonb_array_length(${j}) WHEN 'string' THEN length(${expr})` +
+      ` WHEN 'number' THEN 0 WHEN 'boolean' THEN 0 WHEN 'object' THEN 0 END)`;
+  },
+  itemPair: (a, op, b) => {
+    const ja = pgJsonb(a);
+    const jb = pgJsonb(b);
+    if (!ja || !jb) return null;
+    const num = (j: string) => `jsonb_typeof(${j}) IN ('number', 'boolean')`;
+    const str = (j: string) => `jsonb_typeof(${j}) = 'string'`;
+    const t = POSTGRES_DIALECT.typedCompare!;
+    return `(CASE WHEN ${num(ja)} AND ${num(jb)} THEN ${t.as(ja, "number")} ${op} ${t.as(jb, "number")}` +
+      ` WHEN ${str(ja)} AND ${str(jb)} THEN ${t.as(ja, "text")} ${t.itemTextOrder} ${op} ${t.as(jb, "text")} ${t.itemTextOrder} END)`;
   },
   columnType(fieldType) {
     switch (fieldType) {

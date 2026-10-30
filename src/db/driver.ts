@@ -83,6 +83,8 @@ export interface Dialect {
     as(jsonb: string, kind: "number" | "text"): string;
     /** Like jsonEach, with `value` as jsonb. */
     eachJsonb(expr: string): string;
+    /** Appended to an item's text value so it orders by character code, as on SQLite and in rules.ts. */
+    readonly itemTextOrder: string;
   };
   /**
    * SQLite only: a JSON path read from an item (`items:any(qty = 3)`,
@@ -92,6 +94,19 @@ export interface Dialect {
    * instead of SQLite's ordering of numbers before text.
    */
   itemCompare?(expr: string, kind: "number" | "text"): string | null;
+  /**
+   * Two JSON paths read from one item (`items:any(qty > stock)`) compared
+   * by JSON type: a number or boolean (as 1/0) with a number or boolean,
+   * text with text by character code; NULL for values of different types.
+   * Null when either side isn't a JSON path.
+   */
+  itemPair(a: string, op: string, b: string): string | null;
+  /**
+   * `:length` of a value read by a JSON path, by its JSON type: a list's
+   * count, a string's characters, 0 for another value, NULL when missing.
+   * Null when `expr` isn't a JSON path.
+   */
+  jsonPathLength(expr: string): string | null;
   /** SQLite only: like itemCompare, for the `value` of a jsonEach row (a list inside an item). */
   itemElement?(kind: "number" | "text"): string;
   /** Storage type for a built-in field type (`TEXT`, `INTEGER`, `REAL`). */

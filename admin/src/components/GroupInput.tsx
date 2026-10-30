@@ -9,7 +9,7 @@ import type { FieldDef } from "../api.ts";
 import { VbBtn } from "./Vb.tsx";
 import Icon from "./Icon.tsx";
 import {
-  groupItemBounds, isGroupList, itemSummary, moveItem, singleGroupValue, subfieldsOf, type GroupItem,
+  groupItemBounds, isGroupList, itemSummary, moveItem, newItem, singleGroupValue, subfieldsOf, type GroupItem,
 } from "../lib/group.ts";
 
 export type RenderSubfield = (sub: FieldDef, value: unknown, onChange: (v: unknown) => void) => React.ReactNode;
@@ -64,7 +64,7 @@ function GroupList({ field, value, onChange, readOnly, renderSubfield }: {
   }
 
   const commit = (next: GroupItem[], nextKeys: string[]) => { keys.current = nextKeys; onChange(next); };
-  const add = () => commit([...items, {}], [...keys.current, newKey()]);
+  const add = () => commit([...items, newItem(field)], [...keys.current, newKey()]);
   const remove = (i: number) => commit(items.filter((_, x) => x !== i), keys.current.filter((_, x) => x !== i));
   const move = (from: number, to: number) => commit(moveItem(items, from, to), moveItem(keys.current, from, to));
   const toggle = (k: string) => setCollapsed((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });

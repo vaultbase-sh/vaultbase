@@ -79,7 +79,12 @@ export const SQLITE_DIALECT: Dialect = {
   },
   quoteIdent,
   like: (left, pattern) => `coalesce(${left} LIKE ${pattern}, 0)`,
-  jsonExtract: (expr, path) => `json_extract(${expr}, '${path}')`,
+  // One path: `a.b` reads through objects only. Nested calls re-parsed the
+  // first step's value, and failed the query when it was a string.
+  jsonExtract: (expr, path) => {
+    const m = JSON_EXTRACT_RE.exec(expr);
+    return m ? `json_extract(${m[1]}, '${m[2]}${path.slice(1)}')` : `json_extract(${expr}, '${path}')`;
+  },
   jsonArrayLength: (expr) => `json_array_length(${expr})`,
   // Only an array has elements: a JSON scalar was read as a one-element list.
   // Text that isn't JSON still fails (records.ts turns that into a 400).
@@ -94,6 +99,20 @@ export const SQLITE_DIALECT: Dialect = {
     return kind === "number"
       ? `(CASE ${type} WHEN 'integer' THEN ${expr} WHEN 'real' THEN ${expr} WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)`
       : `(CASE WHEN ${type} = 'text' THEN ${expr} END)`;
+  },
+  jsonPathLength: (expr) => {
+    const m = JSON_EXTRACT_RE.exec(expr);
+    if (!m) return null;
+    return `(CASE json_type(${m[1]}, '${m[2]}') WHEN 'array' THEN json_array_length(${m[1]}, '${m[2]}') WHEN 'text' THEN length(${expr})` +
+      ` WHEN 'integer' THEN 0 WHEN 'real' THEN 0 WHEN 'true' THEN 0 WHEN 'false' THEN 0 WHEN 'object' THEN 0 END)`;
+  },
+  itemPair: (a, op, b) => {
+    const ma = JSON_EXTRACT_RE.exec(a);
+    const mb = JSON_EXTRACT_RE.exec(b);
+    if (!ma || !mb) return null;
+    const kind = (m: RegExpExecArray) =>
+      `(CASE json_type(${m[1]}, '${m[2]}') WHEN 'integer' THEN 'n' WHEN 'real' THEN 'n' WHEN 'true' THEN 'n' WHEN 'false' THEN 'n' WHEN 'text' THEN 't' END)`;
+    return `(CASE WHEN ${kind(ma)} = ${kind(mb)} THEN ${a} ${op} ${b} END)`;
   },
   // json_valid first (CASE runs in order, AND needn't): json_type,
   // json_each and json_array_length fail on text that isn't JSON.

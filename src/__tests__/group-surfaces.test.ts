@@ -178,6 +178,22 @@ describe("OpenAPI", () => {
     expect(fits(size, "x")).toBe(false);
   });
 
+  it("asks a required single object with only optional fields for at least one", async () => {
+    const fields = JSON.stringify([{ name: "place", type: "group", required: true, options: { multiple: false, fields: [
+      { name: "city", type: "text" }, { name: "zip", type: "text" },
+    ] } }]);
+    const s = buildOpenApi([{ ...(await getCollection("orders"))!, fields }]) as { components: { schemas: Record<string, Schema> } };
+    expect(prop(s.components.schemas["OrdersInput"]!, "place")["minProperties"]).toBe(1);
+    expect(prop(s.components.schemas["Orders"]!, "place")["minProperties"]).toBeUndefined();
+    await createCollection({ name: "places", fields });
+    _resetCollectionCache();
+    const d = createDispatcher(await buildRegistry(false), ctx(["mcp:write"]));
+    const r = await d.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" }) as JsonRpcSuccess;
+    const tool = (r.result as { tools: Array<{ name: string; inputSchema: Schema }> }).tools.find((t) => t.name === "vaultbase.create_places")!;
+    const place = ((tool.inputSchema["properties"] as Record<string, Schema>)["data"]!["properties"] as Record<string, Schema>)["place"]!;
+    expect(place["minProperties"]).toBe(1);
+  });
+
   it("leaves minItems out when there is no lower bound, and uses the default max", async () => {
     const s = buildOpenApi([{
       ...(await getCollection("orders"))!,

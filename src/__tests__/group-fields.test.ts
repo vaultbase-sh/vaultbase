@@ -159,6 +159,17 @@ describe("group schema", () => {
     expect(err).toContain("'a' is renamed twice");
   });
 
+  it("refuses renaming a field onto one removed in the same change", async () => {
+    await createCollection({ name: "swap", fields: JSON.stringify([
+      { name: "items", type: "group", options: { fields: [{ name: "a", type: "text" }] } },
+      { name: "lines", type: "group", options: { fields: [{ name: "a", type: "number" }] } },
+    ]) });
+    const err = await schemaError(updateCollection("swap", { fields: JSON.stringify([
+      { name: "items", type: "group", renamedFrom: "lines", options: { fields: [{ name: "a", type: "number" }] } },
+    ]) }));
+    expect(err).toContain("save the removal first");
+  });
+
   it("can't be turned into from json", async () => {
     await createCollection({ name: "g", fields: JSON.stringify([{ name: "items", type: "json" }]) });
     expect(await schemaError(updateCollection("g", { fields: JSON.stringify([ITEMS]) }))).toContain("Cannot change type");
@@ -289,6 +300,11 @@ describe("empty and required groups", () => {
     _resetCollectionCache();
     expect((await validationError(createRecord("places", { place: {} })))["place"]).toContain("fill in at least one");
     expect((await validationError(createRecord("places", { place: { city: "", zip: null } })))["place"]).toContain("fill in at least one");
+    await createCollection({ name: "tagged", fields: JSON.stringify([{ name: "t", type: "group", required: true, options: { multiple: false, fields: [
+      { name: "tags", type: "select", options: { multiple: true, values: ["a"] } },
+    ] } }]) });
+    _resetCollectionCache();
+    expect((await validationError(createRecord("tagged", { t: { tags: [] } })))["t"]).toContain("fill in at least one");
     const rec = await createRecord("places", { place: { zip: "0150" } });
     expect(rec["place"]).toEqual({ zip: "0150" });
     expect((await validationError(updateRecord("places", rec.id, { place: {} })))["place"]).toContain("fill in at least one");

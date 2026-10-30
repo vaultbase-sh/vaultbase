@@ -242,6 +242,10 @@ function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): bool
   if (json && op !== "~" && op !== "!~") {
     const num = (v: unknown) => typeof v === "number" || typeof v === "boolean";
     if (!(num(l) && num(r)) && !(typeof l === "string" && typeof r === "string")) return false;
+    // Text orders as SQL orders it, by character code: "10" < "9", "B" < "a".
+    if (typeof l === "string" && typeof r === "string" && op !== "=" && op !== "!=") {
+      return op === ">" ? l > r : op === ">=" ? l >= r : op === "<" ? l < r : l <= r;
+    }
   }
   switch (op) {
     case "=":  return looseEq(l, r);
@@ -306,12 +310,15 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
   }
 }
 
+/**
+ * A JSON path read as SQL reads it: through objects' own keys only, so
+ * `tags.length` on a list or `meta.constructor` is no value.
+ */
 function walkPath(start: unknown, path: string[]): unknown {
   let v: unknown = start;
   for (const seg of path) {
-    if (v == null) return null;
-    if (typeof v !== "object") return null;
-    v = (v as Record<string, unknown>)[seg];
+    if (!isItem(v) || !Object.prototype.hasOwnProperty.call(v, seg)) return null;
+    v = v[seg];
   }
   return v;
 }

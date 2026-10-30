@@ -33,6 +33,16 @@ export function groupItemBounds(field: FieldDef): { min: number; max: number } {
   return { min, max };
 }
 
+/**
+ * A new item: required bool subfields start off (`false`), as their toggle
+ * shows them. Left out, the server refused the item as missing them.
+ */
+export function newItem(field: FieldDef): GroupItem {
+  const item: GroupItem = {};
+  for (const sub of subfieldsOf(field)) if (sub.type === "bool" && sub.required) item[sub.name] = false;
+  return item;
+}
+
 /** The items of a list value; anything that isn't a list has none. */
 export function itemsOf(value: unknown): GroupItem[] {
   return Array.isArray(value) ? value.filter((v): v is GroupItem => !!v && typeof v === "object" && !Array.isArray(v)) : [];

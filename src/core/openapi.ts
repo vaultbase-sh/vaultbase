@@ -93,7 +93,13 @@ function groupSchema(f: FieldDef, mode: "read" | "input"): Schema {
     ...(required.length ? { required } : {}),
     ...(mode === "input" ? { additionalProperties: false } : {}),
   };
-  if (!list) return item;
+  if (!list) {
+    // Required, with only optional subfields: one of them must hold a value.
+    if (mode === "input" && f.required && required.length === 0) {
+      return { ...item, minProperties: 1, description: "At least one field must hold a value (not null or empty)" };
+    }
+    return item;
+  }
   const { min, max } = groupItemBounds(f);
   return { type: "array", items: item, ...(min > 0 ? { minItems: min } : {}), maxItems: max };
 }

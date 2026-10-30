@@ -233,13 +233,13 @@
     ]
   },
   "vb_gold | meta.a.b.c = \"deep\"": {
-    "sql": "json_extract(json_extract(json_extract(\"vb_gold\".\"meta\", '$.a'), '$.b'), '$.c') = ?",
+    "sql": "json_extract(\"vb_gold\".\"meta\", '$.a.b.c') = ?",
     "params": [
       "deep"
     ]
   },
   "vb_gold | meta.list:length > 1": {
-    "sql": "COALESCE(json_array_length((CASE WHEN json_valid(json_extract(\"vb_gold\".\"meta\", '$.list')) THEN (CASE WHEN json_type(json_extract(\"vb_gold\".\"meta\", '$.list')) = 'array' THEN json_extract(\"vb_gold\".\"meta\", '$.list') END) END)), length(json_extract(\"vb_gold\".\"meta\", '$.list'))) > ?",
+    "sql": "(CASE json_type(\"vb_gold\".\"meta\", '$.list') WHEN 'array' THEN json_array_length(\"vb_gold\".\"meta\", '$.list') WHEN 'text' THEN length(json_extract(\"vb_gold\".\"meta\", '$.list')) WHEN 'integer' THEN 0 WHEN 'real' THEN 0 WHEN 'true' THEN 0 WHEN 'false' THEN 0 WHEN 'object' THEN 0 END) > ?",
     "params": [
       1
     ]

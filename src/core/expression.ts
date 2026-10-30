@@ -371,7 +371,9 @@ function readOperand(ts: TokenStream): Operand {
   }
 
   const modifier = readOptionalModifier(ts);
-  if (ts.inAny && w[0]!.includes("_via_")) throw new Error("_via_ can't be used inside :any(...)");
+  // Inside :any(...) a name is the item's key, never a back-relation:
+  // `ship_via_ups` is a subfield there.
+  if (ts.inAny) return modifier ? { kind: "field", name: w[0]!, path: w.slice(1), modifier } : { kind: "field", name: w[0]!, path: w.slice(1) };
   return makeFieldOperand(w, modifier);
 }
 

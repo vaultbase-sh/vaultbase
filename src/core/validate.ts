@@ -176,8 +176,8 @@ export function validateGroup(field: FieldDef, value: unknown): { error: string 
 
   if (!isGroupList(field)) {
     const r = checkItem(value, field.name, false);
-    // Required: at least one subfield holds a value (an empty string isn't one).
-    if (field.required && "value" in r && !Object.values(r.value).some((v) => v !== "")) {
+    // Required: at least one subfield holds a value (an empty string or list isn't one).
+    if (field.required && "value" in r && !Object.values(r.value).some((v) => v !== "" && !(Array.isArray(v) && v.length === 0))) {
       return { error: `${field.name} is required: fill in at least one of its fields` };
     }
     return r;

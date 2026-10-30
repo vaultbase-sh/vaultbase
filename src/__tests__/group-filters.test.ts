@@ -136,7 +136,8 @@ describe(":any syntax", () => {
     expect(ruleSyntaxError(`items:any(sku = "A")`)).toBeNull();
     expect(ruleSyntaxError(`items:any(a:any(b = 1))`)).toContain("can't be used inside :any");
     expect(ruleSyntaxError(`items:any(@collection.users.id = owner)`)).toContain("@collection can't be used inside :any");
-    expect(ruleSyntaxError(`items:any(posts_via_author.id = 1)`)).toContain("_via_ can't be used inside :any");
+    // Inside :any a name is the item's key, never a back-relation.
+    expect(ruleSyntaxError(`items:any(posts_via_author.id = 1)`)).toBeNull();
     expect(ruleSyntaxError(`posts_via_author:any(id = 1)`)).toContain("needs a field of this collection");
     expect(ruleSyntaxError(`items:any()`)).not.toBeNull();
     expect(ruleSyntaxError(`items:any(sku = "A"`)).not.toBeNull();
@@ -239,4 +240,73 @@ describe("item values compare as the SQL does", () => {
     expect(ruleSyntaxError(`items:any (sku = "A")`)).toBeNull();
     expect(ruleSyntaxError(`true:any(a = 1)`)).toContain("needs a field");
   });
+});
+
+describe("item values compared with each other, and read by path", () => {
+  const sids: Record<string, string> = {};
+  let rows: RecordWithMeta[] = [];
+  const name = (id: string) => Object.keys(sids).find((k) => sids[k] === id)!;
+
+  beforeAll(async () => {
+    await createCollection({
+      name: "stock",
+      list_rule: null,
+      view_rule: null,
+      fields: JSON.stringify([
+        { name: "title", type: "text" },
+        { name: "list", type: "json" },
+        { name: "items", type: "group", options: { fields: [
+          { name: "sku", type: "text" },
+          { name: "qty", type: "number" },
+          { name: "price", type: "number" },
+          { name: "stock", type: "number" },
+          { name: "ship_via_ups", type: "text" },
+        ] } },
+      ]),
+    });
+    _resetCollectionCache();
+    const make = async (key: string, data: Record<string, unknown>) => { sids[key] = (await createRecord("stock", { title: key, ...data })).id; };
+    await make("s1", { items: [{ sku: "10", qty: 10, price: 9, stock: 12, ship_via_ups: "y" }] });
+    await make("s2", { items: [{ sku: "9", qty: 2, price: 5 }], list: [{ a: "str" }] });
+    await make("s3", { items: [{ sku: "a", qty: 1, price: 1 }], list: [{ a: { b: 1 } }] });
+    await make("s4", { items: [{ sku: "B", qty: 3, price: 2 }], list: [{ n: 10, m: "10" }, [1, 2]] });
+    rows = (await listRecords("stock", { perPage: 100 })).data;
+  });
+
+  const sql = async (filter: string) => (await listRecords("stock", { filter, auth: AUTH, perPage: 100 })).data.map((x) => name(x.id)).sort();
+  const rules = (filter: string) => rows.filter((r) => evaluateRule(filter, AUTH, r as unknown as Record<string, unknown>)).map((r) => name(r.id)).sort();
+
+  const CASES2: Array<[string, string[]]> = [
+    // two values of an item compare by JSON type (Postgres compared them as text)
+    [`items:any(qty > price)`, ["s1", "s4"]],
+    [`items:any(stock > qty)`, ["s1"]],
+    [`items:any(price < qty)`, ["s1", "s4"]],
+    [`items:any(sku = qty)`, []],
+    [`items:any(sku > qty)`, []],
+    [`list:any(n = m)`, []],
+    // item text orders by character code: "10" < "9", "B" < "a"
+    [`items:any(sku > "9")`, ["s3", "s4"]],
+    [`items.sku ?< "a"`, ["s1", "s2", "s4"]],
+    [`items:any(sku <= "B")`, ["s1", "s2", "s4"]],
+    // functions over an item's values (Postgres failed on the text it read)
+    [`items:any(geoDistance(qty, qty, 1, 1) < 100000)`, ["s1", "s2", "s3", "s4"]],
+    [`items:any(geoDistance(qty, price, 0, 0) < 1)`, []],
+    // a path through a string value is no value (SQLite failed the query)
+    [`list:any(a.b = 1)`, ["s3"]],
+    [`list:any(a.b != 1)`, []],
+    // :length by JSON type
+    [`items:any(sku:length = 2)`, ["s1"]],
+    [`items:any(qty:length = 0)`, ["s1", "s2", "s3", "s4"]],
+    [`items:any(stock:length = 0)`, ["s1"]],
+    // a list's built-in properties aren't values
+    [`list:any(a.length = 3)`, []],
+    // inside :any a name with _via_ is the item's key
+    [`items:any(ship_via_ups = "y")`, ["s1"]],
+  ];
+  for (const [filter, expected] of CASES2) {
+    it(`${filter}`, async () => {
+      expect(await sql(filter)).toEqual(expected);
+      expect(rules(filter)).toEqual(expected);
+    });
+  }
 });
