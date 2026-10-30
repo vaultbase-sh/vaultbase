@@ -12,6 +12,8 @@ import { Drawer, FieldTypeChip, Modal, Toggle } from "../components/UI.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
 import Icon from "../components/Icon.tsx";
+import { GroupInput } from "../components/GroupInput.tsx";
+import { groupCellText } from "../lib/group.ts";
 import {
   CollectionAvatar,
   TypePill,
@@ -738,6 +740,17 @@ function FieldInput({
       </div>
     );
   }
+  if (field.type === "group") {
+    return (
+      <GroupInput
+        field={field}
+        value={value}
+        onChange={onChange}
+        readOnly={readOnly}
+        renderSubfield={(sub, v, change) => <FieldInput field={sub} value={v} onChange={change} readOnly={readOnly} />}
+      />
+    );
+  }
   if (field.type === "json" || field.type === "vector") {
     return <JsonInput field={field} value={value} onChange={onChange} readOnly={readOnly} />;
   }
@@ -783,9 +796,13 @@ export class InvalidJsonValue {
   constructor(readonly text: string) {}
 }
 
-/** The first field holding text that isn't valid JSON, or null. */
+/** The first field holding text that isn't valid JSON, or null. Looks inside a group's items too. */
 export function firstInvalidJson(values: Record<string, unknown>): string | null {
-  for (const [k, v] of Object.entries(values)) if (v instanceof InvalidJsonValue) return k;
+  const holdsInvalid = (v: unknown): boolean =>
+    v instanceof InvalidJsonValue
+    || (Array.isArray(v) && v.some(holdsInvalid))
+    || (!!v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype && Object.values(v).some(holdsInvalid));
+  for (const [k, v] of Object.entries(values)) if (holdsInvalid(v)) return k;
   return null;
 }
 
@@ -971,7 +988,7 @@ function recordColumns(
       flex: 1,
       mono: false,
       // The API sorts on any field; one value per record makes it meaningful.
-      sortable: !!fdef && !["file", "json", "geoPoint", "vector", "password", "editor"].includes(fdef.type) && !fdef.options?.["multiple"] && !(collection?.type === "auth" && fdef.implicit && fdef.name === "verified"),
+      sortable: !!fdef && !["file", "json", "group", "geoPoint", "vector", "password", "editor"].includes(fdef.type) && !fdef.options?.["multiple"] && !(collection?.type === "auth" && fdef.implicit && fdef.name === "verified"),
       render: (r) => {
         if (isFile && collection && fdef) {
           return (
@@ -1416,6 +1433,7 @@ export default function Records() {
     if (typeof val === "boolean") return val ? "true" : "false";
     const f = fieldsByName.get(col);
     if ((f?.type === "date" || f?.type === "autodate") && typeof val === "number") return new Date(val * 1000).toISOString().slice(0, 19).replace("T", " ");
+    if (f?.type === "group") return groupCellText(val, f);
     if (f?.type === "geoPoint" && val && typeof val === "object") {
       const o = val as { lat?: unknown; lng?: unknown };
       if (typeof o.lat === "number" && typeof o.lng === "number" &&

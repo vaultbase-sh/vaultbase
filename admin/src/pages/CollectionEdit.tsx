@@ -25,12 +25,16 @@ import {
 } from "../lib/rules.ts";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
+import {
+  GROUP_MAX_ITEMS, GROUP_SUBFIELD_TYPES, groupItemBounds, groupSchemaProblem, isGroupList, moveItem,
+  subfieldsForSave, subfieldsOf, withStoredSubfieldNames,
+} from "../lib/group.ts";
 import { toast } from "../stores/toast.ts";
 
 const FIELD_TYPES: FieldDef["type"][] = [
   "text", "number", "bool", "email", "url", "date",
   "password", "editor", "geoPoint", "color",
-  "file", "relation", "select", "json", "vector", "autodate",
+  "file", "relation", "select", "json", "group", "vector", "autodate",
 ];
 
 const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
@@ -44,6 +48,7 @@ const FIELD_TYPE_DESC: Record<FieldDef["type"], string> = {
   relation: "Reference to another collection's record.",
   select:   "Pick from a fixed list of values (single or multi).",
   json:     "Arbitrary JSON value.",
+  group:    "Structured items with their own fields (line items, addresses), or one object.",
   autodate: "Auto-set on create / update.",
   password: "Argon2-hashed. Never returned in API responses.",
   editor:   "Rich text / HTML body.",
@@ -100,7 +105,8 @@ function forSave(fields: FieldDef[]): FieldDef[] {
     // An autodate with neither flag is never filled: default to "set on create",
     // as its toggle shows.
     .map((f) => (f.type === "autodate" && f.onCreate === undefined && f.onUpdate === undefined ? { ...f, onCreate: true } : f))
-    .map(({ renamedFrom, ...f }) => (renamedFrom && renamedFrom !== f.name ? { ...f, renamedFrom } : f));
+    .map(({ renamedFrom, ...f }) => (renamedFrom && renamedFrom !== f.name ? { ...f, renamedFrom } : f))
+    .map(subfieldsForSave);
 }
 
 export default function CollectionEdit() {
@@ -193,7 +199,7 @@ export default function CollectionEdit() {
       setHistoryEnabled(res.data.history_enabled === 1);
       // Remember each field's stored name so a rename reaches the server as
       // a rename (the column keeps its data) and not as a drop plus an add.
-      setFields(parseFields(res.data.fields).map((f) => ({ ...f, renamedFrom: f.name })));
+      setFields(parseFields(res.data.fields).map((f) => withStoredSubfieldNames({ ...f, renamedFrom: f.name })));
       setViewQuery(res.data.view_query ?? "");
       // `?? ""` here used to make `null` (public) and `""` (admin-only)
       // indistinguishable in the editor.
@@ -266,6 +272,14 @@ export default function CollectionEdit() {
     if (badSelect) { toast(`Select field '${badSelect.name}' must have at least one allowed value`); return; }
     const badRelation = userFields.find((f) => f.type === "relation" && !f.collection);
     if (badRelation) { toast(`Relation field '${badRelation.name}' must have a target collection`); return; }
+    // Checked as edited, while subfields still carry their stored names.
+    const storedFields = new Map(parseFields(collection.fields).map((f) => [f.name, f]));
+    for (const f of fields) {
+      if (f.system || f.type !== "group") continue;
+      const before = f.renamedFrom ? storedFields.get(f.renamedFrom) : undefined;
+      const problem = groupSchemaProblem(f, before ? subfieldsOf(before).map((s) => s.name) : []);
+      if (problem) { toast(problem); return; }
+    }
     if (collection.type === "auth") {
       const reserved = new Set<string>(AUTH_RESERVED_FIELD_NAMES);
       const clash = userFields.find((f) => !f.implicit && reserved.has(f.name));
@@ -762,6 +776,7 @@ function FieldsTab(props: FieldsTabProps) {
               </div>
               <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14, maxHeight: "calc(100vh - 240px)", overflowY: "auto" }}>
                 <FieldOptionsBody
+                  key={selectedIdx}
                   sel={sel}
                   updateSel={updateSel}
                   updateSelOptions={updateSelOptions}
@@ -1022,6 +1037,14 @@ function describeField(f: FieldDef): string {
       bits.push((opts["mimeTypes"] as string[]).join(", "));
     }
   }
+  if (f.type === "group") {
+    const n = subfieldsOf(f).length;
+    bits.push(`${n} subfield${n === 1 ? "" : "s"}`);
+    if (isGroupList(f)) {
+      const { min, max } = groupItemBounds(f);
+      bits.push(`${min}–${max} items`);
+    } else bits.push("one object");
+  }
   if (opts["unique"]) bits.push("unique");
   if (opts["encrypted"]) bits.push("encrypted");
   return bits.join(" · ") || "—";
@@ -1035,7 +1058,7 @@ function humanBytes(n: number): string {
 
 // ── Field options body (right panel content) ────────────────────────────────
 function FieldOptionsBody({
-  sel, updateSel, updateSelOptions, numOrUndef, allCollections, collId,
+  sel, updateSel, updateSelOptions, numOrUndef, allCollections, collId, subfield = false,
 }: {
   sel: FieldDef;
   updateSel: (patch: Partial<FieldDef>) => void;
@@ -1043,8 +1066,12 @@ function FieldOptionsBody({
   numOrUndef: (v: string) => number | undefined;
   allCollections: Collection[];
   collId: string;
+  /** A group's subfield: fewer types, and no options that need a column of their own. */
+  subfield?: boolean;
 }) {
   const locked = sel.system || sel.implicit;
+  const types = subfield ? GROUP_SUBFIELD_TYPES : FIELD_TYPES;
+  const topLevel = !subfield;
   return (
     <>
       <VbField
@@ -1067,17 +1094,19 @@ function FieldOptionsBody({
       <VbField
         label="Type"
         // The server can't change a stored field's type (drop it and add a new one).
-        hint={!locked && sel.renamedFrom ? "A saved field's type can't change. Remove it and add a new field instead." : undefined}
+        hint={!locked && sel.renamedFrom ? `A saved ${subfield ? "subfield" : "field"}'s type can't change. Remove it and add a new one instead.` : undefined}
       >
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-          {FIELD_TYPES.map((t) => {
+          {types.map((t) => {
             const active = t === sel.type;
             const fixed = locked || !!sel.renamedFrom;
             return (
               <button
                 key={t}
                 type="button"
-                onClick={() => !fixed && updateSel({ type: t })}
+                // A new type starts without the old one's options: unique or a
+                // length range would carry over where they mean something else.
+                onClick={() => !fixed && t !== sel.type && updateSel({ type: t, options: {} })}
                 disabled={fixed}
                 style={{
                   appearance: "none",
@@ -1139,21 +1168,25 @@ function FieldOptionsBody({
               />
             </VbField>
           )}
-          <OptionRow
-            title="Unique"
-            hint="Disallow duplicate values"
-            on={!!sel.options?.["unique"]}
-            onChange={(v) => updateSelOptions({ unique: v })}
-          />
-          <OptionRow
-            title="Encrypt at rest"
-            hint={<>AES-GCM. Disables filtering &amp; uniqueness on this field. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
-            on={!!sel.options?.["encrypted"]}
-            onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined } : { encrypted: false })}
-          />
+          {topLevel && (
+            <>
+              <OptionRow
+                title="Unique"
+                hint="Disallow duplicate values"
+                on={!!sel.options?.["unique"]}
+                onChange={(v) => updateSelOptions({ unique: v })}
+              />
+              <OptionRow
+                title="Encrypt at rest"
+                hint={<>AES-GCM. Disables filtering &amp; uniqueness on this field. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
+                on={!!sel.options?.["encrypted"]}
+                onChange={(v) => updateSelOptions(v ? { encrypted: true, searchable: undefined } : { encrypted: false })}
+              />
+            </>
+          )}
         </>
       )}
-      {(sel.type === "text" || sel.type === "email" || sel.type === "url" || sel.type === "editor") && (
+      {topLevel && (sel.type === "text" || sel.type === "email" || sel.type === "url" || sel.type === "editor") && (
         <OptionRow
           title="Searchable"
           hint={<>Include in full-text search: <SchemaCode>?search=</SchemaCode> on the list endpoint. Not available for encrypted fields.</>}
@@ -1161,7 +1194,7 @@ function FieldOptionsBody({
           onChange={(v) => updateSelOptions(v ? { searchable: true, encrypted: undefined } : { searchable: undefined })}
         />
       )}
-      {sel.type === "json" && (
+      {topLevel && (sel.type === "json" || sel.type === "group") && (
         <OptionRow
           title="Encrypt at rest"
           hint={<>AES-GCM. Requires <SchemaCode>VAULTBASE_ENCRYPTION_KEY</SchemaCode>.</>}
@@ -1274,13 +1307,24 @@ function FieldOptionsBody({
               />
             </div>
           </VbField>
-          <OptionRow
-            title="Unique"
-            hint="Disallow duplicate values"
-            on={!!sel.options?.["unique"]}
-            onChange={(v) => updateSelOptions({ unique: v })}
-          />
+          {topLevel && (
+            <OptionRow
+              title="Unique"
+              hint="Disallow duplicate values"
+              on={!!sel.options?.["unique"]}
+              onChange={(v) => updateSelOptions({ unique: v })}
+            />
+          )}
         </>
+      )}
+      {sel.type === "group" && topLevel && (
+        <GroupOptions
+          sel={sel}
+          updateSelOptions={updateSelOptions}
+          numOrUndef={numOrUndef}
+          allCollections={allCollections}
+          collId={collId}
+        />
       )}
       {sel.type === "relation" && (
         <>
@@ -1335,7 +1379,9 @@ function FieldOptionsBody({
           </VbField>
           <OptionRow
             title="Allow multiple values"
+            hint={subfield && sel.renamedFrom ? "Can't be switched on a saved subfield. Remove it and add a new one instead." : undefined}
             on={!!sel.options?.["multiple"]}
+            disabled={subfield && !!sel.renamedFrom}
             onChange={(v) => updateSelOptions({ multiple: v })}
           />
         </>
@@ -1449,9 +1495,138 @@ function FieldOptionsBody({
   );
 }
 
+/** A group's own options: list or one object, item counts, and its subfields. */
+function GroupOptions({
+  sel, updateSelOptions, numOrUndef, allCollections, collId,
+}: {
+  sel: FieldDef;
+  updateSelOptions: (patch: Record<string, unknown>) => void;
+  numOrUndef: (v: string) => number | undefined;
+  allCollections: Collection[];
+  collId: string;
+}) {
+  const subs = subfieldsOf(sel);
+  const list = isGroupList(sel);
+  const saved = !!sel.renamedFrom;
+  const [open, setOpen] = useState<number | null>(null);
+  const setSubs = (next: FieldDef[]) => updateSelOptions({ fields: next });
+  const patchSub = (i: number, patch: Partial<FieldDef>) => setSubs(subs.map((s, x) => (x === i ? { ...s, ...patch } : s)));
+  const patchSubOptions = (i: number, patch: Record<string, unknown>) =>
+    setSubs(subs.map((s, x) => (x === i ? { ...s, options: { ...(s.options ?? {}), ...patch } } : s)));
+  const addSub = (type: FieldDef["type"]) => { setSubs([...subs, { name: "", type }]); setOpen(subs.length); };
+  const removeSub = (i: number) => {
+    setSubs(subs.filter((_, x) => x !== i));
+    setOpen((o) => (o === null || o === i ? null : o > i ? o - 1 : o));
+  };
+  const moveSub = (from: number, to: number) => {
+    setSubs(moveItem(subs, from, to));
+    setOpen((o) => (o === from ? to : o === to ? from : o));
+  };
+
+  return (
+    <>
+      <SectionDivider label="Items" />
+      <OptionRow
+        title="List of items"
+        hint={saved
+          ? "Can't be switched on a saved field. Remove it and add a new one instead."
+          : list ? "Each item gets an id. Turn off for a single object, such as an address." : "One object, no ids."}
+        on={list}
+        disabled={saved}
+        onChange={(v) => updateSelOptions(v ? { multiple: undefined } : { multiple: false, min: undefined, max: undefined })}
+      />
+      {list && (
+        <VbField label="Min / Max items" hint={`Required means at least one item. Max defaults to 100, up to ${GROUP_MAX_ITEMS}.`}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <VbInput mono type="number" min={0}
+              value={(sel.options?.["min"] as number | undefined) ?? ""}
+              onChange={(e) => updateSelOptions({ min: numOrUndef(e.target.value) })}
+              placeholder="0" />
+            <VbInput mono type="number" min={1} max={GROUP_MAX_ITEMS}
+              value={(sel.options?.["max"] as number | undefined) ?? ""}
+              onChange={(e) => updateSelOptions({ max: numOrUndef(e.target.value) })}
+              placeholder="100" />
+          </div>
+        </VbField>
+      )}
+
+      <SectionDivider label={`Subfields · ${subs.length}`} />
+      {subs.length === 0 && (
+        <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>Add at least one subfield.</div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {subs.map((sub, i) => (
+          <div key={i} style={{ border: `1px solid ${open === i ? "var(--vb-accent)" : "var(--vb-border)"}`, borderRadius: 6, background: "var(--vb-bg-1)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px" }}>
+              <button
+                type="button"
+                onClick={() => setOpen(open === i ? null : i)}
+                aria-expanded={open === i}
+                aria-label={`${open === i ? "Hide" : "Edit"} options of ${sub.name || "new subfield"}`}
+                style={{ appearance: "none", background: "transparent", border: 0, padding: 2, color: "var(--vb-fg-3)", cursor: "pointer", display: "inline-flex" }}
+              >
+                <Icon name={open === i ? "chevronDown" : "chevronRight"} size={12} />
+              </button>
+              <input
+                value={sub.name}
+                onChange={(e) => patchSub(i, { name: e.target.value.replace(/[^a-z0-9_]/g, "") })}
+                placeholder="subfield_name"
+                aria-label="Subfield name"
+                style={{
+                  flex: 1, minWidth: 0, height: 26, padding: "0 7px",
+                  background: "var(--vb-bg-3)", border: "1px solid var(--vb-border-2)", borderRadius: 4,
+                  color: "var(--vb-fg)", fontFamily: "var(--font-mono)", fontSize: 12, outline: "none",
+                }}
+              />
+              <FieldTypePill type={sub.type} />
+              {sub.required && <span title="Required" style={{ color: "var(--vb-status-warning)", fontSize: 11 }}>*</span>}
+              <VbBtn kind="ghost" size="sm" icon="arrowUp" title="Move up" disabled={i === 0} onClick={() => moveSub(i, i - 1)} />
+              <VbBtn kind="ghost" size="sm" icon="arrowDown" title="Move down" disabled={i === subs.length - 1} onClick={() => moveSub(i, i + 1)} />
+              <VbBtn kind="danger" size="sm" icon="x" title="Remove subfield" onClick={() => removeSub(i)} />
+            </div>
+            {open === i && (
+              <div style={{ padding: "4px 12px 12px", display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid var(--vb-border)" }}>
+                <FieldOptionsBody
+                  subfield
+                  sel={sub}
+                  updateSel={(patch) => patchSub(i, patch)}
+                  updateSelOptions={(patch) => patchSubOptions(i, patch)}
+                  numOrUndef={numOrUndef}
+                  allCollections={allCollections}
+                  collId={collId}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: "var(--vb-fg-3)", marginRight: 2 }}>Add:</span>
+        {GROUP_SUBFIELD_TYPES.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => addSub(t)}
+            style={{
+              appearance: "none", padding: "3px 8px", borderRadius: 4,
+              border: "1px dashed var(--vb-border-2)", background: "transparent",
+              color: "var(--vb-fg-2)", fontFamily: "var(--font-mono)", fontSize: 11, cursor: "pointer",
+            }}
+          >+ {t}</button>
+        ))}
+      </div>
+      {saved && (
+        <div style={{ fontSize: 11, color: "var(--vb-fg-3)", lineHeight: 1.5 }}>
+          Renaming a subfield keeps its values. Removing one deletes its values from every record when you save.
+        </div>
+      )}
+    </>
+  );
+}
+
 function OptionRow({
-  title, hint, on, onChange,
-}: { title: string; hint?: React.ReactNode; on: boolean; onChange: (v: boolean) => void }) {
+  title, hint, on, onChange, disabled,
+}: { title: string; hint?: React.ReactNode; on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <div style={{
       display: "flex",
@@ -1469,7 +1644,7 @@ function OptionRow({
           <div style={{ fontSize: 11, color: "var(--vb-fg-3)", marginTop: 3, lineHeight: 1.5 }}>{hint}</div>
         )}
       </div>
-      <Toggle on={on} onChange={onChange} />
+      <Toggle on={on} onChange={onChange} disabled={disabled} ariaLabel={title} />
     </div>
   );
 }

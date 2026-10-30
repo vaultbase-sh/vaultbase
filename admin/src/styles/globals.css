@@ -1689,6 +1689,8 @@ a { color: inherit; text-decoration: none; }
 .type-chip.select   .dot { background: var(--type-select); }
 .type-chip.json     { background: rgba(148,163,184,0.12); color: var(--type-json); }
 .type-chip.json     .dot { background: var(--type-json); }
+.type-chip.group    { background: rgba(103,232,249,0.12); color: #67e8f9; }
+.type-chip.group    .dot { background: #67e8f9; }
 .type-chip.vector   { background: rgba(165,180,252,0.12); color: #a5b4fc; }
 .type-chip.vector   .dot { background: #a5b4fc; }
 .type-chip.autodate { background: rgba(244,114,182,0.10); color: var(--type-autodate); opacity: 0.85; }

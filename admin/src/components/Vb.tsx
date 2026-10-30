@@ -385,6 +385,7 @@ const FIELD_TYPE_COLOR: Record<string, string> = {
   relation: "#b8a0ff",
   select:   "#9bb6ff",
   json:     "#62cc9c",
+  group:    "#67e8f9",
   autodate: "#b8a0ff",
   vector:   "#62cc9c",
 };

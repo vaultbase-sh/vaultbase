@@ -317,6 +317,14 @@ function tsTypeForField(f: FieldDef): string {
     case "autodate":         return "number";
     case "select":           return f.options?.multiple ? "string[]" : "string";
     case "json":             return "any";
+    case "geoPoint":         return "{ lat: number; lng: number }";
+    case "vector":           return "number[]";
+    case "group": {
+      const subs = Array.isArray(f.options?.fields) ? (f.options.fields as FieldDef[]) : [];
+      const props = subs.map((s) => `${JSON.stringify(s.name)}${s.required ? "" : "?"}: ${tsTypeForField(s)}`);
+      if (f.options?.multiple === false) return `{ ${props.join("; ")} }`;
+      return `Array<{ id: string${props.map((p) => `; ${p}`).join("")} }>`;
+    }
     case "file":
     case "relation":         return "string";
     default:                 return "string";

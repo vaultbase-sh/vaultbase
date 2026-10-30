@@ -95,7 +95,7 @@ export interface FieldDef {
   type:
     | "text" | "number" | "bool" | "file" | "relation"
     | "select" | "autodate" | "date" | "json" | "email" | "url"
-    | "password" | "editor" | "geoPoint" | "color" | "vector";
+    | "password" | "editor" | "geoPoint" | "color" | "vector" | "group";
   required?: boolean;
   system?: boolean;
   /** Auth-collection implicit field (email, verified). Storage lives on vaultbase_users. */
