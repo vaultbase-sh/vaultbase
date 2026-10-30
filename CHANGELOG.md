@@ -7,6 +7,48 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Group fields.** A new field type, `group`, holds structured items whose
+  shape the schema declares: line items on an order, an address book, the
+  steps of a recipe. Each item's subfields (text, number, bool, select,
+  email, url, date, color, editor, json) are validated as top-level fields
+  are, unknown keys are refused, and errors name the item
+  (`items[2].qty must be at least 1`). Every item gets an `id` from the
+  server, kept when the item is sent back. `min` / `max` bound the item
+  count; `multiple: false` stores one object instead of a list.
+  - Renaming a subfield (`renamedFrom`) rewrites the stored items in the
+    same transaction as the schema change; removing one deletes its values.
+    A view that names a subfield blocks its rename or removal.
+  - Filters and rules read items: `items.qty ?> 2`, `items.qty:each > 0`,
+    `items:length > 0`, and `items:any(sku = "A-1" && qty > 2)` for one
+    item meeting every condition. Values inside items compare by JSON type,
+    the same in list queries on both databases and in realtime and
+    single-record checks.
+  - OpenAPI, the MCP tools and seed, CSV import and export, and the admin
+    (schema editor, record form with one card per item, records table)
+    support it. The JS SDK's `vb-types` and the Dart SDK's
+    `dart run vaultbase:types` generate types for it from their next
+    releases.
+
+### Changed
+
+- **Filters over JSON values.** These apply to `json` fields as well as
+  groups:
+  - `?=` and `:each` on a value that isn't a list match nothing. On
+    Postgres they failed the query; on SQLite a single value counted as a
+    one-element list.
+  - A dotted path through a value that isn't an object
+    (`meta.a.b` where `meta.a` is text) is no value. On SQLite it failed
+    the query.
+  - `:length` on a JSON path counts a list's elements or a text's
+    characters, and is 0 for another value. Text that looked like a JSON
+    list was counted as one on SQLite, and a number was measured as text.
+  - Single-record checks and realtime read a path through objects' own
+    keys only: `tags.length` on a list is no value, as in list queries.
+
 ## [0.31.1] — 2026-10-30
 
 ### Fixed
