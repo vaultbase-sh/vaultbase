@@ -480,7 +480,8 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
     // Renaming onto a name this change removes: the column of that name is
     // still there when the rename runs. Two saves do it.
     const from = f.renamedFrom;
-    if (from && from !== f.name && previousByName.has(from) && !fields.some((o) => o.name === from) && previousByName.has(f.name)) {
+    const taken = previous.some((p) => p.name.toLowerCase() === f.name.toLowerCase() && p.name !== from);
+    if (from && from !== f.name && previousByName.has(from) && !fields.some((o) => o.name === from) && taken) {
       errors[f.name] = `Can't rename '${from}' to '${f.name}' while removing '${f.name}' in the same change: save the removal first`;
     }
   }
@@ -1254,8 +1255,10 @@ async function assertNoViewUses(tableName: string, columns: string[] | null, ver
     if (!word(tableName).test(q)) continue;
     const hit = columns ? columns.find((c) => word(c).test(q)) : undefined;
     if (columns && !hit) continue;
-    // Subfields of the group `hit`: only a view naming one of them reads it.
-    const sub = subfields ? subfields.find((n) => word(n).test(q)) : undefined;
+    // Subfields of the group `hit`: a view reads one by a JSON path, which is
+    // a string literal ('$[0].note', ->> 'note'); a column of that name isn't one.
+    const literals = (q.match(/'(?:[^']|'')*'/g) ?? []).join(" ");
+    const sub = subfields ? subfields.find((n) => word(n).test(literals)) : undefined;
     if (subfields && !sub) continue;
     const what = sub ? `'${hit}.${sub}'` : hit ? `'${hit}'` : "";
     throw new CollectionInUseError(

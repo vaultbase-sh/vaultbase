@@ -242,9 +242,10 @@ function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): bool
   if (json && op !== "~" && op !== "!~") {
     const num = (v: unknown) => typeof v === "number" || typeof v === "boolean";
     if (!(num(l) && num(r)) && !(typeof l === "string" && typeof r === "string")) return false;
-    // Text orders as SQL orders it, by character code: "10" < "9", "B" < "a".
+    // Text orders as SQL orders it, by code point: "10" < "9", "B" < "a".
     if (typeof l === "string" && typeof r === "string" && op !== "=" && op !== "!=") {
-      return op === ">" ? l > r : op === ">=" ? l >= r : op === "<" ? l < r : l <= r;
+      const c = codePointOrder(l, r);
+      return op === ">" ? c > 0 : op === ">=" ? c >= 0 : op === "<" ? c < 0 : c <= 0;
     }
   }
   switch (op) {
@@ -258,6 +259,17 @@ function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): bool
     case "!~": return !contains(l, r);
     default:   return false;
   }
+}
+
+/** `a` against `b` by Unicode code point, as SQLite and Postgres (C collation) order UTF-8 text. */
+function codePointOrder(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = x[i]!.codePointAt(0)! - y[i]!.codePointAt(0)!;
+    if (d !== 0) return d;
+  }
+  return x.length - y.length;
 }
 
 function resolveOperand(op: Operand, ctx: EvalContext): unknown {
@@ -360,6 +372,10 @@ function evalFunc(op: Extract<Operand, { kind: "func" }>, ctx: EvalContext): unk
   if (args.some((a) => a === UNAUTH_SENTINEL)) return UNAUTH_SENTINEL;
   if (op.name === "geoDistance") {
     if (args.length !== 4 || args.some((a) => a === null || a === undefined || a === "")) return UNAUTH_SENTINEL;
+    // An item's value counts only as a JSON number (or boolean), as the SQL reads it.
+    if (ctx.item && op.args.some((a, i) => a.kind === "field" && !a.modifier && typeof args[i] !== "number" && typeof args[i] !== "boolean")) {
+      return UNAUTH_SENTINEL;
+    }
     const nums = args.map(Number);
     if (nums.some((n) => !Number.isFinite(n))) return UNAUTH_SENTINEL;
     const [lonA, latA, lonB, latB] = nums as [number, number, number, number];

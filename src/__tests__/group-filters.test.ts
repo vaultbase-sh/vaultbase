@@ -261,15 +261,18 @@ describe("item values compared with each other, and read by path", () => {
           { name: "price", type: "number" },
           { name: "stock", type: "number" },
           { name: "ship_via_ups", type: "text" },
+          { name: "label", type: "text" },
+          { name: "tags", type: "select", options: { values: ["B", "a"], multiple: true } },
+          { name: "lat", type: "text" },
         ] } },
       ]),
     });
     _resetCollectionCache();
     const make = async (key: string, data: Record<string, unknown>) => { sids[key] = (await createRecord("stock", { title: key, ...data })).id; };
-    await make("s1", { items: [{ sku: "10", qty: 10, price: 9, stock: 12, ship_via_ups: "y" }] });
+    await make("s1", { items: [{ sku: "10", qty: 10, price: 9, stock: 12, ship_via_ups: "y", label: "\u{1F600}", tags: ["B"], lat: "12" }] });
     await make("s2", { items: [{ sku: "9", qty: 2, price: 5 }], list: [{ a: "str" }] });
     await make("s3", { items: [{ sku: "a", qty: 1, price: 1 }], list: [{ a: { b: 1 } }] });
-    await make("s4", { items: [{ sku: "B", qty: 3, price: 2 }], list: [{ n: 10, m: "10" }, [1, 2]] });
+    await make("s4", { items: [{ sku: "B", qty: 3, price: 2, label: "\u{FF01}", tags: ["a"] }], list: [{ n: 10, m: "10" }, [1, 2]] });
     rows = (await listRecords("stock", { perPage: 100 })).data;
   });
 
@@ -302,6 +305,15 @@ describe("item values compared with each other, and read by path", () => {
     [`list:any(a.length = 3)`, []],
     // inside :any a name with _via_ is the item's key
     [`items:any(ship_via_ups = "y")`, ["s1"]],
+    // by code point, as UTF-8 orders: an emoji after a full-width "!"
+    [`items:any(label > "\u{FF01}")`, ["s1"]],
+    [`items.label ?< "\u{1F600}"`, ["s4"]],
+    // a list inside an item orders its text by code point too: "B" < "a"
+    [`items:any(tags ?> "a")`, []],
+    [`items:any(tags ?< "a")`, ["s1"]],
+    // functions read an item's numbers only: text that looks like one isn't
+    [`items:any(geoDistance(lat, lat, 0, 0) >= 0)`, []],
+    [`items:any(geoDistance(qty:length, qty, 0, 0) >= 0)`, ["s1", "s2", "s3", "s4"]],
   ];
   for (const [filter, expected] of CASES2) {
     it(`${filter}`, async () => {

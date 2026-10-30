@@ -168,6 +168,9 @@ describe("group schema", () => {
       { name: "items", type: "group", renamedFrom: "lines", options: { fields: [{ name: "a", type: "number" }] } },
     ]) }));
     expect(err).toContain("save the removal first");
+    // Names match without case on SQLite: `B` is the column `b`.
+    await createCollection({ name: "swap2", fields: JSON.stringify([{ name: "a", type: "text" }, { name: "b", type: "text" }]) });
+    expect(await schemaError(updateCollection("swap2", { fields: JSON.stringify([{ name: "B", type: "text", renamedFrom: "a" }]) }))).toContain("save the removal first");
   });
 
   it("can't be turned into from json", async () => {
@@ -479,6 +482,11 @@ describe("group schema changes", () => {
     await expect(withSubfields((subs) => subs.filter((s) => s.name !== "note"))).rejects.toThrow("'items.note'");
     await withSubfields((subs) => subs.filter((s) => s.name !== "gift"));
     expect((await fieldsOf("orders")).find((f) => f.name === "items")!.options!.fields!.map((s) => s.name)).toEqual(["sku", "qty", "note"]);
+    // A column named like a subfield isn't the subfield: only a JSON path (a string literal) reads one.
+    await createCollection({ name: "order_titles", type: "view", view_query: `SELECT id, title, items FROM vb_orders` });
+    _resetCollectionCache();
+    await withSubfields((subs) => [...subs, { name: "title", type: "text" }]);
+    await withSubfields((subs) => subs.filter((s) => s.name !== "title"));
   });
 
   it("renames a subfield of a renamed group", async () => {

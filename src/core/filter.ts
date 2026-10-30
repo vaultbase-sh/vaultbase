@@ -586,7 +586,8 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
     if (kind) {
       const v = right.params[0];
       ctx.params.push(typeof v === "boolean" ? Number(v) : v);
-      return { cmp: `${t.as("value", kind)} ${sqlOpFor(op)} ?`, from: t.eachJsonb(arraySql) };
+      const value = ctx.element && kind === "text" ? `${t.as("value", kind)} ${t.itemTextOrder}` : t.as("value", kind);
+      return { cmp: `${value} ${sqlOpFor(op)} ?`, from: t.eachJsonb(arraySql) };
     }
   }
   // A list inside an item, on SQLite: typed as the bound value too (Dialect.itemCompare).
@@ -603,7 +604,21 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
 
 /** Whether this operand reads JSON: a JSON path, or a value of the item inside :any(...). */
 function readsJson(op: Operand, ctx: CompileCtx): boolean {
+  // A modifier (`:length`, `:lower`) makes it a number or text of SQL's own.
+  if ((op.kind === "field" || op.kind === "collection") && op.modifier) return false;
   return isJsonPath(op) || (!!ctx.element && op.kind === "field");
+}
+
+/**
+ * An item's value as a number for arithmetic: a JSON number, or a boolean
+ * as 1/0; NULL for text or anything else, as rules.ts reads it.
+ */
+function itemNumber(sql: string): string {
+  const d = dialect();
+  const typed = d.itemCompare?.(sql, "number");
+  if (typed) return typed;
+  const j = d.typedCompare?.jsonb(sql);
+  return j ? `CAST(${d.typedCompare!.as(j, "number")} AS DOUBLE PRECISION)` : jsonNumber(sql);
 }
 
 /**
@@ -928,7 +943,11 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
     // statement one value short.
     // A coordinate read from a JSON path is text on some databases; the
     // arithmetic needs a number.
-    const c = (a: Operand) => readsJson(a, ctx) ? jsonNumber(compileOperand(a, ctx)) : compileOperand(a, ctx);
+    const c = (a: Operand) => {
+      const sql = compileOperand(a, ctx);
+      if (!readsJson(a, ctx)) return sql;
+      return ctx.element && a.kind === "field" ? itemNumber(sql) : jsonNumber(sql);
+    };
     const latB1 = c(latB), latA1 = c(latA), latA2 = c(latA), latB2 = c(latB), lonB1 = c(lonB), lonA1 = c(lonA);
     // Haversine in km. Earth radius 6371.
     return `(2 * 6371 * asin(sqrt(` +
