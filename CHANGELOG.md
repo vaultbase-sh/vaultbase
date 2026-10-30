@@ -7,6 +7,36 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.31.1] — 2026-10-30
+
+### Fixed
+
+- **Sign-up stored custom field values as sent.** Registering, accepting
+  an invitation, upgrading a guest account and OAuth sign-up write an auth
+  collection's table directly, and they skipped what a record write does:
+  a `json` or multi-select value answered 500, an `encrypted` field was
+  stored in the clear, a `password` field unhashed, and an `autodate`
+  field took the client's value. They now store values as a record write
+  does. What a `beforeCreate` hook returns is validated at register and
+  invite.
+- **Invitations are checked as an admin's write, for the fields they
+  set.** An invite with an email alone works when the collection has a
+  required field, and may link records only admins can see.
+- **A field marked required when its auth collection was created broke
+  guest sign-up, OAuth sign-up and invitations** with a 500: its column
+  couldn't be empty, and those paths make users without the collection's
+  fields. New auth collections don't have the limit, and `required` is
+  still checked wherever a body is validated.
+
+### Upgrade notes
+
+- **Postgres:** the server removes the limit from existing auth
+  collections when it starts.
+- **SQLite:** it can't be removed in place. The server log at start and
+  `vaultbase doctor` name the affected fields; the authentication docs
+  ("Required fields made before 0.31.1") show how to move each one to a
+  new column and keep its values.
+
 ## [0.31.0] — 2026-10-29
 
 ### Added
