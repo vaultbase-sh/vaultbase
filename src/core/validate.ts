@@ -83,6 +83,8 @@ export async function validateRecord(
       if (field.required && mode === "update") {
         errors[field.name] = `${field.name} cannot be empty`;
       }
+      // A group is items or nothing: "" is stored as null, not as text.
+      if (field.type === "group" && value === "") data[field.name] = null;
       continue;
     }
 
@@ -174,6 +176,10 @@ export function validateGroup(field: FieldDef, value: unknown): { error: string 
 
   if (!isGroupList(field)) {
     const r = checkItem(value, field.name, false);
+    // Required: at least one subfield holds a value (an empty string isn't one).
+    if (field.required && "value" in r && !Object.values(r.value).some((v) => v !== "")) {
+      return { error: `${field.name} is required: fill in at least one of its fields` };
+    }
     return r;
   }
 

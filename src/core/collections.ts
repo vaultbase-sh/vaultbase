@@ -11,7 +11,7 @@ import { ensureRowCount, forgetRowCount } from "./row-counts.ts";
 import { parseThumbSpec } from "./image.ts";
 import { customFieldType, isKnownFieldType } from "./field-types.ts";
 import { ruleSyntaxError } from "./expression.ts";
-import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, withoutRenames } from "./group-fields.ts";
+import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, subfieldsOf, withoutRenames } from "./group-fields.ts";
 import { decryptValue, encryptValue, isEncrypted } from "./encryption.ts";
 
 export type BuiltinFieldType =
@@ -951,11 +951,18 @@ export async function dropUserView(collectionName: string): Promise<void> {
   await db.exec(`DROP VIEW IF EXISTS ${tname}`);
 }
 
-/** Diff old vs new fields and emit ALTER TABLE statements. Throws on type-change attempts. */
+/**
+ * Diff old vs new fields and emit ALTER TABLE statements. Throws on type-change attempts.
+ * `thenInside` runs last in the same transaction, with the write gate still
+ * held: the caller saves the new schema there, so rewritten group items and
+ * the schema that reads them commit together, and no write queued on the
+ * gate validates against the old one.
+ */
 export async function alterUserTable(
   collectionName: string,
   oldFields: FieldDef[],
-  newFields: FieldDef[]
+  newFields: FieldDef[],
+  thenInside?: () => Promise<void>,
 ): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   for (const f of newFields) if (!f.system) assertSqlIdent(f.name, "field");
@@ -1025,7 +1032,11 @@ export async function alterUserTable(
     const prev = oldByName.get(name);
     if (f.type !== "group" || prev?.type !== "group") continue;
     const renames = subfieldRenames(f, prev);
-    if (groupNeedsRewrite(f, prev, renames)) await rewriteGroupRows(tname, name, f, renames);
+    if (!groupNeedsRewrite(f, prev, renames)) continue;
+    const kept = new Set(subfieldsOf(f).map((s) => s.name));
+    const goneSubs = subfieldsOf(prev).map((s) => s.name).filter((n) => renames.has(n) || !kept.has(n));
+    await assertNoViewUses(table, [name], `rename or remove ${goneSubs.map((g) => `'${name}.${g}'`).join(", ")}`, goneSubs);
+    await rewriteGroupRows(tname, name, f, renames);
   }
 
   // Drop fields removed in new
@@ -1082,6 +1093,7 @@ export async function alterUserTable(
   }
 
   await syncFts(collectionName, newFields);
+  await thenInside?.();
   });
 }
 
@@ -1107,6 +1119,7 @@ async function rewriteGroupRows(
       [after],
     );
     if (rows.length === 0) return;
+    const changed: Array<[string, string]> = [];
     for (const r of rows) {
       after = r.id;
       if (typeof r.v !== "string" || r.v === "") continue;
@@ -1117,8 +1130,15 @@ async function rewriteGroupRows(
       try { parsed = JSON.parse(text); } catch { continue; }
       const next = JSON.stringify(rewriteGroupValue(parsed, field, renames));
       if (next === text) continue;
-      await db.run(`UPDATE ${tname} SET ${col} = ? WHERE "id" = ?`, [sealed ? await encryptValue(next) : next, r.id]);
+      changed.push([r.id, sealed ? await encryptValue(next) : next]);
     }
+    // One statement per page: a round trip per row held the write gate for
+    // minutes on a large Postgres table.
+    if (changed.length === 0) continue;
+    await db.run(
+      `UPDATE ${tname} SET ${col} = CASE "id" ${changed.map(() => "WHEN ? THEN ?").join(" ")} END WHERE "id" IN (${changed.map(() => "?").join(", ")})`,
+      [...changed.flat(), ...changed.map(([id]) => id)],
+    );
   }
 }
 
@@ -1216,8 +1236,9 @@ export class CollectionInUseError extends Error {}
  * the message names the view to change first. Without it the view broke
  * silently and every read of it answered 500.
  */
-async function assertNoViewUses(tableName: string, columns: string[] | null, verb: string): Promise<void> {
+async function assertNoViewUses(tableName: string, columns: string[] | null, verb: string, subfields?: string[]): Promise<void> {
   if (columns && columns.length === 0) return;
+  if (subfields && subfields.length === 0) return;
   const word = (w: string) => new RegExp(`(^|[^A-Za-z0-9_])${w.replace(/[^A-Za-z0-9_]/g, "")}([^A-Za-z0-9_]|$)`, "i");
   const views = (await getDb().select().from(collections)).filter((c) => c.type === "view" && c.view_query);
   for (const v of views) {
@@ -1225,8 +1246,12 @@ async function assertNoViewUses(tableName: string, columns: string[] | null, ver
     if (!word(tableName).test(q)) continue;
     const hit = columns ? columns.find((c) => word(c).test(q)) : undefined;
     if (columns && !hit) continue;
+    // Subfields of the group `hit`: only a view naming one of them reads it.
+    const sub = subfields ? subfields.find((n) => word(n).test(q)) : undefined;
+    if (subfields && !sub) continue;
+    const what = sub ? `'${hit}.${sub}'` : hit ? `'${hit}'` : "";
     throw new CollectionInUseError(
-      `Can't ${verb}: the view '${v.name}' reads ${hit ? `'${hit}' from ` : ""}${tableName}. Change or delete that view first.`,
+      `Can't ${verb}: the view '${v.name}' reads ${what ? `${what} from ` : ""}${tableName}. Change or delete that view first.`,
     );
   }
 }
@@ -1519,6 +1544,7 @@ export async function updateCollection(
   // Rename first so every later step (view rebuild, field DDL) targets the
   // new table.
   let currentName = before.name;
+  let savedWithFields = false;
   if (data.name !== undefined && data.name !== before.name) {
     if (before.type !== "view") await assertNoViewUses(userTableName(before.name), null, `rename '${before.name}'`);
     await renameCollectionStorage(before, data.name, effectiveType, data.view_query ?? before.view_query);
@@ -1560,17 +1586,25 @@ export async function updateCollection(
     const present = new Set(incoming.filter((f) => f.implicit).map((f) => f.name));
     const carryOver = oldFields.filter((f) => f.implicit && !present.has(f.name));
     const newFields = ensureImplicitFields(effectiveType, [...carryOver, ...incoming]);
-    // Real table only sees non-implicit fields.
+    // `renamedFrom` is an instruction for the DDL below, not part of the schema.
+    const saved = { ...data, fields: JSON.stringify(withoutRenames(newFields)) };
+    // Real table only sees non-implicit fields. The schema row is saved in
+    // the same transaction (see alterUserTable).
     await alterUserTable(
       currentName,
       oldFields.filter((f) => !f.implicit),
-      newFields.filter((f) => !f.implicit)
+      newFields.filter((f) => !f.implicit),
+      async () => {
+        await db.update(collections).set({ ...saved, updated_at: now }).where(eq(collections.id, id));
+        cache.delete(id);
+        cache.delete(before.name);
+      },
     );
-    // `renamedFrom` is an instruction for the DDL above, not part of the schema.
-    data = { ...data, fields: JSON.stringify(withoutRenames(newFields)) };
+    data = saved;
+    savedWithFields = true;
   }
 
-  await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));
+  if (!savedWithFields) await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));
   cache.delete(id);
   cache.delete(before.name);
   broadcast({ type: "bus", kind: "collections" });

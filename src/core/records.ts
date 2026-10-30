@@ -680,7 +680,9 @@ export async function listRecords(
   // RCE — fail fast instead of relying on the prepare contract.
   const sortableCols = new Set<string>([
     "id", "created_at", "updated_at",
-    ...fields.filter((f) => !f.system).map((f) => f.name),
+    // Not a group: its items have no order of their own (the JSON text, or
+    // ciphertext, would decide it).
+    ...fields.filter((f) => !f.system && f.type !== "group").map((f) => f.name),
   ]);
   let viewCols: ReadonlySet<string> | null = null;
   const viewColumns = (): ReadonlySet<string> => {

@@ -76,6 +76,8 @@ export function groupSchemaError(field: FieldDef, previous: FieldDef | undefined
   if (raw.length > GROUP_MAX_SUBFIELDS) return `'${name}': at most ${GROUP_MAX_SUBFIELDS} subfields`;
   const prevByName = new Map(previous ? subfieldsOf(previous).map((s) => [s.name, s]) : []);
   const seen = new Set<string>();
+  const renamedSources = new Set<string>();
+  const newNames = new Set((raw as Array<{ name?: unknown }>).map((s) => s?.name));
   for (const sub of raw as unknown[]) {
     if (!sub || typeof sub !== "object" || Array.isArray(sub)) return `'${name}': each subfield must be an object`;
     const s = sub as FieldDef;
@@ -100,6 +102,10 @@ export function groupSchemaError(field: FieldDef, previous: FieldDef | undefined
     }
     if (typeof s.renamedFrom === "string" && s.renamedFrom !== s.name && prevByName.has(s.renamedFrom) && prevByName.has(s.name)) {
       return `'${path}': can't rename '${s.renamedFrom}' to '${s.name}': '${s.name}' already exists`;
+    }
+    if (typeof s.renamedFrom === "string" && s.renamedFrom !== s.name && prevByName.has(s.renamedFrom) && !newNames.has(s.renamedFrom)) {
+      if (renamedSources.has(s.renamedFrom)) return `'${path}': '${s.renamedFrom}' is renamed twice in this change`;
+      renamedSources.add(s.renamedFrom);
     }
     const before = prevByName.get(s.renamedFrom && !prevByName.has(s.name) ? s.renamedFrom : s.name);
     if (before && before.type !== s.type) {
@@ -137,13 +143,16 @@ export function subfieldRenames(field: FieldDef, previous: FieldDef): Map<string
 export function rewriteGroupValue(value: unknown, field: FieldDef, renames: ReadonlyMap<string, string>): unknown {
   const keep = new Set(subfieldsOf(field).map((s) => s.name));
   if (isGroupList(field)) keep.add("id");
-  const targets = new Set(renames.values());
+  const sourceOf = new Map([...renames].map(([from, to]) => [to, from]));
   const rewriteItem = (item: unknown): unknown => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(item)) {
-      // A rename's target takes its value from the source only.
-      if (targets.has(k) && !renames.has(k)) continue;
+      // A rename's target takes the source's value when the item has the
+      // source. Without it the target is kept: running the same rewrite
+      // twice leaves the renamed values in place.
+      const from = sourceOf.get(k);
+      if (from !== undefined && !renames.has(k) && Object.prototype.hasOwnProperty.call(item, from)) continue;
       const to = renames.get(k) ?? k;
       if (keep.has(to)) out[to] = v;
     }

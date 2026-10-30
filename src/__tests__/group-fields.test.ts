@@ -7,10 +7,11 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { createCollection, updateCollection, getCollection, parseFields, _resetCollectionCache, type FieldDef } from "../core/collections.ts";
+import { createCollection, updateCollection, getCollection, parseFields, _resetCollectionCache, CollectionInUseError, type FieldDef } from "../core/collections.ts";
 import { createRecord, getRecord, updateRecord, listRecords } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
-import { newItemId } from "../core/group-fields.ts";
+import { newItemId, rewriteGroupValue } from "../core/group-fields.ts";
+import { onSqlite } from "./_helpers.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { admin } from "../db/schema.ts";
@@ -149,6 +150,15 @@ describe("group schema", () => {
     expect(await schemaError(updateCollection("orders", { fields: JSON.stringify(fields) }))).toContain("'note' already exists");
   });
 
+  it("refuses one subfield renamed to two names", async () => {
+    await withGroup({ options: { fields: [{ name: "a", type: "text" }] } });
+    const err = await schemaError(updateCollection("g", { fields: JSON.stringify([{ name: "items", type: "group", options: { fields: [
+      { name: "c", type: "text", renamedFrom: "a" },
+      { name: "d", type: "text", renamedFrom: "a" },
+    ] } }]) }));
+    expect(err).toContain("'a' is renamed twice");
+  });
+
   it("can't be turned into from json", async () => {
     await createCollection({ name: "g", fields: JSON.stringify([{ name: "items", type: "json" }]) });
     expect(await schemaError(updateCollection("g", { fields: JSON.stringify([ITEMS]) }))).toContain("Cannot change type");
@@ -258,6 +268,30 @@ describe("group values", () => {
     const rec = await createRecord("orders", { items: [{ sku: "A", qty: 1 }] });
     const cleared = await updateRecord("orders", rec.id, { items: null });
     expect(cleared["items"]).toBeNull();
+  });
+});
+
+describe("empty and required groups", () => {
+  beforeEach(() => makeOrders());
+
+  it("stores an empty string as null", async () => {
+    const rec = await createRecord("orders", { items: "", address: "" });
+    expect(rec["items"]).toBeNull();
+    expect(rec["address"]).toBeNull();
+    const raw = await db.get<{ items: unknown; address: unknown }>(`SELECT items, address FROM vb_orders WHERE id = ?`, [rec.id]);
+    expect(raw).toEqual({ items: null, address: null });
+  });
+
+  it("needs a value in a required single-object group", async () => {
+    await createCollection({ name: "places", fields: JSON.stringify([{ name: "place", type: "group", required: true, options: { multiple: false, fields: [
+      { name: "city", type: "text" }, { name: "zip", type: "text" },
+    ] } }]) });
+    _resetCollectionCache();
+    expect((await validationError(createRecord("places", { place: {} })))["place"]).toContain("fill in at least one");
+    expect((await validationError(createRecord("places", { place: { city: "", zip: null } })))["place"]).toContain("fill in at least one");
+    const rec = await createRecord("places", { place: { zip: "0150" } });
+    expect(rec["place"]).toEqual({ zip: "0150" });
+    expect((await validationError(updateRecord("places", rec.id, { place: {} })))["place"]).toContain("fill in at least one");
   });
 });
 
@@ -376,6 +410,61 @@ describe("group schema changes", () => {
     expect(sub).not.toHaveProperty("renamedFrom");
   });
 
+  it("rolls the item rewrite back when the schema can't be saved", async () => {
+    const rec = await createRecord("orders", { items: [{ sku: "A", qty: 1, note: "keep" }] });
+    if (onSqlite) {
+      await db.exec(`CREATE TRIGGER vb_fail BEFORE UPDATE ON vaultbase_collections BEGIN SELECT RAISE(ABORT, 'schema save failed'); END`);
+    } else {
+      await db.exec(`CREATE FUNCTION vb_fail() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'schema save failed'; END $$ LANGUAGE plpgsql`);
+      await db.exec(`CREATE TRIGGER vb_fail BEFORE UPDATE ON vaultbase_collections FOR EACH ROW EXECUTE FUNCTION vb_fail()`);
+    }
+    const rename = (subs: FieldDef[]) => subs.map((s) => s.name === "note" ? { ...s, name: "memo", renamedFrom: "note" } : s);
+    // Drizzle wraps the trigger's error ("Failed query: update vaultbase_collections ...").
+    await expect(withSubfields(rename)).rejects.toThrow();
+    const raw = await db.get<{ items: string }>(`SELECT items FROM vb_orders WHERE id = ?`, [rec.id]);
+    expect(JSON.parse(raw!.items)[0]).toMatchObject({ note: "keep" });
+    expect(((await getRecord("orders", rec.id))!["items"] as Array<Record<string, unknown>>)[0]!["note"]).toBe("keep");
+
+    await db.exec(onSqlite ? `DROP TRIGGER vb_fail` : `DROP TRIGGER vb_fail ON vaultbase_collections`);
+    await withSubfields(rename);
+    expect(((await getRecord("orders", rec.id))!["items"] as Array<Record<string, unknown>>)[0]!["memo"]).toBe("keep");
+  });
+
+  it("keeps renamed values when the same rewrite runs twice", () => {
+    const field = (ITEMS.options!.fields!).map((s) => s.name === "note" ? { ...s, name: "memo" } : s);
+    const group = { ...ITEMS, options: { ...ITEMS.options, fields: field } };
+    const renames = new Map([["note", "memo"]]);
+    const once = rewriteGroupValue([{ id: "a", sku: "A", qty: 1, note: "n" }], group, renames);
+    expect(once).toEqual([{ id: "a", sku: "A", qty: 1, memo: "n" }]);
+    expect(rewriteGroupValue(once, group, renames)).toEqual(once);
+  });
+
+  it("rewrites every page of a large table", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 1203; i++) ids.push((await createRecord("orders", { items: [{ sku: `S${i}`, qty: 1, note: `n${i}` }] })).id);
+    await withSubfields((subs) => subs.map((s) => s.name === "note" ? { ...s, name: "memo", renamedFrom: "note" } : s));
+    const rows = await db.all<{ id: string; items: string }>(`SELECT id, items FROM vb_orders`);
+    expect(rows.length).toBe(1203);
+    for (const r of rows) {
+      const item = JSON.parse(r.items)[0];
+      expect(item).not.toHaveProperty("note");
+      expect(item.memo).toBe(`n${item.sku.slice(1)}`);
+    }
+  });
+
+  it("refuses to rename or remove a subfield a view reads, and allows the others", async () => {
+    const query = onSqlite
+      ? `SELECT id, json_extract(items, '$[0].note') AS first_note FROM vb_orders`
+      : `SELECT id, (items::jsonb -> 0 ->> 'note') AS first_note FROM vb_orders`;
+    await createCollection({ name: "order_notes", type: "view", view_query: query });
+    _resetCollectionCache();
+    const rename = withSubfields((subs) => subs.map((s) => s.name === "note" ? { ...s, name: "memo", renamedFrom: "note" } : s));
+    await expect(rename).rejects.toBeInstanceOf(CollectionInUseError);
+    await expect(withSubfields((subs) => subs.filter((s) => s.name !== "note"))).rejects.toThrow("'items.note'");
+    await withSubfields((subs) => subs.filter((s) => s.name !== "gift"));
+    expect((await fieldsOf("orders")).find((f) => f.name === "items")!.options!.fields!.map((s) => s.name)).toEqual(["sku", "qty", "note"]);
+  });
+
   it("renames a subfield of a renamed group", async () => {
     const rec = await createRecord("orders", { items: [{ sku: "A", qty: 1 }] });
     const fields = (await fieldsOf("orders")).map((f) => f.name === "items"
@@ -395,6 +484,17 @@ describe("group schema changes", () => {
     await updateCollection("orders", { fields: JSON.stringify(fields) });
     _resetCollectionCache();
     expect((await getRecord("orders", rec.id))!["address"]).toEqual({ city: "Oslo", postcode: "0150" });
+  });
+});
+
+describe("sorting", () => {
+  it("ignores a group field as a sort key", async () => {
+    await makeOrders();
+    // By the stored JSON the second would come first: it starts with id "a".
+    await createRecord("orders", { title: "first", items: [{ id: "z", sku: "Z", qty: 1 }] });
+    await createRecord("orders", { title: "second", items: [{ id: "a", sku: "A", qty: 1 }] });
+    const sorted = await listRecords("orders", { sort: "items,title" });
+    expect(sorted.data.map((r) => r["title"])).toEqual(["first", "second"]);
   });
 });
 
