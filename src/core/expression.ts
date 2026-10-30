@@ -5,7 +5,8 @@
  *   expr        := or
  *   or          := and ( '||' and )*
  *   and         := atom ( '&&' atom )*
- *   atom        := '(' or ')' | comparison
+ *   atom        := '(' or ')' | itemsAny | comparison
+ *   itemsAny    := word ('.' word)* ':any(' or ')'   -- an item of the list matches; fields inside are the item's
  *   comparison  := operand op operand
  *   operand     := authRef | requestRef | collectionRef | funcCall | macro | literal | field
  *   authRef     := '@request.auth.' ('id' | 'email' | 'type')
@@ -87,6 +88,12 @@ export type Operand =
 
 export type Expr =
   | { kind: "cmp"; left: Operand; op: AnyCmpOp; right: Operand }
+  /**
+   * `items:any(<where>)`: some element of the list in `target` is an object
+   * for which `where` holds, with `where`'s field names read from that
+   * element (a group field's items, or a JSON list of objects).
+   */
+  | { kind: "any"; target: Extract<Operand, { kind: "field" }>; where: Expr }
   | { kind: "and"; left: Expr; right: Expr }
   | { kind: "or"; left: Expr; right: Expr };
 
@@ -117,6 +124,8 @@ class TokenStream {
   operandCount = 0;
   /** Recursion depth for `or`/`and`/`atom`. */
   depth = 0;
+  /** Inside `:any(...)`: field names are an item's, and some operands can't be used. */
+  inAny = false;
   constructor(public src: string) {}
 
   skipWs(): void {
@@ -269,9 +278,39 @@ function parseAtom(ts: TokenStream): Expr {
     popDepth(ts);
     return inner;
   }
-  const expr = parseComparison(ts);
+  const expr = parseItemsAny(ts) ?? parseComparison(ts);
   popDepth(ts);
   return expr;
+}
+
+/** `items:any(<expr>)` at the cursor, or null (the cursor is left where it was). */
+function parseItemsAny(ts: TokenStream): Expr | null {
+  const start = ts.pos;
+  if (!/[A-Za-z_]/.test(ts.peekChar())) return null;
+  let parts: string[];
+  try { parts = readDottedWord(ts); } catch { parts = []; }
+  const open = /^\s*:any\s*\(/.exec(ts.src.slice(ts.pos));
+  if (parts.length === 0 || !open) {
+    ts.pos = start;
+    return null;
+  }
+  if (parts.length === 1 && (parts[0] === "true" || parts[0] === "false" || parts[0] === "null")) {
+    throw new Error(`:any(...) needs a field, not ${parts[0]}`);
+  }
+  if (ts.inAny) throw new Error(":any(...) can't be used inside :any(...)");
+  if (parts[0]!.includes("_via_")) throw new Error(":any(...) needs a field of this collection");
+  ts.pos += open[0].length;
+  ts.operandCount++;
+  if (ts.operandCount > MAX_OPERANDS) throw new Error("expression has too many operands");
+  ts.inAny = true;
+  let where: Expr;
+  try {
+    where = parseOr(ts);
+  } finally {
+    ts.inAny = false;
+  }
+  ts.expect(")");
+  return { kind: "any", target: { kind: "field", name: parts[0]!, path: parts.slice(1) }, where };
 }
 
 function parseComparison(ts: TokenStream): Expr {
@@ -332,6 +371,7 @@ function readOperand(ts: TokenStream): Operand {
   }
 
   const modifier = readOptionalModifier(ts);
+  if (ts.inAny && w[0]!.includes("_via_")) throw new Error("_via_ can't be used inside :any(...)");
   return makeFieldOperand(w, modifier);
 }
 
@@ -434,6 +474,7 @@ function readAtRef(ts: TokenStream): Operand {
     return { kind: "request", prop: "context" };
   }
   if (ts.consume("@collection.")) {
+    if (ts.inAny) throw new Error("@collection can't be used inside :any(...)");
     const collection = ts.readWord();
     if (!collection) throw new Error("expected collection name");
     let alias: string | undefined;

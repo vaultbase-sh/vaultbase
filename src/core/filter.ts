@@ -176,6 +176,7 @@ export function compileToSql(
     joinDepth: 0,
     hoist: null,
     aliasSeq: { n: 0 },
+    itemSeq: { n: 0 },
     maxJoins: opts.maxJoins ?? MAX_COLLECTION_JOINS,
     crossRefs: { n: 0, max: opts.maxCrossRefs ?? Number.POSITIVE_INFINITY },
     clientFilter: opts.clientFilter === true && opts.auth?.type !== "admin",
@@ -200,6 +201,13 @@ interface CompileCtx {
   hoist: HoistScope | null;
   /** Shared counter for join aliases, unique across nested scopes. */
   aliasSeq: { n: number };
+  /** Counter for the aliases of list-item scans (`:any`, `x.f ?= v`); not a join, so not capped by maxJoins. */
+  itemSeq: { n: number };
+  /**
+   * Inside `items:any(...)`: the JSON of the item being tested. Field
+   * operands then read that item's keys instead of the table's columns.
+   */
+  element?: string | undefined;
   /** Cap on aliasSeq.n for this compile. */
   maxJoins: number;
   /**
@@ -257,6 +265,7 @@ function compileScoped(ast: Expr, ctx: CompileCtx): string {
 const MAX_JOIN_DEPTH = 4;
 
 function compileNode(ast: Expr, ctx: CompileCtx): string {
+  if (ast.kind === "any") return compileAny(ast, ctx);
   if (ast.kind === "and") {
     return `(${compileNode(ast.left, ctx)} AND ${compileNode(ast.right, ctx)})`;
   }
@@ -343,7 +352,73 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return likeSql(left, op, ast.right, ctx);
   }
 
-  return typedCmp(compiled(ast.left, ctx), sqlOpFor(op), compiled(ast.right, ctx), ctx);
+  return typedCmp(compiled(ast.left, ctx), sqlOpFor(op), compiled(ast.right, ctx), ctx, !!ctx.element);
+}
+
+/**
+ * `items:any(<where>)`: an element of the list that is an object for which
+ * `where` holds, `where`'s fields read from the element.
+ */
+function compileAny(ast: Extract<Expr, { kind: "any" }>, ctx: CompileCtx): string {
+  if (ctx.element) throw new Error(":any(...) can't be used inside :any(...)");
+  const listSql = compileFieldRef(ast.target, ctx);
+  const d = dialect();
+  const alias = `vb_item${++ctx.itemSeq.n}`;
+  const where = compileNode(ast.where, { ...ctx, element: d.items.value(alias) });
+  return `EXISTS (SELECT 1 FROM ${d.items.from(listSql, alias)} WHERE ${onItem(alias, where)})`;
+}
+
+/**
+ * `cond` for the element in row `alias` when it is an object, else NULL.
+ * A CASE, not AND: SQLite's json_extract fails on a string element, and
+ * AND doesn't promise to test the type first.
+ */
+function onItem(alias: string, cond: string): string {
+  return `(CASE WHEN ${dialect().items.isObject(alias)} THEN (${cond}) END)`;
+}
+
+/**
+ * `x.f` where `x` may hold a list of items: the field `x` and the path read
+ * in each item. `x.f ?= v` and `x.f:each = v` then also look at `f` in every
+ * item of `x`, besides the list at `x.f` (a JSON object's array). The two
+ * can't both apply to one value: a JSON path reads nothing from a list.
+ */
+function itemPath(op: Operand): { list: Extract<Operand, { kind: "field" }>; path: string[] } | null {
+  if (op.kind !== "field" || op.path.length === 0) return null;
+  return { list: { kind: "field", name: op.name, path: [] }, path: op.path };
+}
+
+/** `<item>.path <op> scalar` for the item in row `alias`; binds into ctx. */
+function itemCmp(alias: string, path: string[], op: AnyCmpOp, scalar: Operand, ctx: CompileCtx): string {
+  const d = dialect();
+  let left = d.items.value(alias);
+  for (const seg of path) {
+    if (!IDENT_RE.test(seg)) throw new Error(`invalid field path segment: ${seg}`);
+    left = d.jsonExtract(left, `$.${seg}`);
+  }
+  if (op === "~" || op === "!~") return likeSql(left, op, scalar, ctx);
+  return typedCmp({ sql: left, params: [] }, sqlOpFor(op), compiled(scalar, ctx), ctx, true);
+}
+
+/** Some item of `items.list` whose `items.path` compares true. */
+function anyItemCmp(items: { list: Extract<Operand, { kind: "field" }>; path: string[] }, op: AnyCmpOp, scalar: Operand, ctx: CompileCtx): string {
+  const d = dialect();
+  const listSql = compileFieldRef(items.list, ctx);
+  const alias = `vb_item${++ctx.itemSeq.n}`;
+  const cond = itemCmp(alias, items.path, op, scalar, ctx);
+  return `EXISTS (SELECT 1 FROM ${d.items.from(listSql, alias)} WHERE ${onItem(alias, cond)})`;
+}
+
+/**
+ * At least one item, and every item an object whose `items.path` compares
+ * true. A missing value fails (`IS NOT TRUE`), as it does in rules.ts.
+ */
+function everyItemCmp(items: { list: Extract<Operand, { kind: "field" }>; path: string[] }, op: AnyCmpOp, scalar: Operand, ctx: CompileCtx): string {
+  const d = dialect();
+  const listSql = compileFieldRef(items.list, ctx);
+  const alias = `vb_item${++ctx.itemSeq.n}`;
+  const cond = itemCmp(alias, items.path, op, scalar, ctx);
+  return `(${d.items.length(listSql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${d.items.from(listSql, alias)} WHERE ${onItem(alias, cond)} IS NOT TRUE))`;
 }
 
 /** An operand compiled on its own: its SQL and the values it binds. */
@@ -373,11 +448,21 @@ function compiled(op: Operand, ctx: CompileCtx): Compiled {
  *   as SQLite's affinity does: `sku = 123` on a text field matches "123"
  *   instead of failing with `text = integer`.
  */
-function typedCmp(a: Compiled, op: string, b: Compiled, ctx: CompileCtx): string {
-  const t = dialect().typedCompare;
+function typedCmp(a: Compiled, op: string, b: Compiled, ctx: CompileCtx, item = false): string {
+  const d = dialect();
+  const t = d.typedCompare;
   if (t) [a, b] = [lineUp(a, b, t), lineUp(b, a, t)];
+  else if (item && d.itemCompare) [a, b] = [lineUpItem(a, b, d.itemCompare), lineUpItem(b, a, d.itemCompare)];
   ctx.params.push(...a.params, ...b.params);
   return `${a.sql} ${op} ${b.sql}`;
+}
+
+/** SQLite, for an item's value: a JSON path met by a bound value, typed as that value (Dialect.itemCompare). */
+function lineUpItem(side: Compiled, other: Compiled, as: NonNullable<Dialect["itemCompare"]>): Compiled {
+  if (isBound(side) || !isBound(other)) return side;
+  const kind = boundKind(other.params[0]);
+  const typed = kind ? as(side.sql, kind) : null;
+  return typed ? { sql: typed, params: side.params } : side;
 }
 
 const isBound = (c: Compiled): boolean => c.sql === "?" && c.params.length === 1;
@@ -436,7 +521,12 @@ function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCt
     ({ cmp, from } = elementCmp(arraySql, op, scalarOperand, ctx));
   }
   const d = dialect();
-  return `(${d.jsonArrayLength(arraySql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${from} WHERE NOT (${cmp})))`;
+  // Inside an item a value that doesn't compare (a missing or mistyped one)
+  // fails "every", as rules.ts compares items; elsewhere NOT keeps the old answer.
+  const fails = ctx.element ? `(${cmp}) IS NOT TRUE` : `NOT (${cmp})`;
+  const each = `(${d.jsonArrayLength(arraySql)} > 0 AND NOT EXISTS (SELECT 1 FROM ${from} WHERE ${fails}))`;
+  const items = itemPath(arrayOperand);
+  return items ? `(${each} OR ${everyItemCmp(items, op, scalarOperand, ctx)})` : each;
 }
 
 /** `column ARRAY-OP value` — wraps in `EXISTS (... json_each ...)`. */
@@ -469,7 +559,9 @@ function compileArrayCmp(
   }
   // Splice inner params into outer in the right position.
   ctx.params.push(...inner);
-  return `EXISTS (SELECT 1 FROM ${from} WHERE ${cmp})`;
+  const exists = `EXISTS (SELECT 1 FROM ${from} WHERE ${cmp})`;
+  const items = itemPath(arrayOperand);
+  return items ? `(${exists} OR ${anyItemCmp(items, scalarOp, scalarOperand, ctx)})` : exists;
 }
 
 /**
@@ -489,6 +581,15 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
       const v = right.params[0];
       ctx.params.push(typeof v === "boolean" ? Number(v) : v);
       return { cmp: `${t.as("value", kind)} ${sqlOpFor(op)} ?`, from: t.eachJsonb(arraySql) };
+    }
+  }
+  // A list inside an item, on SQLite: typed as the bound value too (Dialect.itemCompare).
+  if (!t && ctx.element && d.itemElement && isBound(right)) {
+    const kind = boundKind(right.params[0]);
+    if (kind) {
+      const v = right.params[0];
+      ctx.params.push(typeof v === "boolean" ? Number(v) : v);
+      return { cmp: `${d.itemElement(kind)} ${sqlOpFor(op)} ?`, from: d.jsonEach(arraySql) };
     }
   }
   return { cmp: typedCmp({ sql: "value", params: [] }, sqlOpFor(op), right, ctx), from: d.jsonEach(arraySql) };
@@ -553,6 +654,15 @@ function columnFor(name: string, ctx: CompileCtx): string {
 
 function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCtx): string {
   if (!IDENT_RE.test(op.name)) throw new Error(`invalid field name: ${op.name}`);
+  if (ctx.element) {
+    // A key of the item `:any(...)` is testing.
+    let expr = dialect().jsonExtract(ctx.element, `$.${op.name}`);
+    for (const seg of op.path) {
+      if (!IDENT_RE.test(seg)) throw new Error(`invalid field path segment: ${seg}`);
+      expr = dialect().jsonExtract(expr, `$.${seg}`);
+    }
+    return applyModifierToSql(expr, op.modifier);
+  }
   op = { ...op, name: columnFor(op.name, ctx) };
   // Private first, then existence — both raise the same error, so the order
   // only matters for readability.
@@ -860,7 +970,9 @@ function applyModifierToSql(expr: string, m?: FieldModifier): string {
   if (!m) return expr;
   switch (m) {
     case "lower":  return `LOWER(${expr})`;
-    case "length": return `COALESCE(${dialect().jsonArrayLength(expr)}, length(${dialect().asText(expr)}))`;
+    // items.length: NULL unless a JSON array, without failing on other text
+    // (json_array_length fails on "A" and gives 0 for "10").
+    case "length": return `COALESCE(${dialect().items.length(expr)}, length(${dialect().asText(expr)}))`;
     case "isset":
     case "changed":
     case "each":

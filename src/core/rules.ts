@@ -19,6 +19,12 @@ export interface EvalContext {
   auth: AuthContext | null;
   record: Record<string, unknown> | null;
   request?: RequestContextLike | null | undefined;
+  /**
+   * `record` is an item inside `items:any(...)`: its keys are read as they
+   * are (no `created`/`updated` twins), and values compare by JSON type as
+   * the SQL does (`qty = "3"` doesn't match 3).
+   */
+  item?: boolean;
 }
 
 /**
@@ -68,6 +74,7 @@ export function isExpressionRule(rule: string | null): boolean {
 const UNAUTH_SENTINEL = Symbol("unauth");
 
 function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
+  if (ast.kind === "any") return evaluateAny(ast, ctx);
   if (ast.kind === "and") return evaluateExpr(ast.left, ctx) && evaluateExpr(ast.right, ctx);
   if (ast.kind === "or")  return evaluateExpr(ast.left, ctx) || evaluateExpr(ast.right, ctx);
 
@@ -105,19 +112,7 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
     const isNull = v === null || v === undefined;
     return op === "=" ? isNull : !isNull;
   }
-  if (op !== "~" && op !== "!~" && (l === null || l === undefined || r === null || r === undefined)) return false;
-
-  switch (op) {
-    case "=":  return looseEq(l, r);
-    case "!=": return !looseEq(l, r);
-    case ">":  return cmp(l, r) > 0;
-    case ">=": return cmp(l, r) >= 0;
-    case "<":  return cmp(l, r) < 0;
-    case "<=": return cmp(l, r) <= 0;
-    case "~":  return contains(l, r);
-    case "!~": return !contains(l, r);
-    default:   return false;
-  }
+  return compareScalar(l, op, r, ctx.item === true);
 }
 
 /**
@@ -153,11 +148,19 @@ function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalCont
     return false;
   }
 
-  const arr = resolveOperand(stripped, ctx);
-  if (!Array.isArray(arr) || arr.length === 0) return false;
   const target = resolveOperand(scalarOperand, ctx);
   if (target === UNAUTH_SENTINEL) return false;
+  const items = itemPath(stripped);
+  if (items) {
+    // At least one item, every one an object whose value compares true (filter.ts everyItemCmp).
+    const list = resolveOperand(items.list, ctx);
+    if (Array.isArray(list) && list.length > 0
+      && list.every((item) => isItem(item) && compareScalar(walkPath(item, items.path), op, target, true))) return true;
+  }
+  const arr = resolveOperand(stripped, ctx);
+  if (!Array.isArray(arr) || arr.length === 0) return false;
 
+  if (ctx.item) return arr.every((item) => compareScalar(item, op, target, true));
   return arr.every((item) => {
     switch (op) {
       case "=":  return looseEq(item, target);
@@ -178,11 +181,18 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
   const arrayOperand = left.kind === "field" || left.kind === "collection" ? left : right;
   const scalarOperand = arrayOperand === left ? right : left;
 
-  const arr = resolveOperand(arrayOperand, ctx);
-  if (!Array.isArray(arr)) return false;
   const target = resolveOperand(scalarOperand, ctx);
   if (target === UNAUTH_SENTINEL) return false;
+  const items = itemPath(arrayOperand);
+  if (items) {
+    // Some item whose value compares true (filter.ts anyItemCmp).
+    const list = resolveOperand(items.list, ctx);
+    if (Array.isArray(list) && list.some((item) => isItem(item) && compareScalar(walkPath(item, items.path), scalarOp, target, true))) return true;
+  }
+  const arr = resolveOperand(arrayOperand, ctx);
+  if (!Array.isArray(arr)) return false;
 
+  if (ctx.item) return arr.some((item) => compareScalar(item, scalarOp, target, true));
   for (const item of arr) {
     let match: boolean;
     switch (scalarOp) {
@@ -199,6 +209,51 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
     if (match) return true;
   }
   return false;
+}
+
+/**
+ * `items:any(<where>)`: some element of the list is an object for which
+ * `where` holds, its field names read from the element (filter.ts compileAny).
+ */
+function evaluateAny(ast: Extract<Expr, { kind: "any" }>, ctx: EvalContext): boolean {
+  const list = resolveOperand(ast.target, ctx);
+  if (!Array.isArray(list)) return false;
+  return list.some((item) => isItem(item) && evaluateExpr(ast.where, { ...ctx, record: item, item: true }));
+}
+
+const isItem = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** `x.f` → the field `x` and the path read in each of its items (filter.ts itemPath). */
+function itemPath(op: Operand): { list: Operand; path: string[] } | null {
+  if (op.kind !== "field" || op.path.length === 0) return null;
+  return { list: { kind: "field", name: op.name, path: [] }, path: op.path };
+}
+
+/**
+ * One comparison with SQL's NULL rules, as evaluateExpr applies them to a
+ * plain comparison. `json`: the values are an item's JSON values, compared
+ * by type as filter.ts does there (a number or boolean with a number, text
+ * with text); values of different types match nothing.
+ */
+function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): boolean {
+  if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
+  if (op !== "~" && op !== "!~" && (l === null || l === undefined || r === null || r === undefined)) return false;
+  if (json && op !== "~" && op !== "!~") {
+    const num = (v: unknown) => typeof v === "number" || typeof v === "boolean";
+    if (!(num(l) && num(r)) && !(typeof l === "string" && typeof r === "string")) return false;
+  }
+  switch (op) {
+    case "=":  return looseEq(l, r);
+    case "!=": return !looseEq(l, r);
+    case ">":  return cmp(l, r) > 0;
+    case ">=": return cmp(l, r) >= 0;
+    case "<":  return cmp(l, r) < 0;
+    case "<=": return cmp(l, r) <= 0;
+    case "~":  return contains(l, r);
+    case "!~": return !contains(l, r);
+    default:   return false;
+  }
 }
 
 function resolveOperand(op: Operand, ctx: EvalContext): unknown {
@@ -233,7 +288,9 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
     case "macro": return macroValue(op.name);
     case "func":  return evalFunc(op, ctx);
     case "field": {
-      const head = fieldValue(ctx.record, op.name);
+      const head = ctx.item
+        ? (ctx.record && Object.prototype.hasOwnProperty.call(ctx.record, op.name) ? ctx.record[op.name] : undefined)
+        : fieldValue(ctx.record, op.name);
       const v = walkPath(head, op.path);
       return applyModifierValue(v, op.modifier);
     }

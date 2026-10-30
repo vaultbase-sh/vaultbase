@@ -44,6 +44,23 @@ function columnDef(c: ColumnSpec): string {
   return out;
 }
 
+/** An expression jsonExtract made: `json_extract(<expr>, '<path>')`. */
+const JSON_EXTRACT_RE = /^json_extract\((.+), '(\$[^']*)'\)$/s;
+
+/**
+ * The JSON type of `expr`. For a JSON path, read from the path: json_extract
+ * returns a string value as plain text, which json_type can't parse.
+ */
+function sqliteJsonType(expr: string): string {
+  const m = JSON_EXTRACT_RE.exec(expr);
+  return m ? `json_type(${m[1]}, '${m[2]}')` : `json_type(${expr})`;
+}
+
+/** `expr` when it is a JSON array, else NULL. */
+function sqliteItems(expr: string): string {
+  return `(CASE WHEN json_valid(${expr}) THEN (CASE WHEN json_type(${expr}) = 'array' THEN ${expr} END) END)`;
+}
+
 export const SQLITE_DIALECT: Dialect = {
   name: "sqlite",
   epochNow: "unixepoch()",
@@ -64,7 +81,28 @@ export const SQLITE_DIALECT: Dialect = {
   like: (left, pattern) => `coalesce(${left} LIKE ${pattern}, 0)`,
   jsonExtract: (expr, path) => `json_extract(${expr}, '${path}')`,
   jsonArrayLength: (expr) => `json_array_length(${expr})`,
-  jsonEach: (expr) => `json_each(${expr})`,
+  // Only an array has elements: a JSON scalar was read as a one-element list.
+  // Text that isn't JSON still fails (records.ts turns that into a 400).
+  jsonEach: (expr) => `json_each(CASE WHEN ${sqliteJsonType(expr)} = 'array' THEN ${expr} END)`,
+  itemElement: (kind) => kind === "number"
+    ? `(CASE type WHEN 'integer' THEN value WHEN 'real' THEN value WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)`
+    : `(CASE WHEN type = 'text' THEN value END)`,
+  itemCompare: (expr, kind) => {
+    const m = JSON_EXTRACT_RE.exec(expr);
+    if (!m) return null;
+    const type = `json_type(${m[1]}, '${m[2]}')`;
+    return kind === "number"
+      ? `(CASE ${type} WHEN 'integer' THEN ${expr} WHEN 'real' THEN ${expr} WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)`
+      : `(CASE WHEN ${type} = 'text' THEN ${expr} END)`;
+  },
+  // json_valid first (CASE runs in order, AND needn't): json_type,
+  // json_each and json_array_length fail on text that isn't JSON.
+  items: {
+    from: (expr, alias) => `json_each(${sqliteItems(expr)}) AS ${alias}`,
+    value: (alias) => `${alias}.value`,
+    isObject: (alias) => `${alias}.type = 'object'`,
+    length: (expr) => `json_array_length(${sqliteItems(expr)})`,
+  },
   jsonGroupArray: (expr) => `json_group_array(${expr})`,
   asText: (expr) => expr,
   addColumnExpressionDefault: false,

@@ -56,6 +56,19 @@ function jsonPathArray(path: string): string {
   return `'{${seg.replace(/'/g, "''")}}'`;
 }
 
+/** JSON `expr` as jsonb when it is an array, else NULL; text that isn't JSON still fails. */
+function pgArray(expr: string): string {
+  // A JSON path as jsonb (`#>`): `#>>` gives a string value as plain text, which doesn't cast back.
+  const m = JSON_TEXT_RE.exec(expr);
+  const j = m ? `(${m[1]}::jsonb #> ${m[2]})` : `(${expr})::jsonb`;
+  return `(CASE WHEN jsonb_typeof(${j}) = 'array' THEN ${j} END)`;
+}
+
+/** `expr` as jsonb when it is a JSON array, else NULL. */
+function pgItems(expr: string): string {
+  return `(CASE WHEN (${expr})::text LIKE '[%' AND pg_input_is_valid((${expr})::text, 'jsonb') THEN (${expr})::text::jsonb END)`;
+}
+
 /** An expression jsonExtract made: `(<expr>::jsonb #>> '{a,b}')`. */
 const JSON_TEXT_RE = /^\((.+)::jsonb #>> ('\{[^']*\}')\)$/s;
 
@@ -77,7 +90,7 @@ export const POSTGRES_DIALECT: Dialect = {
     as: (j, kind) => kind === "number"
       ? `(CASE jsonb_typeof(${j}) WHEN 'number' THEN (${j})::numeric WHEN 'boolean' THEN (CASE WHEN (${j})::boolean THEN 1 ELSE 0 END) END)`
       : `(CASE WHEN jsonb_typeof(${j}) = 'string' THEN ${j} #>> '{}' END)`,
-    eachJsonb: (expr) => `jsonb_array_elements(${expr}::jsonb)`,
+    eachJsonb: (expr) => `jsonb_array_elements(${pgArray(expr)})`,
   },
   columnType(fieldType) {
     switch (fieldType) {
@@ -99,7 +112,15 @@ export const POSTGRES_DIALECT: Dialect = {
   },
   // NULL for anything that is not a JSON array, as SQLite answers, instead of a cast error.
   jsonArrayLength: (expr) => `(CASE WHEN (${expr})::text LIKE '[%' THEN jsonb_array_length((${expr})::text::jsonb) END)`,
-  jsonEach: (expr) => `jsonb_array_elements_text(${expr}::jsonb)`,
+  // Only an array has elements: jsonb_array_elements fails on a scalar or an object.
+  jsonEach: (expr) => `jsonb_array_elements_text(${pgArray(expr)})`,
+  // pg_input_is_valid first (Postgres 16+): casting text that isn't JSON fails.
+  items: {
+    from: (expr, alias) => `jsonb_array_elements(${pgItems(expr)}) AS ${alias}(value)`,
+    value: (alias) => `${alias}.value`,
+    isObject: (alias) => `jsonb_typeof(${alias}.value) = 'object'`,
+    length: (expr) => `jsonb_array_length(${pgItems(expr)})`,
+  },
   jsonGroupArray: (expr) => `json_agg(${expr})`,
   asText: (expr) => `(${expr})::text`,
   addColumnExpressionDefault: true,

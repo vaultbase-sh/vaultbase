@@ -154,73 +154,73 @@
     ]
   },
   "vb_gold | tags:length = 2": {
-    "sql": "COALESCE(json_array_length(\"vb_gold\".\"tags\"), length(\"vb_gold\".\"tags\")) = ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid(\"vb_gold\".\"tags\") THEN (CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) END)), length(\"vb_gold\".\"tags\")) = ?",
     "params": [
       2
     ]
   },
   "vb_gold | tags:length > 0": {
-    "sql": "COALESCE(json_array_length(\"vb_gold\".\"tags\"), length(\"vb_gold\".\"tags\")) > ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid(\"vb_gold\".\"tags\") THEN (CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) END)), length(\"vb_gold\".\"tags\")) > ?",
     "params": [
       0
     ]
   },
   "vb_gold | docs:length = 0": {
-    "sql": "COALESCE(json_array_length(\"vb_gold\".\"docs\"), length(\"vb_gold\".\"docs\")) = ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid(\"vb_gold\".\"docs\") THEN (CASE WHEN json_type(\"vb_gold\".\"docs\") = 'array' THEN \"vb_gold\".\"docs\" END) END)), length(\"vb_gold\".\"docs\")) = ?",
     "params": [
       0
     ]
   },
   "vb_gold | tags:each = \"a\"": {
-    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (value = ?)))",
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE NOT (value = ?)))",
     "params": [
       "a"
     ]
   },
   "vb_gold | tags:each != \"a\"": {
-    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (value != ?)))",
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE NOT (value != ?)))",
     "params": [
       "a"
     ]
   },
   "vb_gold | tags:each ~ \"a\"": {
-    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT (coalesce(value LIKE ?, 0))))",
+    "sql": "(json_array_length(\"vb_gold\".\"tags\") > 0 AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE NOT (coalesce(value LIKE ?, 0))))",
     "params": [
       "%a%"
     ]
   },
   "vb_gold | tags ?= \"a\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?)",
+    "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE value = ?)",
     "params": [
       "a"
     ]
   },
   "vb_gold | tags ?!= \"a\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value != ?)",
+    "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE value != ?)",
     "params": [
       "a"
     ]
   },
   "vb_gold | tags ?~ \"a\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE coalesce(value LIKE ?, 0))",
+    "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE coalesce(value LIKE ?, 0))",
     "params": [
       "%a%"
     ]
   },
   "vb_gold | tags ?!~ \"a\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE NOT coalesce(value LIKE ?, 0))",
+    "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE NOT coalesce(value LIKE ?, 0))",
     "params": [
       "%a%"
     ]
   },
   "vb_gold | editors ?= \"p1\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"editors\") WHERE value = ?)",
+    "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"editors\") = 'array' THEN \"vb_gold\".\"editors\" END) WHERE value = ?)",
     "params": [
       "p1"
     ]
   },
   "vb_gold | tags ?= \"a\" && tags ?= \"b\"": {
-    "sql": "(EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"tags\") WHERE value = ?))",
+    "sql": "(EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"tags\") = 'array' THEN \"vb_gold\".\"tags\" END) WHERE value = ?))",
     "params": [
       "a",
       "b"
@@ -239,14 +239,15 @@
     ]
   },
   "vb_gold | meta.list:length > 1": {
-    "sql": "COALESCE(json_array_length(json_extract(\"vb_gold\".\"meta\", '$.list')), length(json_extract(\"vb_gold\".\"meta\", '$.list'))) > ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid(json_extract(\"vb_gold\".\"meta\", '$.list')) THEN (CASE WHEN json_type(json_extract(\"vb_gold\".\"meta\", '$.list')) = 'array' THEN json_extract(\"vb_gold\".\"meta\", '$.list') END) END)), length(json_extract(\"vb_gold\".\"meta\", '$.list'))) > ?",
     "params": [
       1
     ]
   },
   "vb_gold | meta.list ?= \"x\"": {
-    "sql": "EXISTS (SELECT 1 FROM json_each(json_extract(\"vb_gold\".\"meta\", '$.list')) WHERE value = ?)",
+    "sql": "(EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"meta\", '$.list') = 'array' THEN json_extract(\"vb_gold\".\"meta\", '$.list') END) WHERE value = ?) OR EXISTS (SELECT 1 FROM json_each((CASE WHEN json_valid(\"vb_gold\".\"meta\") THEN (CASE WHEN json_type(\"vb_gold\".\"meta\") = 'array' THEN \"vb_gold\".\"meta\" END) END)) AS vb_item1 WHERE (CASE WHEN vb_item1.type = 'object' THEN ((CASE WHEN json_type(vb_item1.value, '$.list') = 'text' THEN json_extract(vb_item1.value, '$.list') END) = ?) END)))",
     "params": [
+      "x",
       "x"
     ]
   },
@@ -281,7 +282,7 @@
   },
   "vb_gold | editors ?= @request.auth.id": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM json_each(\"vb_gold\".\"editors\") WHERE value = ?)",
+      "sql": "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(\"vb_gold\".\"editors\") = 'array' THEN \"vb_gold\".\"editors\" END) WHERE value = ?)",
       "params": [
         "u1"
       ]
@@ -514,26 +515,26 @@
   },
   "vb_gold_people | gold_via_author:length > 0": {
     "public": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
+      "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     },
     "user": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
+      "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     },
     "admin": {
-      "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
+      "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
       "params": [
         0
       ]
     }
   },
   "vb_gold_people | gold_via_author:length = 1000": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) = ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) = ?",
     "params": [
       1000
     ]
@@ -547,7 +548,7 @@
     }
   },
   "vb_gold_people | gold_via_author.price:length > 0": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"price\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
     "params": [
       0
     ]
@@ -558,7 +559,7 @@
     }
   },
   "vb_gold_people | gold_via_editors:length > 0": {
-    "sql": "COALESCE(json_array_length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
+    "sql": "COALESCE(json_array_length((CASE WHEN json_valid((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) THEN (CASE WHEN json_type((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub)) = 'array' THEN (SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub) END) END)), length((SELECT json_group_array(_vb_v) FROM (SELECT \"vb_gold\".\"id\" AS _vb_v FROM \"vb_gold\" WHERE \"vb_gold\".\"editors\" = \"vb_gold_people\".\"id\" LIMIT 1000) AS _vb_sub))) > ?",
     "params": [
       0
     ]

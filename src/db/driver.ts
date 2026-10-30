@@ -84,6 +84,16 @@ export interface Dialect {
     /** Like jsonEach, with `value` as jsonb. */
     eachJsonb(expr: string): string;
   };
+  /**
+   * SQLite only: a JSON path read from an item (`items:any(qty = 3)`,
+   * `items.qty ?= 3`) as the bound value's type, NULL for a JSON value of
+   * another type; null when `expr` isn't a JSON path. Group subfields are
+   * typed, so `qty = "3"` matches nothing, as on Postgres and in rules.ts,
+   * instead of SQLite's ordering of numbers before text.
+   */
+  itemCompare?(expr: string, kind: "number" | "text"): string | null;
+  /** SQLite only: like itemCompare, for the `value` of a jsonEach row (a list inside an item). */
+  itemElement?(kind: "number" | "text"): string;
   /** Storage type for a built-in field type (`TEXT`, `INTEGER`, `REAL`). */
   columnType(fieldType: string): string;
   quoteIdent(name: string): string;
@@ -93,6 +103,22 @@ export interface Dialect {
   jsonArrayLength(expr: string): string;
   /** A table expression yielding one row per element of the JSON array `expr`, with a `value` column. */
   jsonEach(expr: string): string;
+  /**
+   * The elements of a list of items (a group field, a JSON list of objects)
+   * for `items:any(...)` and `items.f ?= v`. A value that isn't a JSON array
+   * (another field's text, an encrypted value) has no elements instead of
+   * failing the query.
+   */
+  readonly items: {
+    /** A FROM item: one row per element of `expr`, as `alias`. */
+    from(expr: string, alias: string): string;
+    /** The element of row `alias`, as JSON that jsonExtract reads. */
+    value(alias: string): string;
+    /** Whether the element of row `alias` is a JSON object. */
+    isObject(alias: string): string;
+    /** The number of elements; NULL when `expr` isn't a JSON array. */
+    length(expr: string): string;
+  };
   jsonGroupArray(expr: string): string;
   /** `expr` as text, for LIKE and length over a value that may be JSON-typed. */
   asText(expr: string): string;
