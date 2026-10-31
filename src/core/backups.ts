@@ -16,6 +16,12 @@
  * The bucket is separate from file storage on purpose: a storage bucket is
  * often public behind a CDN, and a DB snapshot holds every password hash.
  *
+ * With local file storage, each backup also keeps the uploaded files
+ * (backup-files.ts; `backups.files`, on by default): a manifest next to the
+ * snapshot and a store of the files shared by every backup. The S3 copy
+ * mirrors that layout, so its prefix synced into a new server's backups
+ * folder restores from the admin like a local backup.
+ *
  * Cluster mode: every worker runs the ticker, but a run is claimed with a
  * conditional UPDATE on `backups.next_run`, so exactly one worker wins.
  */
@@ -25,6 +31,8 @@ import { getRawClient } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { getSetting, setSetting, invalidateSetting } from "../api/settings.ts";
 import { nextRunFromCron, validateCron } from "./jobs.ts";
+import { blobPath, latestManifest, manifestName, pruneBlobs, readManifest, restoreFiles, snapshotFiles, type FilesManifest, type FilesRestoreResult } from "./backup-files.ts";
+import { localUploadDir } from "./storage.ts";
 
 export const DEFAULT_BACKUP_CRON = "0 3 * * *";
 export const DEFAULT_BACKUP_KEEP = 7;
@@ -40,6 +48,8 @@ export interface BackupInfo {
   name: string;
   size: number;
   created_at: number;
+  /** The uploaded files kept with it, when it has them. */
+  files?: { count: number; bytes: number };
 }
 
 export interface BackupStatus {
@@ -47,6 +57,8 @@ export interface BackupStatus {
   cron: string;
   keep: number;
   s3: boolean;
+  /** Whether backups keep the uploaded files (local storage with `backups.files` on). */
+  files: boolean;
   next_run_at: number | null;
   last_run_at: number | null;
   last_error: string | null;
@@ -64,6 +76,36 @@ export function backupPath(name: string): string | null {
   if (!isBackupName(name)) return null;
   const p = join(backupsDir, name);
   return existsSync(p) ? p : null;
+}
+
+/** The manifest of the files kept with a backup, if it has one. */
+export function backupFiles(name: string): FilesManifest | null {
+  if (!isBackupName(name)) return null;
+  return readManifest(join(backupsDir, manifestName(name)));
+}
+
+/**
+ * After a stored backup's database is restored, put back the uploaded files
+ * it kept. Null when it kept none, or storage isn't local now.
+ */
+export function restoreBackupFiles(name: string): FilesRestoreResult | null {
+  const manifest = backupFiles(name);
+  const uploads = localUploadDir();
+  if (!manifest || !uploads) return null;
+  return restoreFiles(manifest, backupsDir, uploads);
+}
+
+/** A sentence for the restore's message, or "". */
+export function filesRestoreMessage(r: FilesRestoreResult | null): string {
+  if (!r) return "";
+  const missing = r.missing > 0 ? ` ${r.missing} file${r.missing === 1 ? " was" : "s were"} missing from the backup store.` : "";
+  return ` Files: ${r.restored} put back, ${r.present} already in place.${missing}`;
+}
+
+/** Where uploaded files are backed up from: local storage with `backups.files` on. */
+function filesSource(): string | null {
+  if (getSetting("backups.files", "1") === "0") return null;
+  return localUploadDir();
 }
 
 export function validateBackupKeep(value: unknown): string | null {
@@ -195,22 +237,28 @@ export function listBackups(): BackupInfo[] {
   for (const name of readdirSync(backupsDir)) {
     if (!isBackupName(name)) continue;
     const st = statSync(join(backupsDir, name));
-    out.push({ name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) });
+    const info: BackupInfo = { name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) };
+    const m = readManifest(join(backupsDir, manifestName(name)));
+    if (m) info.files = { count: m.count, bytes: m.bytes };
+    out.push(info);
   }
   return out.sort((a, b) => (a.name < b.name ? 1 : -1));
 }
 
+/** Delete a backup and its manifest. The files it kept go with the next prune of the store. */
 export function deleteBackup(name: string): boolean {
   const p = backupPath(name);
   if (!p) return false;
   rmSync(p);
+  rmSync(join(backupsDir, manifestName(name)), { force: true });
   return true;
 }
 
 // ── S3 copy ─────────────────────────────────────────────────────────────────
 
-interface S3Like {
-  write(key: string, data: Blob, opts?: { type?: string }): Promise<unknown>;
+export interface S3Like {
+  write(key: string, data: Blob | string, opts?: { type?: string }): Promise<unknown>;
+  file(key: string): { text(): Promise<string> };
   delete(key: string): Promise<unknown>;
   list(opts?: { prefix?: string; continuationToken?: string }): Promise<{
     contents?: { key: string }[];
@@ -238,18 +286,54 @@ function s3Target(): { client: S3Like; prefix: string } | null {
   return { client: new Ctor(opts), prefix };
 }
 
-async function pruneS3(target: { client: S3Like; prefix: string }, keep: number): Promise<void> {
+async function listS3(target: { client: S3Like; prefix: string }, prefix: string): Promise<string[]> {
   const keys: string[] = [];
   let token: string | undefined;
   do {
-    const page = await target.client.list({ prefix: target.prefix, ...(token ? { continuationToken: token } : {}) });
-    for (const o of page.contents ?? []) {
-      if (isBackupName(o.key.slice(target.prefix.length))) keys.push(o.key);
-    }
+    const page = await target.client.list({ prefix, ...(token ? { continuationToken: token } : {}) });
+    for (const o of page.contents ?? []) keys.push(o.key);
     token = page.isTruncated ? page.nextContinuationToken : undefined;
   } while (token);
+  return keys;
+}
+
+export async function pruneS3(target: { client: S3Like; prefix: string }, keep: number): Promise<void> {
+  const keys = (await listS3(target, target.prefix)).filter((k) => isBackupName(k.slice(target.prefix.length)));
   keys.sort().reverse();
-  for (const key of keys.slice(keep)) await target.client.delete(key);
+  for (const key of keys.slice(keep)) {
+    await target.client.delete(key);
+    await target.client.delete(manifestName(key));
+  }
+}
+
+/** Upload the files of `manifest` the bucket doesn't have yet, then the manifest. */
+export async function copyFilesToS3(target: { client: S3Like; prefix: string }, name: string, manifest: FilesManifest): Promise<void> {
+  const have = new Set((await listS3(target, `${target.prefix}files/`)).map((k) => k.slice(k.lastIndexOf("/") + 1)));
+  for (const f of manifest.files) {
+    if (have.has(f.sha256)) continue;
+    await target.client.write(`${target.prefix}files/${f.sha256.slice(0, 2)}/${f.sha256}`, Bun.file(blobPath(backupsDir, f.sha256)));
+    have.add(f.sha256);
+  }
+  // Last: a manifest in the bucket means its files are there.
+  await target.client.write(`${target.prefix}${manifestName(name)}`, Bun.file(join(backupsDir, manifestName(name))), { type: "application/json" });
+}
+
+/** Delete files in the bucket no manifest there lists. Keeps everything if a manifest doesn't read. */
+export async function pruneS3Files(target: { client: S3Like; prefix: string }): Promise<void> {
+  const keys = await listS3(target, target.prefix);
+  const kept = new Set<string>();
+  for (const k of keys) {
+    if (!k.endsWith(".files.json") || k.slice(target.prefix.length).includes("/")) continue;
+    let m: FilesManifest;
+    try { m = JSON.parse(await target.client.file(k).text()) as FilesManifest; } catch { return; }
+    if (!m || !Array.isArray(m.files)) return;
+    for (const f of m.files) kept.add(f.sha256);
+  }
+  for (const k of keys) {
+    if (!k.startsWith(`${target.prefix}files/`)) continue;
+    const sha = k.slice(k.lastIndexOf("/") + 1);
+    if (/^[0-9a-f]{64}$/.test(sha) && !kept.has(sha)) await target.client.delete(k);
+  }
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
@@ -271,17 +355,28 @@ async function doBackup(): Promise<BackupInfo> {
     if (existsSync(tmp)) rmSync(tmp, { force: true });
   }
 
+  // The uploaded files, after the snapshot: a record in it may point at a
+  // file uploaded a moment before, never at one that doesn't exist yet.
+  const uploads = filesSource();
+  let manifest: FilesManifest | null = null;
+  if (uploads) manifest = await snapshotFiles(uploads, backupsDir, join(backupsDir, manifestName(name)), latestManifest(backupsDir));
+
   const keep = keepCount();
   for (const old of listBackups().slice(keep)) deleteBackup(old.name);
+  pruneBlobs(backupsDir);
 
   const s3 = s3Target();
   if (s3) {
     await s3.client.write(`${s3.prefix}${name}`, Bun.file(final), { type });
+    if (manifest) await copyFilesToS3(s3, name, manifest);
     await pruneS3(s3, keep);
+    await pruneS3Files(s3);
   }
 
   const st = statSync(final);
-  return { name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) };
+  const info: BackupInfo = { name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) };
+  if (manifest) info.files = { count: manifest.count, bytes: manifest.bytes };
+  return info;
 }
 
 /**
@@ -352,6 +447,7 @@ export function getBackupStatus(): BackupStatus {
     cron,
     keep: keepCount(),
     s3: getSetting("backups.s3.enabled", "0") === "1",
+    files: filesSource() !== null,
     next_run_at: enabled ? (next && next.cron === cron ? next.at : nextRunFromCron(cron)) : null,
     last_run_at: Number.isFinite(last) ? last : null,
     last_error: getSetting("backups.last_error", "") || null,

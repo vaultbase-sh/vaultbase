@@ -197,6 +197,11 @@ export function registerStorageDriver(def: StorageDriverDef): () => void {
   };
 }
 
+/** The folder local storage keeps uploads in, when local storage is the active driver; else null. */
+export function localUploadDir(): string | null {
+  return activeDriverName() === "local" && configuredUploadDir ? configuredUploadDir : null;
+}
+
 export function listStorageDrivers(): Array<{ name: string; builtin: boolean }> {
   return [...drivers.keys()].map((name) => ({ name, builtin: name === "local" || name === "s3" }));
 }

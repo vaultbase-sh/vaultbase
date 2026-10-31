@@ -22,7 +22,7 @@ import { invalidateStorageCache } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { backupEngine, backupFormat, backupPath, deleteBackup, getBackupStatus, listBackups, runBackup, snapshotTo } from "../core/backups.ts";
+import { backupEngine, backupFormat, backupPath, deleteBackup, filesRestoreMessage, getBackupStatus, listBackups, restoreBackupFiles, runBackup, snapshotTo } from "../core/backups.ts";
 import { adminGuard } from "./_admin.ts";
 import { Database } from "bun:sqlite";
 import { suspendCheckpointer } from "../db/checkpointer.ts";
@@ -401,7 +401,8 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return postgresRestore(set, query["progress"] === "1", async (onPhase) => {
           await restoreArchive(p, params.name, dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
           await followRestoredDatabase();
-          return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.`;
+          const files = filesRestoreMessage(restoreBackupFiles(params.name));
+          return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.${files}`;
         });
       }
       const staging = `${dbPath}.restore`;
@@ -417,7 +418,8 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         set.status = 500;
         return { error: `Restore failed: ${err}`, code: 500 };
       }
-      return { data: { message: "Restore complete. Sessions revoked since the backup stay revoked." } };
+      const files = filesRestoreMessage(restoreBackupFiles(params.name));
+      return { data: { message: `Restore complete. Sessions revoked since the backup stay revoked.${files}` } };
     }, { requireAdmin: true })
 
     // Restore from an uploaded backup: a SQLite file, or on Postgres a pg_dump archive

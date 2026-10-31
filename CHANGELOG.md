@@ -7,6 +7,29 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Backups keep the uploaded files.** With local file storage, scheduled
+  and **Back up now** backups also keep the files in `uploads/`: a manifest
+  next to each snapshot lists them, and the files go in a store shared by
+  every backup, once each, so a run copies only what was uploaded since the
+  last. Restoring a stored backup puts back the files that are missing, and
+  says how many. Pruning removes stored files no backup lists any more. The
+  S3 copy mirrors the layout, so its prefix synced into a new server's
+  `backups/` folder restores from the admin, database and files together.
+  On by default (`backups.files`); with S3 file storage there is nothing to
+  add. The thumbnail cache isn't kept.
+
+### Upgrade notes
+
+- The first backup after upgrading copies every uploaded file into
+  `<dataDir>/backups/files/`, so it needs about as much free disk as the
+  uploads folder takes. Later backups copy only new files. Turn it off with
+  `backups.files` = `0` (**Settings → Backup & restore**) if you back the
+  uploads up another way.
+
 ## [0.33.0] — 2026-10-31
 
 ### Added

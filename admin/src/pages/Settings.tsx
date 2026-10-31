@@ -1775,7 +1775,7 @@ function UpdatesSection() {
 }
 
 // ── Backup / restore ─────────────────────────────────────────────────────────
-interface StoredBackup { name: string; size: number; created_at: number }
+interface StoredBackup { name: string; size: number; created_at: number; files?: { count: number; bytes: number } }
 /** Data a Postgres restore replaced, kept for an undo. */
 interface PreviousData {
   schema: string; replaced_by: "restore" | "undo"; source: string | null;
@@ -1826,6 +1826,8 @@ async function streamRestore(url: string, body: BodyInit | undefined, onPhase: (
 }
 interface BackupStatus {
   enabled: boolean; cron: string; keep: number; s3: boolean;
+  /** Backups keep the uploaded files: local storage with backups.files on. */
+  files: boolean;
   next_run_at: number | null; last_run_at: number | null; last_error: string | null;
 }
 
@@ -1878,6 +1880,7 @@ function BackupSection() {
   const [enabled, setEnabled] = useState(false);
   const [cron, setCron] = useState("0 3 * * *");
   const [keep, setKeep] = useState("7");
+  const [withFiles, setWithFiles] = useState(true);
   const [s3, setS3] = useState(false);
   const [endpoint, setEndpoint] = useState("");
   const [bucket, setBucket] = useState("");
@@ -1950,6 +1953,7 @@ function BackupSection() {
         setEnabled(s["backups.enabled"] === "1");
         setCron(s["backups.cron"] ?? "0 3 * * *");
         setKeep(s["backups.keep"] ?? "7");
+        setWithFiles(s["backups.files"] !== "0");
         setS3(s["backups.s3.enabled"] === "1");
         setEndpoint(s["backups.s3.endpoint"] ?? "");
         setBucket(s["backups.s3.bucket"] ?? "");
@@ -1978,6 +1982,7 @@ function BackupSection() {
       "backups.enabled": enabled ? "1" : "0",
       "backups.cron": cron.trim(),
       "backups.keep": String(n),
+      "backups.files": withFiles ? "1" : "0",
       "backups.s3.enabled": s3 ? "1" : "0",
       "backups.s3.endpoint": endpoint,
       "backups.s3.bucket": bucket,
@@ -2106,6 +2111,16 @@ function BackupSection() {
       </div>
 
       <VbField
+        label="Include uploaded files"
+        hint={status && !status.files && withFiles
+          ? "File storage isn't local, so the files already live off this server: nothing to add."
+          : "Each backup also keeps the files in the uploads folder. Each file is stored once, however many backups include it, and a restore puts back the ones that are missing."}
+        right={<Toggle on={withFiles} onChange={setWithFiles} />}
+      >
+        <></>
+      </VbField>
+
+      <VbField
         label="Copy to S3"
         hint="Upload each snapshot to an S3-compatible bucket. Use a private bucket, not a public file storage bucket: snapshots contain password hashes and secrets."
         right={<Toggle on={s3} onChange={setS3} />}
@@ -2178,6 +2193,12 @@ function BackupSection() {
               }}>
                 <span style={{ fontFamily: "var(--font-mono)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{b.name}</span>
                 <span style={{ color: "var(--vb-fg-3)", fontVariantNumeric: "tabular-nums" }}>{fmtSize(b.size)}</span>
+                {b.files && (
+                  <span style={{ color: "var(--vb-fg-3)", fontVariantNumeric: "tabular-nums" }}
+                    title="Uploaded files kept with this backup">
+                    + {b.files.count} file{b.files.count === 1 ? "" : "s"} · {fmtSize(b.files.bytes)}
+                  </span>
+                )}
                 <VbBtn kind="ghost" size="sm" icon="download"
                   onClick={() => void downloadAuthed(`/api/v1/admin/backups/${encodeURIComponent(b.name)}`, b.name)}>
                   Download
