@@ -12,6 +12,7 @@ import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateC
 import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { validateBackupKeep } from "../core/backups.ts";
 import { validateCron } from "../core/jobs.ts";
+import { SCRIPT_TIMEOUT_KEYS, validateScriptTimeout } from "../core/script-limits.ts";
 import {
   encryptValueSync,
   decryptValueSync,
@@ -369,6 +370,10 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
     }
     if (k === "maintenance.retention_days" || k === "audit.retention_days") {
       const err = validateRetentionDays(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if ((Object.values(SCRIPT_TIMEOUT_KEYS) as string[]).includes(k)) {
+      const err = validateScriptTimeout(v);
       if (err) return `${k}: ${err}`;
     }
     if (k === "backups.keep") {

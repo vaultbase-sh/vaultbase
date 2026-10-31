@@ -7,6 +7,30 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Time limits on scripts.** Every run of a hook, custom route, cron job
+  or queue worker has a limit: 10 s for before-hooks, 30 s for after-hooks
+  and routes, 5 minutes for cron jobs and queue workers. When it runs out,
+  a before-hook fails its write with a `422` naming the hook, a route
+  answers `504`, a cron run is recorded as failed, and a queue job fails
+  and is retried as its worker says. The run's outgoing requests are
+  aborted and its later `helpers` calls throw, so it can't write once its
+  caller has moved on. Set them under **Settings → Script time limits**
+  (`hooks.timeout_ms`, `hooks.after_timeout_ms`, `routes.timeout_ms`,
+  `jobs.timeout_ms`, `queues.timeout_ms`; `0` = no limit). Scripts run in
+  the server's own thread, so a loop that never awaits still can't be
+  interrupted.
+
+### Upgrade notes
+
+- A cron job or queue worker that takes longer than 5 minutes, or a route
+  or after-hook longer than 30 s, or a before-hook longer than 10 s, now
+  fails. Raise its limit (or set it to `0`) under **Settings → Script time
+  limits** before upgrading if you have one.
+
 ## [0.32.3] — 2026-10-31
 
 ### Fixed

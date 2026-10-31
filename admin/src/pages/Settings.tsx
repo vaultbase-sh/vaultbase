@@ -40,7 +40,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 ];
 
 type SettingsTabId =
-  | "application" | "theme" | "sidebar" | "rate-limit" | "egress" | "cors" | "security"
+  | "application" | "theme" | "sidebar" | "rate-limit" | "egress" | "script-limits" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
   | "storage" | "backup" | "retention" | "migrations" | "notifications"
   | "metrics" | "updates" | "danger";
@@ -68,6 +68,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
   { group: "Traffic", items: [
     { id: "rate-limit",  label: "Rate limiting", subtitle: "per-IP token bucket" },
     { id: "egress",      label: "Hook egress",   subtitle: "outbound HTTP allow / deny CIDRs" },
+    { id: "script-limits", label: "Script time limits", subtitle: "hooks · routes · cron jobs · queue workers" },
     { id: "cors",        label: "CORS",          subtitle: "cross-origin allow-list for the HTTP API" },
   ]},
   { group: "Identity", items: [
@@ -242,6 +243,7 @@ export default function Settings() {
           {active === "sidebar" && <SidebarSection />}
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
+          {active === "script-limits" && <ScriptLimitsSection />}
           {active === "cors" && <CorsSection />}
           {active === "security" && <SecuritySection />}
           {active === "smtp" && <SmtpSection />}
@@ -568,6 +570,80 @@ function EgressSection() {
         after DNS resolution; a malicious DNS server can still race-rebind a host between
         resolution and connect. Defense-in-depth alongside an operator-level firewall (iptables /
         VPC NACL) is recommended.
+      </div>
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
+  );
+}
+
+// ── Script time limits ──────────────────────────────────────────────────────
+// Seconds here, milliseconds in the setting; blank = the server's default.
+const SCRIPT_LIMITS: { key: string; label: string; defaultSeconds: number; hint: string }[] = [
+  { key: "hooks.timeout_ms",       label: "Before hooks", defaultSeconds: 10,  hint: "The request (and its write) waits for these." },
+  { key: "hooks.after_timeout_ms", label: "After hooks",  defaultSeconds: 30,  hint: "Run after the response is sent." },
+  { key: "routes.timeout_ms",      label: "Custom routes", defaultSeconds: 30, hint: "The caller gets 504 when it runs out." },
+  { key: "jobs.timeout_ms",        label: "Cron jobs",    defaultSeconds: 300, hint: "The run is recorded as failed." },
+  { key: "queues.timeout_ms",      label: "Queue workers", defaultSeconds: 300, hint: "The job fails and is retried as its worker says." },
+];
+
+function ScriptLimitsSection() {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.data) {
+        const next: Record<string, string> = {};
+        for (const l of SCRIPT_LIMITS) {
+          const ms = res.data[l.key];
+          next[l.key] = ms === undefined || ms === "" ? "" : String(Number(ms) / 1000);
+        }
+        setValues(next);
+      }
+      setLoaded(true);
+    });
+  }, []);
+
+  async function save() {
+    const patch: Record<string, string> = {};
+    for (const l of SCRIPT_LIMITS) {
+      const raw = (values[l.key] ?? "").trim();
+      if (raw === "") { patch[l.key] = ""; continue; }
+      const s = Number(raw);
+      if (!Number.isFinite(s) || s < 0) { toast(`${l.label}: enter seconds, or 0 for no limit`, "info"); return; }
+      patch[l.key] = String(Math.round(s * 1000));
+    }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    toast("Time limits saved");
+  }
+
+  return (
+    <SectionShell
+      id="script-limits"
+      sub={<>How long a script may run before its caller stops waiting. Blank uses the default; <VbCode>0</VbCode> means no limit.</>}
+    >
+      {SCRIPT_LIMITS.map((l) => (
+        <VbField key={l.key} label={`${l.label} (seconds)`} hint={<>{l.hint} Default: {l.defaultSeconds} s.</>}>
+          <VbInput
+            mono type="number" min={0} step="0.1"
+            value={values[l.key] ?? ""}
+            placeholder={String(l.defaultSeconds)}
+            disabled={!loaded}
+            onChange={(e) => setValues((v) => ({ ...v, [l.key]: e.target.value }))}
+          />
+        </VbField>
+      ))}
+
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        <strong style={{ color: "var(--vb-fg-2)" }}>Known limitation:</strong> scripts run in the
+        server's own thread. A limit stops waiting for a script, aborts its outgoing requests and
+        refuses its later <VbCode>helpers</VbCode> calls; a loop that never awaits still holds the
+        server until it ends.
       </div>
 
       <SaveBar saving={saving} dirty={loaded} onSave={save} />

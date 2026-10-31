@@ -3,6 +3,7 @@ import { getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
+import { guardHelpers, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
@@ -458,7 +459,8 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
     return r.length > 0;
   };
   try {
-    await worker.fn(ctx);
+    await withTimeLimit("queue", worker.name || worker.queue, (signal) =>
+      worker.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
     await settle({ status: "succeeded", finished_at: finishedAt(), error: null });
   } catch (e) {
     const msg = e instanceof ValidationError

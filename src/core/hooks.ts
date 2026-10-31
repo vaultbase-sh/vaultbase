@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
+import { guardHelpers, withTimeLimit } from "./script-limits.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { sendEmail } from "./email.ts";
 import { recordRuleEval, type RuleOutcome } from "./request-context.ts";
@@ -261,15 +262,20 @@ export async function runBeforeHook(
       collection: collection.name, event, auth: ctx.auth, name: h.name,
     };
     if (effectiveReq) helperCtx.request = effectiveReq;
-    const helpers = makeHookHelpers(helperCtx);
     try {
-      await h.fn({ ...ctx, helpers });
+      await withTimeLimit("hook", hookLabel(h, collection.name, event), (signal) =>
+        h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
     } catch (e) {
       if (e instanceof ValidationError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       throw new ValidationError({ _hook: msg });
     }
   }
+}
+
+/** A hook's name for messages: its own, or the collection and event with its id. */
+function hookLabel(h: { id: string; name?: string }, collection: string, event: string): string {
+  return h.name || `${collection}.${event} ${h.id.slice(0, 8)}`;
 }
 
 export function runAfterHook(
@@ -287,9 +293,9 @@ export function runAfterHook(
         collection: collection.name, event, auth: ctx.auth, name: h.name,
       };
       if (effectiveReq) helperCtx.request = effectiveReq;
-      const helpers = makeHookHelpers(helperCtx);
       try {
-        await h.fn({ ...ctx, helpers });
+        await withTimeLimit("afterHook", hookLabel(h, collection.name, event), (signal) =>
+          h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
       } catch (e) {
         console.error(`[hooks] after-hook ${h.id} threw:`, e);
       }

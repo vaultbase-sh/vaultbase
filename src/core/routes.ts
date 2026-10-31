@@ -3,6 +3,7 @@ import { accessFor, clientIp, dataPrincipal, headerBearer, verifyAuthToken } fro
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
+import { guardHelpers, ScriptTimeoutError, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { insertLog } from "../api/logs.ts";
@@ -232,7 +233,8 @@ export async function dispatchCustomRoute(
   const ip = clientIp(request);
   const fullPath = "/api/v1/custom" + innerPath;
   try {
-    const result = await match.route.fn(ctx);
+    const result = await withTimeLimit("route", match.route.name || `${match.route.method} ${match.route.path}`, (signal) =>
+      match.route.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
     void insertLog(request.method, fullPath, set.status, Date.now() - started, ip,
       auth ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) } : null);
     appendHookLog({
@@ -246,6 +248,10 @@ export async function dispatchCustomRoute(
     if (e instanceof ValidationError) {
       status = 422;
       body = { error: e.message, code: 422, details: e.details };
+    } else if (e instanceof ScriptTimeoutError) {
+      status = 504;
+      body = { error: e.message, code: 504 };
+      console.error(`[routes] ${e.message}`);
     } else {
       // The message (SQL, paths, stack details) goes to the log only.
       console.error(`[routes] route ${match.route.id} threw:`, e);

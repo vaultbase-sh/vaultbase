@@ -3,6 +3,7 @@ import { CronExpressionParser } from "cron-parser";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
+import { guardHelpers, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { compileCode } from "./code-loader.ts";
@@ -140,10 +141,10 @@ export async function runJob(jobId: string): Promise<{ ok: boolean; error?: stri
   if (!fn) return { ok: false, error: "Failed to compile job code" };
 
   const helpers = makeHookHelpers({ name: row.name });
-  const ctx: JobContext = { helpers, scheduledAt: now };
 
   try {
-    await fn(ctx);
+    await withTimeLimit("job", row.name || row.id.slice(0, 8), (signal) =>
+      fn({ helpers: guardHelpers(helpers, signal), scheduledAt: now }));
     await db.update(jobs).set({
       last_run_at: now,
       last_status: "ok",

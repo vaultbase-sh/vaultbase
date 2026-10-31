@@ -44,6 +44,7 @@
  */
 
 import { lookup } from "node:dns/promises";
+import { currentScriptSignal } from "./script-limits.ts";
 import { isIP, isIPv4, isIPv6 } from "node:net";
 
 export class EgressBlockedError extends Error {
@@ -372,6 +373,15 @@ export async function assertEgressAllowed(url: string): Promise<{ ip: string; fa
 const MAX_REDIRECTS = 5;
 
 /**
+ * The caller's signal joined with the running script's (script-limits.ts):
+ * a script past its time limit stops waiting on its requests.
+ */
+function requestSignal(own: AbortSignal): AbortSignal {
+  const run = currentScriptSignal();
+  return run ? AbortSignal.any([own, run]) : own;
+}
+
+/**
  * `fetch` with the egress check applied to the URL *and to every redirect
  * hop*. Following redirects inside `fetch` checked only the first URL, so a
  * public host could bounce the request to a private one. Redirects are
@@ -398,7 +408,7 @@ export async function guardedFetch(input: string | URL | Request, init?: Request
       headers,
       ...(body ? { body } : {}),
       redirect: "manual",
-      signal: first.signal,
+      signal: requestSignal(first.signal),
     });
     const location = res.headers.get("location");
     if (!follow || res.status < 300 || res.status > 399 || !location) return res;
