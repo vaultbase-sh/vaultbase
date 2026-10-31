@@ -148,11 +148,11 @@ describe("beforeCreate on guest sign-in and guest upgrade", () => {
   it("guest upgrade: the hook sees the guest as existing, and may refuse, or change the address", async () => {
     const { token, id } = await mintAnonymous();
     const app = makeAuthPlugin(SECRET);
-    await hook("if (!ctx.existing || !ctx.existing.email.endsWith('@anonymous.invalid')) throw new Error('no guest'); if (ctx.record.email.endsWith('@blocked.test')) throw new Error('blocked');");
+    await hook("if (!ctx.existing || !ctx.existing.email.endsWith('@anonymous.invalid') || !ctx.auth || ctx.auth.id !== ctx.existing.id || !ctx.auth.anonymous) throw new Error('no guest'); if (ctx.record.email.endsWith('@blocked.test')) throw new Error('blocked');");
     const body = { email: "me@blocked.test", password: "hunter2!!hunter2!!" };
     expect((await app.handle(authReq("POST", "/auth/users/promote", token, body))).status).toBe(422);
 
-    await hook("ctx.record.email = String(ctx.record.email).toLowerCase();");
+    await hook("if (!ctx.auth || !ctx.auth.anonymous) throw new Error('no session'); ctx.record.email = String(ctx.record.email).toLowerCase();");
     const res = await app.handle(authReq("POST", "/auth/users/promote", token, { email: "Me@Real.test", password: "hunter2!!hunter2!!" }));
     expect(res.status).toBe(200);
     const row = await db.get<{ email: string; is_anonymous: number }>(`SELECT email, is_anonymous FROM vb_users WHERE id = ?`, [id]);

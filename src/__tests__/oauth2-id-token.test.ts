@@ -138,6 +138,47 @@ describe("signing in", () => {
     expect((await signIn("google", { sub: "google-user-3" })).status).toBe(409);
   });
 
+  it("takes the provider's values as they come: a name the field refuses is left out, not the account", async () => {
+    const users = (await getCollection("users"))!;
+    const fields = [...JSON.parse(users.fields), { name: "name", type: "text", options: { max: 3 } }]
+      .map((f: { name: string; options?: Record<string, unknown> }) => f.name === "email" ? { ...f, options: { ...f.options, max: 30 } } : f);
+    await updateCollection("users", { fields: JSON.stringify(fields) });
+    _resetCollectionCache();
+    const res = await signIn("google", { claims: { name: "Annabelle Long-Name" } });
+    expect(res.status).toBe(200);
+    // Unverified: the placeholder is longer than the email field's max, and is still used.
+    const unverified = await signIn("google", { sub: "google-user-9", claims: { email: "bob@example.com", email_verified: false } });
+    expect(unverified.status).toBe(200);
+    expect((unverified.body.data!["record"] as { email: string }).email.endsWith("@oauth.invalid")).toBe(true);
+  });
+
+  it("keeps a hook's address that differs only in case, trims it, and survives odd values", async () => {
+    const { hooks } = await import("../db/schema.ts");
+    const { invalidateHookCache } = await import("../core/hooks.ts");
+    const hook = async (code: string) => {
+      await getDb().delete(hooks);
+      const now = Math.floor(Date.now() / 1000);
+      await getDb().insert(hooks).values({ id: crypto.randomUUID(), name: "h", collection_name: "users", event: "beforeCreate", code, enabled: 1, created_at: now, updated_at: now });
+      invalidateHookCache();
+    };
+    await hook("ctx.record.email = String(ctx.record.email).toLowerCase();");
+    const lower = await signIn("google", { sub: "g-case", claims: { email: "Mixed@Case.test" } });
+    expect((lower.body.data!["record"] as { email: string }).email).toBe("mixed@case.test");
+    const u = await findUserById((await getCollection("users"))!, (lower.body.data!["record"] as { id: string }).id);
+    expect(u!.email_verified).toBe(1);
+
+    await hook("ctx.record.email = '  padded@case.test  ';");
+    const padded = await signIn("google", { sub: "g-pad" });
+    expect((padded.body.data!["record"] as { email: string }).email).toBe("padded@case.test");
+
+    await hook("ctx.record.email = null;");
+    const kept = await signIn("google", { sub: "g-null", claims: { email: "kept@example.com" } });
+    expect((kept.body.data!["record"] as { email: string }).email).toBe("kept@example.com");
+
+    await hook("const o = {}; o.self = o; ctx.record.junk = o;");
+    expect((await signIn("google", { sub: "g-cyclic", claims: { email: "cyc@example.com" } })).status).toBe(200);
+  });
+
   it("Apple: the nonce may come back hashed; the app can pass the name", async () => {
     const users = (await getCollection("users"))!;
     await updateCollection(users.id, { fields: JSON.stringify([{ name: "name", type: "text" }]) });

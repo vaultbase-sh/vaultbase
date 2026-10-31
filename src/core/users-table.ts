@@ -92,8 +92,6 @@ interface InsertInput {
   password_reset_at?: number;
   /** Custom-field values keyed by field name (typed per the collection schema). */
   custom?: Record<string, unknown>;
-  /** Pre-serialised legacy JSON blob — used for the dual-write to vaultbase_users. */
-  legacyDataJson?: string;
   created_at: number;
   updated_at: number;
 }

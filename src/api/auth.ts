@@ -682,23 +682,41 @@ async function providerSignIn(
     if (!(await signupAllowed(request, jwtSecret, col, signupFields))) {
       return { status: 403, body: { error: "Forbidden", code: 403 } };
     }
+    // The provider's values are taken as they come, the name only when the
+    // collection's field takes it: a name or a placeholder address the
+    // field's rules refused would block the person from signing in at all.
+    const fromProvider: Record<string, unknown> = { email: accountEmail };
+    if (profile.name) {
+      try {
+        await validateAuthRegister(col, { name: profile.name }, "partial");
+        fromProvider["name"] = profile.name;
+      } catch (e) {
+        if (!(e instanceof ValidationError)) throw e;
+      }
+    }
     // beforeCreate runs as on every sign-up: it may refuse the account or
-    // set its fields. An address it sets is checked and claimed only when
-    // free; it counts as verified only if it is the provider's verified one.
-    const hookData: Record<string, unknown> = { ...signupFields };
+    // set its fields. What it sets is checked; an address it sets is claimed
+    // only when free, and counts as verified only if it is the provider's
+    // verified one.
+    const hookData: Record<string, unknown> = { ...fromProvider };
     try {
       await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
-      await validateAuthRegister(col, hookData, "partial");
+      if (typeof hookData["email"] === "string") hookData["email"] = hookData["email"].trim();
+      // Removed or emptied: the account keeps the provider's address.
+      if (hookData["email"] === undefined || hookData["email"] === null || hookData["email"] === "") hookData["email"] = accountEmail;
+      const changed: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(hookData)) if (!Object.is(v, fromProvider[k])) changed[k] = v;
+      await validateAuthRegister(col, changed, "partial");
     } catch (e) {
       if (e instanceof ValidationError) return { status: 422, body: { error: "Validation failed", code: 422, details: e.details } };
       throw e;
     }
-    const hookEmail = typeof hookData["email"] === "string" ? hookData["email"].trim() : "";
-    let email = accountEmail;
-    if (hookEmail !== "" && hookEmail.toLowerCase() !== accountEmail.toLowerCase()) {
-      if (!EMAIL_RE.test(hookEmail)) return { status: 422, body: { error: "Validation failed", code: 422, details: { email: "Invalid email" } } };
-      if (await findUserByEmailAnyCase(col, hookEmail)) return { status: 409, body: { error: "Email already in use", code: 409 } };
-      email = hookEmail;
+    const email = hookData["email"] as string;
+    if (email !== accountEmail) {
+      if (!EMAIL_RE.test(email)) return { status: 422, body: { error: "Validation failed", code: 422, details: { email: "Invalid email" } } };
+      if (email.toLowerCase() !== accountEmail.toLowerCase() && await findUserByEmailAnyCase(col, email)) {
+        return { status: 409, body: { error: "Email already in use", code: 409 } };
+      }
     }
     const custom: Record<string, unknown> = { ...hookData };
     delete custom["email"];
@@ -709,9 +727,8 @@ async function providerSignIn(
       id: userId,
       email,
       password_hash: hash,
-      email_verified: profile.emailVerified && email === profile.email ? 1 : 0,
+      email_verified: profile.emailVerified && email.toLowerCase() === profile.email.toLowerCase() ? 1 : 0,
       custom: await encodeUserFields(col, custom, "create"),
-      legacyDataJson: JSON.stringify(custom),
       created_at: now,
       updated_at: now,
     });
@@ -1027,7 +1044,6 @@ export function makeAuthPlugin(jwtSecret: string) {
           email,
           password_hash: hash,
           custom,
-          legacyDataJson: JSON.stringify(finalExtra),
           created_at: now,
           updated_at: now,
         });
@@ -1507,7 +1523,6 @@ export function makeAuthPlugin(jwtSecret: string) {
           email,
           password_hash: await hashPassword(crypto.randomUUID() + crypto.randomUUID()),
           custom: await encodeUserFields(col, custom, "create"),
-          legacyDataJson: JSON.stringify(custom),
           created_at: now,
           updated_at: now,
         });
@@ -1823,7 +1838,6 @@ export function makeAuthPlugin(jwtSecret: string) {
         password_hash: hash,
         is_anonymous: 1,
         custom: await encodeUserFields(col, hookData, "create"),
-        legacyDataJson: JSON.stringify(hookData),
         created_at: now,
         updated_at: now,
       });
@@ -1896,7 +1910,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         void password;
         try {
           const guest = await getRecord(col.name, u.id);
-          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: guest as unknown as Record<string, unknown> | null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+          const asGuest = { id: u.id, type: "user" as const, email: u.email, collection: col.name, anonymous: true };
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: guest as unknown as Record<string, unknown> | null, auth: asGuest, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
           await validateAuthRegister(col, hookData);
         } catch (e) {
           if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }

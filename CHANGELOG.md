@@ -15,14 +15,17 @@ Binaries, checksums, signatures and SBOMs for every version are on
   hooks,** so a hook that refused some addresses or set fields at sign-up
   was bypassed on those paths. They run it now, and what it returns is
   validated:
-  - OAuth (and native ID-token) sign-up: an address the hook sets is used
-    when free (`409` otherwise), and counts as verified only if it is the
-    provider's verified address.
+  - OAuth (and native ID-token) sign-up: only what the hook changes is
+    validated, so the provider's name and address never block a sign-in
+    (a name the collection's field refuses is left out, as before it was
+    stored unchecked). An address the hook sets is used when free (`409`
+    otherwise), a change in case only included, and counts as verified
+    only if it is the provider's verified address.
   - Guest sign-in: the hook may refuse guests or set fields; the generated
     address can't be changed.
   - Guest upgrade (`/promote`): the hook gets the guest's record as
-    `ctx.existing` and may change the address, which is then checked for
-    an existing account.
+    `ctx.existing` and the guest's session as `ctx.auth`, and may change
+    the address, which is then checked for an existing account.
 
 ### Upgrade notes
 
