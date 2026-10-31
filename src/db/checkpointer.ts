@@ -176,7 +176,17 @@ function fallBackToInline(reason: string): void {
  * has its connection open and the main connection's autocheckpoint is off.
  * On any failure the main connection keeps its autocheckpoint.
  */
-export function startCheckpointer(client: Database, path: string, journalSizeLimit: number): Promise<void> {
+/**
+ * `tuning` is for tests: a WAL size at which the worker rewinds, and how
+ * many lost rewinds in a row it takes before main is asked, smaller than
+ * production's so a test reaches them on any machine.
+ */
+export function startCheckpointer(
+  client: Database,
+  path: string,
+  journalSizeLimit: number,
+  tuning: { restartFrames?: number; starvedAfter?: number } = {},
+): Promise<void> {
   if (worker) return Promise.resolve();
   started = { path, journalSizeLimit };
   mainClient = client;
@@ -224,7 +234,12 @@ export function startCheckpointer(client: Database, path: string, journalSizeLim
       }
     };
     w.onerror = (e) => { fallBackToInline(e.message); settle(); };
-    w.postMessage({ type: "start", path, intervalMs: INTERVAL_MS, restartFrames: RESTART_FRAMES, starvedAfter: STARVED_AFTER, starvedMaxBehind: STARVED_MAX_BEHIND, journalSizeLimit });
+    w.postMessage({
+      type: "start", path, intervalMs: INTERVAL_MS, journalSizeLimit,
+      restartFrames: tuning.restartFrames ?? RESTART_FRAMES,
+      starvedAfter: tuning.starvedAfter ?? STARVED_AFTER,
+      starvedMaxBehind: STARVED_MAX_BEHIND,
+    });
   });
 }
 

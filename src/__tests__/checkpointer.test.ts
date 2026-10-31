@@ -112,7 +112,10 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
   // that turn of the loop.
   test("rewinds from the main thread when the worker keeps losing the write lock", async () => {
     db = open();
-    await startCheckpointer(db, join(dir, "data.db"), 67_108_864);
+    // Rewind from 2,000 frames, and ask main after 4 lost tries: at
+    // production's 15,000 a slow CI runner's throttled writer didn't get
+    // there within the test, and main was never asked.
+    await startCheckpointer(db, join(dir, "data.db"), 67_108_864, { restartFrames: 2_000, starvedAfter: 4 });
     const ins = db.prepare("INSERT INTO t (v) VALUES (?)");
     const row = "x".repeat(3_000);
     const until = Date.now() + 30_000;
