@@ -1,5 +1,5 @@
 import { clientIp, headerBearer } from "../core/sec.ts";
-import Elysia, { t } from "elysia";
+import Elysia, { ElysiaCustomStatusResponse, t } from "elysia";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
 import { isAdminApiPath } from "../core/api-paths.ts";
@@ -181,6 +181,17 @@ async function verifyForAttribution(
   }
 }
 
+/**
+ * The status a handler answered with when it isn't in `set.status`: a
+ * `status(401, …)` (the admin guard's refusal) or a Response. Logged from
+ * `set.status` alone, refused admin calls showed as 200.
+ */
+function statusOf(value: unknown): number | null {
+  if (value instanceof Response) return value.status;
+  if (value instanceof ElysiaCustomStatusResponse) return Number(value.code);
+  return null;
+}
+
 export function makeLogsPlugin(jwtSecret: string) {
   const timings = new WeakMap<Request, number>();
   const secret = new TextEncoder().encode(jwtSecret);
@@ -190,7 +201,7 @@ export function makeLogsPlugin(jwtSecret: string) {
     .onRequest(({ request }) => {
       timings.set(request, Date.now());
     })
-    .onAfterHandle({ as: "global" }, async ({ request, set }) => {
+    .onAfterHandle({ as: "global" }, async ({ request, set, responseValue }) => {
       const path = new URL(request.url).pathname;
       if (shouldSkip(path)) return;
       const start = timings.get(request) ?? Date.now();
@@ -200,7 +211,8 @@ export function makeLogsPlugin(jwtSecret: string) {
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
-      void timeFor(request, "log_write", () => insertLog(request.method, path, Number(set.status ?? 200), ms, ip, auth, rules));
+      const status = statusOf(responseValue) ?? Number(set.status ?? 200);
+      void timeFor(request, "log_write", () => insertLog(request.method, path, status, ms, ip, auth, rules));
     })
     .onError({ as: "global" }, async ({ request, error }) => {
       const path = new URL(request.url).pathname;

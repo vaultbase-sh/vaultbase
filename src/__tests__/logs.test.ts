@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { setLogsDir } from "../core/file-logger.ts";
-import { insertLog, listLogs } from "../api/logs.ts";
+import { insertLog, listLogs, makeLogsPlugin } from "../api/logs.ts";
 
 let tmpDir: string;
 
@@ -30,6 +30,23 @@ describe("insertLog", () => {
     await insertLog("GET", "/api/posts", 200, 2, null, null);
     const result = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: false });
     expect(result.data[0]!.path).toBe("/api/posts");
+  });
+});
+
+describe("request logging", () => {
+  it("logs a refused admin call with its status, not 200", async () => {
+    const { default: Elysia } = await import("elysia");
+    const { adminGuard } = await import("../api/_admin.ts");
+    const app = new Elysia().use(makeLogsPlugin("test-secret-logs")).use(adminGuard("test-secret-logs"))
+      .get("/admin/thing", () => ({ ok: true }), { requireAdmin: true });
+    const res = await app.handle(new Request("http://localhost/admin/thing"));
+    expect(res.status).toBe(401);
+    for (let i = 0; i < 50; i++) {
+      const r = await listLogs({ page: 1, perPage: 10, method: "all", status: "all", includeAdmin: true });
+      if (r.data.length > 0) { expect(r.data[0]!.status).toBe(401); return; }
+      await Bun.sleep(10);
+    }
+    throw new Error("no log entry was written");
   });
 });
 

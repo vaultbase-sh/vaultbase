@@ -24,6 +24,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
   directory: `doctor` checked an install that wasn't there. They read
   `/etc/vaultbase/vaultbase.env` (or `VAULTBASE_ENV_FILE`) for variables not
   already set, as `setup-admin` does.
+- **The request log showed a refused admin call as `200`.** The admin
+  guard answers `401` without setting the route's status, and the log took
+  that. It now logs the status the response went out with.
 
 ## [0.32.2] — 2026-10-31
 
