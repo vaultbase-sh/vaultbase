@@ -74,18 +74,12 @@ import {
   type WSAuth,
 } from "./realtime/manager.ts";
 import { openSSEStream } from "./realtime/sse.ts";
-
-/** Status a handler answered with: a returned Response wins over `set.status`. */
-function responseStatus(value: unknown, setStatus: unknown): number {
-  if (value instanceof Response) return value.status;
-  if (typeof setStatus === "number") return setStatus;
-  return 200;
-}
+import { answeredStatus, thrownStatus } from "./core/http-status.ts";
 
 /** Status an error path ends in, for the metrics status-class counters. */
 function errorStatus(code: unknown, error: unknown, setStatus: unknown): number {
-  const own = (error as { status?: unknown } | null)?.status;
-  if (typeof own === "number") return own;
+  const own = thrownStatus(error);
+  if (own !== null) return own;
   if (code === "NOT_FOUND") return 404;
   if (code === "VALIDATION" || code === "PARSE") return 400;
   if (typeof setStatus === "number" && setStatus >= 400) return setStatus;
@@ -486,7 +480,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
 
       // Roll the request's per-step timings into the global histograms.
       const t = detachTimer(request);
-      if (t) t.finish(request.method, responseStatus(responseValue, set.status));
+      if (t) t.finish(request.method, answeredStatus(responseValue, set.status));
     })
     .onError(({ request, set, code, error }) => {
       // Make sure we don't leak timers on error paths.

@@ -19,14 +19,23 @@ Binaries, checksums, signatures and SBOMs for every version are on
   Files are now sent `Cache-Control: private` (a browser may keep them, a
   shared cache may not), `private, no-store` when served by a token, and
   errors `no-store`.
-- **`sudo vaultbase doctor`, `backup`, `token` and `wipe` ignored the
-  service's env file** and worked on `./vaultbase_data` in the current
-  directory: `doctor` checked an install that wasn't there. They read
+- **`vaultbase doctor`, `backup`, `token` and `wipe` ignored the service's
+  env file** and worked on `./vaultbase_data` in the current directory:
+  `doctor` checked an install that wasn't there. They read
   `/etc/vaultbase/vaultbase.env` (or `VAULTBASE_ENV_FILE`) for variables not
-  already set, as `setup-admin` does.
-- **The request log showed a refused admin call as `200`.** The admin
-  guard answers `401` without setting the route's status, and the log took
-  that. It now logs the status the response went out with.
+  already set, as `setup-admin` does, and say when the file is there but
+  can't be read.
+- **`sudo vaultbase setup-admin` could stop the service from starting.**
+  Run as root, it left a root-owned file in the data directory that the
+  service, running as its own user, couldn't read at its next start. These
+  commands now refuse to run as root on a data directory another user owns,
+  and print the command to run instead (`sudo -u vaultbase vaultbase …`).
+  If the service already fails with "database.json can't be read", run
+  `sudo chown -R vaultbase:vaultbase /var/lib/vaultbase` and start it.
+- **The request log and the metrics showed a refused admin call as
+  `200`.** The admin guard answers `401` without setting the route's
+  status, and both took that. They now record the status the response went
+  out with.
 
 ## [0.32.2] — 2026-10-31
 

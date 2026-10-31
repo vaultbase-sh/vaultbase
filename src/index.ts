@@ -1,4 +1,4 @@
-import { loadConfig, loadServiceEnvFile } from "./config.ts";
+import { loadConfig, prepareServiceCommand } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
 import { initDb, getDb, closeDb, getRawClient, JOURNAL_SIZE_LIMIT } from "./db/client.ts";
 import { getDriver } from "./db/index.ts";
@@ -330,8 +330,8 @@ async function main() {
   // the current directory (doctor checked an empty install, backup copied
   // nothing). Variables set in the environment win.
   if (["doctor", "wipe", "token", "backup"].includes(process.argv[2] ?? "")) {
-    const envFile = loadServiceEnvFile();
-    if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+    const refused = prepareServiceCommand(process.argv[2]!, process.argv.slice(2));
+    if (refused) { process.stderr.write(refused); process.exit(1); }
   }
 
   // `vaultbase doctor` — read-only checks. SQLite: pre-flight for the v0.11
@@ -427,8 +427,9 @@ async function main() {
   // `sudo vaultbase setup-admin` used to ignore the service's env file and
   // write the admin into a throwaway ./vaultbase_data in the current dir.
   if (flags.setupAdmin) {
-    const envFile = loadServiceEnvFile();
-    if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+    // The password stays out of the suggested command.
+    const refused = prepareServiceCommand("setup-admin", ["setup-admin", "--email", flags.setupAdmin.email, "--password", "'<password>'"]);
+    if (refused) { process.stderr.write(refused); process.exit(1); }
   }
   const config = await loadConfig();
 

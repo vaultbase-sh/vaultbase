@@ -134,6 +134,46 @@ describe("other commands run by hand read it too", () => {
   });
 });
 
+describe("commands run by hand as root on the service's data", () => {
+  it("are refused when another user owns the data directory, naming the command to run instead", async () => {
+    const { prepareServiceCommand, foreignOwner } = await import("../config.ts");
+    const { mkdirSync, statSync } = await import("fs");
+    const dataDir = join(dir, "owned");
+    mkdirSync(dataDir, { recursive: true });
+    const me = statSync(dataDir).uid;
+    expect(foreignOwner(dataDir, me)).toBeNull();
+    expect(foreignOwner(dataDir, 0)).toBe(me === 0 ? null : me);
+    const saved = { data: process.env["VAULTBASE_DATA_DIR"], env: process.env["VAULTBASE_ENV_FILE"] };
+    process.env["VAULTBASE_DATA_DIR"] = dataDir;
+    process.env["VAULTBASE_ENV_FILE"] = join(dir, "none.env");
+    try {
+      if (me !== 0) {
+        const msg = prepareServiceCommand("doctor", ["doctor"], 0)!;
+        const name = Bun.spawnSync(["id", "-nu", String(me)]).stdout.toString().trim();
+        expect(msg).toContain(`sudo -u ${name} vaultbase doctor`);
+      }
+      expect(prepareServiceCommand("doctor", ["doctor"], me)).toBeNull();
+    } finally {
+      if (saved.data === undefined) delete process.env["VAULTBASE_DATA_DIR"]; else process.env["VAULTBASE_DATA_DIR"] = saved.data;
+      if (saved.env === undefined) delete process.env["VAULTBASE_ENV_FILE"]; else process.env["VAULTBASE_ENV_FILE"] = saved.env;
+    }
+  });
+
+  it("say so when the env file is there but can't be read", async () => {
+    const { writeFileSync, chmodSync } = await import("fs");
+    const file = join(dir, "locked.env");
+    writeFileSync(file, "VAULTBASE_DATA_DIR=/nowhere\n");
+    chmodSync(file, 0o000);
+    const env: Record<string, string> = { ...process.env as Record<string, string>, VAULTBASE_ENV_FILE: file };
+    delete env["VAULTBASE_DATA_DIR"];
+    delete env["VAULTBASE_TEST_DB"];
+    const entry = fileURLToPath(new URL("../index.ts", import.meta.url));
+    const r = Bun.spawnSync(["bun", entry, "doctor"], { cwd: dir, env });
+    chmodSync(file, 0o600);
+    if (process.getuid?.() !== 0) expect(r.stderr.toString()).toContain(`can't read ${file}`);
+  });
+});
+
 describe("setup key across processes (review 15 F-7)", () => {
   it("an empty key file left by a crash is replaced, not ignored", async () => {
     const { writeFileSync } = await import("fs");

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, chmodSync, linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, chmodSync, linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 
 export interface Config {
@@ -116,6 +116,48 @@ export async function loadConfig(): Promise<Config> {
 
 /** Where the installer writes the service's environment. */
 export const SERVICE_ENV_FILE = "/etc/vaultbase/vaultbase.env";
+
+/**
+ * Before a CLI command run by hand against an installed service (doctor,
+ * setup-admin, token, backup, wipe): read the service's env file, say so,
+ * and refuse to run as root on a data directory another user owns. Run with
+ * sudo, the command left root-owned files there (database.json, the WAL)
+ * that the service, running as its own user, then couldn't open: it failed
+ * at its next start. Returns the message to print and exit on, or null.
+ */
+export function prepareServiceCommand(command: string, argv: string[], uid = process.getuid?.()): string | null {
+  const envPath = process.env["VAULTBASE_ENV_FILE"] ?? SERVICE_ENV_FILE;
+  const envFile = loadServiceEnvFile(envPath);
+  if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+  else if (existsSync(envPath)) {
+    process.stderr.write(`vaultbase: can't read ${envPath}; run as the service's user (sudo -u vaultbase vaultbase ${command} ...) to use its settings\n`);
+  }
+  const owner = foreignOwner(process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data", uid);
+  if (owner === null) return null;
+  const who = userName(owner) ?? `#${owner}`;
+  return `vaultbase ${command}: the data directory belongs to '${who}', the user the service runs as. Run it as that user, so the files it writes stay readable by the service:\n  sudo -u ${who} vaultbase ${argv.join(" ")}\n`;
+}
+
+/** The owner of `dataDir` when running as root and it's someone else's, else null. */
+export function foreignOwner(dataDir: string, uid: number | undefined): number | null {
+  if (uid !== 0) return null;
+  try {
+    const owner = statSync(dataDir).uid;
+    return owner === 0 ? null : owner;
+  } catch {
+    return null;
+  }
+}
+
+function userName(uid: number): string | null {
+  try {
+    const r = Bun.spawnSync(["id", "-nu", String(uid)]);
+    const name = r.stdout.toString().trim();
+    return r.exitCode === 0 && /^[a-z_][a-z0-9_-]*\$?$/i.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * For CLI subcommands run by hand against an installed service (`vaultbase

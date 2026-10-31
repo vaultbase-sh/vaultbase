@@ -1,5 +1,6 @@
 import { clientIp, headerBearer } from "../core/sec.ts";
-import Elysia, { ElysiaCustomStatusResponse, t } from "elysia";
+import Elysia, { t } from "elysia";
+import { answeredStatus, thrownStatus } from "../core/http-status.ts";
 import * as jose from "jose";
 import { timeFor } from "../core/perf-metrics.ts";
 import { isAdminApiPath } from "../core/api-paths.ts";
@@ -181,17 +182,6 @@ async function verifyForAttribution(
   }
 }
 
-/**
- * The status a handler answered with when it isn't in `set.status`: a
- * `status(401, …)` (the admin guard's refusal) or a Response. Logged from
- * `set.status` alone, refused admin calls showed as 200.
- */
-function statusOf(value: unknown): number | null {
-  if (value instanceof Response) return value.status;
-  if (value instanceof ElysiaCustomStatusResponse) return Number(value.code);
-  return null;
-}
-
 export function makeLogsPlugin(jwtSecret: string) {
   const timings = new WeakMap<Request, number>();
   const secret = new TextEncoder().encode(jwtSecret);
@@ -211,7 +201,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
-      const status = statusOf(responseValue) ?? Number(set.status ?? 200);
+      const status = answeredStatus(responseValue, set.status);
       void timeFor(request, "log_write", () => insertLog(request.method, path, status, ms, ip, auth, rules));
     })
     .onError({ as: "global" }, async ({ request, error }) => {
@@ -221,7 +211,7 @@ export function makeLogsPlugin(jwtSecret: string) {
       timings.delete(request);
       const ms = Date.now() - start;
       const ip = clientIp(request);
-      const status = "status" in error ? Number((error as { status: number }).status) : 500;
+      const status = thrownStatus(error) ?? 500;
       const auth = await extractAuth(request, secret);
       const rules = getRuleEvals(request);
       clearRequestContext(request);
