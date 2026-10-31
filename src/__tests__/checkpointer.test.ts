@@ -117,11 +117,20 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     const row = "x".repeat(3_000);
     const until = Date.now() + 30_000;
     let peak = 0;
+    // Main steps in only when the worker's copy is nearly done (within
+    // STARVED_MAX_BEHIND, 4,096 frames). On a loaded machine the writer
+    // outran the copy, so main was never asked and the WAL headed for the
+    // runaway threshold: the test failed now and then in full-suite runs and
+    // on CI while proving nothing. The writer still holds the lock as often,
+    // which is what the worker loses to, but adds no rows while the copy is
+    // behind; a PASSIVE copy doesn't need the lock and catches up.
+    const behind = () => { const c = checkpointStats(); return c ? c.wal_frames - c.checkpointed_frames : 0; };
     while (Date.now() < until && (checkpointStats()?.main_restarts ?? 0) < 2) {
       // The lock is held across awaits, as a group commit's window is.
       db.exec("BEGIN IMMEDIATE");
+      const rows = behind() > 3_000 ? 0 : 25;
       for (let j = 0; j < 4; j++) {
-        for (let i = 0; i < 25; i++) ins.run(row);
+        for (let i = 0; i < rows; i++) ins.run(row);
         await Bun.sleep(2);
       }
       db.exec("COMMIT");
