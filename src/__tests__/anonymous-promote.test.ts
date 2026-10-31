@@ -119,3 +119,43 @@ describe("POST /api/auth/:collection/promote", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("beforeCreate on guest sign-in and guest upgrade", () => {
+  const hook = async (code: string) => {
+    const { hooks } = await import("../db/schema.ts");
+    const { invalidateHookCache } = await import("../core/hooks.ts");
+    await getDb().delete(hooks);
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(hooks).values({ id: crypto.randomUUID(), name: "h", collection_name: "users", event: "beforeCreate", code, enabled: 1, created_at: now, updated_at: now });
+    invalidateHookCache();
+  };
+
+  it("guest sign-in: the hook may refuse it or set fields, but not the generated address", async () => {
+    await createCollection({ name: "users", type: "auth", create_rule: null, fields: JSON.stringify([{ name: "plan", type: "text" }]) });
+    const app = makeAuthPlugin(SECRET);
+    await hook("throw new Error('no guests');");
+    expect((await app.handle(authReq("POST", "/auth/users/anonymous", null))).status).toBe(422);
+
+    await hook("ctx.record.plan = 'trial'; ctx.record.email = 'x@y.test';");
+    const res = await app.handle(authReq("POST", "/auth/users/anonymous", null));
+    expect(res.status).toBe(200);
+    const id = ((await res.json()) as { data: { record: { id: string } } }).data.record.id;
+    const row = await db.get<{ email: string; plan: string }>(`SELECT email, plan FROM vb_users WHERE id = ?`, [id]);
+    expect(row!.plan).toBe("trial");
+    expect(row!.email.endsWith("@anonymous.invalid")).toBe(true);
+  });
+
+  it("guest upgrade: the hook sees the guest as existing, and may refuse, or change the address", async () => {
+    const { token, id } = await mintAnonymous();
+    const app = makeAuthPlugin(SECRET);
+    await hook("if (!ctx.existing || !ctx.existing.email.endsWith('@anonymous.invalid')) throw new Error('no guest'); if (ctx.record.email.endsWith('@blocked.test')) throw new Error('blocked');");
+    const body = { email: "me@blocked.test", password: "hunter2!!hunter2!!" };
+    expect((await app.handle(authReq("POST", "/auth/users/promote", token, body))).status).toBe(422);
+
+    await hook("ctx.record.email = String(ctx.record.email).toLowerCase();");
+    const res = await app.handle(authReq("POST", "/auth/users/promote", token, { email: "Me@Real.test", password: "hunter2!!hunter2!!" }));
+    expect(res.status).toBe(200);
+    const row = await db.get<{ email: string; is_anonymous: number }>(`SELECT email, is_anonymous FROM vb_users WHERE id = ?`, [id]);
+    expect(row).toEqual({ email: "me@real.test", is_anonymous: 0 });
+  });
+});

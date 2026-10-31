@@ -7,6 +7,31 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **OAuth sign-up, guest sign-in and guest upgrade skipped `beforeCreate`
+  hooks,** so a hook that refused some addresses or set fields at sign-up
+  was bypassed on those paths. They run it now, and what it returns is
+  validated:
+  - OAuth (and native ID-token) sign-up: an address the hook sets is used
+    when free (`409` otherwise), and counts as verified only if it is the
+    provider's verified address.
+  - Guest sign-in: the hook may refuse guests or set fields; the generated
+    address can't be changed.
+  - Guest upgrade (`/promote`): the hook gets the guest's record as
+    `ctx.existing` and may change the address, which is then checked for
+    an existing account.
+
+### Upgrade notes
+
+- `beforeCreate` hooks on auth collections now also run on OAuth sign-up,
+  guest sign-in and guest upgrade. A hook written for `/register` only may
+  see bodies without the fields it expects (OAuth and guests set few), or
+  refuse those sign-ups. Check `ctx.existing` (set on guest upgrade) or the
+  record's fields if a hook should treat them differently.
+
 ## [0.32.1] — 2026-10-31
 
 ### Fixed

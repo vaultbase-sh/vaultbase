@@ -109,6 +109,35 @@ describe("signing in", () => {
     expect(links).toHaveLength(1);
   });
 
+  it("runs beforeCreate on a new account: it may refuse it, or set its fields and address", async () => {
+    const { hooks } = await import("../db/schema.ts");
+    const { invalidateHookCache } = await import("../core/hooks.ts");
+    const hook = async (code: string) => {
+      await getDb().delete(hooks);
+      const now = Math.floor(Date.now() / 1000);
+      await getDb().insert(hooks).values({ id: crypto.randomUUID(), name: "h", collection_name: "users", event: "beforeCreate", code, enabled: 1, created_at: now, updated_at: now });
+      invalidateHookCache();
+    };
+    await hook("if (String(ctx.record.email).endsWith('@example.com')) throw new Error('no example.com');");
+    const refused = await signIn("google");
+    expect(refused.status).toBe(422);
+    expect(await getDb().select().from(oauthLinks)).toHaveLength(0);
+
+    await hook("ctx.record.email = 'ann@moved.test';");
+    const moved = await signIn("google", { sub: "google-user-2" });
+    expect(moved.status).toBe(200);
+    const id = (moved.body.data!["record"] as { id: string }).id;
+    expect((moved.body.data!["record"] as { email: string }).email).toBe("ann@moved.test");
+    const u = await findUserById((await getCollection("users"))!, id);
+    expect(u!.email).toBe("ann@moved.test");
+    // Not the address the provider verified.
+    expect(u!.email_verified).toBe(0);
+
+    // An address that has an account is refused.
+    await hook("ctx.record.email = 'seed@test.local';");
+    expect((await signIn("google", { sub: "google-user-3" })).status).toBe(409);
+  });
+
   it("Apple: the nonce may come back hashed; the app can pass the name", async () => {
     const users = (await getCollection("users"))!;
     await updateCollection(users.id, { fields: JSON.stringify([{ name: "name", type: "text" }]) });

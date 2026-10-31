@@ -334,7 +334,7 @@ async function signupAllowed(
 async function validateAuthRegister(
   col: { id: string; name: string; type: string; fields: string; created_at: number; updated_at: number; view_query: string | null; list_rule: string | null; view_rule: string | null; create_rule: string | null; update_rule: string | null; delete_rule: string | null; },
   data: Record<string, unknown>,
-  by: "visitor" | "admin" = "visitor",
+  by: "visitor" | "admin" | "partial" = "visitor",
 ): Promise<void> {
   // Email uniqueness is left to the caller's own lookup: as a validation error
   // it would answer "email must be unique" and tell anyone which addresses
@@ -352,8 +352,10 @@ async function validateAuthRegister(
   // invitation is checked as an admin's write, and only for the fields it
   // sets: the admin UI invites with an email alone, and the invitee can't
   // fill in a required field later (accept-invite takes a password only).
+  // "partial": a visitor's sign-up that sets only some fields (OAuth, guest
+  // sign-in): checked as the visitor's write, without `required`.
   const asAdmin = by === "admin";
-  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, asAdmin ? "update" : "create", undefined, asAdmin ? undefined : canSeeAs(null));
+  await validateRecord(synthetic as unknown as Parameters<typeof validateRecord>[0], data, by === "visitor" ? "create" : "update", undefined, asAdmin ? undefined : canSeeAs(null));
   // validateRecord's "email" branch only checks regex, not min/max length —
   // enforce admin-set length constraints here so register matches the rest of
   // the API surface (text-typed fields already get min/max from validateRecord).
@@ -680,16 +682,36 @@ async function providerSignIn(
     if (!(await signupAllowed(request, jwtSecret, col, signupFields))) {
       return { status: 403, body: { error: "Forbidden", code: 403 } };
     }
+    // beforeCreate runs as on every sign-up: it may refuse the account or
+    // set its fields. An address it sets is checked and claimed only when
+    // free; it counts as verified only if it is the provider's verified one.
+    const hookData: Record<string, unknown> = { ...signupFields };
+    try {
+      await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+      await validateAuthRegister(col, hookData, "partial");
+    } catch (e) {
+      if (e instanceof ValidationError) return { status: 422, body: { error: "Validation failed", code: 422, details: e.details } };
+      throw e;
+    }
+    const hookEmail = typeof hookData["email"] === "string" ? hookData["email"].trim() : "";
+    let email = accountEmail;
+    if (hookEmail !== "" && hookEmail.toLowerCase() !== accountEmail.toLowerCase()) {
+      if (!EMAIL_RE.test(hookEmail)) return { status: 422, body: { error: "Validation failed", code: 422, details: { email: "Invalid email" } } };
+      if (await findUserByEmailAnyCase(col, hookEmail)) return { status: 409, body: { error: "Email already in use", code: 409 } };
+      email = hookEmail;
+    }
+    const custom: Record<string, unknown> = { ...hookData };
+    delete custom["email"];
     const randomPw = crypto.randomUUID() + crypto.randomUUID();
     const hash = await hashPassword(randomPw);
     userId = crypto.randomUUID();
     await insertUser(col, {
       id: userId,
-      email: accountEmail,
+      email,
       password_hash: hash,
-      email_verified: accountEmail === profile.email ? 1 : 0,
-      custom: await encodeUserFields(col, profile.name ? { name: profile.name } : {}, "create"),
-      legacyDataJson: JSON.stringify(profile.name ? { name: profile.name } : {}),
+      email_verified: profile.emailVerified && email === profile.email ? 1 : 0,
+      custom: await encodeUserFields(col, custom, "create"),
+      legacyDataJson: JSON.stringify(custom),
       created_at: now,
       updated_at: now,
     });
@@ -711,14 +733,14 @@ async function providerSignIn(
   // account's MFA.
   const signedIn = await findUserById(col, userId);
   if (signedIn?.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId) } };
-  const email = signedIn?.email ?? accountEmail;
+  const tokenEmail = signedIn?.email ?? accountEmail;
   const { token } = await signAuthToken({
-    payload: { id: userId, email, collection: col.name },
+    payload: { id: userId, email: tokenEmail, collection: col.name },
     audience: "user",
     expiresInSeconds: tokenWindowSeconds("user"),
     jwtSecret,
   });
-  return { body: { data: { token, record: { id: userId, email } } } };
+  return { body: { data: { token, record: { id: userId, email: tokenEmail } } } };
 }
 
 /** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
@@ -1781,6 +1803,17 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
       const id = crypto.randomUUID();
       const email = `anon_${id.replace(/-/g, "").slice(0, 16)}@anonymous.invalid`;
+      // beforeCreate runs as on every sign-up: it may refuse guests or set
+      // fields. A guest's address is generated: one the hook sets is ignored.
+      const hookData: Record<string, unknown> = { email };
+      try {
+        await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+        delete hookData["email"];
+        await validateAuthRegister(col, hookData, "partial");
+      } catch (e) {
+        if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
+        throw e;
+      }
       const randomPw = crypto.randomUUID() + crypto.randomUUID();
       const hash = await hashPassword(randomPw);
       const now = Math.floor(Date.now() / 1000);
@@ -1789,8 +1822,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         email,
         password_hash: hash,
         is_anonymous: 1,
-        custom: await encodeUserFields(col, {}, "create"),
-        legacyDataJson: "{}",
+        custom: await encodeUserFields(col, hookData, "create"),
+        legacyDataJson: JSON.stringify(hookData),
         created_at: now,
         updated_at: now,
       });
@@ -1856,17 +1889,33 @@ export function makeAuthPlugin(jwtSecret: string) {
           const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
         }
+        // Becoming a real account is a sign-up, so beforeCreate runs, with
+        // the guest's record as `existing`. It may refuse, set fields or
+        // change the address; what it returns is checked as the body was.
+        const { password, ...hookData } = body as Record<string, unknown>;
+        void password;
+        try {
+          const guest = await getRecord(col.name, u.id);
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: guest as unknown as Record<string, unknown> | null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+          await validateAuthRegister(col, hookData);
+        } catch (e) {
+          if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
+          throw e;
+        }
+        const email = hookData["email"];
+        if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+          set.status = 422; return { error: "Validation failed", code: 422, details: { email: "email is required" } };
+        }
         // Email uniqueness within the collection (excluding self).
         // Case-insensitive, as register checks: `ALICE@x` beside `alice@x`
         // is the same mailbox under two accounts.
-        const dup = await findUserByEmailAnyCase(col, body.email);
+        const dup = await findUserByEmailAnyCase(col, email);
         if (dup && dup.id !== u.id) {
           set.status = 409; return { error: "Email already in use", code: 409 };
         }
         const hash = await hashPassword(body.password);
         const now = Math.floor(Date.now() / 1000);
-        const { email, password, ...extra } = body as Record<string, unknown>;
-        void password;
+        const { email: _email, ...extra } = hookData;
         const update: Record<string, unknown> = {
           email: email as string,
           password_hash: hash,
