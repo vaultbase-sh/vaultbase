@@ -85,6 +85,8 @@ describe("protected file field", () => {
   it("a valid token serves it once (legitimate path)", async () => {
     const token = await mintToken();
     const ok = await get(`/files/${filename}?token=${token}`);
+    // Kept by no cache: the token works once.
+    expect(ok.headers.get("cache-control")).toBe("private, no-store");
     expect(ok.status).toBe(200);
     expect(await ok.text()).toBe("%PDF-secret");
     expect((await get(`/files/${filename}?token=${token}`)).status).toBe(410);

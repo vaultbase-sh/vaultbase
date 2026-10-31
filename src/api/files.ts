@@ -595,6 +595,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }
     )
     .get("/files/:filename", async ({ params, query, request, server, set }) => {
+      // Never kept by a shared cache (a CDN in front): its key is the URL,
+      // and whether a file is served depends on who asks. Errors too.
+      set.headers["Cache-Control"] = "no-store";
       if (!isValidStorageFilename(params.filename)) {
         set.status = 400;
         return { error: "Invalid filename", code: 400 };
@@ -703,6 +706,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         // Defence in depth: even with a correct type, nothing served from here
         // may execute, load subresources, or reach back into this origin.
         "Content-Security-Policy": "sandbox; default-src 'none'",
+        // The browser may keep it, a shared cache may not: access was decided
+        // for this caller (a rule can read the session, headers or IP). A
+        // token's file isn't kept at all: it may work once, or from one IP.
+        "Cache-Control": via === "token" ? "private, no-store" : "private",
       };
       if (!inlineSafe) {
         const safeName = (meta?.original_name ?? params.filename).replace(/[^a-zA-Z0-9._-]/g, "_");

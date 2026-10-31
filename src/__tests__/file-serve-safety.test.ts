@@ -141,6 +141,20 @@ describe("file responses can never run as a page", () => {
   });
 });
 
+describe("a shared cache (a CDN) never keeps a file response", () => {
+  it("marks a served file private, and an error no-store", async () => {
+    await plant("photo.png", "image/png", "png-bytes");
+    const ok = await serve("photo.png");
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("cache-control")).toBe("private");
+    const thumb = await makeFilesPlugin(join(dir, "uploads"), SECRET).handle(new Request(`http://localhost/files/photo.png?thumb=10x10`));
+    expect(thumb.headers.get("cache-control")).toBe("private");
+    const missing = await serve("nope.png");
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
 describe("storage drivers hand back opaque bytes", () => {
   it("does not let the driver infer a type from the stored name", async () => {
     const { fileResponse } = await import("../core/storage.ts");

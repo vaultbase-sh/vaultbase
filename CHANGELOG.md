@@ -7,6 +7,19 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **A CDN in front of the server could keep a file and serve it to anyone.**
+  File responses had no `Cache-Control`, and a CDN such as Cloudflare
+  caches images, PDFs and other static extensions by default, keyed on the
+  URL. A file a view rule allowed for one caller could then be served to
+  others, and one-time or IP-bound file tokens worked again from the cache.
+  Files are now sent `Cache-Control: private` (a browser may keep them, a
+  shared cache may not), `private, no-store` when served by a token, and
+  errors `no-store`.
+
 ## [0.32.2] — 2026-10-31
 
 ### Fixed
