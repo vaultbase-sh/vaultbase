@@ -98,7 +98,7 @@ describe("hooks", () => {
 
   it("a before-hook past its limit fails the write with a 422 naming it, and can't write afterwards", async () => {
     // Waits, then writes elsewhere. Within the limit the write goes through.
-    const write = `ctx.helpers.db.exec("INSERT INTO vb_audit (id, note) VALUES (?, ?)", crypto.randomUUID(), "from hook");`;
+    const write = `await ctx.helpers.sql.exec("INSERT INTO vb_audit (id, note) VALUES (?, ?)", [crypto.randomUUID(), "from hook"]);`;
     setSetting("hooks.timeout_ms", "1000");
     await installHook("beforeCreate", `await new Promise((r) => setTimeout(r, 20)); ${write}`, "quick-hook");
     await createRecord("posts", { title: "ok" });
