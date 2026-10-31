@@ -20,7 +20,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   S3 copy mirrors the layout, so its prefix synced into a new server's
   `backups/` folder restores from the admin, database and files together.
   On by default (`backups.files`); with S3 file storage there is nothing to
-  add. The thumbnail cache isn't kept.
+  add. The thumbnail cache, dotfiles and symlinks aren't kept. The work runs
+  without holding up requests; a file that can't be read is left out and
+  reported in the backup's status instead of failing it. One backup runs at
+  a time, across cluster workers too (**Back up now** answers `409` while
+  another is running).
 
 ### Upgrade notes
 

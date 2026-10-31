@@ -31,7 +31,7 @@ import { getRawClient } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { getSetting, setSetting, invalidateSetting } from "../api/settings.ts";
 import { nextRunFromCron, validateCron } from "./jobs.ts";
-import { blobPath, latestManifest, manifestName, pruneBlobs, readManifest, restoreFiles, snapshotFiles, type FilesManifest, type FilesRestoreResult } from "./backup-files.ts";
+import { blobPath, latestManifest, manifestName, manifestSummary, pruneBlobs, readManifest, restoreFiles, snapshotFiles, withBackupLock, type FilesManifest, type FilesRestoreResult } from "./backup-files.ts";
 import { localUploadDir } from "./storage.ts";
 
 export const DEFAULT_BACKUP_CRON = "0 3 * * *";
@@ -48,8 +48,8 @@ export interface BackupInfo {
   name: string;
   size: number;
   created_at: number;
-  /** The uploaded files kept with it, when it has them. */
-  files?: { count: number; bytes: number };
+  /** The uploaded files kept with it, when it has them; `skipped` couldn't be read. */
+  files?: { count: number; bytes: number; skipped: number };
 }
 
 export interface BackupStatus {
@@ -88,16 +88,22 @@ export function backupFiles(name: string): FilesManifest | null {
  * After a stored backup's database is restored, put back the uploaded files
  * it kept. Null when it kept none, or storage isn't local now.
  */
-export function restoreBackupFiles(name: string): FilesRestoreResult | null {
+export async function restoreBackupFiles(name: string): Promise<FilesRestoreResult | { error: string } | null> {
   const manifest = backupFiles(name);
   const uploads = localUploadDir();
   if (!manifest || !uploads) return null;
-  return restoreFiles(manifest, backupsDir, uploads);
+  // The database is back by now: a file error is reported with the success, not as a failed restore.
+  try {
+    return await restoreFiles(manifest, backupsDir, uploads);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** A sentence for the restore's message, or "". */
-export function filesRestoreMessage(r: FilesRestoreResult | null): string {
+export function filesRestoreMessage(r: FilesRestoreResult | { error: string } | null): string {
   if (!r) return "";
+  if ("error" in r) return ` The files couldn't all be put back: ${r.error}`;
   const missing = r.missing > 0 ? ` ${r.missing} file${r.missing === 1 ? " was" : "s were"} missing from the backup store.` : "";
   return ` Files: ${r.restored} put back, ${r.present} already in place.${missing}`;
 }
@@ -238,8 +244,8 @@ export function listBackups(): BackupInfo[] {
     if (!isBackupName(name)) continue;
     const st = statSync(join(backupsDir, name));
     const info: BackupInfo = { name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) };
-    const m = readManifest(join(backupsDir, manifestName(name)));
-    if (m) info.files = { count: m.count, bytes: m.bytes };
+    const m = manifestSummary(join(backupsDir, manifestName(name)));
+    if (m) info.files = m;
     out.push(info);
   }
   return out.sort((a, b) => (a.name < b.name ? 1 : -1));
@@ -297,13 +303,15 @@ async function listS3(target: { client: S3Like; prefix: string }, prefix: string
   return keys;
 }
 
-export async function pruneS3(target: { client: S3Like; prefix: string }, keep: number): Promise<void> {
+/** Delete the backups past `keep`, each with its manifest. Returns how many went. */
+export async function pruneS3(target: { client: S3Like; prefix: string }, keep: number): Promise<number> {
   const keys = (await listS3(target, target.prefix)).filter((k) => isBackupName(k.slice(target.prefix.length)));
   keys.sort().reverse();
   for (const key of keys.slice(keep)) {
     await target.client.delete(key);
     await target.client.delete(manifestName(key));
   }
+  return Math.max(0, keys.length - keep);
 }
 
 /** Upload the files of `manifest` the bucket doesn't have yet, then the manifest. */
@@ -318,8 +326,12 @@ export async function copyFilesToS3(target: { client: S3Like; prefix: string }, 
   await target.client.write(`${target.prefix}${manifestName(name)}`, Bun.file(join(backupsDir, manifestName(name))), { type: "application/json" });
 }
 
-/** Delete files in the bucket no manifest there lists. Keeps everything if a manifest doesn't read. */
+/**
+ * Delete files in the bucket no manifest there lists. Keeps everything if a
+ * manifest doesn't read, and with no prefix (a bucket shared with other data).
+ */
 export async function pruneS3Files(target: { client: S3Like; prefix: string }): Promise<void> {
+  if (!target.prefix) return;
   const keys = await listS3(target, target.prefix);
   const kept = new Set<string>();
   for (const k of keys) {
@@ -340,7 +352,10 @@ export async function pruneS3Files(target: { client: S3Like; prefix: string }): 
 
 async function doBackup(): Promise<BackupInfo> {
   if (!backupsDir) throw new Error("backups directory not configured");
-  if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
+  return withBackupLock(backupsDir, backupLocked);
+}
+
+async function backupLocked(): Promise<BackupInfo> {
 
   const { ext, type } = backupFormat();
   let ms = Date.now();
@@ -367,15 +382,16 @@ async function doBackup(): Promise<BackupInfo> {
 
   const s3 = s3Target();
   if (s3) {
-    await s3.client.write(`${s3.prefix}${name}`, Bun.file(final), { type });
+    // Files and manifest first, the snapshot last: a snapshot in the bucket
+    // means everything it needs is there too.
     if (manifest) await copyFilesToS3(s3, name, manifest);
-    await pruneS3(s3, keep);
-    await pruneS3Files(s3);
+    await s3.client.write(`${s3.prefix}${name}`, Bun.file(final), { type });
+    if ((await pruneS3(s3, keep)) > 0) await pruneS3Files(s3);
   }
 
   const st = statSync(final);
   const info: BackupInfo = { name, size: st.size, created_at: Math.floor(st.mtimeMs / 1000) };
-  if (manifest) info.files = { count: manifest.count, bytes: manifest.bytes };
+  if (manifest) info.files = { count: manifest.count, bytes: manifest.bytes, skipped: manifest.skipped };
   return info;
 }
 
@@ -387,7 +403,11 @@ export function runBackup(): Promise<BackupInfo> {
   if (running) return running;
   running = doBackup()
     .then(async (info) => {
-      await setSetting("backups.last_error", "");
+      // A backup that skipped unreadable files worked, but someone should look.
+      const skipped = info.files?.skipped ?? 0;
+      await setSetting("backups.last_error", skipped > 0
+        ? `${skipped} uploaded file${skipped === 1 ? "" : "s"} couldn't be read and ${skipped === 1 ? "isn't" : "aren't"} in the backup (see its manifest)`
+        : "");
       return info;
     })
     .catch(async (e: unknown) => {

@@ -22,6 +22,7 @@ import { invalidateStorageCache } from "../core/storage.ts";
 import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { invalidateCorsCache } from "../core/cors.ts";
 import { runMigrations } from "../db/migrate.ts";
+import { BackupBusyError } from "../core/backup-files.ts";
 import { backupEngine, backupFormat, backupPath, deleteBackup, filesRestoreMessage, getBackupStatus, listBackups, restoreBackupFiles, runBackup, snapshotTo } from "../core/backups.ts";
 import { adminGuard } from "./_admin.ts";
 import { Database } from "bun:sqlite";
@@ -358,6 +359,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       try {
         return { data: await runBackup() };
       } catch (e) {
+        if (e instanceof BackupBusyError) { set.status = 409; return { error: "Another backup is running; try again when it's done", code: 409 }; }
         set.status = 500;
         return { error: `Backup failed: ${e instanceof Error ? e.message : String(e)}`, code: 500 };
       }
@@ -401,7 +403,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return postgresRestore(set, query["progress"] === "1", async (onPhase) => {
           await restoreArchive(p, params.name, dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
           await followRestoredDatabase();
-          const files = filesRestoreMessage(restoreBackupFiles(params.name));
+          const files = filesRestoreMessage(await restoreBackupFiles(params.name));
           return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.${files}`;
         });
       }
@@ -418,7 +420,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         set.status = 500;
         return { error: `Restore failed: ${err}`, code: 500 };
       }
-      const files = filesRestoreMessage(restoreBackupFiles(params.name));
+      const files = filesRestoreMessage(await restoreBackupFiles(params.name));
       return { data: { message: `Restore complete. Sessions revoked since the backup stay revoked.${files}` } };
     }, { requireAdmin: true })
 
