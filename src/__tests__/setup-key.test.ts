@@ -116,6 +116,24 @@ describe("setup-admin reads the service env file", () => {
   });
 });
 
+describe("other commands run by hand read it too", () => {
+  it("doctor checks the data directory the env file names", async () => {
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const dataDir = join(dir, "service-data");
+    mkdirSync(dataDir, { recursive: true });
+    const file = join(dir, "service.env");
+    writeFileSync(file, `VAULTBASE_DATA_DIR=${dataDir}\n`);
+    const env: Record<string, string> = { ...process.env as Record<string, string>, VAULTBASE_ENV_FILE: file };
+    delete env["VAULTBASE_DATA_DIR"];
+    delete env["VAULTBASE_TEST_DB"];
+    const entry = fileURLToPath(new URL("../index.ts", import.meta.url));
+    const r = Bun.spawnSync(["bun", entry, "doctor"], { cwd: dir, env });
+    const err = r.stderr.toString();
+    expect(err).toContain(`using settings from ${file}`);
+    expect(err).toContain(join(dataDir, "data.db"));
+  });
+});
+
 describe("setup key across processes (review 15 F-7)", () => {
   it("an empty key file left by a crash is replaced, not ignored", async () => {
     const { writeFileSync } = await import("fs");

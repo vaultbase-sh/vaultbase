@@ -19,6 +19,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   Files are now sent `Cache-Control: private` (a browser may keep them, a
   shared cache may not), `private, no-store` when served by a token, and
   errors `no-store`.
+- **`sudo vaultbase doctor`, `backup`, `token` and `wipe` ignored the
+  service's env file** and worked on `./vaultbase_data` in the current
+  directory: `doctor` checked an install that wasn't there. They read
+  `/etc/vaultbase/vaultbase.env` (or `VAULTBASE_ENV_FILE`) for variables not
+  already set, as `setup-admin` does.
 
 ## [0.32.2] — 2026-10-31
 

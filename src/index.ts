@@ -325,6 +325,15 @@ async function main() {
     }
   }
 
+  // Commands run by hand against an installed service read its env file,
+  // as setup-admin does below: run with sudo they used ./vaultbase_data in
+  // the current directory (doctor checked an empty install, backup copied
+  // nothing). Variables set in the environment win.
+  if (["doctor", "wipe", "token", "backup"].includes(process.argv[2] ?? "")) {
+    const envFile = loadServiceEnvFile();
+    if (envFile) process.stderr.write(`vaultbase: using settings from ${envFile}\n`);
+  }
+
   // `vaultbase doctor` — read-only checks. SQLite: pre-flight for the v0.11
   // auth-collection migration. Postgres: version, schema, search path,
   // client tools, helpers.db hooks (scripts/doctor.ts). Exits non-zero on
