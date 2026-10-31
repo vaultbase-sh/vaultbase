@@ -527,8 +527,10 @@ VAULTBASE_JWT_SECRET=${JWT_SECRET}
 # and print its own. \`vaultbase setup-admin\` doesn't need it.
 VAULTBASE_SETUP_KEY=${SETUP_KEY}
 
-# Optional: required only if you use encrypted fields.
-# Generate with: head -c 32 /dev/urandom | base64
+# Encryption key for encrypted fields and secret settings. Without this line
+# the server makes one at first start and keeps it in ${DATA_DIR}/.encryption-key.
+# Back up whichever you use: without it, encrypted values can't be read.
+# To set your own, do it before the first start: head -c 32 /dev/urandom | base64
 # VAULTBASE_ENCRYPTION_KEY=
 
 # Optional: peer addresses allowed to set X-Forwarded-For, comma-separated.
