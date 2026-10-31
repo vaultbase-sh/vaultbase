@@ -17,6 +17,7 @@
  * returns them as BigInt and the row mapper turns them into numbers.
  */
 import { SQL } from "bun";
+import { currentScriptSignal, stoppedReason } from "../core/script-signal.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
@@ -329,6 +330,11 @@ export class PostgresDriver implements DbDriver {
    * the error has already aborted.
    */
   private async query(text: string, params: unknown[], values: boolean): Promise<unknown[]> {
+    // A script past its time limit (script-limits.ts) runs no more queries:
+    // the transaction it was in may have ended, and its connection gone back
+    // to the pool, where the query would land outside it.
+    const script = currentScriptSignal();
+    if (script?.aborted) throw stoppedReason(script);
     const run = () => {
       const q = this.conn().unsafe(`${text}\n/* vb:${this.token} */`, params);
       return (values ? q.values() : q) as Promise<unknown[]>;

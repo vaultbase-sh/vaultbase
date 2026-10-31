@@ -91,7 +91,12 @@ export function validateMode(mode: string): string | null {
   return null;
 }
 
-export async function runJob(jobId: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Run a cron job now. `onRun` gets the script's own run, which outlasts the
+ * result when the job ran out of time: the caller holds the job's slot
+ * until it ends.
+ */
+export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => void): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const rows = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
   const row = rows[0] as JobRow | undefined;
@@ -144,7 +149,7 @@ export async function runJob(jobId: string): Promise<{ ok: boolean; error?: stri
 
   try {
     await withTimeLimit("job", row.name || row.id.slice(0, 8), (signal) =>
-      fn({ helpers: guardHelpers(helpers, signal), scheduledAt: now }));
+      fn({ helpers: guardHelpers(helpers, signal), scheduledAt: now }), onRun);
     await db.update(jobs).set({
       last_run_at: now,
       last_status: "ok",
@@ -251,7 +256,12 @@ async function scheduleTick(): Promise<Promise<unknown>[]> {
         .returning({ id: jobs.id });
       if (claim.length === 0) continue;
       runningJobs.add(r.id);
-      started.push(runJob(r.id).finally(() => runningJobs.delete(r.id)));
+      // The slot stays taken until the script ends, also when it ran out of
+      // time: another run of the same job doesn't start beside it.
+      let run: Promise<unknown> | undefined;
+      const done = runJob(r.id, (p) => { run = p; });
+      started.push(done);
+      void done.finally(() => Promise.resolve(run).catch(() => {}).finally(() => runningJobs.delete(r.id)));
     } else if (r.next_run_at === null) {
       // Newly created or never run — initialize next_run_at
       try {

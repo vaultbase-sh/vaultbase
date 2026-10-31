@@ -6,10 +6,17 @@
  * outgoing requests are aborted, and its later helper calls are refused, so
  * a run left behind can't write after the request it belonged to ended.
  * A loop that never awaits still holds the thread: nothing in-process can
- * interrupt it.
+ * interrupt it. A helper call already under way when the limit runs out
+ * finishes (an email being sent); code that doesn't go through helpers
+ * isn't stopped.
+ *
+ * Applies to scripts written in the admin or kept as files. Code registered
+ * from an app embedding Vaultbase, and the server's own workers, isn't limited.
  */
-import { AsyncLocalStorage } from "node:async_hooks";
 import { getSetting } from "../api/settings.ts";
+import { scriptRuns, stoppedReason, untilAborted } from "./script-signal.ts";
+
+export { currentScriptSignal } from "./script-signal.ts";
 
 export type ScriptKind = "hook" | "afterHook" | "route" | "job" | "queue";
 
@@ -61,22 +68,24 @@ export class ScriptTimeoutError extends Error {
   }
 }
 
-const runs = new AsyncLocalStorage<AbortSignal>();
-
-/** The running script's signal, aborted when its limit runs out (outgoing requests join it). */
-export function currentScriptSignal(): AbortSignal | undefined {
-  return runs.getStore();
-}
-
 /**
  * Run `fn` under the limit for `kind`. `fn` gets the run's signal: hand it
  * to guardHelpers. Rejects with ScriptTimeoutError when the limit runs out;
  * the run itself goes on until it next awaits a helper or a request.
+ * `onRun` gets the run's own promise, which settles when the run really
+ * ends: a caller holding a slot for it (queue concurrency, the cron overlap
+ * guard) keeps the slot until then, so runs left behind can't pile up.
  */
-export async function withTimeLimit<T>(kind: ScriptKind, script: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withTimeLimit<T>(
+  kind: ScriptKind,
+  script: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+  onRun?: (run: Promise<unknown>) => void,
+): Promise<T> {
   const ms = scriptTimeoutMs(kind);
   const ac = new AbortController();
-  const run = runs.run(ac.signal, () => fn(ac.signal));
+  const run = scriptRuns.run(ac.signal, () => fn(ac.signal));
+  onRun?.(run);
   if (ms === 0) return run;
   // Settled after the limit, the run's result has no one waiting for it.
   run.catch(() => {});
@@ -97,8 +106,10 @@ export async function withTimeLimit<T>(kind: ScriptKind, script: string, fn: (si
 
 /**
  * `helpers` refusing every use once `signal` is aborted: a run past its
- * limit can't query, write, mail or enqueue any more. Nested namespaces
- * (`helpers.db`, `helpers.http`, …) are guarded the same way.
+ * limit can't start a query, a write, a mail or a job any more. A helper
+ * call that returns a promise rejects when the limit runs out, so the
+ * script stops waiting on it. Nested namespaces (`helpers.db`,
+ * `helpers.http`, …) are guarded the same way.
  */
 export function guardHelpers<T extends object>(helpers: T, signal: AbortSignal): T {
   const cache = new WeakMap<object, object>();
@@ -107,12 +118,13 @@ export function guardHelpers<T extends object>(helpers: T, signal: AbortSignal):
     if (hit) return hit as O;
     const proxy = new Proxy(target, {
       get(t, prop, receiver) {
-        if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("script stopped");
+        if (signal.aborted) throw stoppedReason(signal);
         const v = Reflect.get(t, prop, receiver);
         if (typeof v === "function") {
           return (...args: unknown[]) => {
-            if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("script stopped");
-            return Reflect.apply(v, t, args);
+            if (signal.aborted) throw stoppedReason(signal);
+            const out = Reflect.apply(v, t, args);
+            return out instanceof Promise ? untilAborted(out, signal) : out;
           };
         }
         return v !== null && typeof v === "object" ? wrap(v as object) : v;

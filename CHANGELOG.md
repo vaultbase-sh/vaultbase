@@ -16,20 +16,28 @@ Binaries, checksums, signatures and SBOMs for every version are on
   and routes, 5 minutes for cron jobs and queue workers. When it runs out,
   a before-hook fails its write with a `422` naming the hook, a route
   answers `504`, a cron run is recorded as failed, and a queue job fails
-  and is retried as its worker says. The run's outgoing requests are
-  aborted and its later `helpers` calls throw, so it can't write once its
-  caller has moved on. Set them under **Settings → Script time limits**
-  (`hooks.timeout_ms`, `hooks.after_timeout_ms`, `routes.timeout_ms`,
-  `jobs.timeout_ms`, `queues.timeout_ms`; `0` = no limit). Scripts run in
-  the server's own thread, so a loop that never awaits still can't be
-  interrupted.
+  and is retried as its worker says. A stopped run's `helpers.fetch` /
+  `helpers.http` requests are aborted, a `helpers.sql.transaction` it holds
+  is rolled back, and its later `helpers` calls throw; a queue job keeps its
+  worker's slot until the script really ends, so stuck runs don't pile up.
+  A helper call already under way still finishes, and code that doesn't go
+  through `helpers` isn't stopped. Set them under **Settings → Script time
+  limits** (`hooks.timeout_ms`, `hooks.after_timeout_ms`,
+  `routes.timeout_ms`, `jobs.timeout_ms`, `queues.timeout_ms`; `0` = no
+  limit). Code registered by an app embedding Vaultbase, and the server's
+  own workers, have no limit. Scripts run in the server's own thread, so a
+  loop that never awaits still can't be interrupted.
+- **On Postgres, a script past its limit runs no more queries,** so its
+  next one can't land on a connection its transaction already gave back.
 
 ### Upgrade notes
 
 - A cron job or queue worker that takes longer than 5 minutes, or a route
   or after-hook longer than 30 s, or a before-hook longer than 10 s, now
   fails. Raise its limit (or set it to `0`) under **Settings → Script time
-  limits** before upgrading if you have one.
+  limits** before upgrading if you have one. A cron or queue job stopped
+  partway isn't rolled back: what it did before stays done, and a retry
+  starts over.
 
 ## [0.32.3] — 2026-10-31
 

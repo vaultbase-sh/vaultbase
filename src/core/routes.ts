@@ -65,6 +65,8 @@ interface CompiledRoute {
   paramNames: string[];
   requireAuth: boolean;
   fn: (ctx: RouteContext) => Promise<unknown>;
+  /** Registered from code (an extension): trusted, so no time limit. */
+  fromCode?: boolean;
 }
 
 const cache = new Map<string, CompiledRoute>();
@@ -131,6 +133,7 @@ export function registerRoute(def: RouteRegistration): () => void {
     id: `ext:${def.name}`, name: def.name, method, path: def.path,
     pathPattern: regex, paramNames: params, requireAuth: def.requireAuth === true,
     fn: async (ctx) => def.handle(ctx),
+    fromCode: true,
   };
   registeredRoutes.push(route);
   return () => {
@@ -233,8 +236,11 @@ export async function dispatchCustomRoute(
   const ip = clientIp(request);
   const fullPath = "/api/v1/custom" + innerPath;
   try {
-    const result = await withTimeLimit("route", match.route.name || `${match.route.method} ${match.route.path}`, (signal) =>
-      match.route.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
+    const route = match.route;
+    const result = route.fromCode
+      ? await route.fn(ctx)
+      : await withTimeLimit("route", route.name || `${route.method} ${route.path}`, (signal) =>
+        route.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
     void insertLog(request.method, fullPath, set.status, Date.now() - started, ip,
       auth ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) } : null);
     appendHookLog({

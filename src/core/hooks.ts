@@ -144,6 +144,8 @@ interface CompiledHook {
   id: string;
   name: string;
   fn: (ctx: HookContext) => Promise<unknown>;
+  /** Registered from code (an extension): trusted, so no time limit. */
+  fromCode?: boolean;
 }
 
 // hook id → compiled code, tagged with the row's updated_at so an edit made
@@ -202,7 +204,7 @@ export function registerHook(def: HookRegistration): () => void {
   const entry = {
     collection: def.collection ?? "",
     event: def.event,
-    hook: { id: `ext:${def.name}`, name: def.name, fn: async (ctx: HookContext) => def.run(ctx) },
+    hook: { id: `ext:${def.name}`, name: def.name, fn: async (ctx: HookContext) => def.run(ctx), fromCode: true },
   };
   registeredHooks.push(entry);
   return () => {
@@ -263,14 +265,19 @@ export async function runBeforeHook(
     };
     if (effectiveReq) helperCtx.request = effectiveReq;
     try {
-      await withTimeLimit("hook", hookLabel(h, collection.name, event), (signal) =>
-        h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
+      await runHook(h, "hook", hookLabel(h, collection.name, event), ctx, helperCtx);
     } catch (e) {
       if (e instanceof ValidationError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       throw new ValidationError({ _hook: msg });
     }
   }
+}
+
+/** One hook: under its time limit, unless it was registered from code. */
+function runHook(h: CompiledHook, kind: "hook" | "afterHook", label: string, ctx: HookContext, helperCtx: HookHelperContext): Promise<unknown> {
+  if (h.fromCode) return h.fn({ ...ctx, helpers: makeHookHelpers(helperCtx) });
+  return withTimeLimit(kind, label, (signal) => h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
 }
 
 /** A hook's name for messages: its own, or the collection and event with its id. */
@@ -294,8 +301,7 @@ export function runAfterHook(
       };
       if (effectiveReq) helperCtx.request = effectiveReq;
       try {
-        await withTimeLimit("afterHook", hookLabel(h, collection.name, event), (signal) =>
-          h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
+        await runHook(h, "afterHook", hookLabel(h, collection.name, event), ctx, helperCtx);
       } catch (e) {
         console.error(`[hooks] after-hook ${h.id} threw:`, e);
       }

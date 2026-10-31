@@ -3,7 +3,7 @@ import { getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
-import { guardHelpers, withTimeLimit } from "./script-limits.ts";
+import { guardHelpers, ScriptTimeoutError, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
@@ -75,6 +75,8 @@ interface CompiledWorker {
   retry_backoff: RetryBackoff;
   retry_delay_ms: number;
   fn: (ctx: JobContext) => Promise<unknown>;
+  /** Registered from code (the server, an extension): trusted, so no time limit. */
+  fromCode?: boolean;
 }
 
 const compiledCache = new Map<string, CompiledWorker>(); // worker id → compiled
@@ -121,6 +123,7 @@ export function registerBuiltinWorker(spec: BuiltinWorkerSpec): () => void {
     retry_backoff: spec.retry_backoff === "fixed" ? "fixed" : "exponential",
     retry_delay_ms: Math.max(50, spec.retry_delay_ms ?? 2000),
     fn: spec.fn,
+    fromCode: true,
   });
   const entry = builtinWorkers.get(spec.queue);
   return () => {
@@ -458,13 +461,20 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
     if (r.length === 0) console.error(`[queues] Job ${job.id} attempt ${job.attempt} finished after losing its lease; its result was not recorded`);
     return r.length > 0;
   };
+  // The script's own run: it can outlast the job's result when it ran out
+  // of time, and holds its concurrency slot until it ends.
+  let run: Promise<unknown> | undefined;
   try {
-    await withTimeLimit("queue", worker.name || worker.queue, (signal) =>
-      worker.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
+    if (worker.fromCode) await worker.fn(ctx);
+    else {
+      await withTimeLimit("queue", worker.name || worker.queue, (signal) =>
+        worker.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }), (p) => { run = p; });
+    }
     await settle({ status: "succeeded", finished_at: finishedAt(), error: null });
   } catch (e) {
     const msg = e instanceof ValidationError
       ? `ValidationError: ${e.message}`
+      : e instanceof ScriptTimeoutError ? e.message
       : (e instanceof Error ? (e.stack ?? e.message) : String(e));
     // Per-job overrides from enqueue() win over the worker's defaults.
     const retryMax = job.retry_max ?? worker.retry_max;
@@ -484,6 +494,8 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
       if (await settle({ status: "dead", finished_at: finishedAt(), error: msg })) console.error(`[queues] Job ${job.id} dead after ${job.attempt} attempts: ${msg}`);
     }
   }
+  // Its slot is freed (inFlight) when this returns: after the run itself.
+  await Promise.resolve(run).catch(() => {});
 }
 
 // ── Admin operations ────────────────────────────────────────────────────────

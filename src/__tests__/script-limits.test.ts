@@ -17,10 +17,10 @@ import { createCollection, _resetCollectionCache } from "../core/collections.ts"
 import { createRecord, listRecords } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { hooks, jobs, jobsLog, routes, workers } from "../db/schema.ts";
-import { invalidateHookCache } from "../core/hooks.ts";
+import { invalidateHookCache, registerHook } from "../core/hooks.ts";
 import { invalidateRoutesCache, dispatchCustomRoute } from "../core/routes.ts";
 import { runJob } from "../core/jobs.ts";
-import { enqueue, invalidateWorkerCache, startQueueScheduler, stopQueueScheduler } from "../core/queues.ts";
+import { enqueue, invalidateWorkerCache, registerWorker, startQueueScheduler, stopQueueScheduler } from "../core/queues.ts";
 import {
   DEFAULT_SCRIPT_TIMEOUT_MS, ScriptTimeoutError, guardHelpers, scriptTimeoutMs, validateScriptTimeout, withTimeLimit,
 } from "../core/script-limits.ts";
@@ -138,6 +138,34 @@ describe("hooks", () => {
     }
   });
 
+  it("gives up a transaction the hook holds, so other writers don't wait for it", async () => {
+    setSetting("hooks.timeout_ms", "150");
+    await installHook("beforeCreate", `await ctx.helpers.sql.transaction(async () => { await new Promise((r) => setTimeout(r, 1500)); });`);
+    const t0 = Date.now();
+    const slow = createRecord("posts", { title: "t" }).catch((e) => e);
+    await sleep(300);
+    const t1 = Date.now();
+    await createRecord("audit", { note: "unrelated" });
+    const waited = Date.now() - t1;
+    const err = await slow;
+    expect((err as ValidationError).details["_hook"]).toContain("timed out after 150 ms");
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(waited).toBeLessThan(500);
+  });
+
+  it("a hook registered from code has no limit", async () => {
+    setSetting("hooks.timeout_ms", "100");
+    const off = registerHook({ name: "code-hook", collection: "posts", event: "beforeCreate", run: async (ctx) => {
+      await sleep(250);
+      (ctx.record as Record<string, unknown>)["title"] = "from code";
+    } });
+    try {
+      expect((await createRecord("posts", { title: "t" }))["title"]).toBe("from code");
+    } finally {
+      off();
+    }
+  });
+
   it("a hook that ends in time isn't affected", async () => {
     setSetting("hooks.timeout_ms", "1000");
     await installHook("beforeCreate", `await new Promise((r) => setTimeout(r, 20)); ctx.record.title = "hooked";`);
@@ -172,6 +200,42 @@ describe("cron jobs", () => {
 });
 
 describe("queue workers", () => {
+  it("keep a job's slot until its script really ends, so runs left behind don't pile up", async () => {
+    setSetting("queues.timeout_ms", "100");
+    // Counts the runs going at once: each waits 600 ms, well past its limit.
+    (globalThis as Record<string, unknown>)["__vbRuns"] = { now: 0, peak: 0 };
+    await getDb().insert(workers).values({
+      id: crypto.randomUUID(), name: "hanging", queue: "hang",
+      code: `const c = globalThis.__vbRuns; c.now++; c.peak = Math.max(c.peak, c.now); await new Promise((r) => setTimeout(r, 600)); c.now--;`,
+      enabled: 1, concurrency: 1, retry_max: 1, retry_backoff: "fixed", retry_delay_ms: 10, created_at: now(), updated_at: now(),
+    });
+    invalidateWorkerCache();
+    for (let i = 0; i < 4; i++) await enqueue("hang", { i });
+    startQueueScheduler();
+    await sleep(1_500);
+    expect(((globalThis as Record<string, unknown>)["__vbRuns"] as { peak: number }).peak).toBe(1);
+  });
+
+  it("a worker registered from code has no limit", async () => {
+    setSetting("queues.timeout_ms", "100");
+    let finished = false;
+    const off = registerWorker({ queue: "code-q", fn: async () => { await sleep(300); finished = true; } });
+    try {
+      const { jobId } = await enqueue("code-q", {});
+      startQueueScheduler();
+      let job: typeof jobsLog.$inferSelect | undefined;
+      for (let i = 0; i < 40; i++) {
+        job = (await getDb().select().from(jobsLog).where(eq(jobsLog.id, jobId)))[0];
+        if (job?.status === "succeeded") break;
+        await sleep(50);
+      }
+      expect(job?.status).toBe("succeeded");
+      expect(finished).toBe(true);
+    } finally {
+      off();
+    }
+  });
+
   it("fail a job past its limit, which is then retried as the worker says", async () => {
     setSetting("queues.timeout_ms", "150");
     await getDb().insert(workers).values({
@@ -188,6 +252,6 @@ describe("queue workers", () => {
       await sleep(50);
     }
     expect(job?.status).toBe("dead");
-    expect(job?.error).toContain("queue worker 'slow-worker' timed out after 150 ms");
+    expect(job?.error).toBe("queue worker 'slow-worker' timed out after 150 ms");
   });
 });

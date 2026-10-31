@@ -44,7 +44,7 @@
  */
 
 import { lookup } from "node:dns/promises";
-import { currentScriptSignal } from "./script-limits.ts";
+import { currentScriptSignal } from "./script-signal.ts";
 import { isIP, isIPv4, isIPv6 } from "node:net";
 
 export class EgressBlockedError extends Error {

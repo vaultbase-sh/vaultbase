@@ -612,7 +612,11 @@ function ScriptLimitsSection() {
       const raw = (values[l.key] ?? "").trim();
       if (raw === "") { patch[l.key] = ""; continue; }
       const s = Number(raw);
-      if (!Number.isFinite(s) || s < 0) { toast(`${l.label}: enter seconds, or 0 for no limit`, "info"); return; }
+      // The server takes 0 or 100 ms to a day.
+      if (!Number.isFinite(s) || s < 0 || (s > 0 && s < 0.1) || s > 86_400) {
+        toast(`${l.label}: enter 0 (no limit) or 0.1 to 86400 seconds`, "info");
+        return;
+      }
       patch[l.key] = String(Math.round(s * 1000));
     }
     setSaving(true);
@@ -641,9 +645,11 @@ function ScriptLimitsSection() {
 
       <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
         <strong style={{ color: "var(--vb-fg-2)" }}>Known limitation:</strong> scripts run in the
-        server's own thread. A limit stops waiting for a script, aborts its outgoing requests and
-        refuses its later <VbCode>helpers</VbCode> calls; a loop that never awaits still holds the
-        server until it ends.
+        server's own thread. A limit stops waiting for a script, aborts its{" "}
+        <VbCode>helpers.fetch</VbCode> / <VbCode>helpers.http</VbCode> requests and refuses new{" "}
+        <VbCode>helpers</VbCode> calls. A helper call already under way (an email being sent) still
+        finishes, and a loop that never awaits holds the server until it ends. Code registered by an
+        app embedding Vaultbase has no limit.
       </div>
 
       <SaveBar saving={saving} dirty={loaded} onSave={save} />

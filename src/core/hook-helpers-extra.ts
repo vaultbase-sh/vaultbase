@@ -8,6 +8,7 @@
  * timeouts, body sizes) to prevent footguns from typos.
  */
 import * as jose from "jose";
+import { currentScriptSignal, untilAborted } from "./script-signal.ts";
 import { db } from "../db/index.ts";
 
 // ── security ────────────────────────────────────────────────────────────────
@@ -485,7 +486,13 @@ function makeSql(): SqlHelpers {
     query: (sql, params = []) => Promise.resolve(db.all(sql, params)),
     queryOne: (sql, params = []) => Promise.resolve(db.get(sql, params)),
     exec: async (sql, params = []) => ({ changes: (await db.run(sql, params)).changes }),
-    transaction: (fn) => db.transaction(fn),
+    // A script past its time limit gives the transaction up: it rolls back
+    // and frees the connection (on SQLite, every other writer waits for it)
+    // instead of staying open while the script goes on waiting.
+    transaction: (fn) => db.transaction(() => {
+      const signal = currentScriptSignal();
+      return signal ? untilAborted(fn(), signal) : fn();
+    }),
   };
 }
 
