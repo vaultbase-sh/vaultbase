@@ -36,6 +36,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **A realtime connection with no subscriptions wasn't told its sign-in
   expired.** The server dropped its auth but only sent `auth_expired` to
   connections holding a topic.
+- **A setting changed outside the settings API could read as its old value
+  for up to 2 seconds.** When the background settings reload overlapped the
+  change, it put the old value back.
 
 ## [0.34.1] — 2026-11-01
 

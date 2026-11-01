@@ -237,6 +237,8 @@ export async function invalidateSetting(key: string): Promise<void> {
   const row = await db.get<{ value: string }>(`SELECT value FROM vaultbase_settings WHERE key = ?`, [key]);
   if (row == null) v.delete(key);
   else v.set(key, row.value);
+  // A reload whose read predates this one would put the old value back.
+  for (const written of reloadsInFlight) written.add(key);
 }
 
 /** Drop the store so the next read loads it again (tests). */

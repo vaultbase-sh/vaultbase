@@ -6,7 +6,8 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
 import { closeDb, initDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { _reloadSettings, getSetting, loadSettings, setSetting } from "../api/settings.ts";
+import { _reloadSettings, getSetting, invalidateSetting, loadSettings, setSetting } from "../api/settings.ts";
+import { db } from "../db/index.ts";
 
 beforeEach(async () => {
   await initDb(":memory:");
@@ -37,4 +38,31 @@ it("keeps a value whose write was still in flight when a reload started", async 
   }
   await _reloadSettings();
   expect(getSetting("app.fresh_19", "")).toBe("new");
+});
+
+it("keeps a value re-read by invalidateSetting while a reload was reading", async () => {
+  // Code that writes the table itself (the backup scheduler's claim) then
+  // calls invalidateSetting; a reload that read before the write put the
+  // old value back.
+  await setSetting("app.direct", "old");
+  // Hold the reload's read until the write and the re-read are done.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const all = db.all;
+  db.all = (async (...args: Parameters<typeof all>) => {
+    db.all = all;
+    const rows = await all.apply(db, args);
+    await gate;
+    return rows;
+  }) as typeof all;
+  try {
+    const reload = _reloadSettings();
+    await db.run(`UPDATE vaultbase_settings SET value = 'new' WHERE key = 'app.direct'`);
+    await invalidateSetting("app.direct");
+    release();
+    await reload;
+  } finally {
+    db.all = all;
+  }
+  expect(getSetting("app.direct", "")).toBe("new");
 });
