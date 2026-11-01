@@ -48,15 +48,25 @@ const post = (path: string, body: unknown) =>
     body: JSON.stringify(body),
   }));
 
-/** Pretend every token of `purpose` was issued `seconds` earlier. */
+/**
+ * Pretend the tokens of `purpose` just issued were issued `seconds` earlier.
+ * Requests answer before the email (and, for OTP, the token row) is done, so
+ * this waits for a token not yet aged; a fixed wait wasn't always enough on CI.
+ */
 async function age(purpose: string, seconds: number): Promise<void> {
-  // Requests answer before the email (and, for OTP, the token row) is done.
-  await Bun.sleep(50);
-  const rows = await getDb().select().from(authTokens).where(and(eq(authTokens.user_id, userId), eq(authTokens.purpose, purpose)));
+  const fresh = async () => (await getDb().select().from(authTokens)
+    .where(and(eq(authTokens.user_id, userId), eq(authTokens.purpose, purpose))))
+    .filter((r) => r.created_at > Math.floor(Date.now() / 1000) - 30);
+  let rows = await fresh();
+  for (let i = 0; i < 100 && rows.length === 0; i++) { await Bun.sleep(20); rows = await fresh(); }
   for (const r of rows) await getDb().update(authTokens).set({ created_at: r.created_at - seconds }).where(eq(authTokens.id, r.id));
 }
 
-async function settle(): Promise<void> { await Bun.sleep(100); }
+/** Wait for `expected` emails, then a little longer so an extra one would show. */
+async function settle(expected: number, count = () => smtp.messages.length): Promise<void> {
+  for (let i = 0; i < 100 && count() < expected; i++) await Bun.sleep(20);
+  await Bun.sleep(100);
+}
 
 const flows = [
   { name: "password reset", path: "/auth/users/request-password-reset", purpose: "password_reset" },
@@ -68,7 +78,7 @@ for (const f of flows) {
     it("a second request within a minute sends nothing, but still answers 200", async () => {
       expect((await post(f.path, { email: EMAIL })).status).toBe(200);
       expect((await post(f.path, { email: EMAIL })).status).toBe(200);
-      await settle();
+      await settle(1);
       expect(smtp.messages).toHaveLength(1);
     });
 
@@ -76,7 +86,7 @@ for (const f of flows) {
       await post(f.path, { email: EMAIL });
       await age(f.purpose, 61);
       await post(f.path, { email: EMAIL });
-      await settle();
+      await settle(2);
       expect(smtp.messages).toHaveLength(2);
     });
 
@@ -85,13 +95,13 @@ for (const f of flows) {
         await post(f.path, { email: EMAIL });
         await age(f.purpose, 61);
       }
-      await settle();
+      await settle(7);
       expect(smtp.messages).toHaveLength(7);
     });
 
     it("parallel requests send one email", async () => {
       await Promise.all(Array.from({ length: 5 }, () => post(f.path, { email: EMAIL })));
-      await settle();
+      await settle(1);
       expect(smtp.messages).toHaveLength(1);
     });
   });
@@ -100,7 +110,7 @@ for (const f of flows) {
 describe("register with a taken address", () => {
   it("doesn't let repeated registrations flood the owner with reset emails", async () => {
     for (let i = 0; i < 3; i++) await post("/auth/users/register", { email: EMAIL, password: "another-password-1" });
-    await settle();
+    await settle(1, () => smtp.messages.filter((m) => m.includes("reset")).length);
     expect(smtp.messages.filter((m) => m.includes("reset"))).toHaveLength(1);
   });
 });
@@ -118,7 +128,7 @@ describe("request-email-change cooldown", () => {
     // A taken address answers the same 429 inside the window: no oracle.
     await seedAuthUser({ collection: "users", email: "taken@test.local" });
     expect((await send("taken@test.local")).status).toBe(429);
-    await settle();
+    await settle(1);
     expect(smtp.messages).toHaveLength(1);
     await age("email_change", 61);
     expect((await send("stranger@test.local")).status).toBe(200);
