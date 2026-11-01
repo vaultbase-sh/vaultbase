@@ -61,6 +61,7 @@
   type TEXT NOT NULL DEFAULT 'base'
   fields TEXT NOT NULL DEFAULT '[]'
   view_query TEXT
+  view_params TEXT
   list_rule TEXT
   view_rule TEXT
   create_rule TEXT

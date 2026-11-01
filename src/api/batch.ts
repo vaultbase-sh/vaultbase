@@ -9,6 +9,7 @@ import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, bu
 import type { AuthContext } from "../core/rules.ts";
 import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
+import { parseViewParams } from "../core/view-params.ts";
 
 interface BatchRequest {
   method: string;
@@ -89,6 +90,11 @@ async function dispatchOp(
   if (!col) return { status: 404, body: { error: `Collection '${op.collection}' not found`, code: 404 } };
   if (col.type === "singleton" && (op.kind === "create" || op.kind === "delete")) {
     throw new SingletonRecordError(col.name, op.kind);
+  }
+  // A view with parameters is read directly: here its rules would see the
+  // batch request's own URL, not the read's parameters (view-params.ts).
+  if (col.type === "view" && parseViewParams(col.view_params).length > 0) {
+    return { status: 400, body: { error: `'${col.name}' takes parameters: read it with GET /api/v1/${col.name}, not in a batch`, code: 400 } };
   }
 
   switch (op.kind) {

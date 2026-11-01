@@ -452,8 +452,14 @@ function readAtRef(ts: TokenStream): Operand {
     return { kind: "requestMap", mapKind: "headers", key };
   }
   if (ts.consume("@request.query.")) {
-    const key = ts.readWord();
+    let key = ts.readWord();
     if (!key) throw new Error("expected query key");
+    // `@request.query.params.<name>`: a view parameter, `?params[<name>]=…`.
+    if (key === "params" && ts.consume(".")) {
+      const name = ts.readWord();
+      if (!name) throw new Error("expected a parameter name after @request.query.params.");
+      key = `params.${name}`;
+    }
     const modifier = readOptionalModifier(ts);
     if (modifier) return { kind: "requestMap", mapKind: "query", key, modifier };
     return { kind: "requestMap", mapKind: "query", key };

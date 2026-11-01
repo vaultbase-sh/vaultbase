@@ -73,3 +73,84 @@ export function scanSql(sql: string): { words: string[]; identifiers: string[]; 
   if (pending) statements++;
   return { words, identifiers, statements };
 }
+
+/**
+ * Rewrite a view query's `:name` parameters (view-params.ts): each becomes
+ * what `replace` returns, and the names come back in the order they appear.
+ * Strings, quoted identifiers and comments are copied as they are, so a
+ * `':x'` or `-- :x` isn't a parameter, and neither is Postgres's `::type`.
+ *
+ * `pg` also reads Postgres's own literals (`E'…'` with backslash escapes,
+ * `$tag$…$tag$`). With `bound` (Postgres, a query that runs with bound
+ * values) a lone `?`, jsonb's key operator, is doubled: there `?` is a
+ * placeholder and `??` the literal (db/placeholders.ts).
+ */
+export function rewriteSqlParams(
+  sql: string,
+  replace: (name: string) => string,
+  opts: { pg: boolean; bound: boolean },
+): { sql: string; names: string[] } {
+  const { pg } = opts;
+  const bound = pg && opts.bound;
+  const names: string[] = [];
+  let out = "";
+  let i = 0;
+  const n = sql.length;
+  // Postgres: inside [...] a `:` is an array slice (arr[1:n]), not a parameter.
+  let brackets = 0;
+  const copyUntil = (j: number) => { out += sql.slice(i, j); i = j; };
+  while (i < n) {
+    const c = sql[i]!;
+    const next = sql[i + 1];
+    if (c === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      copyUntil(end < 0 ? n : end + 1);
+    } else if (c === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      copyUntil(end < 0 ? n : end + 2);
+    } else if (pg && (c === "E" || c === "e") && next === "'" && !/[A-Za-z0-9_]/.test(sql[i - 1] ?? "")) {
+      let j = i + 2;
+      while (j < n) {
+        if (sql[j] === "\\") { j += 2; continue; }
+        if (sql[j] === "'") { if (sql[j + 1] === "'") { j += 2; continue; } break; }
+        j++;
+      }
+      copyUntil(Math.min(n, j + 1));
+    } else if (pg && c === "$" && /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(sql.slice(i)) && !/[A-Za-z0-9_]/.test(sql[i - 1] ?? "")) {
+      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))![0];
+      const end = sql.indexOf(tag, i + tag.length);
+      copyUntil(end < 0 ? n : end + tag.length);
+    } else if (c === "'" || c === '"' || c === "`" || (!pg && c === "[")) {
+      const close = c === "[" ? "]" : c;
+      let j = i + 1;
+      for (;;) {
+        const k = sql.indexOf(close, j);
+        if (k < 0) { j = n; break; }
+        if (close !== "]" && sql[k + 1] === close) { j = k + 2; continue; }
+        j = k + 1;
+        break;
+      }
+      copyUntil(j);
+    } else if (c === ":" && next === ":") {
+      copyUntil(i + 2); // ::type
+    } else if (pg && (c === "[" || c === "]")) {
+      brackets = Math.max(0, brackets + (c === "[" ? 1 : -1));
+      copyUntil(i + 1);
+    } else if (c === ":" && next !== undefined && /[A-Za-z_]/.test(next) && sql[i - 1] !== ":" && brackets === 0) {
+      let j = i + 2;
+      while (j < n && /[A-Za-z0-9_]/.test(sql[j]!)) j++;
+      const name = sql.slice(i + 1, j);
+      names.push(name);
+      out += replace(name);
+      i = j;
+    } else if (bound && c === "?") {
+      // `?|`, `?&` are operators and `??` already the literal; a lone `?` is doubled.
+      if (next === "|" || next === "&") copyUntil(i + 2);
+      else if (next === "?") copyUntil(i + 2);
+      else { out += "??"; i++; }
+    } else {
+      copyUntil(i + 1);
+    }
+  }
+  return { sql: out, names };
+}

@@ -13,7 +13,7 @@
 import { db } from "../db/index.ts";
 import type { Collection } from "../db/schema.ts";
 import { privateFieldNames, parseFields, userTableName, type FieldDef } from "./collections.ts";
-import { compileListWhere, FilterError, type ListOptions } from "./records.ts";
+import { compileListWhere, FilterError, readSource, withViewParamValues, type ListOptions } from "./records.ts";
 
 export type AggFn = "count" | "sum" | "avg" | "min" | "max";
 export type Bucket = "hour" | "day" | "week" | "month" | "year";
@@ -36,7 +36,7 @@ const TIME = new Set(["date", "autodate"]);
 /** Types whose stored value is a scalar worth grouping or comparing. */
 const SCALAR = new Set(["text", "number", "bool", "select", "relation", "email", "url", "date", "autodate", "editor", "color"]);
 
-export interface AggregateOptions extends Pick<ListOptions, "filter" | "search" | "accessRule" | "auth" | "request"> {
+export interface AggregateOptions extends Pick<ListOptions, "filter" | "search" | "accessRule" | "auth" | "request" | "viewParams"> {
   agg?: string;
   groupBy?: string;
   sort?: string;
@@ -165,15 +165,19 @@ export async function aggregateRecords(col: Collection, opts: AggregateOptions):
   const limitRaw = opts.limit ?? DEFAULT_GROUP_LIMIT;
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_GROUP_LIMIT) : DEFAULT_GROUP_LIMIT;
 
+  // A view with parameters aggregates its query, bound (view-params.ts); its
+  // rules see the values the query uses.
+  const source = readSource(col, opts.viewParams, opts.auth);
+  if (source.values) opts = { ...opts, request: withViewParamValues(opts.request, source.values) ?? null };
   const where = await compileListWhere(col, opts);
   const select = [...groups.map((g) => g.sql), ...aggs.map((a) => a.sql)]
     .map((expr, i) => `${expr} AS c${i}`).join(", ");
   const groupSql = groups.length > 0 ? `GROUP BY ${groups.map((_, i) => i + 1).join(", ")}` : "";
-  const sql = `SELECT ${select} FROM ${q(userTableName(col.name))} ${where.whereSql} ${groupSql} ${orderSql} LIMIT ?`;
+  const sql = `SELECT ${select} FROM ${source.from} ${where.whereSql} ${groupSql} ${orderSql} LIMIT ?`;
 
   let raw: Array<Record<string, unknown>>;
   try {
-    raw = await db.all<Record<string, unknown>>(sql, [...where.whereParams, limit]);
+    raw = await db.all<Record<string, unknown>>(sql, [...source.binds, ...where.whereParams, limit]);
   } catch (e) {
     if (opts.search && e instanceof Error && /fts5/i.test(e.message)) throw new FilterError(`invalid search: ${e.message}`);
     throw e;

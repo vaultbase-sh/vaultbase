@@ -4,7 +4,7 @@ import { gateMode, withExclusiveWrite } from "./write-gate.ts";
 import { getDb, onCloseDb } from "../db/client.ts";
 import { db, getDriver, type DbDriver } from "../db/index.ts";
 import type { ColumnSpec } from "../db/ddl.ts";
-import { scanSql } from "./sql-scan.ts";
+import { rewriteSqlParams, scanSql } from "./sql-scan.ts";
 import { collections, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts, SEARCH_COLUMN } from "./fts.ts";
 import { ensureRowCount, forgetRowCount } from "./row-counts.ts";
@@ -13,6 +13,7 @@ import { customFieldType, isKnownFieldType } from "./field-types.ts";
 import { ruleSyntaxError } from "./expression.ts";
 import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, subfieldsOf, withoutRenames } from "./group-fields.ts";
 import { decryptValue, encryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
+import { boundViewSource, coerceViewParam, parseViewParams, validateViewParams, viewQueryWithDefaults, type ViewParam } from "./view-params.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -717,7 +718,9 @@ const VIEW_BANNED_WORDS = new Set([
 ]);
 
 export function validateViewQuery(query: string): void {
-  const q = query.trim();
+  // Parameters (view-params.ts) are values: checked as NULL, so a `:update`
+  // isn't read as the word UPDATE.
+  const q = rewriteSqlParams(query.trim(), () => "NULL", { pg: db.name === "postgres", bound: false }).sql;
   if (!q) throw new Error("View query is empty");
   // One scanner pass that knows strings, quoted identifiers and comments.
   // Stripping comments with a regex first let a `'--'` inside a string hide
@@ -838,8 +841,8 @@ export function baseColumnName(name: string): string {
 }
 
 /** Run the query with LIMIT 0 to extract column names without fetching rows. */
-export async function inferViewColumns(query: string): Promise<string[]> {
-  const body = query.trim().replace(/;\s*$/, "");
+export async function inferViewColumns(query: string, params: ViewParam[] = []): Promise<string[]> {
+  const body = viewQueryWithDefaults(query, params).trim().replace(/;\s*$/, "");
   const wrapped = `SELECT * FROM (${body}) LIMIT 0`;
   return await db.describe(wrapped);
 }
@@ -850,13 +853,26 @@ export async function inferViewColumns(query: string): Promise<string[]> {
  * (their own clamps stack with ours). Rows are returned as plain objects keyed
  * by column name — useful for the admin UI's "preview rows" button.
  */
-export async function previewViewRows(query: string, limit = 5): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }> {
+export async function previewViewRows(
+  query: string,
+  limit = 5,
+  params: ViewParam[] = [],
+  testValues: Record<string, unknown> = {},
+): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }> {
   validateViewQuery(query);
-  const body = query.trim().replace(/;\s*$/, "");
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
-  const wrapped = `SELECT * FROM (${body}) LIMIT ${safeLimit}`;
-  const columns = await db.describe(wrapped);
-  const rows = await db.all<Record<string, unknown>>(wrapped);
+  // Parameters take the test values given, else their defaults (NULL for a
+  // required one or one from auth).
+  const values = new Map<string, string | number | null>();
+  for (const p of params) {
+    const given = testValues[p.name];
+    if (given === undefined || given === "" || p.from) { values.set(p.name, p.from || p.required ? null : p.default ?? null); continue; }
+    try { values.set(p.name, coerceViewParam(p.type, given)); } catch (e) { throw new Error(`Test value for '${p.name}' ${(e as Error).message}`); }
+  }
+  const source = boundViewSource(query, params, values, "v");
+  const wrapped = `SELECT * FROM ${source.sql} LIMIT ${safeLimit}`;
+  const columns = await db.describe(viewQueryWithDefaults(`SELECT * FROM (${query.trim().replace(/;\s*$/, "")}) AS v LIMIT ${safeLimit}`, params));
+  const rows = await db.all<Record<string, unknown>>(wrapped, source.binds);
   return { columns, rows };
 }
 
@@ -928,17 +944,17 @@ function classifyValue(value: unknown, columnName: string): FieldType {
  * column's first observed value. Columns with no sample (or all-null) fall
  * back to "text".
  */
-export async function inferViewFields(query: string): Promise<FieldDef[]> {
+export async function inferViewFields(query: string, params: ViewParam[] = []): Promise<FieldDef[]> {
   await loadSensitiveSchema();
   validateViewQuery(query);
-  const columns = await inferViewColumns(query);
+  const columns = await inferViewColumns(query, params);
   const userColumns = columns.filter((c) => !VIEW_META_COLUMNS.has(c));
   if (userColumns.length === 0) return [];
 
   // One sample row is enough — algorithm spec uses the first non-null per column.
   let sample: Record<string, unknown> | undefined;
   try {
-    const { rows } = await previewViewRows(query, 1);
+    const { rows } = await previewViewRows(query, 1, params);
     sample = rows[0];
   } catch {
     // If the query fails at execution time, fall back to text-typed fields.
@@ -952,12 +968,15 @@ export async function inferViewFields(query: string): Promise<FieldDef[]> {
   });
 }
 
-/** Create the SQLite VIEW backing a view collection. */
-export async function createUserView(collectionName: string, query: string): Promise<void> {
+/**
+ * Create the database view backing a view collection: its query with each
+ * parameter's default written in (view-params.ts).
+ */
+export async function createUserView(collectionName: string, query: string, params: ViewParam[] = []): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
-  const body = query.trim().replace(/;\s*$/, "");
+  const body = viewQueryWithDefaults(query, params).trim().replace(/;\s*$/, "");
   await db.exec(db.dialect.createView(tname, body));
 }
 
@@ -1290,6 +1309,15 @@ export class CollectionValidationError extends Error {
   }
 }
 
+/** A view's parameters checked against its query (view-params.ts), as a 422 on `view_params`. */
+function checkedViewParams(query: string, raw: unknown): ViewParam[] {
+  try {
+    return validateViewParams(query, raw);
+  } catch (e) {
+    throw new CollectionValidationError({ view_params: `Parameters: ${e instanceof Error ? e.message : String(e)}` });
+  }
+}
+
 function assertValidFieldsForType(type: string, fields: FieldDef[]): void {
   if (type !== "auth") return;
   const reserved = new Set<string>(AUTH_RESERVED_FIELD_NAMES);
@@ -1339,18 +1367,21 @@ export async function createCollection(
   if (clash.length > 0) throw new Error(`A collection named '${data.name}' already exists`);
 
   let fields: FieldDef[];
+  let viewParams: ViewParam[] = [];
   if (type === "view") {
     if (!data.view_query) throw new Error("View collections require a view_query");
     await loadSensitiveSchema();
     validateViewQuery(data.view_query);
+    viewParams = checkedViewParams(data.view_query, data.view_params);
     const incoming = parseFields(data.fields ?? "[]");
     // If caller didn't pre-populate fields, infer column names + types from the query.
     try {
-      fields = incoming.length > 0 ? incoming : await inferViewFields(data.view_query);
+      fields = incoming.length > 0 ? incoming : await inferViewFields(data.view_query, viewParams);
     } catch (e) {
       throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
     }
   } else {
+    if (data.view_params) throw new CollectionValidationError({ view_params: "Only view collections take parameters" });
     const incoming = parseFields(data.fields ?? "[]");
     assertValidFieldsForType(type, incoming);
     fields = ensureImplicitFields(type, incoming);
@@ -1373,6 +1404,7 @@ export async function createCollection(
     update_rule: data.update_rule === undefined ? "" : data.update_rule,
     delete_rule: data.delete_rule === undefined ? "" : data.delete_rule,
     fields: JSON.stringify(withoutRenames(fields)),
+    view_params: viewParams.length > 0 ? JSON.stringify(viewParams) : null,
     created_at: now,
     updated_at: now,
   };
@@ -1385,7 +1417,7 @@ export async function createCollection(
   try {
     if (type === "view") {
       try {
-        await createUserView(row.name, data.view_query!);
+        await createUserView(row.name, data.view_query!, viewParams);
       } catch (e) {
         // The database refusing the query (a missing column) is the caller's to fix.
         throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
@@ -1453,6 +1485,7 @@ async function renameCollectionStorage(
   newName: string,
   type: string,
   viewQuery: string | null | undefined,
+  viewParams: ViewParam[] = [],
 ): Promise<void> {
   assertNewCollectionName(newName);
   const orm = getDb();
@@ -1479,7 +1512,7 @@ async function renameCollectionStorage(
     if (type === "view") {
       if (!viewQuery) throw new Error("View collections require a view_query");
       await dropUserView(oldName);
-      await createUserView(newName, viewQuery);
+      await createUserView(newName, viewQuery, viewParams);
     } else {
       // The search index is named after the collection; rebuilt below.
       await dropFts(oldName);
@@ -1556,6 +1589,9 @@ export async function updateCollection(
   assertRulesParse(data, typeof data.fields === "string" ? parseFields(data.fields) : null);
 
   const effectiveType = data.type ?? before.type;
+  if (effectiveType !== "view" && data.view_params) {
+    throw new CollectionValidationError({ view_params: "Only view collections take parameters" });
+  }
   if (data.type !== undefined && data.type !== before.type && (data.type === "singleton" || before.type === "singleton")) {
     throw new Error("A collection can't be turned into a singleton or out of one: create a new collection and move the data");
   }
@@ -1566,7 +1602,9 @@ export async function updateCollection(
   let savedWithFields = false;
   if (data.name !== undefined && data.name !== before.name) {
     if (before.type !== "view") await assertNoViewUses(userTableName(before.name), null, `rename '${before.name}'`);
-    await renameCollectionStorage(before, data.name, effectiveType, data.view_query ?? before.view_query);
+    // The view is rebuilt under the new name with the parameters it has now;
+    // a query or parameter change in the same update rebuilds it again below.
+    await renameCollectionStorage(before, data.name, effectiveType, before.view_query, parseViewParams(before.view_params));
     currentName = data.name;
   }
 
@@ -1577,20 +1615,24 @@ export async function updateCollection(
     const newQuery = data.view_query !== undefined ? data.view_query : before.view_query;
     if (!newQuery) throw new Error("View collections require a view_query");
     const queryChanged = data.view_query !== undefined && data.view_query !== before.view_query;
-    if (queryChanged) {
+    const paramsChanged = data.view_params !== undefined && (data.view_params ?? null) !== (before.view_params ?? null);
+    if (queryChanged || paramsChanged) {
       await loadSensitiveSchema();
       validateViewQuery(newQuery);
+      const newParams = checkedViewParams(newQuery, data.view_params !== undefined ? data.view_params : before.view_params);
+      data = { ...data, view_params: newParams.length > 0 ? JSON.stringify(newParams) : null };
       await dropUserView(currentName);
       try {
-        await createUserView(currentName, newQuery);
+        await createUserView(currentName, newQuery, newParams);
       } catch (e) {
         // Put the old query back, then report the new one's problem.
-        if (before.view_query) await createUserView(currentName, before.view_query).catch(() => {});
+        if (before.view_query) await createUserView(currentName, before.view_query, parseViewParams(before.view_params)).catch(() => {});
         throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
       }
       // Re-infer fields if the caller didn't supply explicit field defs.
+      // Defaults decide the sample row, so new parameters re-infer too.
       if (data.fields === undefined) {
-        const inferred = await inferViewFields(newQuery).catch((e) => {
+        const inferred = await inferViewFields(newQuery, newParams).catch((e) => {
           throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
         });
         data = { ...data, fields: JSON.stringify(inferred) };

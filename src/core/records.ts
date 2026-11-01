@@ -260,6 +260,7 @@ import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedW
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { validateRecord, type CanSeeRecord } from "./validate.ts";
+import { ViewParamError, boundViewSource, parseViewParams, resolveViewParams } from "./view-params.ts";
 import { getActiveHookRequest, makeHookHelpers, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
@@ -429,6 +430,8 @@ export interface ListOptions {
    * export) aren't held to MAX_LIST_OFFSET. Never set from client input.
    */
   allowDeepPaging?: boolean;
+  /** A view's parameters for this read (`?params[name]=…`, view-params.ts). */
+  viewParams?: Record<string, unknown> | null;
 }
 
 export interface ListResult {
@@ -543,6 +546,44 @@ function decodeValue(val: unknown, field: FieldDef): unknown {
 type Binding = string | number | bigint | boolean | null | Uint8Array;
 
 /**
+ * What a read of `col` selects FROM: its table (or database view), or, for a
+ * view with parameters, its query bound to this read's values under the
+ * table's own name, so everything written against `"vb_<name>"` still
+ * applies. The bound values come before any others in the statement.
+ */
+export function readSource(
+  col: Pick<Collection, "name" | "type" | "view_query" | "view_params">,
+  given: Record<string, unknown> | null | undefined,
+  auth: Pick<AuthContext, "id"> | null | undefined,
+): { from: string; binds: Binding[]; values: Map<string, string | number | null> | null } {
+  const tableRef = quoteIdent(userTableName(col.name));
+  const params = col.type === "view" ? parseViewParams(col.view_params) : [];
+  if (params.length === 0 || !col.view_query) {
+    if (given && Object.keys(given).length > 0) throw new ViewParamError(`'${col.name}' takes no parameters`);
+    return { from: tableRef, binds: [], values: null };
+  }
+  const values = resolveViewParams(params, given, auth?.id || null);
+  const source = boundViewSource(col.view_query, params, values, tableRef);
+  return { from: source.sql, binds: source.binds, values };
+}
+
+/**
+ * The request as rules see it, with `@request.query.params.<name>` set to the
+ * values the view's query uses: defaults and the caller's id included, so a
+ * rule never checks a value other than the one the query reads.
+ */
+export function withViewParamValues(
+  request: RequestContextLike | null | undefined,
+  values: Map<string, string | number | null> | null,
+): RequestContextLike | null | undefined {
+  if (!values) return request;
+  const query: Record<string, string> = {};
+  for (const [k, v] of Object.entries(request?.query ?? {})) if (!k.startsWith("params.")) query[k] = v;
+  for (const [name, v] of values) if (v !== null) query[`params.${name}`] = String(v);
+  return { ...(request ?? {}), query };
+}
+
+/**
  * WHERE clause for a list query: the caller's filter AND the collection's
  * access rule, both compiled fail-closed. Shared with vector search so it
  * scopes candidates exactly like a list does.
@@ -638,6 +679,10 @@ export async function listRecords(
   const fields = cachedFields(col.fields);
   const tname = userTableName(col.name);
   const tableRef = quoteIdent(tname);
+  // A view with parameters reads its query, bound, under the same name, and
+  // its rules see the values the query uses.
+  const source = readSource(col, opts.viewParams, opts.auth);
+  if (source.values) opts = { ...opts, request: withViewParamValues(opts.request, source.values) ?? null };
 
   // Guard against values that would reach SQL as-is: LIMIT -1 means "no
   // limit" in SQLite, 0 gives Infinity pages, NaN fails the bind.
@@ -725,10 +770,10 @@ export async function listRecords(
     ? (newest ? newestSelect : rankedSelect)(col.name, tableRef, rankedWhere.whereSql)
     : rowid && orderSql && offset >= ROWID_FIRST_OFFSET
       ? `SELECT * FROM ${tableRef} WHERE ${rowid} IN (SELECT ${rowid} FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?) ${orderSql}`
-      : `SELECT * FROM ${tableRef} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
+      : `SELECT * FROM ${source.from} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`;
   const selectParams = match && rankedWhere
     ? [match.query, ...rankedWhere.whereParams, perPage, offset]
-    : [...whereParams, perPage, offset];
+    : [...source.binds, ...whereParams, perPage, offset];
 
   let rows: Record<string, unknown>[];
   let totalItems = -1;
@@ -741,8 +786,8 @@ export async function listRecords(
       // A search on SQLite counts from the search index (searchCountSql),
       // not by joining every match into a WHERE ... IN on the table.
       const ftsCount = match && rankedWhere && db.capabilities.fts === "fts5";
-      const countSql = ftsCount ? searchCountSql(col.name, tableRef, rankedWhere.whereSql) : `SELECT COUNT(*) AS c FROM ${tableRef} ${whereSql}`;
-      const countParams = ftsCount ? [match.query, ...rankedWhere.whereParams] : whereParams;
+      const countSql = ftsCount ? searchCountSql(col.name, tableRef, rankedWhere.whereSql) : `SELECT COUNT(*) AS c FROM ${source.from} ${whereSql}`;
+      const countParams = ftsCount ? [match.query, ...rankedWhere.whereParams] : [...source.binds, ...whereParams];
       // A view's SELECT, strftime('now', …) in a filter, or a rule or filter
       // that reads another table (@collection, _via_, view-rule guards) can
       // change its answer without a write to this table, which is all the
@@ -836,13 +881,16 @@ function projectFields(item: RecordWithMeta, keep: string[]): RecordWithMeta {
 
 export async function getRecord(
   collectionName: string,
-  id: string
+  id: string,
+  /** A client read of a view with parameters: its values and the caller (view-params.ts). */
+  read?: { viewParams?: Record<string, unknown> | null; auth?: Pick<AuthContext, "id"> | null },
 ): Promise<RecordWithMeta | null> {
   const col = await getCollection(collectionName);
   if (!col) return null;
   const fields = cachedFields(col.fields);
-  const tableRef = quoteIdent(userTableName(col.name));
-  const row = await db.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]);
+  // Internal callers (no `read`) of a view read its database view, with the defaults.
+  const source = read ? readSource(col, read.viewParams, read.auth) : { from: quoteIdent(userTableName(col.name)), binds: [] };
+  const row = await db.get<Record<string, unknown>>(`SELECT * FROM ${source.from} WHERE "id" = ?`, [...source.binds, id]);
   return row ? await rowToMetaAsync(row, col, fields) : null;
 }
 

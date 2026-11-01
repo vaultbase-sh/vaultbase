@@ -7,6 +7,8 @@ import {
   createRecord,
   deleteRecord,
   getRecord,
+  readSource,
+  withViewParamValues,
   listRecords,
   shapeRecords,
   ReadOnlyCollectionError,
@@ -34,6 +36,7 @@ import { parseVectorParam, VectorParseError } from "../core/vector.ts";
 import { searchVectors } from "../core/vector-search.ts";
 import { aggregateRecords, type AggregateOptions } from "../core/aggregate.ts";
 import { timeFor } from "../core/perf-metrics.ts";
+import { ViewParamError, viewParamsFromUrl } from "../core/view-params.ts";
 
 function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollectionError | SingletonRecordError) {
   set.status = 405;
@@ -46,7 +49,7 @@ function readOnlyResponse(set: { status?: number | string }, err: ReadOnlyCollec
  * log, not the response. Returns null for anything else.
  */
 function listErrorResponse(set: { status?: number | string }, e: unknown) {
-  if (e instanceof FilterError) {
+  if (e instanceof FilterError || e instanceof ViewParamError) {
     set.status = 400;
     return { error: e.message, code: 400 };
   }
@@ -177,9 +180,20 @@ export function makeRecordsPlugin(jwtSecret: string) {
     const col = await timeFor(request, "collection_load", () => getCollection(collection));
     if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
     const auth = await getAuthContext(request, jwtSecret);
-    const record = await timeFor(request, "db_exec", () => getRecord(collection, id));
+    const viewParams = viewParamsFromUrl(new URL(request.url).searchParams);
+    let record: Awaited<ReturnType<typeof getRecord>>;
+    // Rules see the values a view's query uses (defaults, the caller's id).
+    let ruleRequest: RequestContextLike;
+    try {
+      ruleRequest = withViewParamValues(buildRequestContext(request), readSource(col, viewParams, auth).values)!;
+      record = await timeFor(request, "db_exec", () => getRecord(collection, id, { viewParams, auth }));
+    } catch (e) {
+      const r = listErrorResponse(set, e);
+      if (r) return r;
+      throw e;
+    }
     if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
-    if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>)) {
+    if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>, ruleRequest)) {
       set.status = 403;
       return { error: "Forbidden", code: 403 };
     }
@@ -200,7 +214,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
     const exclude = q.get("exclude") ?? undefined;
     if (!expand && !fields && !exclude) return { data: record };
     const [shaped] = await timeFor(request, "db_exec", () =>
-      shapeRecords(col, [record], { expand, fields, exclude, auth, request: buildRequestContext(request) }));
+      shapeRecords(col, [record], { expand, fields, exclude, auth, request: ruleRequest }));
     return { data: shaped };
   }
 
@@ -274,6 +288,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.exclude) opts.exclude = query.exclude;
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
+        const viewParams = viewParamsFromUrl(new URL(request.url).searchParams);
+        if (viewParams) opts.viewParams = viewParams;
         // Apply expression rule as access filter (admins bypass)
         // Rules see the request: the list rule here, and the related
         // collections' view rules when expanding.
@@ -290,6 +306,12 @@ export function makeRecordsPlugin(jwtSecret: string) {
         // larger working set and slice — this is fine up to ~50K candidates;
         // beyond that, switch to sqlite-vec.
         if (query.nearVector && query.nearVectorField) {
+          // Candidates are ranked from the table itself; for a view with
+          // parameters that would be the defaults, not this read's values.
+          if (col.type === "view" && col.view_params) {
+            set.status = 400;
+            return { error: `nearVector isn't available on '${col.name}', a view with parameters`, code: 400 };
+          }
           const fields = parseFields(col.fields);
           const vecField = fields.find((f) => f.name === query.nearVectorField && f.type === "vector");
           if (!vecField) {
@@ -407,7 +429,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (col.list_rule === "" && auth?.type !== "admin") {
           set.status = 403; return { error: "Forbidden", code: 403 };
         }
-        const opts: AggregateOptions = { auth };
+        const opts: AggregateOptions = { auth, viewParams: viewParamsFromUrl(new URL(request.url).searchParams) };
         if (query.agg) opts.agg = query.agg;
         if (query.groupBy) opts.groupBy = query.groupBy;
         if (query.filter) opts.filter = query.filter;

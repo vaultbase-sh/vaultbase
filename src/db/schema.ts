@@ -32,6 +32,8 @@ export const collections = sqliteTable("vaultbase_collections", {
   type: text("type").notNull().default("base"),
   fields: text("fields").notNull().default("[]"),
   view_query: text("view_query"),
+  /** A view's parameters, JSON (core/view-params.ts); null when it has none. */
+  view_params: text("view_params"),
   list_rule: text("list_rule"),
   view_rule: text("view_rule"),
   create_rule: text("create_rule"),

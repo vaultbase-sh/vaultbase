@@ -3,6 +3,7 @@ import type { AuthContext } from "../core/rules.ts";
 import { evaluateRule } from "../core/rules.ts";
 import { recordRuleEval, type RuleOutcome } from "../core/request-context.ts";
 import type { RequestContextLike } from "../core/filter.ts";
+import { viewParamsFromUrl } from "../core/view-params.ts";
 
 /** Sensitive headers that NEVER reach the rule engine. */
 const REDACTED_HEADERS: ReadonlySet<string> = new Set([
@@ -37,6 +38,12 @@ export function buildRequestContext(
   const url = new URL(request.url);
   const query: Record<string, string> = {};
   url.searchParams.forEach((v, k) => { query[k] = v; });
+  // View parameters (`params[name]=…`) as `@request.query.params.name` sees
+  // them. A literal `params.x` key in the URL isn't one: it would let a rule
+  // check a value the view never reads. Reads of a view replace these with
+  // the values the query really uses (records.ts readSource).
+  for (const k of Object.keys(query)) if (k.startsWith("params.")) delete query[k];
+  for (const [name, v] of Object.entries(viewParamsFromUrl(url.searchParams) ?? {})) query[`params.${name}`] = v;
 
   return {
     method: request.method.toUpperCase(),

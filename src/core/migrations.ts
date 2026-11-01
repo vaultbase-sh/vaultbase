@@ -7,6 +7,7 @@ import {
   updateCollection,
   type FieldDef,
 } from "./collections.ts";
+import { coerceViewParam, parseViewParams, type ViewParam } from "./view-params.ts";
 
 /**
  * Stable JSON shape for a collection definition. Persisted across environments
@@ -19,6 +20,8 @@ export interface CollectionSnapshot {
   type: "base" | "auth" | "view" | "singleton";
   fields: FieldDef[];
   view_query?: string | null;
+  /** A view's parameters (core/view-params.ts). */
+  view_params?: ViewParam[] | null;
   list_rule?: string | null;
   view_rule?: string | null;
   create_rule?: string | null;
@@ -79,6 +82,25 @@ function fieldsEqual(a: FieldDef[], b: FieldDef[]): boolean {
 
 type ExistingCollection = NonNullable<Awaited<ReturnType<typeof getCollection>>>;
 
+/**
+ * A parameter list as stored: JSON in one key order with defaults converted,
+ * or null for none, so a hand-written snapshot compares equal to what saving
+ * it stores.
+ */
+function viewParamsJson(params: ViewParam[] | null | undefined): string | null {
+  if (!params || params.length === 0) return null;
+  return JSON.stringify(params.map((p) => {
+    let def = p.default;
+    if (def !== undefined && def !== null) { try { def = coerceViewParam(p.type, def); } catch { /* compared as written */ } }
+    return {
+      name: p.name, type: p.type,
+      ...(def !== undefined && def !== null ? { default: def } : {}),
+      ...(p.required ? { required: true } : {}),
+      ...(p.from ? { from: p.from } : {}),
+    };
+  }));
+}
+
 export function isCollectionInSync(
   existing: Awaited<ReturnType<typeof getCollection>>,
   snap: CollectionSnapshot
@@ -86,6 +108,7 @@ export function isCollectionInSync(
   if (!existing) return false;
   if (existing.type !== snap.type) return false;
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) return false;
+  if (viewParamsJson(parseViewParams(existing.view_params)) !== viewParamsJson(snap.view_params)) return false;
   if (RULES.some((r) => ruleDiffers(existing[r], snap[r]))) return false;
   return fieldsEqual(parseFields(existing.fields), snap.fields);
 }
@@ -123,6 +146,7 @@ export function describeCollectionChanges(existing: ExistingCollection, snap: Co
   }
 
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) changes.push("view_query changed");
+  if (viewParamsJson(parseViewParams(existing.view_params)) !== viewParamsJson(snap.view_params)) changes.push("view_params changed");
   for (const r of RULES) if (ruleDiffers(existing[r], snap[r])) changes.push(`${r} changed`);
 
   return changes;
@@ -243,6 +267,7 @@ export async function applySnapshot(
           type: c.type,
           fields: JSON.stringify(c.fields ?? []),
           view_query: c.view_query ?? null,
+          view_params: viewParamsJson(c.view_params),
           // Same reasoning as createCollection: a snapshot that omits a rule
           // must not restore it as public. Leaving these undefined lets the
           // admin-only default apply; a snapshot with an explicit null still
@@ -291,6 +316,7 @@ export async function applySnapshot(
       await updateCollection(existing.id, {
         fields: JSON.stringify(c.fields ?? []),
         view_query: c.view_query ?? null,
+        view_params: viewParamsJson(c.view_params),
         // Only the rules the snapshot carries; the others stay as they are.
         ...Object.fromEntries(RULES.filter((r) => c[r] !== undefined).map((r) => [r, c[r]])),
       });

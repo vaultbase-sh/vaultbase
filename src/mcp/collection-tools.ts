@@ -29,6 +29,7 @@ import {
 import { ensureSingletonRecord, listCollections, parseFields, type FieldDef } from "../core/collections.ts";
 import { groupItemBounds, isGroupList, subfieldsOf } from "../core/group-fields.ts";
 import { ToolRegistry, asJsonText, asUntrustedJsonText } from "./tools.ts";
+import { parseViewParams } from "../core/view-params.ts";
 
 const HARD_PER_PAGE_CAP = 100;
 
@@ -153,6 +154,23 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
   for (const col of cols) {
     const fields = parseFields(col.fields);
     const slug = col.name; // collection name is already SQL-ident-safe
+    // A view's parameters (core/view-params.ts), as a `params` argument. One
+    // from auth.id isn't settable; with no user here it's NULL.
+    const viewParams = col.type === "view" ? parseViewParams(col.view_params).filter((p) => !p.from) : [];
+    const paramsProp = viewParams.length === 0 ? {} : {
+      params: {
+        type: "object",
+        description: `The view's parameters: ${viewParams.map((p) => `${p.name} (${p.type}${p.required ? ", required" : ""})`).join(", ")}`,
+        properties: Object.fromEntries(viewParams.map((p) => [p.name, {
+          type: p.type === "number" ? "number" : p.type === "bool" ? "boolean" : "string",
+          ...(p.type === "date" ? { description: "ISO 8601 date or Unix seconds" } : {}),
+        }])),
+        ...(viewParams.some((p) => p.required) ? { required: viewParams.filter((p) => p.required).map((p) => p.name) } : {}),
+        additionalProperties: false,
+      },
+    };
+    const paramsArg = (args: Record<string, unknown>) =>
+      args["params"] && typeof args["params"] === "object" ? args["params"] as Record<string, unknown> : null;
 
     // A singleton has one record: read and update it, no id, no list,
     // create or delete.
@@ -204,7 +222,9 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
             fields:    { type: "string",  description: "Comma-separated projection, e.g. 'id,title,created'" },
             exclude:   { type: "string",  description: "Comma-separated fields to leave out, applied after fields; id is always returned" },
             skipTotal: { type: "boolean", description: "Skip COUNT(*) for huge tables. Default false." },
+            ...paramsProp,
           },
+          ...(viewParams.some((p) => p.required) ? { required: ["params"] } : {}),
           additionalProperties: false,
         },
       },
@@ -217,6 +237,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         if (typeof args.fields    === "string")  opts.fields    = args.fields;
         if (typeof args.exclude   === "string")  opts.exclude   = args.exclude;
         if (typeof args.skipTotal === "boolean") opts.skipTotal = args.skipTotal;
+        if (paramsArg(args)) opts.viewParams = paramsArg(args);
         const r = await listRecords(slug, opts);
         return asUntrustedJsonText(`${slug} list`, r);
       },
@@ -232,14 +253,15 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
           type: "object",
           properties: {
             id: { type: "string", description: "Record id" },
+            ...paramsProp,
           },
-          required: ["id"],
+          required: viewParams.some((p) => p.required) ? ["id", "params"] : ["id"],
           additionalProperties: false,
         },
       },
       handler: async (args) => {
         if (typeof args.id !== "string") throw new Error("id (string) is required");
-        const r = await getRecord(slug, args.id);
+        const r = await getRecord(slug, args.id, viewParams.length > 0 || col.view_params ? { viewParams: paramsArg(args), auth: null } : undefined);
         return asUntrustedJsonText(`${slug} record`, r);
       },
     });

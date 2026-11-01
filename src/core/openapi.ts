@@ -11,6 +11,7 @@ import { parseFields, type FieldDef } from "./collections.ts";
 import { VAULTBASE_VERSION } from "./version.ts";
 import { customFieldType } from "./field-types.ts";
 import { groupItemBounds, isGroupList, subfieldsOf } from "./group-fields.ts";
+import { parseViewParams } from "./view-params.ts";
 
 type Schema = Record<string, unknown>;
 
@@ -164,11 +165,20 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
       },
     };
   }
+  // A view's parameters (core/view-params.ts), as `params[name]`; one from
+  // auth.id comes from the caller, not the query string.
+  const viewParams = col.type === "view" ? parseViewParams(col.view_params).filter((p) => !p.from) : [];
+  const paramQps = viewParams.map((p) => ({
+    name: `params[${p.name}]`, in: "query", required: !!p.required,
+    description: `View parameter (${p.type}${p.type === "date" ? ": ISO 8601 or Unix seconds" : ""})`,
+    schema: p.type === "number" ? { type: "number" } : p.type === "bool" ? { type: "boolean" } : { type: "string" },
+  }));
   const paths: Record<string, Schema> = {
     [base]: {
       get: {
         tags, operationId: `list${T}`, summary: `List ${col.name}`,
         parameters: [
+          ...paramQps,
           qp("page", "1-based page", { type: "integer", minimum: 1 }),
           qp("perPage", "Page size (max 500)", { type: "integer", minimum: 1, maximum: 500 }),
           qp("filter", "Filter expression, e.g. status = \"open\" && amount > 10"),
@@ -210,6 +220,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
           qp("search", "Full-text search"),
           qp("sort", "groupBy field or aggregate alias, '-' for descending"),
           qp("limit", "Max groups (default 100, max 1000)", { type: "integer" }),
+          ...paramQps,
         ],
         responses: { "200": ok(dataOf({ type: "array", items: { type: "object", additionalProperties: true } })), ...ERRORS },
       },
@@ -217,7 +228,7 @@ function collectionPaths(col: Collection, T: string): Record<string, Schema> {
     [`${base}/{id}`]: {
       get: {
         tags, operationId: `get${T}`, summary: `Get a ${col.name} record`,
-        parameters: [ID, qp("expand", "Relation fields to expand"), qp("fields", "Fields to return"), qp("exclude", "Fields to leave out")],
+        parameters: [ID, qp("expand", "Relation fields to expand"), qp("fields", "Fields to return"), qp("exclude", "Fields to leave out"), ...paramQps],
         responses: { "200": ok(dataOf(ref(T))), ...ERRORS },
       },
       ...(col.type === "view" ? {} : {

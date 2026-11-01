@@ -17,6 +17,7 @@ import {
 } from "../core/collections.ts";
 import { db } from "../db/index.ts";
 import { adminGuard } from "./_admin.ts";
+import { validateViewParams } from "../core/view-params.ts";
 
 export function makeCollectionsPlugin(jwtSecret: string) {
   return new Elysia({ name: "collections" })
@@ -60,6 +61,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           if (body.list_rule !== undefined) init.list_rule = body.list_rule;
           if (body.view_rule !== undefined) init.view_rule = body.view_rule;
           if (body.view_query !== undefined) init.view_query = body.view_query;
+          if (body.view_params !== undefined) init.view_params = body.view_params === null ? null : JSON.stringify(body.view_params);
           if (body.history_enabled !== undefined) init.history_enabled = body.history_enabled ? 1 : 0;
           const col = await createCollection(init);
           return { data: col };
@@ -87,6 +89,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           type: t.Optional(t.String()),
           fields: t.Optional(t.Array(t.Any())),
           view_query: t.Optional(t.String()),
+          view_params: t.Optional(t.Nullable(t.Array(t.Any()))),
           list_rule: t.Optional(t.Nullable(t.String())),
           view_rule: t.Optional(t.Nullable(t.String())),
           create_rule: t.Optional(t.Nullable(t.String())),
@@ -103,6 +106,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         if (body.name !== undefined) update["name"] = body.name;
         if (body.fields !== undefined) update["fields"] = JSON.stringify(body.fields);
         if (body.view_query !== undefined) update["view_query"] = body.view_query;
+        if (body.view_params !== undefined) update["view_params"] = body.view_params === null ? null : JSON.stringify(body.view_params);
         if ("list_rule" in body) update["list_rule"] = body.list_rule;
         if ("view_rule" in body) update["view_rule"] = body.view_rule;
         if ("create_rule" in body) update["create_rule"] = body.create_rule;
@@ -144,6 +148,7 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           name: t.Optional(t.String()),
           fields: t.Optional(t.Array(t.Any())),
           view_query: t.Optional(t.String()),
+          view_params: t.Optional(t.Nullable(t.Array(t.Any()))),
           list_rule: t.Optional(t.Nullable(t.String())),
           view_rule: t.Optional(t.Nullable(t.String())),
           create_rule: t.Optional(t.Nullable(t.String())),
@@ -161,15 +166,16 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         try {
           await loadSensitiveSchema();
           validateViewQuery(body.view_query);
-          const columns = await inferViewColumns(body.view_query);
-          const fields = await inferViewFields(body.view_query);
+          const params = validateViewParams(body.view_query, body.view_params ?? []);
+          const columns = await inferViewColumns(body.view_query, params);
+          const fields = await inferViewFields(body.view_query, params);
           return { data: { columns, fields } };
         } catch (e) {
           set.status = 422;
           return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
-      { requireAdmin: true, body: t.Object({ view_query: t.String() }) }
+      { requireAdmin: true, body: t.Object({ view_query: t.String(), view_params: t.Optional(t.Array(t.Any())) }) }
     )
     // Preview the first N rows a view query would return. Lets the admin UI
     // sanity-check a query before saving the collection — no view is created.
@@ -179,14 +185,21 @@ export function makeCollectionsPlugin(jwtSecret: string) {
         try {
           const limit = typeof body.limit === "number" ? body.limit : 5;
           await loadSensitiveSchema();
-          const result = await previewViewRows(body.view_query, limit);
+          // Parameters take the test values given (else their defaults).
+          const params = validateViewParams(body.view_query, body.view_params ?? []);
+          const result = await previewViewRows(body.view_query, limit, params, body.params ?? {});
           return { data: result };
         } catch (e) {
           set.status = 422;
           return { error: e instanceof Error ? e.message : String(e), code: 422 };
         }
       },
-      { requireAdmin: true, body: t.Object({ view_query: t.String(), limit: t.Optional(t.Number()) }) }
+      { requireAdmin: true, body: t.Object({
+        view_query: t.String(),
+        limit: t.Optional(t.Number()),
+        view_params: t.Optional(t.Array(t.Any())),
+        params: t.Optional(t.Record(t.String(), t.Any())),
+      }) }
     )
     .delete("/collections/:id", async ({ params, set }) => {
       try {

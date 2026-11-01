@@ -13,6 +13,7 @@ import {
   type Snapshot,
 } from "../core/migrations.ts";
 import { adminGuard } from "./_admin.ts";
+import { parseViewParams } from "../core/view-params.ts";
 
 /**
  * Re-exported for tests / older imports — the canonical home is now
@@ -36,6 +37,8 @@ export function makeMigrationsPlugin(jwtSecret: string) {
             fields: parseFields(c.fields),
           };
           if (c.view_query !== null && c.view_query !== undefined) out.view_query = c.view_query;
+          const params = parseViewParams(c.view_params);
+          if (params.length > 0) out.view_params = params;
           // All five, public (null) included: a rule left out means "keep as
           // is" when applied to an existing collection, and admin-only when
           // it creates one, so leaving null out would change it either way.

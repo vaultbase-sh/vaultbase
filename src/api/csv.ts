@@ -1,7 +1,8 @@
 import Elysia from "elysia";
 import { encodeRow, parseCsvToObjects } from "../core/csv.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
-import { createRecord, listRecords, type RecordWithMeta } from "../core/records.ts";
+import { createRecord, listRecords, readSource, type RecordWithMeta } from "../core/records.ts";
+import { ViewParamError, viewParamsFromUrl } from "../core/view-params.ts";
 import { ValidationError } from "../core/validate.ts";
 import { adminGuard } from "./_admin.ts";
 
@@ -116,7 +117,7 @@ export function makeCsvPlugin(jwtSecret: string) {
     //
     // Output is byte-identical to the previous buffered implementation:
     //   header CRLF row1 CRLF row2 ... CRLF rowN     (no trailing CRLF)
-    .get("/admin/export/:collection", async ({ params, query, set }) => {
+    .get("/admin/export/:collection", async ({ params, query, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (col.type !== "base") {
@@ -146,7 +147,17 @@ export function makeCsvPlugin(jwtSecret: string) {
 
       // Admin-only export of the whole table: not bound by the offset cap
       // that protects client-facing lists.
-      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true, ...(idFilter ? { filter: idFilter } : {}) });
+      // A view with parameters exports for the values given (`params[name]=…`);
+      // checked here, so a bad one is a 400 rather than a broken stream.
+      const viewParams = viewParamsFromUrl(new URL(request.url).searchParams);
+      try {
+        readSource(col, viewParams, null);
+      } catch (e) {
+        if (!(e instanceof ViewParamError)) throw e;
+        set.status = 400;
+        return { error: e.message, code: 400 };
+      }
+      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true, viewParams, ...(idFilter ? { filter: idFilter } : {}) });
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {

@@ -30,6 +30,21 @@ Binaries, checksums, signatures and SBOMs for every version are on
     mode, so a migration that drops a file's reference for a while doesn't
     lose the file.
   - `/api/health` reports the level (`maintenance`).
+- **Parameters on view collections.** A view's query can use `:name`
+  placeholders, filled from the request as `?params[name]=…` on list,
+  get-one, `_aggregate` and CSV export, so a view can compute "revenue since
+  a date" instead of needing one view per range.
+  - Each parameter is declared with a type (`text`, `number`, `bool`,
+    `date`), an optional default, or `required` (a read without it gets
+    `400`). Values are always bound behind a cast, never written into the SQL.
+  - `from: "auth.id"` fills a parameter with the signed-in user's id, which
+    the request can't set: per-user views where the rows can't be filtered
+    after the query.
+  - Rules can read the values as `@request.query.params.<name>`.
+  - Other views, `@collection.<view>` in rules and relations into the view
+    read it with the defaults.
+  - The admin API's view previews take parameters and test values; OpenAPI
+    and the MCP list/get tools describe them; snapshots carry them.
 
 ### Changed
 
