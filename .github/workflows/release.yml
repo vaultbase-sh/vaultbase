@@ -72,9 +72,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           # Pinned: the compile target embeds this exact Bun runtime, so a Bun
-          # bump changes binary size and behaviour. 1.4.2 is ~20 MB smaller
-          # than 1.3.x. Bump deliberately after running the suite on it.
-          bun-version: 1.4.2
+          # bump changes binary size and behaviour. 1.4.4 adds ~28 MB over
+          # 1.4.2 (runtime only; an empty program grows the same amount).
+          # Bump deliberately after running the suite on it.
+          bun-version: 1.4.4
 
       - name: Install root dependencies
         run: bun install --frozen-lockfile

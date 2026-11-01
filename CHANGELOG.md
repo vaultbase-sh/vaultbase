@@ -7,6 +7,23 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **Built on Bun 1.4.4** (was 1.4.2). Postgres queries use less CPU, idle
+  servers use less, and S3 uploads no longer hold the whole file in memory.
+  The binaries are about 28 MB larger (about 15 MB more to download), all of
+  it in the Bun runtime.
+
+### Fixed
+
+- **GIF thumbnails measure the canvas from the file.** The decode limits for
+  animated GIFs now read the canvas size from the GIF's own header, widened
+  to cover every frame, instead of trusting the image library's report. Bun
+  1.4.4 reports the first frame's size there, which would have let a small
+  file with tiny frames on a huge canvas be decoded in full.
+
 ## [0.34.0] — 2026-11-01
 
 ### Added

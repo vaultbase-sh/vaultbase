@@ -275,15 +275,26 @@ const MAX_ANIMATED_DECODES = 2;
 export class ImageTooLargeError extends Error {}
 
 /**
- * Frames in a GIF: its image descriptors, found by walking the block
- * structure without decoding anything. Counting graphic-control extensions
- * (the old way) missed frames that have none — they're optional — so a few
- * hundred bytes could declare dozens of full-canvas frames and be decoded
- * as one. A file that doesn't parse counts as over any budget.
+ * A GIF's frame count and canvas size, found by walking the block structure
+ * without decoding anything.
+ *
+ * Frames are the image descriptors. Counting graphic-control extensions (the
+ * old way) missed frames that have none — they're optional — so a few hundred
+ * bytes could declare dozens of full-canvas frames and be decoded as one.
+ *
+ * The canvas is the logical screen, widened to cover every frame. The decoder
+ * composites each frame onto it, so this is what decoding costs. Bun.Image's
+ * metadata can't stand in: since Bun 1.4.4 it reports the first frame's size,
+ * so a 4000×4000 canvas of 1×1 frames looked like 1×1.
+ *
+ * A file that doesn't parse counts as over any frame budget.
  */
-export function gifFrameCount(bytes: Uint8Array): number {
+export function gifLayout(bytes: Uint8Array): { frames: number; width: number; height: number } {
   const TOO_MANY = Number.MAX_SAFE_INTEGER;
-  if (bytes.length < 13) return TOO_MANY;
+  if (bytes.length < 13) return { frames: TOO_MANY, width: 0, height: 0 };
+  let width = bytes[6]! | (bytes[7]! << 8);
+  let height = bytes[8]! | (bytes[9]! << 8);
+  const unparsed = () => ({ frames: TOO_MANY, width, height });
   let i = 13; // header (6) + logical screen descriptor (7)
   const packed = bytes[10]!;
   if (packed & 0x80) i += 3 * (1 << ((packed & 0x07) + 1)); // global color table
@@ -303,18 +314,26 @@ export function gifFrameCount(bytes: Uint8Array): number {
     if (block === 0x21) { // extension: introducer, label, sub-blocks
       i = skipSubBlocks(i + 2);
     } else if (block === 0x2c) { // image descriptor
-      if (i + 10 > bytes.length) return TOO_MANY;
+      if (i + 10 > bytes.length) return unparsed();
       frames++;
+      const u16 = (at: number) => bytes[at]! | (bytes[at + 1]! << 8);
+      width = Math.max(width, u16(i + 1) + u16(i + 5)); // left + frame width
+      height = Math.max(height, u16(i + 3) + u16(i + 7)); // top + frame height
       const flags = bytes[i + 9]!;
       i += 10;
       if (flags & 0x80) i += 3 * (1 << ((flags & 0x07) + 1)); // local color table
       i = skipSubBlocks(i + 1); // LZW minimum code size, then image data
     } else {
-      return TOO_MANY;
+      return unparsed();
     }
-    if (i < 0) return frames > 0 ? frames + 1 : TOO_MANY; // truncated mid-block
+    if (i < 0) return frames > 0 ? { frames: frames + 1, width, height } : unparsed(); // truncated mid-block
   }
-  return Math.max(1, frames);
+  return { frames: Math.max(1, frames), width, height };
+}
+
+/** Frames in a GIF; see {@link gifLayout}. */
+export function gifFrameCount(bytes: Uint8Array): number {
+  return gifLayout(bytes).frames;
 }
 
 let animatedDecodes = 0;
@@ -342,9 +361,13 @@ export async function generateThumbnail(
   // Check the size from the header before decoding anything: a small file
   // can declare a huge canvas (a decompression bomb), and decoding happens
   // on the request path.
-  const { width, height } = await new Bun.Image(bytes).metadata();
-  if (!(width > 0 && height > 0) || width * height > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
-  if (format === "gif" && !spec.format && gifFrameCount(bytes) * width * height > MAX_ANIMATION_PIXELS) {
+  const meta = await new Bun.Image(bytes).metadata();
+  // A GIF's real canvas comes from its own header; see gifLayout.
+  const gif = format === "gif" ? gifLayout(bytes) : null;
+  const width = Math.max(meta.width, gif?.width ?? 0);
+  const height = Math.max(meta.height, gif?.height ?? 0);
+  if (!(meta.width > 0 && meta.height > 0) || width * height > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
+  if (gif && !spec.format && gif.frames * width * height > MAX_ANIMATION_PIXELS) {
     // Too much to decode every frame: render the first one.
     return await thumbnailStill(bytes, spec, "png");
   }
