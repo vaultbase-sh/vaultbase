@@ -29,8 +29,14 @@ afterEach(() => closeDb());
 const app = () => new Elysia().use(makeAuditLogPlugin(SECRET)).post("/api/v1/admin/collections", () => ({ data: { ok: true } }));
 
 async function actors(): Promise<Array<string | null>> {
-  await Bun.sleep(20); // the entry is written without awaiting
-  return (await getDb().select().from(auditLog)).map((r) => r.actor_id);
+  // The entry is written without awaiting: wait for it (a fixed 20 ms wasn't
+  // always enough on a busy CI runner).
+  for (let i = 0; i < 100; i++) {
+    const rows = await getDb().select().from(auditLog);
+    if (rows.length > 0) return rows.map((r) => r.actor_id);
+    await Bun.sleep(20);
+  }
+  return [];
 }
 
 describe("audit actor", () => {
