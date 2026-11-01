@@ -7,6 +7,7 @@ import { guardHelpers, ScriptTimeoutError, withTimeLimit } from "./script-limits
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
+import { backgroundPaused } from "./maintenance-mode.ts";
 
 /**
  * In-process job queue + worker engine. Phase 1 of the Redis brainstorm —
@@ -384,6 +385,9 @@ export async function waitForRunningJobs(timeoutMs: number): Promise<boolean> {
 }
 
 async function tick(): Promise<void> {
+  // Maintenance mode: jobs stay queued. Running ones finish, and their
+  // leases are still renewed.
+  if (backgroundPaused()) return;
   const compiled = await loadWorkers();
 
   // Group workers by queue, picking a single worker per queue per tick to

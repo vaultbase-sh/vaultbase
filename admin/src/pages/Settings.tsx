@@ -11,6 +11,7 @@ import { toast } from "../stores/toast.ts";
 import { DEFAULT_EMAIL_TEMPLATES, type EmailTemplateKind } from "../lib/email-templates.ts";
 import { useAuth } from "../stores/auth.ts";
 import { useSidebar } from "../stores/sidebar.ts";
+import { useMaintenance, type MaintenanceLevel } from "../stores/maintenance.ts";
 import { OPTIONAL_NAV_ITEMS } from "../lib/nav.ts";
 import { applyTheme, themeVars } from "../theme.ts";
 import {
@@ -40,7 +41,7 @@ const DEFAULT_RULES: RateLimitRule[] = [
 ];
 
 type SettingsTabId =
-  | "application" | "theme" | "sidebar" | "rate-limit" | "egress" | "script-limits" | "cors" | "security"
+  | "application" | "theme" | "sidebar" | "maintenance" | "rate-limit" | "egress" | "script-limits" | "cors" | "security"
   | "smtp" | "templates" | "auth" | "password-policy" | "oauth2"
   | "storage" | "backup" | "retention" | "migrations" | "notifications"
   | "metrics" | "updates" | "danger";
@@ -66,6 +67,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
     { id: "updates",     label: "Updates",     subtitle: "GitHub release checker" },
   ]},
   { group: "Traffic", items: [
+    { id: "maintenance", label: "Maintenance mode", subtitle: "take the API offline for clients" },
     { id: "rate-limit",  label: "Rate limiting", subtitle: "per-IP token bucket" },
     { id: "egress",      label: "Hook egress",   subtitle: "outbound HTTP allow / deny CIDRs" },
     { id: "script-limits", label: "Script time limits", subtitle: "hooks · routes · cron jobs · queue workers" },
@@ -243,6 +245,7 @@ export default function Settings() {
           {active === "sidebar" && <SidebarSection />}
           {active === "rate-limit" && <RateLimitSection />}
           {active === "egress" && <EgressSection />}
+          {active === "maintenance" && <MaintenanceSection />}
           {active === "script-limits" && <ScriptLimitsSection />}
           {active === "cors" && <CorsSection />}
           {active === "security" && <SecuritySection />}
@@ -650,6 +653,184 @@ function ScriptLimitsSection() {
         <VbCode>helpers</VbCode> calls. A helper call already under way (an email being sent) still
         finishes, and a loop that never awaits holds the server until it ends. Code registered by an
         app embedding Vaultbase has no limit.
+      </div>
+
+      <SaveBar saving={saving} dirty={loaded} onSave={save} />
+    </SectionShell>
+  );
+}
+
+// ── Maintenance mode ────────────────────────────────────────────────────────
+const MAINTENANCE_LEVELS: { label: string; value: MaintenanceLevel }[] = [
+  { label: "Fully off: clients get 503", value: "full" },
+  { label: "Read-only: reads work, writes get 503", value: "read_only" },
+];
+
+interface CustomRouteRow { id: string; name: string; method: string; path: string }
+
+/** Unix seconds → the value a datetime-local input takes, in local time. */
+function toLocalInput(sec: string): string {
+  const n = Number(sec);
+  if (!Number.isInteger(n) || n <= 0) return "";
+  const d = new Date(n * 1000);
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function MaintenanceSection() {
+  const refreshBanner = useMaintenance((s) => s.refresh);
+  const [enabled, setEnabled] = useState(false);
+  const [wasEnabled, setWasEnabled] = useState(false);
+  const [level, setLevel] = useState<MaintenanceLevel>("full");
+  const [savedLevel, setSavedLevel] = useState<MaintenanceLevel>("full");
+  const [message, setMessage] = useState("");
+  const [until, setUntil] = useState("");
+  const [runBackground, setRunBackground] = useState(false);
+  const [openRoutes, setOpenRoutes] = useState<string[]>([]);
+  const [customRoutes, setCustomRoutes] = useState<CustomRouteRow[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings"),
+      api.get<ApiResponse<CustomRouteRow[]>>("/api/v1/admin/routes"),
+    ]).then(([settings, routes]) => {
+      const s = settings.data ?? {};
+      const on = s["maintenance_mode.enabled"] === "1";
+      setEnabled(on);
+      setWasEnabled(on);
+      const lvl: MaintenanceLevel = s["maintenance_mode.level"] === "read_only" ? "read_only" : "full";
+      setLevel(lvl);
+      setSavedLevel(lvl);
+      setMessage(s["maintenance_mode.message"] ?? "");
+      setUntil(toLocalInput(s["maintenance_mode.until"] ?? ""));
+      setRunBackground(s["maintenance_mode.background"] === "run");
+      try {
+        const list = JSON.parse(s["maintenance_mode.routes"] || "[]") as unknown;
+        setOpenRoutes(Array.isArray(list) ? list.filter((e): e is string => typeof e === "string") : []);
+      } catch { setOpenRoutes([]); }
+      setCustomRoutes(routes.data ?? []);
+      setLoaded(true);
+    });
+  }, []);
+
+  const routeKey = (r: CustomRouteRow) => `${r.method.toUpperCase()} ${r.path}`;
+  const toggleRoute = (key: string, on: boolean) =>
+    setOpenRoutes((prev) => (on ? [...prev.filter((k) => k !== key), key] : prev.filter((k) => k !== key)));
+
+  // Entries for routes that aren't listed (deleted, or registered in code),
+  // shown so they can be closed again.
+  const listed = new Set(customRoutes.map(routeKey));
+  const unlisted = openRoutes.filter((k) => !listed.has(k));
+
+  async function save() {
+    // Turning it on, or going from read-only to fully off while it's on.
+    if (enabled && (!wasEnabled || (level === "full" && savedLevel === "read_only"))) {
+      const ok = await confirm({
+        title: wasEnabled ? "Close the API fully?" : "Turn on maintenance mode?",
+        message: level === "full"
+          ? "Clients get 503 from the API and their realtime connections are closed. Admins keep working."
+          : "Clients can still read, but every write gets 503. Admins keep working.",
+        confirmLabel: "Turn on",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    const untilSec = until ? Math.floor(new Date(until).getTime() / 1000) : 0;
+    if (until && !(untilSec > 0)) { toast("Back at isn't a valid date and time", "info"); return; }
+    setSaving(true);
+    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+      "maintenance_mode.enabled": enabled ? "1" : "0",
+      "maintenance_mode.level": level,
+      "maintenance_mode.message": message.trim(),
+      "maintenance_mode.until": untilSec > 0 ? String(untilSec) : "",
+      "maintenance_mode.background": runBackground ? "run" : "pause",
+      "maintenance_mode.routes": JSON.stringify(openRoutes),
+    });
+    setSaving(false);
+    if (res.error) { toast(res.error, "info"); return; }
+    setWasEnabled(enabled);
+    setSavedLevel(level);
+    void refreshBanner();
+    toast(enabled ? "Maintenance mode is on" : "Maintenance settings saved");
+  }
+
+  return (
+    <SectionShell
+      id="maintenance"
+      sub="Close the API to clients while you work. The admin panel, admin API tokens, MCP and /api/health stay open."
+      right={
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Toggle on={enabled} onChange={setEnabled} disabled={!loaded} ariaLabel="Maintenance mode" />
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-mono)",
+            color: enabled ? "var(--vb-status-warning)" : "var(--vb-fg-3)",
+          }}>{enabled ? "on" : "off"}</span>
+        </span>
+      }
+    >
+      <VbField label="What clients can do" hint="Read-only keeps record lists, single records, files and realtime working.">
+        <Dropdown
+          value={level}
+          options={MAINTENANCE_LEVELS}
+          onChange={(e) => setLevel(e.value as MaintenanceLevel)}
+          disabled={!loaded}
+          style={{ height: 32, fontSize: 12, maxWidth: 360 }}
+        />
+      </VbField>
+
+      <VbField label="Message" hint="Sent to clients with the 503. Blank uses a default.">
+        <VbInput
+          value={message} maxLength={500} disabled={!loaded}
+          placeholder="The service is down for maintenance. Please try again later."
+          onChange={(e) => setMessage(e.target.value)}
+        />
+      </VbField>
+
+      <VbField label="Back at (optional)" hint="Tells clients when to retry (Retry-After). Maintenance mode doesn't end by itself.">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <VbInput type="datetime-local" value={until} disabled={!loaded} onChange={(e) => setUntil(e.target.value)} style={{ maxWidth: 240 }} />
+          {until && <VbBtn size="sm" onClick={() => setUntil("")}>Clear</VbBtn>}
+        </div>
+      </VbField>
+
+      <VbField
+        label="Background work"
+        hint="Paused: cron jobs wait (each runs once when maintenance ends), queue jobs and webhook deliveries stay queued. Record hooks always run."
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+          <Toggle on={runBackground} onChange={setRunBackground} disabled={!loaded} ariaLabel="Keep background work running" />
+          {runBackground ? "Keep running" : "Paused"}
+        </span>
+      </VbField>
+
+      <VbField label="Custom routes left open" hint="Closed by default in both levels. Open the ones that must keep answering, such as a status page.">
+        {customRoutes.length === 0 && unlisted.length === 0 ? (
+          <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>No custom routes.</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {customRoutes.map((r) => (
+              <span key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                <Toggle on={openRoutes.includes(routeKey(r))} onChange={(on) => toggleRoute(routeKey(r), on)} disabled={!loaded} ariaLabel={`Leave ${routeKey(r)} open`} />
+                <VbCode>{routeKey(r)}</VbCode>
+                <span style={{ color: "var(--vb-fg-3)" }}>{r.name}</span>
+              </span>
+            ))}
+            {unlisted.map((k) => (
+              <span key={k} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+                <Toggle on onChange={() => toggleRoute(k, false)} disabled={!loaded} ariaLabel={`Close ${k}`} />
+                <VbCode>{k}</VbCode>
+                <span style={{ color: "var(--vb-fg-3)" }}>not in the routes list (deleted, or registered in code)</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </VbField>
+
+      <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
+        Other servers sharing this database follow within a few seconds. Fully off also closes clients'
+        realtime connections; the SDKs reconnect by themselves when maintenance ends.
       </div>
 
       <SaveBar saving={saving} dirty={loaded} onSave={save} />

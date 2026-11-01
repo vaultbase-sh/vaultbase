@@ -58,7 +58,9 @@ import { RequestTimer, attachTimer, detachTimer } from "./core/perf-metrics.ts";
 
 import {
   admitConnection,
+  closeConnections,
   hasRoom,
+  trackConnection,
   reverifyRealtimeAuth,
   setSSEOwner,
   setWSAuth,
@@ -74,6 +76,7 @@ import {
   type WSAuth,
 } from "./realtime/manager.ts";
 import { openSSEStream } from "./realtime/sse.ts";
+import { maintenanceRefusal, maintenanceState, realtimeClosed } from "./core/maintenance-mode.ts";
 import { answeredStatus, thrownStatus } from "./core/http-status.ts";
 
 /** Status an error path ends in, for the metrics status-class counters. */
@@ -114,6 +117,8 @@ async function verifyTokenForWS(token: string, jwtSecret: string): Promise<WSAut
 
 /** How often open realtime connections have their tokens re-verified. */
 const REALTIME_REVERIFY_MS = 60_000;
+/** How often full maintenance mode looks for realtime connections to close. */
+const MAINTENANCE_SWEEP_MS = 2_000;
 
 /**
  * The caller may change an SSE client: once the client has authenticated,
@@ -215,6 +220,7 @@ function realtimeSocket(jwtSecret: string) {
         ws.close();
         return;
       }
+      trackConnection(ws);
       // Auth via {type:"auth", token} message. Tokens in the URL query are
       // no longer accepted (logs/Referer leak risk).
       ws.send(JSON.stringify({ type: "connected" }));
@@ -300,8 +306,12 @@ export function startInternalListener(app: { handle(request: Request): Promise<R
       rememberPeer(request, peer);
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (new URL(request.url).pathname !== "/realtime") return new Response("Not Found", { status: 404 });
-        if (!hasRoom(perClientLimitIp(request, peer))) return realtimeFull();
-        return srv.upgrade(request, { data: { request, peer } }) ? undefined : new Response("Upgrade failed", { status: 400 });
+        // The upgrade skips the Elysia pipeline, so maintenance mode is checked here.
+        return maintenanceRefusal(request, config.jwtSecret).then((closed) => {
+          if (closed) return closed;
+          if (!hasRoom(perClientLimitIp(request, peer))) return realtimeFull();
+          return srv.upgrade(request, { data: { request, peer } }) ? undefined : new Response("Upgrade failed", { status: 400 });
+        });
       }
       return app.handle(request);
     },
@@ -401,6 +411,15 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   setInterval(() => {
     void reverifyRealtimeAuth((token) => verifyTokenForWS(token, config.jwtSecret)).catch(() => { /* next tick */ });
   }, REALTIME_REVERIFY_MS).unref?.();
+  // Full maintenance mode closes realtime connections that aren't an
+  // admin's. Checked on a timer, so every cluster process follows the
+  // setting once its store has reloaded it.
+  setInterval(() => {
+    try {
+      if (!realtimeClosed()) return;
+      closeConnections((auth) => auth?.type === "admin", { type: "error", reason: "maintenance", message: maintenanceState().message });
+    } catch { /* next tick */ }
+  }, MAINTENANCE_SWEEP_MS).unref?.();
   startBackupScheduler();
   if (singleton) startOrphanFileSweeper();
   startApiTokenUsageFlusher();
@@ -445,7 +464,8 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
     // hasRoom); admitConnection in `open` still decides a race.
     .onRequest(({ request, server }) => {
       if (reader || request.headers.get("upgrade")?.toLowerCase() !== "websocket") return;
-      if (new URL(request.url).pathname !== "/realtime") return;
+      // Routing ignores a trailing slash, so `/realtime/` is the socket too.
+      if (new URL(request.url).pathname.replace(/\/+$/, "") !== "/realtime") return;
       const peer = peerAddress(request, server);
       if (hasRoom(perClientLimitIp(request, peer))) return;
       return realtimeFull();
@@ -455,6 +475,9 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       const res = handleCorsPreflight(request);
       if (res) return res;
     })
+    // Maintenance mode (core/maintenance-mode.ts): ahead of custom routes,
+    // rate limits and the read-worker forward. Read workers run it too.
+    .onRequest(({ request }) => maintenanceRefusal(request, config.jwtSecret).then((res) => res ?? undefined))
     // Attach security headers globally. CSP applies to non-API surface.
     .onAfterHandle(({ request, set, responseValue }) => {
       const path = new URL(request.url).pathname;
@@ -559,7 +582,9 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
     .use(makeAuthPagesPlugin())
     .get("/api/health", async () => {
       const { VAULTBASE_VERSION } = await import("./core/version.ts");
-      return { data: { status: "ok", version: VAULTBASE_VERSION } };
+      // Monitoring keeps reaching this in maintenance mode; it says so.
+      const m = maintenanceState();
+      return { data: { status: "ok", version: VAULTBASE_VERSION, maintenance: m.on ? m.level : null } };
     })
     // Cluster health probe — admin proxies / load-balancers hit this. Worker
     // id (if running under cluster mode) helps debug which worker answered.

@@ -20,6 +20,7 @@ import {
   isEncrypted,
 } from "../core/encryption.ts";
 import { adminGuard } from "./_admin.ts";
+import { validateMaintenanceSetting } from "../core/maintenance-mode.ts";
 
 /**
  * Setting keys whose values look like secrets and should be AES-GCM-encrypted
@@ -366,6 +367,10 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
     }
     if (k === "files.max_upload_size") {
       const err = validateMaxUploadSize(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k.startsWith("maintenance_mode.")) {
+      const err = validateMaintenanceSetting(k, v);
       if (err) return `${k}: ${err}`;
     }
     if (k === "maintenance.retention_days" || k === "audit.retention_days") {

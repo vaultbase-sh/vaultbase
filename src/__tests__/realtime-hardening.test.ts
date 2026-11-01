@@ -8,7 +8,7 @@
 import { describe, expect, it, beforeEach } from "bun:test";
 import {
   _reset, admitConnection, broadcast, getSSEClient, reverifyRealtimeAuth, setSSESubscriptions,
-  setWSAuth, subscribe, unregisterSSEClient, MAX_CONNECTIONS_PER_IP, MAX_REALTIME_CONNECTIONS, hasRoom,
+  setWSAuth, subscribe, trackConnection, unregisterSSEClient, MAX_CONNECTIONS_PER_IP, MAX_REALTIME_CONNECTIONS, hasRoom,
   MAX_TOPIC_LENGTH, MAX_TOPICS_PER_CONNECTION, type WSLike,
 } from "../realtime/manager.ts";
 import { openSSEStream } from "../realtime/sse.ts";
@@ -43,6 +43,15 @@ describe("realtime auth after subscribe", () => {
     const before = ws.got.length;
     broadcast("notes", event, ownerOnly);
     expect(ws.got).toHaveLength(before);
+  });
+
+  it("a connection holding no topic is told too", async () => {
+    const ws = fakeWs("c2");
+    admitConnection("c2");
+    trackConnection(ws);
+    setWSAuth(ws, { id: "u1", type: "user", token: "revoked-token" });
+    await reverifyRealtimeAuth(async () => null);
+    expect(ws.got.map((m) => JSON.parse(m))).toEqual([{ type: "auth_expired" }]);
   });
 });
 

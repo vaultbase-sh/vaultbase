@@ -28,6 +28,7 @@ import { webhooks, webhookDeliveries } from "../db/schema.ts";
 import { assertEgressAllowed, EgressBlockedError } from "./hook-egress.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
+import { backgroundPaused } from "./maintenance-mode.ts";
 
 const TICK_INTERVAL_MS = 2000;
 const CLAIM_LIMIT = 50;
@@ -139,6 +140,8 @@ export function stopWebhookDispatcher(): void {
 }
 
 async function tick(): Promise<Promise<void>[]> {
+  // Maintenance mode: deliveries stay pending until it ends.
+  if (backgroundPaused()) return [];
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const due = await db

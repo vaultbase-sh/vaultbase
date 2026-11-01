@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import "./styles/globals.css";
 // ADMIN THEME: redesign token layer. Remove this line to revert the whole
 // app to the previous look — see src/styles/theme-next.css.
@@ -11,6 +11,7 @@ import { ToastHost } from "./components/UI.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { CommandPalette, useCommandPalette } from "./components/CommandPalette.tsx";
 import { useAuth } from "./stores/auth.ts";
+import { useMaintenance } from "./stores/maintenance.ts";
 import Login from "./pages/Login.tsx";
 import Setup from "./pages/Setup.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
@@ -89,12 +90,41 @@ function PageFallback() {
   );
 }
 
+/** Shown on every page while maintenance mode is on, so it isn't left on by accident. */
+function MaintenanceBanner() {
+  const level = useMaintenance((s) => s.level);
+  const refresh = useMaintenance((s) => s.refresh);
+  useEffect(() => {
+    void refresh();
+    // Another admin (or MCP) may switch it.
+    const t = setInterval(() => { void refresh(); }, 30_000);
+    return () => clearInterval(t);
+  }, [refresh]);
+  if (!level) return null;
+  return (
+    <div role="status" style={{
+      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      padding: "8px 28px", fontSize: 12.5,
+      background: "color-mix(in srgb, var(--vb-status-warning) 14%, transparent)",
+      borderBottom: "1px solid color-mix(in srgb, var(--vb-status-warning) 40%, transparent)",
+      color: "var(--vb-fg)",
+    }}>
+      <strong>Maintenance mode is on.</strong>
+      <span style={{ color: "var(--vb-fg-2)" }}>
+        {level === "read_only" ? "Clients can read but not write." : "Clients get 503; only admins can use the API."}
+      </span>
+      <Link to="/_/settings?tab=maintenance" style={{ marginLeft: "auto", color: "var(--vb-fg)" }}>Settings</Link>
+    </div>
+  );
+}
+
 function AppShell() {
   const palette = useCommandPalette();
   return (
     <div className="app">
       <Sidebar />
       <main className="app-main">
+        <MaintenanceBanner />
         <Suspense fallback={<PageFallback />}>
           <Outlet />
         </Suspense>

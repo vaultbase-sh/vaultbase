@@ -81,8 +81,39 @@ export function hasRoom(ip?: string | null): boolean {
   return !ip || (connsByIp.get(ip) ?? 0) < MAX_CONNECTIONS_PER_IP;
 }
 
+/**
+ * WebSocket adapters by connection id, so every connection can be reached,
+ * not only those holding a topic (SSE clients are in `sseClients`).
+ */
+const wsConns = new Map<string, WSLike>();
+
+/** Remember an admitted WebSocket (its `data.connId` is set). */
+export function trackConnection(ws: WSLike): void {
+  wsConns.set(connId(ws), ws);
+}
+
+/**
+ * Close every connection whose auth `keep` turns down, sending `notice`
+ * first. Their close handlers clean up as for any other close. Returns how
+ * many were closed.
+ */
+export function closeConnections(keep: (auth: WSAuth | undefined) => boolean, notice: object): number {
+  const payload = JSON.stringify(notice);
+  let n = 0;
+  for (const id of [...liveConns]) {
+    if (keep(currentAuth(id))) continue;
+    const ws = wsConns.get(id) ?? sseClients.get(id);
+    if (!ws) continue;
+    try { ws.send(payload); } catch { /* already closing */ }
+    try { ws.close?.(); } catch { /* already gone */ }
+    n++;
+  }
+  return n;
+}
+
 /** Stop counting a connection (it closed or was dropped). */
 function releaseConnection(id: string): void {
+  wsConns.delete(id);
   if (!liveConns.delete(id)) return;
   const ip = ipOfConn.get(id);
   if (ip === undefined) return;
@@ -204,6 +235,9 @@ export async function reverifyRealtimeAuth(verify: (token: string) => Promise<WS
 
 /** Any adapter currently registered for `id`. */
 function connAdapter(id: string): WSLike | undefined {
+  // Every WebSocket, also one that holds no topic (it used to miss auth_expired).
+  const ws = wsConns.get(id);
+  if (ws) return ws;
   const sse = sseClients.get(id);
   if (sse) return sse;
   for (const t of topicsByConn.get(id) ?? []) {
@@ -655,6 +689,7 @@ export function _reset(): void {
   sseClients.clear();
   sseOwners.clear();
   liveConns.clear();
+  wsConns.clear();
   connsByIp.clear();
   ipOfConn.clear();
   wsAuth.clear();

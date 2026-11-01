@@ -32,6 +32,7 @@ import { rememberPeer, trustedClientIp } from "./sec.ts";
 import { verifyHs256 } from "./jwt-hs256.ts";
 import { MetricsRegistry } from "./perf-metrics.ts";
 import { MAX_WS_QUEUED_BYTES } from "../realtime/manager.ts";
+import { maintenanceRefusal } from "./maintenance-mode.ts";
 
 /** Proves a request on the internal listener came from one of our workers. */
 export const INTERNAL_HEADER = "x-vaultbase-internal";
@@ -143,6 +144,10 @@ export function listenOnWorker(spec: ListenMessage, deps: WorkerListenerDeps): S
   };
 
   const bridge = async (request: Request, url: URL, server: Server<BridgeData>, peer: string | null): Promise<Response | undefined> => {
+    // The main thread would refuse it too, but a refused bridge reads as
+    // "too many connections" below; answer with the maintenance 503 here.
+    const closed = await maintenanceRefusal(request, deps.jwtSecret);
+    if (closed) return closed;
     const headers: Record<string, string> = { [INTERNAL_HEADER]: spec.secret, [PEER_HEADER]: peer ?? "" };
     request.headers.forEach((v, k) => { if (!HANDSHAKE_HEADERS.has(k)) headers[k] = v; });
     const upstream = new WebSocket(`ws://${internal}${url.pathname}${url.search}`, { headers } as unknown as string[]);

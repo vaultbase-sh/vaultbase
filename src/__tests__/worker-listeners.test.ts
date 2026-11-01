@@ -141,6 +141,23 @@ describe("a worker's own listener", () => {
     }
   });
 
+  it("answers maintenance mode itself: reads, and realtime before bridging", async () => {
+    await setSetting("maintenance_mode.enabled", "1");
+    try {
+      const read = await fetch(`${workerBase}/api/v1/posts`);
+      expect(read.status).toBe(503);
+      expect(read.headers.get("x-vaultbase-read-worker")).not.toBeNull();
+      // A refused bridge used to read as "too many connections".
+      const upgrade = await fetch(`${workerBase}/realtime`, {
+        headers: { connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" },
+      });
+      expect(upgrade.status).toBe(503);
+      expect(((await upgrade.json()) as { maintenance?: { level: string } }).maintenance?.level).toBe("full");
+    } finally {
+      await setSetting("maintenance_mode.enabled", "");
+    }
+  });
+
   it("streams SSE from the main thread", async () => {
     const ctl = new AbortController();
     const res = await fetch(`${workerBase}/api/v1/realtime`, { signal: ctl.signal });
@@ -215,6 +232,18 @@ describe("the main thread's internal listener", () => {
     expect((await internalFetch("/api/health", {})).status).toBe(403);
     expect((await internalFetch("/api/health", { [INTERNAL_HEADER]: "not-the-secret" })).status).toBe(403);
     expect((await internalFetch("/api/health", { [INTERNAL_HEADER]: internal.secret })).status).toBe(200);
+  });
+
+  it("refuses a realtime upgrade in maintenance mode (the upgrade skips the Elysia pipeline)", async () => {
+    const upgrade = { [INTERNAL_HEADER]: internal.secret, connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" };
+    await setSetting("maintenance_mode.enabled", "1");
+    try {
+      const res = await internalFetch("/realtime", upgrade);
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { maintenance?: unknown }).maintenance).toBeDefined();
+    } finally {
+      await setSetting("maintenance_mode.enabled", "");
+    }
   });
 
   it("treats the peer a worker reports as the client's address", async () => {

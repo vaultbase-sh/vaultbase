@@ -7,6 +7,36 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Maintenance mode.** Close the API to clients while you migrate data,
+  restore a backup or change the schema; the admin keeps working.
+  **Settings → Maintenance mode** switches it, and a banner on every admin
+  page shows while it's on.
+  - Clients get `503` with your message, and a `Retry-After` (also in the
+    body) when you set a time to be back. The JS SDK reports it as
+    `kind: "maintenance"`, the Dart SDK as `MaintenanceException`.
+  - **Read-only** keeps reads and realtime working and refuses writes.
+  - Admin sessions, admin API tokens, MCP and `/api/health` stay open.
+    Custom routes are closed unless you leave them open one by one.
+  - Fully off also closes clients' realtime connections; the SDKs
+    reconnect when it ends.
+  - Cron jobs, queue workers and webhook deliveries pause unless you keep
+    them running. A cron job that came due runs once when it ends. Record
+    hooks always run.
+  - The sweep that deletes orphaned uploads doesn't run during maintenance
+    mode, so a migration that drops a file's reference for a while doesn't
+    lose the file.
+  - `/api/health` reports the level (`maintenance`).
+
+### Fixed
+
+- **A realtime connection with no subscriptions wasn't told its sign-in
+  expired.** The server dropped its auth but only sent `auth_expired` to
+  connections holding a topic.
+
 ## [0.34.1] — 2026-11-01
 
 ### Changed

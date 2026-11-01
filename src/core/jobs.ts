@@ -8,6 +8,7 @@ import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
+import { backgroundPaused } from "./maintenance-mode.ts";
 
 /**
  * Cron-style scheduled jobs.
@@ -239,6 +240,9 @@ function dueRegisteredJobs(now: number): Promise<unknown>[] {
 }
 
 async function scheduleTick(): Promise<Promise<unknown>[]> {
+  // Maintenance mode: a slot that comes due stays due, so each job runs
+  // once when the mode ends instead of every missed slot (or none).
+  if (backgroundPaused()) return [];
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const rows = await db.select().from(jobs).where(eq(jobs.enabled, 1));

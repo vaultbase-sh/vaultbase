@@ -25,6 +25,7 @@ import { getSetting } from "../api/settings.ts";
 import { parseFields } from "./collections.ts";
 import { deleteFile, thumbCacheDir } from "./storage.ts";
 import { forgetThumbVariants } from "./image.ts";
+import { maintenanceOn } from "./maintenance-mode.ts";
 
 export const GRACE_SECONDS = 24 * 60 * 60;
 const BATCH = 500;
@@ -121,6 +122,9 @@ let ticker: ReturnType<typeof setInterval> | null = null;
 export function startOrphanFileSweeper(): void {
   if (ticker) return;
   const run = () => {
+    // Not during maintenance mode, whatever it says about background work:
+    // a migration can drop a file's reference for a while.
+    if (maintenanceOn()) return;
     void sweepOrphanFiles()
       .then((r) => { if (r.deleted > 0) console.log(`[files] removed ${r.deleted} orphaned file(s)`); })
       .catch((e) => console.error("[files] orphan sweep failed:", e instanceof Error ? e.message : e));

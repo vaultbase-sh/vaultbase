@@ -172,6 +172,24 @@ describe("forwarding", () => {
     setSetting("cors.origins", "");
   });
 
+  // Over HTTP the Bun routes forward a read before the Elysia pipeline runs
+  // on the main thread, so the worker's own check is what refuses it.
+  it("maintenance mode refuses a forwarded read on the worker, except an admin's", async () => {
+    await getDb().insert(adminTable).values({ id: "a-mm", email: "mm@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    const { token } = await signAuthToken({ payload: { id: "a-mm", email: "mm@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    await setSetting("maintenance_mode.enabled", "1");
+    try {
+      const refused = await forwardRead(new Request("http://localhost/api/v1/posts?perPage=1"), null);
+      expect(refused.status).toBe(503);
+      expect(((await refused.json()) as { maintenance: { level: string } }).maintenance.level).toBe("full");
+      const allowed = await forwardRead(new Request("http://localhost/api/v1/posts?perPage=1", { headers: { authorization: `Bearer ${token}` } }), null);
+      expect(allowed.status).toBe(200);
+    } finally {
+      await setSetting("maintenance_mode.enabled", "");
+    }
+    expect((await forwardRead(new Request("http://localhost/api/v1/posts?perPage=1"), null)).status).toBe(200);
+  });
+
   it("totals on a worker follow writes on the main thread, to this and other collections", async () => {
     const total = async () => ((await (await get("/api/v1/posts?perPage=1")).json()) as { totalItems: number }).totalItems;
     const n = await total();
