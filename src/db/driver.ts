@@ -146,6 +146,10 @@ export interface Dialect {
   createIndex(index: IndexSpec): string;
   /** A query whose rows carry the table's column names in a `name` column. */
   listColumnsSql(table: string): string;
+  /** Rows `{ tbl, name }`: every column of every table and view in the schema. */
+  listAllColumnsSql(): string;
+  /** Rows `{ tbl, name }`: every index in the schema (those `listIndexesSql` lists). */
+  listAllIndexesSql(): string;
   /** A view over a SELECT body, replacing an existing one of that name. */
   createView(name: string, body: string): string;
   /** `SELECT 1 …` with one `?` for the index name. */

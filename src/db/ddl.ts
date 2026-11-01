@@ -61,26 +61,41 @@ export function tableName(table: SQLiteTable): string {
   return getTableConfig(table).name;
 }
 
+/**
+ * Every table's columns and every index, in two queries. Asking per table
+ * took one round trip each (about 75 at every start), most of a fresh
+ * install's migration time on Postgres.
+ */
+async function schemaSnapshot(): Promise<{ columns: Map<string, Set<string>>; indexes: Map<string, Set<string>> }> {
+  const group = (rows: Array<{ tbl: string; name: string }>) => {
+    const out = new Map<string, Set<string>>();
+    for (const r of rows) {
+      let set = out.get(r.tbl);
+      if (!set) out.set(r.tbl, (set = new Set()));
+      set.add(r.name);
+    }
+    return out;
+  };
+  return {
+    columns: group(await db.all<{ tbl: string; name: string }>(db.dialect.listAllColumnsSql())),
+    indexes: group(await db.all<{ tbl: string; name: string }>(db.dialect.listAllIndexesSql())),
+  };
+}
+
 /** What {@link ensureFixedSchema} would add, as `table`, `table.column` and `index name`. Reads only. */
 export async function missingFixedSchema(): Promise<string[]> {
-  const d = db.dialect;
+  const { columns, indexes } = await schemaSnapshot();
   const missing: string[] = [];
   const absent = new Set<string>();
   for (const table of FIXED_TABLES) {
     const name = tableName(table);
-    const present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
-    if (present.size === 0) { missing.push(name); absent.add(name); continue; }
+    const present = columns.get(name);
+    if (!present) { missing.push(name); absent.add(name); continue; }
     for (const spec of columnSpecs(table)) if (!present.has(spec.name)) missing.push(`${name}.${spec.name}`);
   }
-  const indexesOf = new Map<string, Set<string>>();
   for (const ix of FIXED_INDEXES) {
     if (absent.has(ix.table)) continue;
-    let have = indexesOf.get(ix.table);
-    if (!have) {
-      have = new Set((await db.all<{ name: string }>(d.listIndexesSql(), [ix.table])).map((r) => r.name));
-      indexesOf.set(ix.table, have);
-    }
-    if (!have.has(ix.name)) missing.push(`index ${ix.name}`);
+    if (!indexes.get(ix.table)?.has(ix.name)) missing.push(`index ${ix.name}`);
   }
   return missing;
 }
@@ -93,14 +108,20 @@ export async function missingFixedSchema(): Promise<string[]> {
  */
 export async function ensureFixedSchema(): Promise<void> {
   const d = db.dialect;
+  const { columns, indexes } = await schemaSnapshot();
+  // Missing tables are created together, in one round trip (a fresh install
+  // creates them all); they come with every column, so nothing to add.
+  const creates: string[] = [];
+  for (const table of FIXED_TABLES) {
+    const name = tableName(table);
+    if (!columns.has(name)) creates.push(d.createTable(name, columnSpecs(table)));
+  }
+  if (creates.length > 0) await db.exec(creates.join(";\n"));
   for (const table of FIXED_TABLES) {
     const name = tableName(table);
     const specs = columnSpecs(table);
-    let present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
-    if (present.size === 0) {
-      await db.exec(d.createTable(name, specs));
-      present = new Set((await db.all<{ name: string }>(d.listColumnsSql(name))).map((r) => r.name));
-    }
+    const present = columns.get(name);
+    if (!present) continue;
     for (const spec of specs) {
       if (present.has(spec.name)) continue;
       const expression = spec.default?.kind === "epochNow" || spec.default?.kind === "epochMsNow";
@@ -129,13 +150,6 @@ export async function ensureFixedSchema(): Promise<void> {
           OR (o.status = vaultbase_jobs_log.status AND (o.enqueued_at < vaultbase_jobs_log.enqueued_at
             OR (o.enqueued_at = vaultbase_jobs_log.enqueued_at AND o.id < vaultbase_jobs_log.id)))
         ))`);
-  const indexesOf = new Map<string, Set<string>>();
-  for (const ix of FIXED_INDEXES) {
-    let have = indexesOf.get(ix.table);
-    if (!have) {
-      have = new Set((await db.all<{ name: string }>(d.listIndexesSql(), [ix.table])).map((r) => r.name));
-      indexesOf.set(ix.table, have);
-    }
-    if (!have.has(ix.name)) await db.exec(d.createIndex(ix));
-  }
+  const missingIndexes = FIXED_INDEXES.filter((ix) => !indexes.get(ix.table)?.has(ix.name));
+  if (missingIndexes.length > 0) await db.exec(missingIndexes.map((ix) => d.createIndex(ix)).join(";\n"));
 }

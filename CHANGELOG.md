@@ -31,6 +31,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
     lose the file.
   - `/api/health` reports the level (`maintenance`).
 
+### Changed
+
+- **Faster start on Postgres.** Checking the built-in tables at start asks
+  for every table's columns and indexes in two queries instead of one per
+  table, through the catalog rather than `information_schema`, and a fresh
+  install creates its tables and indexes in two statements.
+
 ### Fixed
 
 - **A realtime connection with no subscriptions wasn't told its sign-in

@@ -155,8 +155,18 @@ export const POSTGRES_DIALECT: Dialect = {
   createTable: (name, columns) => `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.map(columnDef).join(",\n  ")}\n)`,
   addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${columnDef(column)}`,
   createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,
+  // The catalog, not information_schema: the same columns (tables, views,
+  // foreign and partitioned tables) at a fraction of the cost, and startup
+  // asks this for every table.
   listColumnsSql: (table) =>
-    `SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ${sqlLiteral(bareIdent(table))} ORDER BY ordinal_position`,
+    `SELECT a.attname AS name FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      WHERE c.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()) AND c.relname = ${sqlLiteral(bareIdent(table))}
+        AND c.relkind IN ('r', 'p', 'v', 'f') AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`,
+  listAllColumnsSql: () =>
+    `SELECT c.relname AS tbl, a.attname AS name FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      WHERE c.relnamespace = (SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema())
+        AND c.relkind IN ('r', 'p', 'v', 'f') AND a.attnum > 0 AND NOT a.attisdropped`,
+  listAllIndexesSql: () => `SELECT tablename AS tbl, indexname AS name FROM pg_indexes WHERE schemaname = current_schema()`,
   createView: (name, body) => `CREATE OR REPLACE VIEW ${name} AS ${body}`,
   indexExistsSql: () => `SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?`,
   listIndexesSql: () => `SELECT indexname AS name, indexdef AS sql FROM pg_indexes WHERE schemaname = current_schema() AND tablename = ?`,

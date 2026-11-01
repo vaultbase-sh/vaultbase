@@ -132,6 +132,8 @@ export const SQLITE_DIALECT: Dialect = {
   },
   createIndex: (ix: IndexSpec) => `CREATE ${ix.unique ? "UNIQUE " : ""}INDEX IF NOT EXISTS ${ix.name} ON ${ix.table}(${ix.columns.join(", ")})${ix.where ? ` WHERE ${ix.where}` : ""}`,
   listColumnsSql: (table) => `SELECT name FROM pragma_table_info('${table.replace(/'/g, "''")}')`,
+  listAllColumnsSql: () => `SELECT m.name AS tbl, p.name AS name FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type IN ('table', 'view')`,
+  listAllIndexesSql: () => `SELECT tbl_name AS tbl, name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL`,
   createView: (name, body) => `CREATE VIEW IF NOT EXISTS ${name} AS ${body}`,
   indexExistsSql: () => `SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`,
   listIndexesSql: () => `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL`,
