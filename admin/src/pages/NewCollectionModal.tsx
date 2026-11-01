@@ -6,6 +6,7 @@ import { Modal, Toggle } from "../components/UI.tsx";
 import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
 import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
+import { ViewParamsEditor, draftsToPayload, type ViewParamDraft } from "../components/ViewParams.tsx";
 
 const FIELD_TYPES: FieldDef["type"][] = ["text", "number", "bool", "email", "url", "date", "color", "file", "relation", "select", "json", "editor", "geoPoint", "password"];
 
@@ -47,6 +48,7 @@ export default function NewCollectionModal({
   const [loading, setLoading] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
   const [viewQuery, setViewQuery] = useState("");
+  const [viewParams, setViewParams] = useState<ViewParamDraft[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
   /** Columns from the last successful Validate, shown under the editor. */
   const [viewColumns, setViewColumns] = useState<string[] | null>(null);
@@ -70,7 +72,7 @@ export default function NewCollectionModal({
     setValidating(true);
     const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
       "/api/v1/admin/collections/preview-view",
-      { view_query: viewQuery.trim() }
+      { view_query: viewQuery.trim(), view_params: draftsToPayload(viewParams) }
     );
     setValidating(false);
     if (res.error) { setViewError(res.error); return; }
@@ -87,6 +89,7 @@ export default function NewCollectionModal({
       setError("");
       setLoading(false);
       setViewQuery("");
+      setViewParams([]);
       setViewError(null);
       setViewColumns(null);
       api.get<ApiResponse<Collection[]>>("/api/v1/collections").then((res) => {
@@ -156,6 +159,7 @@ export default function NewCollectionModal({
         name: collName,
         type,
         view_query: viewQuery.trim(),
+        ...(viewParams.length > 0 ? { view_params: draftsToPayload(viewParams) } : {}),
       });
       setLoading(false);
       if (res.error) { setError(res.error); return; }
@@ -311,6 +315,9 @@ export default function NewCollectionModal({
                 {viewError}
               </div>
             )}
+            <div style={{ marginTop: 10 }}>
+              <ViewParamsEditor query={viewQuery} drafts={viewParams} onChange={(d) => { setViewParams(d); setViewColumns(null); }} />
+            </div>
             {viewColumns && (
               <div style={{ marginTop: 6, fontSize: 12, color: "var(--vb-status-success)" }}>
                 Valid · {viewColumns.length} {viewColumns.length === 1 ? "column" : "columns"}

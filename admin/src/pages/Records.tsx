@@ -28,6 +28,7 @@ import {
   type VbTab,
   type VbTableColumn,
 } from "../components/Vb.tsx";
+import { ViewParamInputs, appendViewParams, draftsFromJson } from "../components/ViewParams.tsx";
 
 // ── GeoPoint map picker (Leaflet + OpenStreetMap) ──────────────────────────
 //
@@ -1096,6 +1097,11 @@ export default function Records() {
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState("");
   const [appliedFilter, setAppliedFilter] = useState("");
+  // A view with parameters (server: core/view-params.ts): the values typed,
+  // and the ones the list was loaded with.
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [appliedParams, setAppliedParams] = useState<Record<string, string>>({});
+  const viewParamDrafts = useMemo(() => (collection?.type === "view" ? draftsFromJson(collection.view_params) : []), [collection]);
   const [sort, setSort] = useState("-created");
   const [openRec, setOpenRec] = useState<RecordRow | null>(null);
   const [editData, setEditData] = useState<Record<string, unknown>>({});
@@ -1140,6 +1146,7 @@ export default function Records() {
     const params = new URLSearchParams({ page: String(p), perPage: "30" });
     params.set("sort", sort);
     if (f) params.set("filter", f);
+    appendViewParams(params, appliedParams);
     // v0.11: auth collections are first-class; the records flow handles
     // them like every other collection. The legacy /admin/users/:col path
     // is retained server-side for back-compat but no longer needed here.
@@ -1161,7 +1168,8 @@ export default function Records() {
   }
 
   useEffect(() => { setOpenRec(null); loadCollection(); }, [collId]);
-  useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort]);
+  useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort, appliedParams]);
+  useEffect(() => { setParamValues({}); setAppliedParams({}); }, [collId]);
   // Clear selection on navigation events; row references would otherwise be stale.
   useEffect(() => { setSelected([]); }, [collId, page, appliedFilter, sort]);
 
@@ -1328,7 +1336,11 @@ export default function Records() {
   function handleExport(ids?: string[]) {
     if (!collection) return;
     const token = getMemoryToken();
-    const qs = ids && ids.length > 0 ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
+    const search = new URLSearchParams();
+    if (ids && ids.length > 0) search.set("ids", ids.join(","));
+    // A view with parameters exports what the table shows.
+    appendViewParams(search, appliedParams);
+    const qs = search.size > 0 ? `?${search}` : "";
     fetch(`/api/v1/admin/export/${collection.name}${qs}`, {
       credentials: "same-origin",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -1649,6 +1661,13 @@ export default function Records() {
         </div>
       ) : (
       <div className="app-body" style={{ padding: "16px 28px 28px" }}>
+        {viewParamDrafts.some((d) => d.mode !== "auth") && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>Parameters</span>
+            <ViewParamInputs drafts={viewParamDrafts} values={paramValues} onChange={setParamValues} />
+            <VbBtn kind="soft" size="sm" icon="check" onClick={() => { setAppliedParams(paramValues); setPage(1); }}>Apply</VbBtn>
+          </div>
+        )}
         {/* Filter bar */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
           <div style={{ flex: 1, position: "relative" }}>

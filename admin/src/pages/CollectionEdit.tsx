@@ -19,6 +19,7 @@ import {
 } from "../components/Vb.tsx";
 import { Toggle } from "../components/UI.tsx";
 import { RuleEditor } from "../components/RuleEditor.tsx";
+import { ViewParamInputs, ViewParamsEditor, draftsFromJson, draftsToPayload, type ViewParamDraft } from "../components/ViewParams.tsx";
 import {
   AUTH_ONLY_EXPR, describeRule, fromRuleSet, toRuleSet,
   type RuleOpId, type RuleSet, type RuleValue,
@@ -120,6 +121,8 @@ export default function CollectionEdit() {
   const [saving, setSaving] = useState(false);
   const [allCollections, setAllCollections] = useState<Collection[]>([]);
   const [viewQuery, setViewQuery] = useState("");
+  const [viewParams, setViewParams] = useState<ViewParamDraft[]>([]);
+  const [previewValues, setPreviewValues] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState("");
   const [historyEnabled, setHistoryEnabled] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
@@ -151,7 +154,7 @@ export default function CollectionEdit() {
     setValidating(true);
     const res = await api.post<ApiResponse<{ columns: string[]; fields: FieldDef[] }>>(
       "/api/v1/admin/collections/preview-view",
-      { view_query: viewQuery.trim() }
+      { view_query: viewQuery.trim(), view_params: draftsToPayload(viewParams) }
     );
     setValidating(false);
     if (res.error) {
@@ -173,7 +176,7 @@ export default function CollectionEdit() {
     setPreviewing(true);
     const res = await api.post<ApiResponse<{ columns: string[]; rows: Array<Record<string, unknown>> }>>(
       "/api/v1/admin/collections/preview-view-rows",
-      { view_query: viewQuery.trim(), limit: 5 }
+      { view_query: viewQuery.trim(), limit: 5, view_params: draftsToPayload(viewParams), params: previewValues }
     );
     setPreviewing(false);
     if (res.error) {
@@ -201,6 +204,7 @@ export default function CollectionEdit() {
       // a rename (the column keeps its data) and not as a drop plus an add.
       setFields(parseFields(res.data.fields).map((f) => withStoredSubfieldNames({ ...f, renamedFrom: f.name })));
       setViewQuery(res.data.view_query ?? "");
+      setViewParams(draftsFromJson(res.data.view_params));
       // `?? ""` here used to make `null` (public) and `""` (admin-only)
       // indistinguishable in the editor.
       setRules(toRuleSet(res.data));
@@ -250,6 +254,7 @@ export default function CollectionEdit() {
       const queryChanged = viewQuery.trim() !== (collection.view_query ?? "");
       const payload: Record<string, unknown> = {
         view_query: viewQuery.trim(),
+        view_params: viewParams.length > 0 ? draftsToPayload(viewParams) : null,
         history_enabled: historyEnabled,
         // `|| null` here used to turn every admin-only rule public on save.
         ...fromRuleSet(rules),
@@ -409,6 +414,10 @@ export default function CollectionEdit() {
               collId={collId}
               viewQuery={viewQuery}
               setViewQuery={setViewQuery}
+              viewParams={viewParams}
+              setViewParams={setViewParams}
+              previewValues={previewValues}
+              setPreviewValues={setPreviewValues}
               viewError={viewError}
               setViewError={setViewError}
               validating={validating}
@@ -567,6 +576,10 @@ interface FieldsTabProps {
   collId: string;
   viewQuery: string;
   setViewQuery: (v: string) => void;
+  viewParams: ViewParamDraft[];
+  setViewParams: (v: ViewParamDraft[]) => void;
+  previewValues: Record<string, string>;
+  setPreviewValues: (v: Record<string, string>) => void;
   viewError: string | null;
   setViewError: (v: string | null) => void;
   validating: boolean;
@@ -582,7 +595,7 @@ function FieldsTab(props: FieldsTabProps) {
   const {
     isView, collection, fields, setFields, selectedIdx, setSelectedIdx, sel,
     updateSel, updateSelOptions, numOrUndef, addField, removeField,
-    allCollections, collId, viewQuery, setViewQuery, viewError, setViewError,
+    allCollections, collId, viewQuery, setViewQuery, viewParams, setViewParams, previewValues, setPreviewValues, viewError, setViewError,
     validating, validateView, previewRows, setPreviewRows, previewing,
     previewViewRowsHandler, sqlSchema,
   } = props;
@@ -623,6 +636,18 @@ function FieldsTab(props: FieldsTabProps) {
           <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.55 }}>
             Single SELECT only — no semicolons, no DML/DDL. Autocompletes <SchemaCode>vb_*</SchemaCode> tables and columns.
           </div>
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: 1.2, textTransform: "uppercase", color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)", marginBottom: 8 }}>
+              Parameters
+            </div>
+            <ViewParamsEditor query={viewQuery} drafts={viewParams} onChange={setViewParams} />
+          </div>
+          {viewParams.some((d) => d.mode !== "auth" && d.name) && (
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>Preview with</span>
+              <ViewParamInputs drafts={viewParams} values={previewValues} onChange={setPreviewValues} />
+            </div>
+          )}
           {previewRows && (
             <div style={{
               marginTop: 14,

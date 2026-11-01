@@ -88,6 +88,7 @@ export function RequestPanel({
             <KvTable rows={req.params} onChange={(params) => set({ params })} make={kv} keyPlaceholder="perPage" valuePlaceholder="10" />
             <div className="ap-hint">
               Lists take <code>page</code>, <code>perPage</code>, <code>filter</code>, <code>sort</code>, <code>expand</code>, <code>fields</code>, <code>search</code> and <code>skipTotal</code>.
+              A view with parameters takes <code>params[name]</code>.
             </div>
           </>
         )}

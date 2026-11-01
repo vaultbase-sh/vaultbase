@@ -45,6 +45,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
     read it with the defaults.
   - The admin API's view previews take parameters and test values; OpenAPI
     and the MCP list/get tools describe them; snapshots carry them.
+  - In the admin, the view editor (and the new-collection dialog) has a
+    parameters table under the query, offers to declare each `:name` it
+    finds, and previews with test values; a view's records page and its CSV
+    export take parameter values.
 
 ### Changed
 

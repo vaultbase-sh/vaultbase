@@ -117,6 +117,8 @@ export interface Collection {
   type: CollectionType;
   fields: string;
   view_query: string | null;
+  /** A view's parameters, JSON text; null when it has none. */
+  view_params?: string | null;
   list_rule: string | null;
   view_rule: string | null;
   create_rule: string | null;
