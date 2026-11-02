@@ -16,7 +16,10 @@ describe("MetricsRegistry live fields", () => {
     expect(s.methods).toEqual({ GET: 1, POST: 1, PATCH: 1, DELETE: 1 });
   });
 
-  test("series covers 120 seconds and holds this second's traffic", () => {
+  test("series covers 120 seconds and holds this second's traffic", async () => {
+    // Away from a second boundary: the requests, the snapshot and the check
+    // below must all fall in one second (it failed now and then otherwise).
+    if (Date.now() % 1000 > 800) await Bun.sleep(1000 - (Date.now() % 1000) + 5);
     const m = new MetricsRegistry();
     m.finalizeRequest(1_000, "POST", 200);
     m.finalizeRequest(3_000, "GET", 503);
