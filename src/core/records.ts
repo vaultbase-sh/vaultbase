@@ -634,7 +634,6 @@ async function compileWhereParts(
     auth: opts.auth ?? null,
     request: opts.request ?? null,
     lookup,
-    hostIdField: "id",
     hostPrivateField: (n: string) => hostPrivate.has(n),
     hostFilterable: (n: string) => hostCols.has(n),
   } as const;

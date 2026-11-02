@@ -96,8 +96,6 @@ export interface ParseFilterOpts {
   auth?: AuthContext | null;
   request?: RequestContextLike | null;
   lookup?: CollectionLookup;
-  /** The id-field of the host table (default "id") — needed for back-relation join. */
-  hostIdField?: string;
   /** Privacy predicate for the host collection's own columns. */
   hostPrivateField?: (name: string) => boolean;
   /**
@@ -169,7 +167,6 @@ export function compileToSql(
     auth: opts.auth ?? null,
     request: opts.request ?? null,
     lookup: opts.lookup,
-    hostIdField: opts.hostIdField ?? "id",
     hostPrivateField: opts.hostPrivateField ?? (() => false),
     hostFilterable: opts.hostFilterable,
     params: [],
@@ -191,7 +188,6 @@ interface CompileCtx {
   auth: AuthContext | null;
   request: RequestContextLike | null;
   lookup: CollectionLookup | undefined;
-  hostIdField: string;
   params: unknown[];
   joinDepth: number;
   /** Privacy predicate for whichever table `tableName` currently points at. */
@@ -1010,7 +1006,7 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
         })();
 
     // Validate ref field if a lookup is provided.
-    let where = `${quoteIdent(targetTable)}.${quoteIdent(op.refField)} = ${quoteIdent(ctx.tableName)}.${quoteIdent(ctx.hostIdField)}`;
+    let where = `${quoteIdent(targetTable)}.${quoteIdent(op.refField)} = ${quoteIdent(ctx.tableName)}."id"`;
     if (ctx.lookup) {
       const meta = ctx.lookup(op.targetCollection);
       if (!meta) {
