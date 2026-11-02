@@ -517,7 +517,6 @@ async function main() {
   // Hooks, routes, jobs and workers as files (vb_hooks/), when set up.
   {
     const { resolveCodeFilesDir, startCodeFiles, codeFileErrors } = await import("./core/code-files.ts");
-    const { runsSingletonDuties } = await import("./core/cluster-role.ts");
     const hooksDir = resolveCodeFilesDir(config.dataDir);
     try {
       await startCodeFiles(hooksDir, { isWriter: runsSingletonDuties() });

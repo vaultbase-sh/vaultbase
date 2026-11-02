@@ -227,13 +227,6 @@ export async function loginSucceeded(attempt: LoginAttempt): Promise<void> {
 // failure budget per account that holds no matter how many fresh codes or
 // tickets the caller mints. Unlike the login lockout above, these always apply.
 
-/** Record one failed attempt against `key` (e.g. `otp:<collection>:<user>`). */
-export async function recordAttemptFailure(key: string): Promise<void> {
-  await getDb().insert(loginFailures)
-    .values({ id: crypto.randomUUID(), key, at: Math.floor(Date.now() / 1000) })
-    .catch(() => { /* swallow */ });
-}
-
 /** Failed attempts recorded against `key` within the last `windowSeconds`. */
 export async function recentAttemptFailures(key: string, windowSeconds: number): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;

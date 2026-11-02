@@ -288,11 +288,3 @@ export async function runSql(opts: RunSqlOptions): Promise<RunSqlResult> {
   };
 }
 
-function extractSqliteCode(e: unknown): string | null {
-  if (e && typeof e === "object" && "code" in e) {
-    const c = (e as { code: unknown }).code;
-    if (typeof c === "string") return c;
-  }
-  return null;
-}
-

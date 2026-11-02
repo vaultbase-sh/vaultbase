@@ -23,7 +23,6 @@ import {
   MAX_SQL_RESULT_ROWS,
 } from "../core/sql-runner.ts";
 import {
-  setSandboxDir,
   resetSandbox,
   describeSandbox,
   dropSandbox,
@@ -54,7 +53,6 @@ async function seedAdmin(id = "a1"): Promise<{ id: string; email: string }> {
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "vaultbase-sql-"));
   setLogsDir(tmpDir);
-  setSandboxDir(join(tmpDir, "sandboxes"));
   dbPath = join(tmpDir, "data.db");
   await initDb(testDb(dbPath));
   await runMigrations();

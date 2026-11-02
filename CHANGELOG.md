@@ -246,6 +246,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   - Building the OpenAPI document no longer slows down with the square of
     the number of collections.
 
+### Removed
+
+- The `db:generate` and `db:migrate` package scripts (and the `drizzle-kit`
+  dev dependency): the schema is created at start, so they did nothing.
+  Unused internal code found by the review is gone too.
+
 ### Upgrade notes (feature flags)
 
 - The rollout fix moves some users into a different bucket: a user who was

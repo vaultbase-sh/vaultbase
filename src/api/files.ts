@@ -1,7 +1,7 @@
 import { and, eq, lt } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { existsSync, readdirSync, renameSync, unlinkSync } from "fs";
-import { join, resolve, sep } from "path";
+import { join } from "path";
 import { getDb } from "../db/client.ts";
 import { auditLog, files, fileTokenUses } from "../db/schema.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
@@ -280,15 +280,6 @@ function mimeAllowed(mime: string, patterns: string[]): boolean {
     }
   }
   return false;
-}
-
-/** Resolve `key` against `uploadDir` and assert it does not escape the dir. */
-function safeJoin(uploadDir: string, key: string): string | null {
-  if (!isValidStorageFilename(key)) return null;
-  const root = resolve(uploadDir);
-  const full = resolve(join(root, key));
-  if (full !== root && !full.startsWith(root + sep)) return null;
-  return full;
 }
 
 /**
@@ -869,8 +860,6 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       await db.delete(files).where(eq(files.id, meta.id));
       return { data: null };
     });
-  // safeJoin retained for storage-layer hardening if/when it grows callers.
-  void safeJoin;
 }
 
 function deleteThumbsFor(uploadDir: string, filename: string): void {

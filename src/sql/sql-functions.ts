@@ -189,8 +189,3 @@ export const SQL_FUNCTIONS: SqlFunction[] = [
   ...VAULTBASE,
 ];
 
-/** Look up by name (case-insensitive). */
-export function findFunction(name: string): SqlFunction | null {
-  const n = name.toLowerCase();
-  return SQL_FUNCTIONS.find((f) => f.name === n) ?? null;
-}

@@ -12,7 +12,7 @@ import { setLogsDir } from "./core/file-logger.ts";
 import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
 import { customInnerPath } from "./core/api-paths.ts";
 import { setUploadDir } from "./core/storage.ts";
-import { setSandboxDir, pruneStaleSandboxes } from "./core/sql-sandbox.ts";
+import { pruneStaleSandboxes } from "./core/sql-sandbox.ts";
 import { makeAuthPlugin } from "./api/auth.ts";
 import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
@@ -440,7 +440,6 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   const reader = opts.role === "reader";
   setLogsDir(config.logsDir);
   setUploadDir(config.uploadDir);
-  setSandboxDir(`${config.dataDir}/sandboxes`);
   setBackupsDir(`${config.dataDir}/backups`);
   configureSetupKey(config.dataDir);
   if (!reader) {

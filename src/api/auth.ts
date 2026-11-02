@@ -99,10 +99,6 @@ async function userSession(request: Request, jwtSecret: string, collection: stri
   return ctx && ctx.collection === collection ? ctx : null;
 }
 
-function getSecret(secret: string): Uint8Array {
-  return new TextEncoder().encode(secret);
-}
-
 const TOKEN_TTL_SECONDS = 60 * 60; // 1 hour
 const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

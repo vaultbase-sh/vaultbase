@@ -995,12 +995,6 @@ export async function exchangeCodeForToken(opts: {
   return { access_token: accessToken, raw: json };
 }
 
-export async function fetchProviderProfile(provider: string, accessToken: string): Promise<NormalizedProfile> {
-  const def = PROVIDERS[provider];
-  if (!def) throw new Error(`Unknown OAuth2 provider: ${provider}`);
-  return def.fetchProfile(accessToken);
-}
-
 /**
  * Some IdPs (Apple) put the user identity inside the token-endpoint response
  * itself rather than at a userinfo URL. Callers that want a single function

@@ -196,14 +196,3 @@ export function unquoteIdent(text: string): string {
   return text;
 }
 
-/**
- * Find the index of the token whose span contains (or ends at) `offset`.
- * Returns -1 if before the first token; tokens.length if past the last.
- */
-export function tokenAtOffset(tokens: SqlToken[], offset: number): number {
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i]!;
-    if (offset <= t.end) return i;
-  }
-  return tokens.length;
-}

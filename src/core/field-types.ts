@@ -81,10 +81,6 @@ export function registerFieldType(def: FieldTypeDef): () => void {
   };
 }
 
-export function getFieldType(type: string): RegisteredFieldType | undefined {
-  return registry.get(type);
-}
-
 /** An extension's type (not a built-in), if one is registered under this name. */
 export function customFieldType(type: string): RegisteredFieldType | undefined {
   const t = registry.get(type);

@@ -21,7 +21,7 @@
  * still applies). Strings + comments are pre-filtered by callers.
  */
 
-import { meaningful, tokenize, tokenAtOffset, unquoteIdent, type SqlToken } from "./sql-tokenizer.ts";
+import { meaningful, tokenize, unquoteIdent, type SqlToken } from "./sql-tokenizer.ts";
 
 export type SqlContext =
   | { kind: "afterDot"; base: string }

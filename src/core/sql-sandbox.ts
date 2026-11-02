@@ -195,7 +195,3 @@ export function _resetSandboxRegistryForTests(): void {
   _sandboxes.clear();
 }
 
-/** No-op shim to keep the older API call site (server.ts) happy. */
-export function setSandboxDir(_dir: string): void {
-  /* sandbox is in-memory; directory is no longer used */
-}

@@ -295,7 +295,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
       ? requestIsSet(ast.left, ctx) : compileOperand(ast.left, ctx);
     const rhs = ast.right.kind === "requestMap" && ast.right.modifier === "isset"
       ? requestIsSet(ast.right, ctx) : compileOperand(ast.right, ctx);
-    return `(${lhs}) ${sqlOpFor(op)} (${rhs})`;
+    return `(${lhs}) ${op} (${rhs})`;
   }
 
   // `:changed` modifier — only valid on @request.body.* fields, evaluated at
@@ -308,7 +308,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
       ? bodyChanged(ast.left, ctx) : compileOperand(ast.left, ctx);
     const rhs = ast.right.kind === "requestMap" && ast.right.modifier === "changed"
       ? bodyChanged(ast.right, ctx) : compileOperand(ast.right, ctx);
-    return `(${lhs}) ${sqlOpFor(op)} (${rhs})`;
+    return `(${lhs}) ${op} (${rhs})`;
   }
 
   // Array-prefix operators (`?=` / `?~` / etc.) — match-any-element semantics
@@ -352,7 +352,7 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return likeSql(left, op, ast.right, ctx);
   }
 
-  return typedCmp(compiled(ast.left, ctx), sqlOpFor(op), compiled(ast.right, ctx), ctx, !!ctx.element);
+  return typedCmp(compiled(ast.left, ctx), op, compiled(ast.right, ctx), ctx, !!ctx.element);
 }
 
 /**
@@ -397,7 +397,7 @@ function itemCmp(alias: string, path: string[], op: AnyCmpOp, scalar: Operand, c
     left = d.jsonExtract(left, `$.${seg}`);
   }
   if (op === "~" || op === "!~") return likeSql(left, op, scalar, ctx);
-  return typedCmp({ sql: left, params: [] }, sqlOpFor(op), compiled(scalar, ctx), ctx, true);
+  return typedCmp({ sql: left, params: [] }, op, compiled(scalar, ctx), ctx, true);
 }
 
 /** Some item of `items.list` whose `items.path` compares true. */
@@ -495,13 +495,6 @@ function boundKind(v: unknown): "number" | "text" | null {
   return null;
 }
 
-function sqlOpFor(op: AnyCmpOp): string {
-  if (op === "=" || op === "!=") return op === "=" ? "=" : "!=";
-  if (op === ">" || op === ">=" || op === "<" || op === "<=") return op;
-  // ~ / !~ handled inline; ? variants handled inline
-  return op;
-}
-
 /** `field:each <op> value` — match every array element. */
 function compileEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: CompileCtx): string {
   const arrayOperand = ((left.kind === "field" || left.kind === "collection") && left.modifier === "each")
@@ -587,7 +580,7 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
       const v = right.params[0];
       ctx.params.push(typeof v === "boolean" ? Number(v) : v);
       const value = ctx.element && kind === "text" ? `${t.as("value", kind)} ${t.itemTextOrder}` : t.as("value", kind);
-      return { cmp: `${value} ${sqlOpFor(op)} ?`, from: t.eachJsonb(arraySql) };
+      return { cmp: `${value} ${op} ?`, from: t.eachJsonb(arraySql) };
     }
   }
   // A list inside an item, on SQLite: typed as the bound value too (Dialect.itemCompare).
@@ -596,10 +589,10 @@ function elementCmp(arraySql: string, op: AnyCmpOp, scalar: Operand, ctx: Compil
     if (kind) {
       const v = right.params[0];
       ctx.params.push(typeof v === "boolean" ? Number(v) : v);
-      return { cmp: `${d.itemElement(kind)} ${sqlOpFor(op)} ?`, from: d.jsonEach(arraySql) };
+      return { cmp: `${d.itemElement(kind)} ${op} ?`, from: d.jsonEach(arraySql) };
     }
   }
-  return { cmp: typedCmp({ sql: "value", params: [] }, sqlOpFor(op), right, ctx), from: d.jsonEach(arraySql) };
+  return { cmp: typedCmp({ sql: "value", params: [] }, op, right, ctx), from: d.jsonEach(arraySql) };
 }
 
 /** Whether this operand reads JSON: a JSON path, or a value of the item inside :any(...). */

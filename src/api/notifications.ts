@@ -14,7 +14,7 @@
  */
 import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
-import { setSetting, getAllSettings } from "./settings.ts";
+import { setSetting } from "./settings.ts";
 import { headerBearer, verifyAuthToken } from "../core/sec.ts";
 import {
   loadProviderConfigs,
@@ -332,5 +332,4 @@ export function makeNotificationsPlugin(jwtSecret: string) {
     );
 }
 
-/** Test-only: re-export `getAllSettings` so tests don't need to import it separately. */
-export { getAllSettings };
+

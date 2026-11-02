@@ -1,4 +1,4 @@
-import { existsSync, renameSync, unlinkSync, statSync, rmSync } from "fs";
+import { existsSync, renameSync, unlinkSync, rmSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { getAllSettings } from "../api/settings.ts";
 import { forgetThumbVariants } from "./image.ts";
@@ -317,7 +317,6 @@ export function getStorageStatus(): { driver: StorageDriver; uploadDir: string; 
   return { ...extra, driver, uploadDir: configuredUploadDir };
 }
 
-export { statSync };
 
 /** A setting that changes where files come from (and so what a cached thumbnail shows). */
 export function isStorageSetting(key: string): boolean {

@@ -176,15 +176,6 @@ export async function revokeApiToken(id: string): Promise<{ revoked: boolean }> 
   return { revoked: true };
 }
 
-/**
- * Resolve token metadata for a verified jti. Called from the JWT verifier
- * extension that handles `audience: "api"` — returns null when the token
- * isn't in the table (somehow signed but not minted via the proper path).
- */
-export async function loadApiTokenByJti(jti: string): Promise<ApiTokenRow | null> {
-  return getApiToken(jti);
-}
-
 // ── Scope check helpers ──────────────────────────────────────────────────────
 
 /**

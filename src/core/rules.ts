@@ -59,11 +59,6 @@ export function evaluateRule(
   }
 }
 
-/** True if the rule references SQL-only constructs that need filter compilation. */
-export function isExpressionRule(rule: string | null): boolean {
-  return rule !== null && rule !== "";
-}
-
 // ── AST evaluation ──────────────────────────────────────────────────────────
 
 /**
