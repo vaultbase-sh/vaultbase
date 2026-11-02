@@ -105,7 +105,6 @@ export function handleCorsPreflight(request: Request): Response | null {
   const cfg = load();
   if (!originAllowed(cfg, origin)) return null;
 
-  const reqMethod = request.headers.get("access-control-request-method") ?? "";
   const reqHeaders = request.headers.get("access-control-request-headers") ?? "";
 
   const headers: Record<string, string> = {
@@ -116,9 +115,6 @@ export function handleCorsPreflight(request: Request): Response | null {
     "Vary": "Origin, Access-Control-Request-Headers",
   };
   if (cfg.credentials) headers["Access-Control-Allow-Credentials"] = "true";
-  // No-op acknowledgement of method — browsers don't need it echoed but
-  // some preflight inspectors look for it.
-  if (reqMethod) headers["Access-Control-Allow-Methods"] = cfg.methods;
 
   return new Response(null, { status: 204, headers });
 }

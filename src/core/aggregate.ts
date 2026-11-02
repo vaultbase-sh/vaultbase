@@ -120,7 +120,8 @@ function parseGroupBy(col: Collection, fields: FieldDef[], raw: string | undefin
       out.push({ alias, sql: c.sql });
       continue;
     }
-    if (!(bucket in BUCKET_FMT)) throw new FilterError(`invalid bucket '${bucket}' (use hour, day, week, month, year)`);
+    // Own keys only: `in` also took `toString` and the like.
+    if (!Object.hasOwn(BUCKET_FMT, bucket)) throw new FilterError(`invalid bucket '${bucket}' (use hour, day, week, month, year)`);
     if (c.type !== null && !TIME.has(c.type)) throw new FilterError(`'${name}:${bucket}': '${name}' is not a date field`);
     out.push({ alias, sql: db.dialect.timeBucket(bucket as Bucket, c.sql), bucketed: true });
   }

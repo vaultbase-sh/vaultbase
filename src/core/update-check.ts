@@ -18,6 +18,10 @@
 import { getSetting, setSetting } from "../api/settings.ts";
 import { VAULTBASE_VERSION } from "./version.ts";
 
+async function setIfChanged(key: string, value: string): Promise<void> {
+  if (getSetting(key, "") !== value) await setSetting(key, value);
+}
+
 const REPO = "vaultbase-sh/vaultbase";
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const FIRST_DELAY_MS = 30_000;
@@ -70,11 +74,12 @@ export async function runUpdateCheck(): Promise<void> {
       await setSetting("update_check.error", "no tag_name in response");
       return;
     }
-    await setSetting("update_check.latest_version", tag);
+    // Only what changed: each write is announced to every server.
+    await setIfChanged("update_check.latest_version", tag);
     await setSetting("update_check.checked_at", String(Math.floor(Date.now() / 1000)));
-    await setSetting("update_check.error", "");
+    await setIfChanged("update_check.error", "");
   } catch (e) {
-    await setSetting("update_check.error", e instanceof Error ? e.message : String(e));
+    await setIfChanged("update_check.error", e instanceof Error ? e.message : String(e));
   }
 }
 

@@ -57,3 +57,25 @@ describe("public flag evaluation", () => {
     expect((await evaluate({}, jwt)).status).toBe(200);
   });
 });
+
+describe("admin flag create and update", () => {
+  async function adminToken(): Promise<string> {
+    const { getDb } = await import("../db/client.ts");
+    const { admin } = await import("../db/schema.ts");
+    const { signAuthToken } = await import("../core/sec.ts");
+    await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    return (await signAuthToken({ payload: { id: "a1", email: "a@test.local" }, audience: "admin", expiresInSeconds: 3600, jwtSecret: SECRET })).token;
+  }
+  const call = async (method: string, path: string, body: unknown, token: string) =>
+    makeFlagsPlugin(SECRET).handle(new Request(`http://localhost${path}`, {
+      method, headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+    }));
+
+  it("POST of an existing key is a 409, PATCH of a missing one a 404", async () => {
+    const token = await adminToken();
+    expect((await call("POST", "/admin/flags", { key: "vip_feature", enabled: false }, token)).status).toBe(409);
+    expect((await call("PATCH", "/admin/flags/nope", { enabled: true }, token)).status).toBe(404);
+    expect((await call("POST", "/admin/flags", { key: "fresh", type: "bool" }, token)).status).toBe(200);
+    expect((await call("PATCH", "/admin/flags/fresh", { enabled: true }, token)).status).toBe(200);
+  });
+});

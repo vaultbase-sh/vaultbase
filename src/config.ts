@@ -94,6 +94,17 @@ export function loadEncryptionKey(dataDir: string): string {
   return key;
 }
 
+/** VAULTBASE_PORT as a port number; anything else stops the start with a clear message. */
+function parsePort(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return 8091;
+  const port = Number(raw.trim());
+  // parseInt took "80x" as 80 and "abc" as NaN (which then printed localhost:NaN).
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`VAULTBASE_PORT must be a port number from 0 to 65535, got '${raw}'`);
+  }
+  return port;
+}
+
 export async function loadConfig(): Promise<Config> {
   try { process.umask(FILE_UMASK); } catch { /* not supported (Windows) */ }
   const dataDir = process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data";
@@ -112,7 +123,7 @@ export async function loadConfig(): Promise<Config> {
   const jwtSecret = process.env["VAULTBASE_JWT_SECRET"] || loadJwtSecret(dataDir);
 
   return {
-    port: parseInt(process.env["VAULTBASE_PORT"] ?? "8091"),
+    port: parsePort(process.env["VAULTBASE_PORT"]),
     dataDir,
     dbPath: join(dataDir, "data.db"),
     uploadDir,

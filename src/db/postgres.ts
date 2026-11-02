@@ -130,7 +130,9 @@ export const POSTGRES_DIALECT: Dialect = {
     }
   },
   quoteIdent,
-  like: (left, pattern) => `COALESCE(${left} ILIKE ${pattern}, FALSE)`,
+  // Cast to text first: Postgres has no ILIKE for numbers, bigints (dates,
+  // bools) or json, so `price ~ "1"` failed the query where SQLite matched.
+  like: (left, pattern) => `COALESCE((${left})::text ILIKE ${pattern}, FALSE)`,
   // One `#>>` over the whole path: `a.b.c` reads through objects only, as
   // json_extract does, instead of re-parsing each step's text as JSON.
   jsonExtract: (expr, path) => {

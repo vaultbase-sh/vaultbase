@@ -6,6 +6,7 @@
 import { db } from "../db/index.ts";
 import { getSetting } from "../api/settings.ts";
 import { pruneLogFiles } from "./file-logger.ts";
+import { getLockoutPolicy } from "./security.ts";
 
 /**
  * Default for `maintenance.retention_days`: finished jobs and webhook
@@ -27,6 +28,8 @@ export interface PruneResult {
   authTokens: number;
   logFiles: number;
   auditEntries: number;
+  adminSessions: number;
+  loginFailures: number;
 }
 
 /**
@@ -66,5 +69,9 @@ export async function pruneHistory(): Promise<PruneResult> {
       `DELETE FROM vaultbase_audit_log WHERE at < ?`,
       now - auditRetentionDays() * 24 * 60 * 60,
     ),
+    // Both grew without end: a row per admin sign-in and per failed sign-in.
+    adminSessions: await run(`DELETE FROM vaultbase_admin_sessions WHERE expires_at < ?`, expiredCutoff),
+    // Kept while the lockout can still count them (twice its window, at least a day).
+    loginFailures: await run(`DELETE FROM vaultbase_login_failures WHERE at < ?`, now - Math.max(86_400, getLockoutPolicy().duration_seconds * 2)),
   };
 }

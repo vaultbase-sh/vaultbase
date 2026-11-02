@@ -136,3 +136,15 @@ describe("the notification inbox", () => {
     } finally { stop(); }
   });
 });
+
+describe("FCM errors", () => {
+  it("INVALID_ARGUMENT disables the token only when FCM names the token field", async () => {
+    const { fcmTokenIsDead } = await import("../core/notifications.ts");
+    const tokenBad = JSON.stringify({ error: { status: "INVALID_ARGUMENT", details: [{ errorCode: "INVALID_ARGUMENT" }, { fieldViolations: [{ field: "message.token", description: "Invalid registration token" }] }] } });
+    const messageBad = JSON.stringify({ error: { status: "INVALID_ARGUMENT", details: [{ errorCode: "INVALID_ARGUMENT" }, { fieldViolations: [{ field: "message.data[0].value", description: "Invalid value" }] }] } });
+    expect(fcmTokenIsDead("INVALID_ARGUMENT", tokenBad)).toBe(true);
+    expect(fcmTokenIsDead("INVALID_ARGUMENT", messageBad)).toBe(false);
+    expect(fcmTokenIsDead("UNREGISTERED", "{}")).toBe(true);
+    expect(fcmTokenIsDead("INTERNAL", "{}")).toBe(false);
+  });
+});

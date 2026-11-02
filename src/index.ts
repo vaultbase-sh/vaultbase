@@ -654,4 +654,6 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+// A failed start exits non-zero, so a supervisor (systemd Restart=on-failure)
+// sees it; logging alone exited 0 on SQLite and left a zombie on Postgres.
+main().catch((e) => { console.error(e); process.exit(1); });

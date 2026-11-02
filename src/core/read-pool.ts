@@ -50,7 +50,8 @@ export interface ForwardReply {
 interface Slot {
   worker: Worker;
   inflight: number;
-  served: number;
+  /** Its spawn number: stable, unlike its place in `slots`. */
+  id: number;
   /** Spawn time, part of the id its stats are filed under. */
   born: number;
   /** When it last answered, or went from idle to busy. */
@@ -209,7 +210,9 @@ export async function forwardRead(request: Request, peerIp: string | null): Prom
 }
 
 function onStats(slot: Slot, m: WorkerStats): void {
-  const id = `w${slots.indexOf(slot)}:${slot.born}`;
+  // Not its index: after a worker was dropped, the others moved down and
+  // filed their stats under a second id, counted twice in /metrics.
+  const id = `w${slot.id}:${slot.born}`;
   globalMetrics.setExternalSteps(id, m.steps as Partial<Record<Step, HistogramParts>>);
   globalMetrics.setExternalRequests(id, m.requests ?? null);
   setExternalShapes(id, m.queries as ExportedShape[]);
@@ -316,7 +319,7 @@ function spawnSlot(s: PoolSpec): Promise<Slot> {
   const i = nextWorkerId++;
   const worker = new Worker(s.workerUrl, { env: { ...s.env, VAULTBASE_READ_WORKER: String(i) } });
   const born = Date.now();
-  const slot: Slot = { worker, inflight: 0, served: 0, born, progressAt: born };
+  const slot: Slot = { worker, inflight: 0, id: i, born, progressAt: born };
   return new Promise<Slot>((resolve, reject) => {
     const fail = (e: Error) => {
       clearTimeout(timer);

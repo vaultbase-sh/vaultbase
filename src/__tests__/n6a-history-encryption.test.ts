@@ -72,6 +72,13 @@ describe("N-6a: encrypted-field values are encrypted at rest in history rows", (
     expect(seen).toContain("still-private");
   });
 
+  it("an encrypted text value that looks like JSON comes back as text", async () => {
+    await withHistoryAndEncryption();
+    const r = await createRecord("notes", { title: "j", secret: "[1,2]" }, null);
+    const list = await listRecordHistory("notes", r.id);
+    expect(list.data[0]!.snapshot["secret"]).toBe("[1,2]");
+  });
+
   it("preserves the live record's plaintext API shape (no regression)", async () => {
     await withHistoryAndEncryption();
     const r = await createRecord("notes", { title: "x", secret: "shh" }, null);

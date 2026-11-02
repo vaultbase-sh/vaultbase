@@ -228,6 +228,14 @@ function positiveInt(v: number | undefined, fallback: number): number {
 }
 
 /**
+ * A positive whole number from a query value, or `fallback`. `parseInt("x")`
+ * is NaN, which the clamps let through (Math.max(1, NaN) is NaN) into OFFSET.
+ */
+export function positiveIntParam(raw: unknown, fallback: number): number {
+  return positiveInt(typeof raw === "string" || typeof raw === "number" ? parseInt(String(raw), 10) : undefined, fallback);
+}
+
+/**
  * Parse client-supplied page / perPage query values: invalid → defaults,
  * perPage capped at MAX_PER_PAGE.
  */
@@ -476,7 +484,7 @@ function isJsonField(field: FieldDef): boolean {
 }
 
 /** Coerce a JS value to its DB-safe representation based on field type. */
-function encodeValue(val: unknown, field: FieldDef): unknown {
+export function encodeValue(val: unknown, field: FieldDef): unknown {
   if (val === undefined || val === null) return null;
   const custom = customFieldType(field.type);
   if (custom?.encode) return custom.encode(val, field);

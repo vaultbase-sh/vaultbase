@@ -77,9 +77,14 @@ const DEFAULT_DENY: readonly string[] = [
   "169.254.0.0/16",
   "172.16.0.0/12",
   "192.168.0.0/16",
+  "198.18.0.0/15",   // benchmarking (RFC 2544), used inside some networks
+  "224.0.0.0/4",     // multicast
+  "240.0.0.0/4",     // reserved, and 255.255.255.255 broadcast
   "::1/128",
   "fc00::/7",
   "fe80::/10",
+  "fec0::/10",       // site-local (deprecated, still routed by some stacks)
+  "ff00::/8",        // multicast
   // IPv6 forms that carry an IPv4 address. The embedded address is also
   // checked against the IPv4 ranges above; these block the wrappers outright.
   "::/128",          // unspecified
@@ -87,6 +92,7 @@ const DEFAULT_DENY: readonly string[] = [
   "64:ff9b::/96",    // NAT64 well-known prefix
   "64:ff9b:1::/48",  // NAT64 local-use
   "2002::/16",       // 6to4
+  "2001::/32",       // Teredo: its IPv4 address is obfuscated, so it can't be checked
 ];
 
 /**
@@ -411,7 +417,14 @@ export async function guardedFetch(input: string | URL | Request, init?: Request
       signal: requestSignal(first.signal),
     });
     const location = res.headers.get("location");
+    // As fetch's own `redirect: "error"`: a redirect rejects.
+    if (first.redirect === "error" && res.status >= 300 && res.status <= 399) {
+      await res.body?.cancel().catch(() => {});
+      throw new TypeError(`egress: redirect from ${url} refused (redirect: "error")`);
+    }
     if (!follow || res.status < 300 || res.status > 399 || !location) return res;
+    // The redirect's own body is never read: release its connection now.
+    await res.body?.cancel().catch(() => {});
     if (hop >= MAX_REDIRECTS) throw new Error(`egress: too many redirects from ${first.url}`);
     const next = new URL(location, url);
     // Credentials don't follow a redirect to another origin (as in fetch's

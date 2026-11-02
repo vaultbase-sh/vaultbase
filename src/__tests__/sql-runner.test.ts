@@ -71,6 +71,14 @@ afterEach(async () => {
 
 // ── detectMutation ───────────────────────────────────────────────────────
 
+describe("detectMutation: replace", () => {
+  it("allows the replace() function and refuses REPLACE INTO", () => {
+    expect(detectMutation("SELECT replace(title, 'a', 'b') FROM vb_posts")).toBeNull();
+    expect(detectMutation("REPLACE INTO vb_posts (id) VALUES ('x')")).toBe("REPLACE");
+    expect(detectMutation("INSERT OR REPLACE INTO vb_posts (id) VALUES ('x')")).not.toBeNull();
+  });
+});
+
 describe("detectMutation", () => {
   it("flags INSERT/UPDATE/DELETE/DROP", () => {
     expect(detectMutation("INSERT INTO t VALUES (1)")).toBe("INSERT");

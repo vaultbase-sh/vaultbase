@@ -123,6 +123,9 @@ async function serve(m: ForwardRequest): Promise<void> {
     headers.push(["x-vaultbase-read-worker", WORKER_ID]);
     body = await res.arrayBuffer();
   } catch (e) {
+    // Failed after the status was taken (reading the body): a 500, not that status.
+    status = 500;
+    headers = [["content-type", "application/json"]];
     body = new TextEncoder().encode(JSON.stringify({ error: e instanceof Error ? e.message : "read worker failed", code: 500 })).buffer as ArrayBuffer;
   }
   const reply: ForwardReply = { type: "reply", id: m.id, status, headers, body };

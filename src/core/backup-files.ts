@@ -286,13 +286,16 @@ export async function restoreFiles(manifest: FilesManifest, backupsDir: string, 
  * delete files the first is about to list. A lock whose process is gone,
  * or older than a day, is taken over.
  */
+/** This run of the process, told apart from an earlier one with the same pid. */
+const BOOT_ID = crypto.randomUUID();
+
 export async function withBackupLock<T>(backupsDir: string, fn: () => Promise<T>): Promise<T> {
   mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
   const lock = join(backupsDir, ".lock");
   for (let attempt = 0; ; attempt++) {
     try {
       const fd = openSync(lock, "wx", 0o600);
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, boot: BOOT_ID, at: Date.now() }));
       closeSync(fd);
       break;
     } catch (e) {
@@ -300,9 +303,13 @@ export async function withBackupLock<T>(backupsDir: string, fn: () => Promise<T>
         if ((e as { code?: string }).code === "EEXIST") throw new BackupBusyError();
         throw e;
       }
-      let held: { pid?: number; at?: number } = {};
+      let held: { pid?: number; boot?: string; at?: number } = {};
       try { held = JSON.parse(readFileSync(lock, "utf8")); } catch { /* half-written: treat as stale */ }
-      const alive = typeof held.pid === "number" && (() => { try { process.kill(held.pid, 0); return true; } catch { return false; } })();
+      // Our pid from another boot is a lock left by a crashed run: a container
+      // restarted after a crash usually gets the same pid (often 1), which
+      // looked alive and refused backups for a day.
+      const earlierBoot = held.pid === process.pid && held.boot !== BOOT_ID;
+      const alive = typeof held.pid === "number" && !earlierBoot && (() => { try { process.kill(held.pid, 0); return true; } catch { return false; } })();
       if (alive && typeof held.at === "number" && Date.now() - held.at < 86_400_000) throw new BackupBusyError();
       rmSync(lock, { force: true });
     }

@@ -14,7 +14,7 @@ import { invalidateRecordVectors, _resetVectorCache } from "./vector-cache.ts";
 import { _reloadSettings, invalidateSetting } from "../api/settings.ts";
 import { invalidateRateLimitCache } from "../api/ratelimit.ts";
 import { invalidateEmailCache } from "./email.ts";
-import { clearThumbCache, invalidateStorageCache } from "./storage.ts";
+import { clearThumbCache, invalidateStorageCache, isStorageSetting } from "./storage.ts";
 import { invalidateEgressCache } from "./hook-egress.ts";
 import { invalidateCorsCache } from "./cors.ts";
 import { broadcast as realtimeBroadcast, broadcastRules, broadcastSystem } from "../realtime/manager.ts";
@@ -28,12 +28,16 @@ function schemaChanged(): void {
   _resetVectorCache();
 }
 
-/** The caches built from settings, as the settings PATCH drops them. */
-function settingsCachesChanged(): void {
+/**
+ * The caches built from settings, as the settings PATCH drops them. The
+ * thumbnail files only for a storage setting: every setting written anywhere
+ * (each backup's last-run time, the update check) deleted them on every server.
+ */
+function settingsCachesChanged(key?: string): void {
   invalidateRateLimitCache();
   invalidateEmailCache();
   invalidateStorageCache();
-  clearThumbCache();
+  if (key !== undefined && isStorageSetting(key)) clearThumbCache();
   invalidateEgressCache();
   invalidateCorsCache();
 }
@@ -57,7 +61,7 @@ onPeerMessage("bus", async (msg) => {
       break;
     case "settings":
       await invalidateSetting(m.key);
-      settingsCachesChanged();
+      settingsCachesChanged(m.key);
       break;
   }
 }, { reset: true });

@@ -7,6 +7,7 @@ import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
 import { dispatchEvent, invalidateWebhookCache } from "../core/webhooks.ts";
 import { adminGuard } from "./_admin.ts";
+import { positiveIntParam } from "../core/records.ts";
 
 function generateSecret(): string {
   const bytes = new Uint8Array(32);
@@ -146,7 +147,7 @@ export function makeWebhooksPlugin(jwtSecret: string) {
 
     // Delivery log — per-webhook recent deliveries.
     .get("/admin/webhooks/:id/deliveries", async ({ params, query }) => {
-      const limit = Math.min(200, Math.max(1, parseInt(query.limit ?? "50", 10)));
+      const limit = Math.min(200, positiveIntParam(query.limit, 50));
       const sinceRaw = query.since ? parseInt(query.since, 10) : 0;
       const conds = sinceRaw > 0
         ? and(eq(webhookDeliveries.webhook_id, params.id), gte(webhookDeliveries.created_at, sinceRaw))

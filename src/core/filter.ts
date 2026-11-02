@@ -773,6 +773,16 @@ function joinedCollectionGuard(
   return parts.length === 1 ? parts[0]! : parts.map((p) => `(${p})`).join(" AND ");
 }
 
+/**
+ * `created` / `updated` on another collection (`@collection.x.created`,
+ * `x_via_y.created`) as on the host: the columns are `created_at` and
+ * `updated_at`, unless that table has a real column by the short name.
+ */
+function systemAlias(name: string, meta: { isFilterable(n: string): boolean } | null): string {
+  if (name !== "created" && name !== "updated") return name;
+  return meta?.isFilterable(name) ? name : `${name}_at`;
+}
+
 function compileCollectionRef(
   op: Extract<Operand, { kind: "collection" }>,
   ctx: CompileCtx,
@@ -788,7 +798,7 @@ function compileCollectionRef(
     const targetTable = `vb_${op.collection}`;
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
-    const head = op.path[0]!;
+    const head = systemAlias(op.path[0]!, ctx.lookup?.(op.collection) ?? null);
     if (!exists && ctx.hoist) {
       const targetMeta0 = ctx.lookup?.(op.collection);
       if (targetMeta0 && (targetMeta0.isPrivateField(head) || !targetMeta0.isFilterable(head))) {
@@ -890,7 +900,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
     const sel = op.path.length === 0
       ? `${escapeIdent(targetTable)}.${escapeIdent("id")}`
       : (() => {
-          let inner = `${escapeIdent(targetTable)}.${escapeIdent(op.path[0]!)}`;
+          let inner = `${escapeIdent(targetTable)}.${escapeIdent(systemAlias(op.path[0]!, ctx.lookup?.(op.targetCollection) ?? null))}`;
           for (let i = 1; i < op.path.length; i++) {
             inner = dialect().jsonExtract(inner, `$.${op.path[i]}`);
           }
@@ -911,7 +921,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       // `posts_via_author.password_hash` selects the column out of the joined
       // table, so the path head needs the same guard as a direct reference.
       if (op.path.length > 0) {
-        const head = op.path[0]!;
+        const head = systemAlias(op.path[0]!, meta);
         if (meta.isPrivateField(head) || !meta.isFilterable(head)) {
           throw new PrivateFieldError(head);
         }

@@ -53,6 +53,12 @@ describe("IPv6 wrappers around IPv4", () => {
     await blocked("http://[::]/");
   });
 
+  it("multicast, reserved, broadcast, benchmarking, site-local and Teredo are blocked too", async () => {
+    for (const host of ["224.0.0.1", "239.255.255.250", "240.0.0.1", "255.255.255.255", "198.18.0.1", "[ff02::1]", "[fec0::1]", "[2001:0:4136:e378:8000:63bf:3fff:fdd2]"]) {
+      await blocked(`http://${host}/`);
+    }
+  });
+
   it("unwraps correctly", () => {
     expect(embeddedIPv4("::ffff:10.1.2.3")).toBe("10.1.2.3");
     expect(embeddedIPv4("64:ff9b::7f00:1")).toBe("127.0.0.1");

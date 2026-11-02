@@ -28,6 +28,7 @@ import {
   verifyAuthToken,
   accessFor,
   dataPrincipal,
+  headerBearer,
 } from "../core/sec.ts";
 import { buildRequestContext, checkRule } from "./_rules.ts";
 import { getAllSettings } from "./settings.ts";
@@ -92,7 +93,7 @@ function clientIpForLockout(request: Request): string | null {
  * auth collection doesn't count.
  */
 async function userSession(request: Request, jwtSecret: string, collection: string) {
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = (headerBearer(request) ?? undefined);
   if (!token) return null;
   const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
   return ctx && ctx.collection === collection ? ctx : null;
@@ -182,6 +183,15 @@ async function consumeToken(id: string, now: number): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** A user's recovery codes, with their lookup rows (left behind before). */
+async function deleteRecoveryCodes(userId: string, collectionId: string): Promise<void> {
+  const db = getDb();
+  const mine = and(eq(mfaRecoveryCodes.user_id, userId), eq(mfaRecoveryCodes.collection_id, collectionId));
+  const ids = (await db.select({ id: mfaRecoveryCodes.id }).from(mfaRecoveryCodes).where(mine)).map((r) => r.id);
+  if (ids.length > 0) await db.delete(mfaRecoveryLookup).where(inArray(mfaRecoveryLookup.recovery_id, ids));
+  await db.delete(mfaRecoveryCodes).where(mine);
+}
+
 /** Links and codes that act for a user without their password. */
 const ACCOUNT_TOKEN_PURPOSES = ["password_reset", "otp", "email_verify", "email_change", "invite", "mfa_ticket"];
 
@@ -201,7 +211,8 @@ function isRedirectUriAllowed(provider: string, uri: string): boolean {
   let target: URL;
   try { target = new URL(uri); } catch { return false; }
   const settings = getAllSettings();
-  const raw = settings[`oauth2.${provider}.allowed_redirect_uris`] ?? settings["oauth2.allowed_redirect_uris"] ?? "";
+  // `||`: a provider list cleared to "" falls back to the global one.
+  const raw = settings[`oauth2.${provider}.allowed_redirect_uris`] || settings["oauth2.allowed_redirect_uris"] || "";
   if (!raw) {
     // Not configured: only this app's own origin (app.url). Allowing any URI
     // here left the decision to whatever the provider has registered, which
@@ -337,7 +348,7 @@ async function signupAllowed(
   fields: Record<string, unknown>,
 ): Promise<boolean> {
   if (col.create_rule === null) return true;
-  const token = request.headers.get("authorization")?.replace("Bearer ", "");
+  const token = (headerBearer(request) ?? undefined);
   const auth = token ? dataPrincipal(await verifyAuthToken(token, jwtSecret), accessFor(request)) : null;
   const { password: _pw, ...ruleBody } = fields;
   return checkRule(
@@ -952,9 +963,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const now = Math.floor(Date.now() / 1000);
       await updateUserById(col, params.id, { totp_enabled: 0, totp_secret: null, updated_at: now });
       // Wipe recovery codes — useless without TOTP.
-      await getDb()
-        .delete(mfaRecoveryCodes)
-        .where(and(eq(mfaRecoveryCodes.user_id, params.id), eq(mfaRecoveryCodes.collection_id, col.id)));
+      await deleteRecoveryCodes(params.id, col.id);
       return { data: { disabled: true } };
     }, { requireAdmin: true })
     .post(
@@ -1114,7 +1123,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
 
         const { token } = await signAuthToken({
-          payload: { id: u.id, email: u.email, collection: params.collection },
+          // The name, not what the URL used: an id there made a token that
+          // userSession (which compares names) refused everywhere.
+          payload: { id: u.id, email: u.email, collection: col.name },
           audience: "user",
           expiresInSeconds: tokenWindowSeconds("user"),
           jwtSecret,
@@ -1292,7 +1303,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       }
     )
     .get("/auth/me", async ({ request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      const token = (headerBearer(request) ?? undefined);
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret, { audience: "user" });
       if (!ctx) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
@@ -1607,7 +1618,14 @@ export function makeAuthPlugin(jwtSecret: string) {
       const token = extractBearer(request);
       if (token) {
         const ctx = await verifyAuthToken(token, jwtSecret, { recheckPrincipal: false });
-        if (ctx?.jti && ctx.exp) await revokeToken(ctx.jti, ctx.exp);
+        if (ctx?.jti && ctx.exp) {
+          // An API token is revoked in its own table too, or the admin
+          // still listed it as active.
+          if (ctx.viaApiToken) {
+            const { revokeApiToken } = await import("../core/api-tokens.ts");
+            await revokeApiToken(ctx.jti);
+          } else await revokeToken(ctx.jti, ctx.exp);
+        }
         // A tab still holding a token that was just refreshed elsewhere is
         // signing out that session: end the replacement too, rather than
         // leaving it live (and fetchable with the old token for 30 s).
@@ -1809,9 +1827,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         await updateUserById(col, u.id, { totp_enabled: 0, totp_secret: null, updated_at: Math.floor(Date.now() / 1000) });
         // Wipe recovery codes — they're useless without TOTP, and leaving
         // them around would let a re-enabled MFA inherit stale codes.
-        await db
-          .delete(mfaRecoveryCodes)
-          .where(and(eq(mfaRecoveryCodes.user_id, u.id), eq(mfaRecoveryCodes.collection_id, col.id)));
+        await deleteRecoveryCodes(u.id, col.id);
         return { data: { enabled: false } };
       },
       { body: t.Object({ code: t.String() }) }
@@ -2340,7 +2356,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (proven) await loginSucceeded(attempt);
       }
       if (!proven) {
-        const headerToken = request.headers.get("authorization")?.replace("Bearer ", "");
+        const headerToken = (headerBearer(request) ?? undefined);
         if (headerToken) {
           const ctx = await verifyAuthToken(headerToken, jwtSecret, { audience: "user" });
           if (ctx && ctx.id === user.id && ctx.collection === col.name) { proven = true; viaSession = true; }
@@ -2442,7 +2458,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     })
     // Token refresh — re-validates that the principal still exists.
     .post("/auth/refresh", async ({ request, set }) => {
-      const token = request.headers.get("authorization")?.replace("Bearer ", "");
+      const token = (headerBearer(request) ?? undefined);
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const ctx = await verifyAuthToken(token, jwtSecret);
       if (!ctx) {

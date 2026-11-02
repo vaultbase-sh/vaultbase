@@ -689,8 +689,9 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
           if (auth) setSSEOwner(body.clientId, `${auth.type}:${auth.id}`);
         }
         const topics = body.topics ?? body.subscriptions ?? body.collections ?? [];
-        setSSESubscriptions(body.clientId, topics);
-        return { data: { clientId: body.clientId, topics } };
+        // The topics it holds now: invalid, over-long and past-the-cap ones are dropped.
+        const accepted = setSSESubscriptions(body.clientId, topics) ?? [];
+        return { data: { clientId: body.clientId, topics: accepted } };
       },
       {
         body: t.Object({

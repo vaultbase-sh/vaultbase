@@ -318,6 +318,17 @@ export interface FcmDeviceToken {
   token: string;
 }
 
+/**
+ * Whether an FCM error means the device token is gone. INVALID_ARGUMENT is the
+ * token's fault only when FCM names the token field; otherwise the message was
+ * bad (too large, a bad data value), and disabling every device it went to
+ * cut the user off.
+ */
+export function fcmTokenIsDead(code: string | null, body: string): boolean {
+  if (code === "UNREGISTERED" || code === "SENDER_ID_MISMATCH" || code === "NOT_FOUND") return true;
+  return code === "INVALID_ARGUMENT" && /"field"\s*:\s*"message\.token"/.test(body);
+}
+
 export async function sendFcm(
   config: FcmConfig,
   tokens: FcmDeviceToken[],
@@ -376,7 +387,7 @@ export async function sendFcm(
     const v = r.value;
     if (v.ok) { delivered++; continue; }
     // Permanent token-level errors — disable in caller's table.
-    if (v.code === "UNREGISTERED" || v.code === "INVALID_ARGUMENT" || v.code === "SENDER_ID_MISMATCH" || v.code === "NOT_FOUND") {
+    if (fcmTokenIsDead(v.code, v.body)) {
       invalidTokens.push(v.id);
       summaries.push(`token[${i}] ${v.code} → marked dead`);
       continue;

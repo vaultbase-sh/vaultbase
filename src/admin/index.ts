@@ -54,7 +54,8 @@ export function makeAdminPlugin() {
 
     // 1) Serve from embedded files (compiled binary)
     if (HAS_EMBEDDED) {
-      const key = EMBEDDED[pathname] ? pathname : "index.html";
+      // Own keys only: `/_/constructor` found Object's and threw.
+      const key = Object.hasOwn(EMBEDDED, pathname) ? pathname : "index.html";
       const b64 = EMBEDDED[key];
       if (!b64) { set.status = 404; return "Not found"; }
       set.headers["Content-Type"] = mimeType(key);

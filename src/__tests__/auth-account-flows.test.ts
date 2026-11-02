@@ -209,3 +209,22 @@ describe("hosted pages", () => {
     expect(html).toContain("\\u003c/script\\u003e");
   });
 });
+
+describe("small sign-in fixes", () => {
+  it("signing in at /auth/<collection id>/login names the collection in the token", async () => {
+    await user();
+    const { getCollection } = await import("../core/collections.ts");
+    const col = (await getCollection("users"))!;
+    const res = await post(`/auth/${col.id}/login`, { email: "old@test.local", password: "correct-horse-1" });
+    expect(res.status).toBe(200);
+    const token = ((await res.json()) as { data: { token: string } }).data.token;
+    expect(JSON.parse(atob(token.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))).collection).toBe("users");
+  });
+
+  it("signing out with an API token revokes it in the tokens list too", async () => {
+    const { mintApiToken, getApiToken } = await import("../core/api-tokens.ts");
+    const minted = await mintApiToken({ name: "t", scopes: ["read"], createdBy: "a1", createdByEmail: "a@test.local", ttlSeconds: 3600 }, SECRET);
+    expect((await post("/auth/logout", {}, minted.token)).status).toBe(200);
+    expect((await getApiToken(minted.id))!.revoked_at).not.toBeNull();
+  });
+});

@@ -53,7 +53,7 @@ if (!Number.isFinite(N) || N < 1) {
 }
 
 if (N === 1) {
-  process.stderr.write(`vaultbase-cluster: only 1 worker requested — running directly without cluster overhead\n`);
+  process.stderr.write(`vaultbase-cluster: only 1 worker requested; one worker is started and kept running\n`);
 }
 
 const workers: WorkerHandle[] = [];
@@ -67,14 +67,17 @@ const SHUTDOWN_TIMEOUT_MS = 30_000;
  *     also runs the binary (no Bun runtime needed at the spawn site).
  *   - Source-tree dev (`bun src/cluster.ts`): spawn `bun src/index.ts`.
  *
- * Detection: when running compiled, `process.argv[1]` is empty and
- * `process.execPath` ends with the binary name; otherwise we're under Bun.
+ * Detection: a compiled binary runs its embedded code from Bun's virtual
+ * filesystem (`/$bunfs/root/…`, `B:/~BUN/root/…` on Windows), whatever the
+ * file is called. Matching the name missed `vaultbase-linux-x64`, which then
+ * spawned `bun src/index.ts`, died and respawned forever.
  */
 function workerCmd(): string[] {
   // Bun sets `process.isBun` always; the compiled binary embeds Bun + the
   // user code, so `--bun` style flags aren't applicable. Use the binary
   // path directly for the compiled case.
-  const isCompiled = !process.argv[1] || /vaultbase(\.exe)?$/.test(process.execPath);
+  const entry = process.argv[1] ?? "";
+  const isCompiled = !entry || entry.includes("$bunfs") || entry.includes("~BUN");
   if (isCompiled) return [process.execPath];
   return ["bun", "src/index.ts"];
 }
@@ -91,18 +94,28 @@ function spawnWorker(id: number): WorkerHandle {
     onExit(_p, exitCode, signalCode, error) {
       if (shuttingDown) return;
       const reason = error?.message ?? `exit=${exitCode} signal=${signalCode ?? ""}`;
-      process.stderr.write(`vaultbase-cluster: worker ${id} died (${reason}) — respawning in 1s\n`);
+      // A worker that dies soon after starting (bad config, a port in use)
+      // waits longer each time, up to 30 s, instead of respawning every second.
+      const quick = Date.now() - startedAt < 10_000;
+      const n = quick ? (quickDeaths.get(id) ?? 0) + 1 : 0;
+      quickDeaths.set(id, n);
+      const delay = Math.min(30_000, 1000 * 2 ** Math.max(0, n - 1));
+      process.stderr.write(`vaultbase-cluster: worker ${id} died (${reason}) — respawning in ${Math.round(delay / 1000)}s\n`);
       setTimeout(() => {
         if (shuttingDown) return;
         const fresh = spawnWorker(id);
         const idx = workers.findIndex((w) => w.id === id);
         if (idx >= 0) workers[idx] = fresh;
         else workers.push(fresh);
-      }, 1000);
+      }, delay);
     },
   });
-  return { id, proc, startedAt: Date.now() };
+  const startedAt = Date.now();
+  return { id, proc, startedAt };
 }
+
+/** Worker id → how many times in a row it died within 10 s of starting. */
+const quickDeaths = new Map<number, number>();
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;

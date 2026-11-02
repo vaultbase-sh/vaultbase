@@ -311,3 +311,20 @@ describe.skipIf(onSqlite)("long index names made by earlier releases (Postgres)"
     expect((await indexedColumns(table)).has(REL)).toBe(false);
   });
 });
+
+describe("index names that join to the same text", () => {
+  it("a second index whose name collides is refused, not reported as made", async () => {
+    await createCollection({ name: "blog_posts", fields: F([{ name: "title", type: "text" }]), ...open });
+    await createCollection({ name: "blog", fields: F([{ name: "posts_title", type: "text" }]), ...open });
+    const first = await createCollectionIndex((await getCollection("blog_posts"))!, ["title"]);
+    expect(first.name).toBe("idx_blog_posts_title");
+    await expect(createCollectionIndex((await getCollection("blog"))!, ["posts_title"])).rejects.toThrow("already exists");
+  });
+
+  it("creating the same index again returns it (legitimate path)", async () => {
+    await createCollection({ name: "blog_posts", fields: F([{ name: "title", type: "text" }]), ...open });
+    const col = (await getCollection("blog_posts"))!;
+    await createCollectionIndex(col, ["title"]);
+    expect((await createCollectionIndex(col, ["title"])).fields).toEqual(["title"]);
+  });
+});

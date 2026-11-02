@@ -700,16 +700,26 @@ export const AUTH_SYSTEM_COLUMNS: ReadonlyArray<ColumnSpec> = [
 export async function ensureAuthColumns(collectionName: string): Promise<void> {
   assertSqlIdent(collectionName, "collection");
   const tname = quoteIdent(userTableName(collectionName));
+  // Only what's missing, and a failure is reported: swallowing every error
+  // (a lock timeout, a permission) left an auth table without a column or
+  // its unique email index, silently.
+  const present = new Set((await db.all<{ name: string }>(columnsSql(collectionName))).map((r) => r.name));
   for (const c of AUTH_SYSTEM_COLUMNS) {
-    try {
-      await db.exec(db.dialect.addColumn(tname, { ...c, name: quoteIdent(c.name) }));
-    } catch { /* column exists — idempotent */ }
+    if (present.has(c.name)) continue;
+    await db.exec(db.dialect.addColumn(tname, { ...c, name: quoteIdent(c.name) }));
   }
+  if (AUTH_SYSTEM_COLUMNS.some((c) => !present.has(c.name))) invalidateUserTableColumnCache(collectionName);
   // Unique email index — anonymous users get a synthetic uniqe email so the
   // unconditional UNIQUE works without a partial-index workaround.
-  try {
-    await db.exec(db.dialect.createIndex({ name: quoteIdent(db.dialect.fitIdent(`idx_${userTableName(collectionName)}_email`)), table: tname, columns: ["email"], unique: true }));
-  } catch { /* may already exist or fail on duplicates pre-migration */ }
+  const indexName = db.dialect.fitIdent(`idx_${userTableName(collectionName)}_email`);
+  if (!(await db.get(db.dialect.indexExistsSql(), [indexName]))) {
+    try {
+      await db.exec(db.dialect.createIndex({ name: quoteIdent(indexName), table: tname, columns: ["email"], unique: true }));
+    } catch (e) {
+      // Duplicate emails from before the index existed: the start goes on, loudly.
+      console.error(`[collections] '${collectionName}': the unique email index couldn't be created:`, e instanceof Error ? e.message : e);
+    }
+  }
 }
 
 // ── View collections ────────────────────────────────────────────────────────

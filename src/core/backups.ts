@@ -417,8 +417,10 @@ export function runBackup(): Promise<BackupInfo> {
       throw e;
     })
     .finally(async () => {
-      await setSetting("backups.last_run_at", String(Math.floor(Date.now() / 1000)));
+      // Cleared first: if this write failed, every later backup returned the
+      // same rejected promise until a restart.
       running = null;
+      await setSetting("backups.last_run_at", String(Math.floor(Date.now() / 1000))).catch((e) => console.error("[backups] recording the run time failed:", e));
     });
   return running;
 }

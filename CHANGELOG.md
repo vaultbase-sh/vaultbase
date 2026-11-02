@@ -146,6 +146,64 @@ Binaries, checksums, signatures and SBOMs for every version are on
   - The dashboard's recent requests read the request log directly instead
     of scanning it with a search.
 
+- **Backups:**
+  - One failed write of the "last run" time stopped all later backups until
+    a restart.
+  - After a container restarted mid-backup, backups were refused for up to
+    a day: the restarted server usually had the same process id, so its old
+    lock looked alive.
+- **Several servers on one database:**
+  - Any setting written on one server deleted every server's cached
+    thumbnails, including the backup's last-run time and the update check
+    every six hours. Thumbnails are now cleared only for storage settings,
+    and the update check writes only what changed.
+  - A server could take its own cache invalidation for a missed one and
+    reload everything.
+- `/metrics` counted read-worker stats twice after a worker was replaced.
+- Two different filters longer than 4,096 characters of the same length
+  shared one cached parse.
+- **Sign-in and accounts:**
+  - Expired admin sessions and old failed sign-in records are deleted daily
+    (both tables grew without end).
+  - Signing in at `/auth/<collection id>/login` made a token that other
+    account routes refused.
+  - Signing out with an API token now marks it revoked in the tokens list.
+  - A provider's redirect-URI list cleared to empty now falls back to the
+    global list.
+  - Twitter sign-ups get a placeholder email from the account id, not the
+    username, which can change hands.
+  - A lowercase `bearer` authorization header works on every auth route.
+  - Turning off MFA also removes the recovery codes' lookup rows.
+- **Outgoing requests from hooks:** multicast, reserved, broadcast,
+  benchmarking (198.18.0.0/15), IPv6 site-local and Teredo addresses are
+  blocked by default. A redirect's body is released, and
+  `redirect: "error"` rejects on a redirect.
+- **Custom routes / collections API:** an index whose generated name was
+  already taken by an index on other fields was reported as created; it
+  now answers `409`. `POST /admin/flags` with an existing key answers `409`
+  (it overwrote the flag) and `PATCH` of a missing flag `404` (it created
+  one). Public flag evaluation takes at most 200 keys.
+- **Records and filters:**
+  - A unique `date` or `json` field compared the raw input with the stored
+    value, so duplicates reached the database (or the driver threw).
+  - On Postgres, `~` on a number, date or bool field failed the query.
+  - `@collection.<name>.created` and `<x>_via_<y>.created` were refused as
+    unknown fields.
+  - Access rules: `@request.auth.id = null` now holds for a guest on single
+    records as it does in lists, and `strftime('%%')` works in both.
+  - `_aggregate` refused prototype names as buckets (`created:toString`).
+  - Read-only SQL refused the `replace()` function as a `REPLACE` statement.
+  - Encrypted text that looked like JSON came back from record history as
+    JSON.
+  - A database error while looking up a user no longer reads as "no such
+    user".
+- **Server:** a failed start exits with a non-zero code (it exited 0, so
+  `Restart=on-failure` didn't restart it). `vaultbase cluster` recognises a
+  renamed binary (`vaultbase-linux-x64`) and backs off a worker that keeps
+  dying at start. `VAULTBASE_PORT` must be a valid port. An SSE
+  subscription answer lists the topics accepted, not the ones asked for.
+  `db:reset` also removes `database.json`.
+
 ### Upgrade notes (feature flags)
 
 - The rollout fix moves some users into a different bucket: a user who was

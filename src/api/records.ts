@@ -21,6 +21,7 @@ import {
   RecordBusyError,
   RestrictError,
   updateRecord,
+  positiveIntParam,
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
@@ -587,8 +588,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         set.status = 403;
         return { error: "Forbidden", code: 403 };
       }
-      const perPage = query.perPage ? parseInt(String(query.perPage), 10) : 50;
-      const page = query.page ? parseInt(String(query.page), 10) : 1;
+      const perPage = positiveIntParam(query.perPage, 50);
+      const page = positiveIntParam(query.page, 1);
       // Admins see every version. Anyone else sees a version only if the view
       // rule passes against that version as it stood: passing it against the
       // record as it is *now* let a new owner read everything the previous

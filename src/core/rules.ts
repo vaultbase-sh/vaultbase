@@ -97,8 +97,6 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   const l = resolveOperand(ast.left, ctx);
   const r = resolveOperand(ast.right, ctx);
 
-  if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
-
   // NULL as SQL has it, so a single-record check agrees with the list query:
   // `= null` / `!= null` written as a literal are IS NULL / IS NOT NULL, and
   // any other comparison with a missing value is unknown, which no rule
@@ -109,9 +107,11 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   const nullLiteral = (o: Operand) => o.kind === "literal" && o.value === null;
   if ((op === "=" || op === "!=") && (nullLiteral(ast.left) || nullLiteral(ast.right))) {
     const v = nullLiteral(ast.left) ? r : l;
-    const isNull = v === null || v === undefined;
+    // No signed-in user: `@request.auth.id = null` holds, as in the SQL.
+    const isNull = v === null || v === undefined || v === UNAUTH_SENTINEL;
     return op === "=" ? isNull : !isNull;
   }
+  if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
   return compareScalar(l, op, r, ctx.item === true);
 }
 
@@ -387,7 +387,7 @@ function evalFunc(op: Extract<Operand, { kind: "func" }>, ctx: EvalContext): unk
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
 
-/** The strftime codes this engine and the Postgres compiler both support, in UTC (no `%%`: Postgres refuses it). */
+/** The strftime codes this engine and the Postgres compiler both support, in UTC. */
 const STRFTIME_CODES: Readonly<Record<string, (d: Date) => string>> = {
   Y: (d) => pad(d.getUTCFullYear(), 4),
   m: (d) => pad(d.getUTCMonth() + 1),
@@ -396,6 +396,8 @@ const STRFTIME_CODES: Readonly<Record<string, (d: Date) => string>> = {
   M: (d) => pad(d.getUTCMinutes()),
   S: (d) => pad(d.getUTCSeconds()),
   j: (d) => pad(Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86_400_000) + 1, 3),
+  // A literal %: both SQL compilers support it.
+  "%": () => "%",
 };
 
 /** "YYYY-MM-DD", optionally with " HH:MM[:SS[.fff]]" or "T…" and a "Z": what SQLite reads as UTC. */

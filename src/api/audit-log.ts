@@ -2,6 +2,7 @@ import Elysia, { t } from "elysia";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
 import { isAdminApiPath, normalizeApiPath } from "../core/api-paths.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
+import { positiveIntParam } from "../core/records.ts";
 
 /** Admin paths, plus collections: admin-only, but outside /admin. */
 function isAuditedPath(pathname: string): boolean {
@@ -59,12 +60,12 @@ export function makeAuditLogPlugin(jwtSecret: string) {
       "/admin/audit-log",
       async ({ query }) => {
         const opts: Parameters<typeof listAuditEntries>[0] = {};
-        if (query.page) opts.page = parseInt(query.page);
-        if (query.perPage) opts.perPage = parseInt(query.perPage);
+        if (query.page) opts.page = positiveIntParam(query.page, 1);
+        if (query.perPage) opts.perPage = positiveIntParam(query.perPage, 50);
         if (query.actorId) opts.actorId = query.actorId;
         if (query.actionPrefix) opts.actionPrefix = query.actionPrefix;
-        if (query.from) opts.from = parseInt(query.from);
-        if (query.to) opts.to = parseInt(query.to);
+        if (query.from && Number.isFinite(parseInt(query.from, 10))) opts.from = parseInt(query.from, 10);
+        if (query.to && Number.isFinite(parseInt(query.to, 10))) opts.to = parseInt(query.to, 10);
         const result = await listAuditEntries(opts);
         return { data: result };
       },

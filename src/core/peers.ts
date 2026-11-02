@@ -178,13 +178,22 @@ function flush(): void {
 
 /** Move the invalidation generation (non-transactional: a rollback keeps it, which costs only a reset). */
 function bumpGeneration(): void {
-  driver?.get<{ n: string | number }>(`SELECT nextval('${GEN_SEQUENCE}') AS n`)
+  if (!driver) return;
+  bumpsInFlight++;
+  driver.get<{ n: string | number }>(`SELECT nextval('${GEN_SEQUENCE}') AS n`)
     .then((r) => { if (r) genOwn.add(Number(r.n)); })
-    .catch(warn);
+    .catch(warn)
+    .finally(() => { bumpsInFlight--; });
 }
+
+/** Own bumps sent but not yet answered: their numbers aren't in genOwn yet. */
+let bumpsInFlight = 0;
 
 async function pollGeneration(): Promise<void> {
   if (!driver) return;
+  // A poll landing between our nextval and its answer took our own bump for
+  // a missed one and reset everything: wait for the next poll instead.
+  if (bumpsInFlight > 0) return;
   const r = await driver.get<{ n: string | number; called: boolean }>(`SELECT last_value AS n, is_called AS called FROM ${GEN_SEQUENCE}`);
   const gen = r && r.called ? Number(r.n) : 0;
   if (gen <= genSeen) return;

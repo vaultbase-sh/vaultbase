@@ -104,6 +104,12 @@ export function detectMutation(sql: string): string | null {
 function detectKeyword(sql: string, keywords: readonly string[]): string | null {
   const { words } = scanSql(sql);
   for (const kw of keywords) {
+    // REPLACE is a statement only as `REPLACE INTO` (`INSERT OR REPLACE` is
+    // caught by INSERT); otherwise it's the replace() string function.
+    if (kw === "REPLACE") {
+      if (words.some((w, i) => w === "REPLACE" && words[i + 1] === "INTO")) return kw;
+      continue;
+    }
     if (words.includes(kw)) return kw;
   }
   return null;

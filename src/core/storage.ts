@@ -298,3 +298,8 @@ export function getStorageStatus(): { driver: StorageDriver; uploadDir: string; 
 }
 
 export { statSync };
+
+/** A setting that changes where files come from (and so what a cached thumbnail shows). */
+export function isStorageSetting(key: string): boolean {
+  return key === "storage.driver" || key.startsWith("s3.");
+}

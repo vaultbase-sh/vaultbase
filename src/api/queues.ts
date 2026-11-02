@@ -16,6 +16,7 @@ import {
 } from "../core/queues.ts";
 import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
+import { positiveIntParam } from "../core/records.ts";
 
 const VALID_STATUS = new Set<JobStatus>(["queued", "running", "succeeded", "failed", "dead"]);
 
@@ -161,8 +162,8 @@ export function makeQueuesPlugin(jwtSecret: string) {
           opts.status = query.status as JobStatus;
         }
         if (query.worker_id) opts.worker_id = query.worker_id;
-        if (query.page) opts.page = Number(query.page);
-        if (query.perPage) opts.perPage = Number(query.perPage);
+        if (query.page) opts.page = positiveIntParam(query.page, 1);
+        if (query.perPage) opts.perPage = positiveIntParam(query.perPage, 50);
         return listJobsLog(opts);
       },
       {

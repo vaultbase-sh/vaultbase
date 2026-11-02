@@ -61,8 +61,11 @@ export async function findUserById(col: Collection, id: string): Promise<AuthUse
   const tname = quoteIdent(userTableName(col.name));
   try {
     return await db.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE id = ?`, [id]);
-  } catch {
-    return null;
+  } catch (e) {
+    // Only a missing table means "no such user"; a database outage isn't a
+    // wrong password.
+    if (db.dialect.isMissingTable(e)) return null;
+    throw e;
   }
 }
 
@@ -71,8 +74,9 @@ export async function findUserByEmail(col: Collection, email: string): Promise<A
   const tname = quoteIdent(userTableName(col.name));
   try {
     return await db.get<AuthUserRow>(`SELECT * FROM ${tname} WHERE email = ?`, [email]);
-  } catch {
-    return null;
+  } catch (e) {
+    if (db.dialect.isMissingTable(e)) return null;
+    throw e;
   }
 }
 
@@ -165,12 +169,4 @@ export async function updateUserById(
   if (sets.length > 0) {
     await db.run(`UPDATE ${tname} SET ${sets.join(", ")} WHERE id = ?`, [...vals, id], { table: userTableName(col.name) });
   }
-}
-
-/** Delete a user from `vb_<name>` by id. */
-export async function deleteUserById(col: Collection, id: string): Promise<void> {
-  const tname = quoteIdent(userTableName(col.name));
-  try {
-    await db.run(`DELETE FROM ${tname} WHERE id = ?`, [id], { table: userTableName(col.name) });
-  } catch { /* table missing or row absent */ }
 }

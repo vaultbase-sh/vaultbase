@@ -9,7 +9,7 @@
  *   - Secrets fingerprints: SHA-256 first 8 hex chars of JWT/AES keys.
  *   - Security headers preview: render what the server sends.
  */
-import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { adminSessions, admin as adminTable, loginFailures, tokenRevocations } from "../db/schema.ts";
 import { getSetting } from "../api/settings.ts";
@@ -113,11 +113,6 @@ export async function forceLogoutAllAdmins(): Promise<{ count: number }> {
 }
 
 /** GC sessions whose `expires_at` is in the past. Called from a periodic tick. */
-export async function pruneExpiredAdminSessions(): Promise<void> {
-  const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
-  await db.delete(adminSessions).where(lt(adminSessions.expires_at, now));
-}
 
 // ── Brute-force lockout ─────────────────────────────────────────────────────
 
@@ -274,12 +269,6 @@ export async function clearAttemptFailures(key: string): Promise<void> {
 }
 
 /** GC failures older than the longest lockout window. */
-export async function pruneOldLoginFailures(): Promise<void> {
-  const policy = getLockoutPolicy();
-  const db = getDb();
-  const cutoff = Math.floor(Date.now() / 1000) - Math.max(86400, policy.duration_seconds * 2);
-  await db.delete(loginFailures).where(lt(loginFailures.at, cutoff));
-}
 
 // ── IP extraction (mirrors ratelimit / audit-log defensive defaults) ────────
 

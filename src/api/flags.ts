@@ -62,6 +62,8 @@ export function makeFlagsPlugin(jwtSecret: string) {
       return { data: flag };
     }, { requireAdmin: true })
     .post("/admin/flags", async ({ body, set }) => {
+      // Create only: it used to overwrite a flag of the same key without a word.
+      if (await getFlag(body.key)) { set.status = 409; return { error: `A flag named '${body.key}' already exists`, code: 409 }; }
       try {
         const input: Parameters<typeof upsertFlag>[0] = { key: body.key };
         if (body.description !== undefined)   input.description = body.description;
@@ -89,6 +91,8 @@ export function makeFlagsPlugin(jwtSecret: string) {
       }),
     })
     .patch("/admin/flags/:key", async ({ params, body, set }) => {
+      // Update only: it used to create an enabled flag with defaults.
+      if (!(await getFlag(params.key))) { set.status = 404; return { error: "Flag not found", code: 404 }; }
       try {
         const input: Parameters<typeof upsertFlag>[0] = { key: params.key };
         if (body.description !== undefined)   input.description = body.description;
@@ -207,7 +211,8 @@ export function makeFlagsPlugin(jwtSecret: string) {
     }, {
       body: t.Object({
         context: t.Optional(t.Record(t.String(), t.Any())),
-        keys: t.Optional(t.Array(t.String())),
+        // Each key is evaluated in turn, on a public endpoint: bounded.
+        keys: t.Optional(t.Array(t.String(), { maxItems: 200 })),
       }),
     });
 }

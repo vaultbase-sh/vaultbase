@@ -185,3 +185,12 @@ describe("audit log is append-only at the data layer", () => {
     void auditLog;
   });
 });
+
+describe("GET /admin/audit-log paging", () => {
+  it("a page that isn't a number falls back to page 1 instead of a 500", async () => {
+    const token = await signAdmin();
+    const app = makeAuditLogPlugin(SECRET);
+    const res = await app.handle(new Request("http://localhost/admin/audit-log?page=x&perPage=y&from=z", { headers: { Authorization: `Bearer ${token}` } }));
+    expect(res.status).toBe(200);
+  });
+});

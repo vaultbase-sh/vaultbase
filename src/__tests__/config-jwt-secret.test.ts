@@ -46,3 +46,17 @@ describe("JWT secret", () => {
     expect((await loadConfig()).jwtSecret).toBe("from-env");
   });
 });
+
+describe("VAULTBASE_PORT", () => {
+  it("must be a port number", async () => {
+    const saved = process.env["VAULTBASE_PORT"];
+    try {
+      process.env["VAULTBASE_PORT"] = "80x";
+      await expect(loadConfig()).rejects.toThrow("VAULTBASE_PORT");
+      process.env["VAULTBASE_PORT"] = "9000";
+      expect((await loadConfig()).port).toBe(9000);
+    } finally {
+      if (saved === undefined) delete process.env["VAULTBASE_PORT"]; else process.env["VAULTBASE_PORT"] = saved;
+    }
+  });
+});

@@ -16,7 +16,10 @@ const MAX_ENTRIES = 512;
 const cache = new Map<string, Expr | null>();
 
 export function cachedParseExpression(expr: string): Expr | null {
-  const key = expr.length > 4096 ? `__too_long__${expr.length}` : expr;
+  // Over the cap it isn't cached: keyed by length, two different long
+  // expressions shared one entry, and one got the other's parse.
+  if (expr.length > 4096) return parseExpression(expr);
+  const key = expr;
   if (cache.has(key)) {
     const v = cache.get(key)!;
     // Refresh LRU order

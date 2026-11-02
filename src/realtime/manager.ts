@@ -679,14 +679,14 @@ export function unregisterSSEClient(clientId: string): void {
 }
 
 /** Replace the client's topic list (PocketBase-style: PUT semantics). */
-export function setSSESubscriptions(clientId: string, topics: string[]): boolean {
+/** Replace an SSE client's topics; the ones accepted, or null for an unknown client. */
+export function setSSESubscriptions(clientId: string, topics: string[]): string[] | null {
   const adapter = sseClients.get(clientId);
-  if (!adapter) return false;
+  if (!adapter) return null;
   const id = connId(adapter);
   // Leave its current topics, then add the new set.
   leaveAll(id);
-  subscribe(adapter, topics);
-  return true;
+  return subscribe(adapter, topics);
 }
 
 export function _reset(): void {

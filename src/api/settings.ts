@@ -4,7 +4,7 @@ import { onCloseDb, trackPendingWrite } from "../db/client.ts";
 import { broadcast } from "../core/thread-bus.ts";
 import { invalidateRateLimitCache } from "./ratelimit.ts";
 import { invalidateEmailCache, listEmailTransports, sendEmail, verifySmtp } from "../core/email.ts";
-import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers } from "../core/storage.ts";
+import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache, listStorageDrivers, isStorageSetting } from "../core/storage.ts";
 import { invalidateEgressCache, parseCidr } from "../core/hook-egress.ts";
 import { isIP } from "node:net";
 import { invalidateCorsCache } from "../core/cors.ts";
@@ -414,7 +414,7 @@ export async function applySettingsPatch(body: Record<string, unknown>): Promise
   // Storage driver / S3 creds may have changed — drop the cached client
   // and the local thumb cache (different bucket means different objects)
   invalidateStorageCache();
-  clearThumbCache();
+  if (Object.keys(body).some(isStorageSetting)) clearThumbCache();
   invalidateEgressCache();
   invalidateCorsCache();
   // Re-arm the update-check scheduler if the toggle flipped.

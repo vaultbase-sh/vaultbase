@@ -200,6 +200,9 @@ describe("review fixes", () => {
     writeFileSync(join(backups, ".lock"), JSON.stringify({ pid: 2 ** 22 + 12345, at: Date.now() }));
     expect(await withBackupLock(backups, async () => "taken over")).toBe("taken over");
     expect(existsSync(join(backups, ".lock"))).toBe(false);
+    // Our own pid from an earlier boot (a restarted container): stale too.
+    writeFileSync(join(backups, ".lock"), JSON.stringify({ pid: process.pid, boot: "an-earlier-boot", at: Date.now() }));
+    expect(await withBackupLock(backups, async () => "after restart")).toBe("after restart");
   });
 
   it("prune temp files left by a run that died, after a day", async () => {

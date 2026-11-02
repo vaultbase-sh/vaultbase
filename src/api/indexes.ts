@@ -16,7 +16,7 @@ export interface IndexInfo {
 export const MAX_INDEX_FIELDS = 4;
 
 export class IndexError extends Error {
-  constructor(message: string, public readonly status: 422 = 422) { super(message); }
+  constructor(message: string, public readonly status: 409 | 422 = 422) { super(message); }
 }
 
 /** The column list of an index from its definition: the text between the parentheses after ON. */
@@ -76,6 +76,14 @@ export async function createCollectionIndex(col: Collection, fieldNames: string[
     if (!existsInSchema) throw new IndexError(`Field '${fieldName}' not found on '${col.name}'`);
   }
   const name = indexName(col.name, fieldNames, unique);
+  // Names join with `_`, which field and collection names contain too: blog +
+  // posts_title and blog_posts + title both make idx_blog_posts_title, and
+  // IF NOT EXISTS answered 200 for an index that was never made.
+  if (await db.get(db.dialect.indexExistsSql(), [name])) {
+    const same = (await listIndexes(userTableName(col.name))).find((i) => i.name === name);
+    if (same && same.unique === unique && same.fields.join(",") === fieldNames.join(",")) return same;
+    throw new IndexError(`An index named '${name}' already exists on other fields; it can't be created under that name`, 409);
+  }
   const tableRef = `"${userTableName(col.name)}"`;
   const cols = fieldNames.map((f) => `"${f}"`).join(", ");
   // A non-unique index ends with the tie-break where the database needs it

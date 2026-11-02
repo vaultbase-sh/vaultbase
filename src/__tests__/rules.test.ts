@@ -143,3 +143,19 @@ describe("evaluateRule — error handling", () => {
     expect(evaluateRule("field", null, {})).toBe(false);
   });
 });
+
+describe("rule engine agrees with the SQL", () => {
+  it("`@request.auth.id = null` holds for a caller who isn't signed in", () => {
+    expect(evaluateRule("@request.auth.id = null", null, {})).toBe(true);
+    expect(evaluateRule("@request.auth.id != null", null, {})).toBe(false);
+    expect(evaluateRule("@request.auth.id = null", { id: "u1", type: "user" }, {})).toBe(false);
+  });
+
+  it("an owner check still refuses anonymous callers (legitimate path)", () => {
+    expect(evaluateRule("@request.auth.id = owner", null, { owner: null })).toBe(false);
+  });
+
+  it("strftime reads %% as a literal percent", () => {
+    expect(evaluateRule(`strftime('%Y%%', '2024-05-01') = "2024%"`, { id: "u1", type: "user" }, {})).toBe(true);
+  });
+});

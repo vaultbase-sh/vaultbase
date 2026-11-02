@@ -23,6 +23,9 @@ const targets = [
   join(dataDir, "data.db-shm"),
   join(dataDir, "data.db-wal"),
   join(dataDir, ".secret"),
+  // Names the database this data directory uses; without the file it names,
+  // the next start refused to run.
+  join(dataDir, "database.json"),
   join(dataDir, "uploads"),
 ];
 

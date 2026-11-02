@@ -303,7 +303,8 @@ async function twitterProfile(token: string): Promise<NormalizedProfile> {
   const id = String(d["id"] ?? "");
   const profile: NormalizedProfile = {
     id,
-    email: username ? `${username}@twitter.invalid` : `${id}@twitter.invalid`,
+    // From the id: a username can be changed and then taken by someone else.
+    email: `${id}@twitter.invalid`,
     // We can't claim verified — Twitter doesn't give us the email at all.
     emailVerified: false,
   };

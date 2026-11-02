@@ -65,3 +65,25 @@ describe("settings secrets", () => {
     expect(body.data["s3.secret_access_key"] ?? "").toBe("");
   });
 });
+
+describe("thumbnail cache", () => {
+  it("survives a setting unrelated to storage, and goes with a storage one", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const { setUploadDir, thumbCacheDir } = await import("../core/storage.ts");
+    const dir = mkdtempSync(join(tmpdir(), "vb-thumbs-"));
+    try {
+      setUploadDir(dir);
+      mkdirSync(thumbCacheDir(), { recursive: true });
+      const thumb = join(thumbCacheDir(), "a.png__100x100");
+      writeFileSync(thumb, "x");
+      expect((await call("PATCH", { "smtp.host": "other.example.com" })).status).toBe(200);
+      expect(existsSync(thumb)).toBe(true);
+      expect((await call("PATCH", { "s3.bucket": "b2" })).status).toBe(200);
+      expect(existsSync(thumb)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

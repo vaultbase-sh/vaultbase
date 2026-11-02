@@ -15,7 +15,7 @@ import { getDb } from "../db/client.ts";
 import { recordHistory } from "../db/schema.ts";
 import type { AuthContext } from "./rules.ts";
 import type { Collection } from "../db/schema.ts";
-import { parseFields, type FieldDef } from "./collections.ts";
+import { getCollection, parseFields, type FieldDef } from "./collections.ts";
 import { decryptValue, encryptValue, isEncrypted, isEncryptionAvailable, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
 /**
@@ -55,16 +55,19 @@ async function encryptSnapshotFields(
  */
 async function decryptSnapshotFields(
   snapshot: Record<string, unknown>,
+  collectionName: string,
 ): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = { ...snapshot };
+  // Which fields hold JSON: guessing from the text turned an encrypted text
+  // value like "[1,2]" into an array, which a restore then refused.
+  const col = await getCollection(collectionName).catch(() => null);
+  const jsonFields = new Set(col ? parseFields(col.fields).filter((f) => f.type === "json" || f.type === "group").map((f) => f.name) : []);
   for (const k of Object.keys(out)) {
     const v = out[k];
     if (typeof v !== "string" || !isEncrypted(v)) continue;
     try {
       const plain = await decryptValue(v);
-      // Best-effort: if the decoded plaintext looks like JSON, parse it
-      // back. Otherwise leave it as a string.
-      if (plain.startsWith("{") || plain.startsWith("[")) {
+      if (jsonFields.has(k)) {
         try { out[k] = JSON.parse(plain); continue; } catch { /* fall through */ }
       }
       out[k] = plain;
@@ -166,7 +169,7 @@ export async function listRecordHistory(
     collection: r.collection,
     record_id: r.record_id,
     op: r.op as HistoryOp,
-    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot)),
+    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot), r.collection),
     actor_id: r.actor_id,
     actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
     at: r.at,
@@ -206,7 +209,7 @@ export async function listRecordHistory(
     collection: r.collection,
     record_id: r.record_id,
     op: r.op as HistoryOp,
-    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot)),
+    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot), r.collection),
     actor_id: r.actor_id,
     actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
     at: r.at,
@@ -248,7 +251,7 @@ export async function getHistoryAt(
     collection: r.collection,
     record_id: r.record_id,
     op: r.op as HistoryOp,
-    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot)),
+    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot), r.collection),
     actor_id: r.actor_id,
     actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
     at: r.at,

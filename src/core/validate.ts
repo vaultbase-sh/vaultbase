@@ -116,7 +116,7 @@ export async function validateRecord(
     // Unique check (DB query)
     if (field.options?.unique) {
       // The stored form (normalised color, sanitised HTML), not the raw input.
-      const isUnique = await checkUnique(collection, field.name, data[field.name], existingId);
+      const isUnique = await checkUnique(collection, field, data[field.name], existingId);
       if (!isUnique) errors[field.name] = `${field.name} must be unique`;
     }
 
@@ -411,10 +411,15 @@ function validateValue(field: FieldDef, value: unknown): string | null {
 
 async function checkUnique(
   collection: Collection,
-  fieldName: string,
-  value: unknown,
+  field: FieldDef,
+  raw: unknown,
   existingId?: string
 ): Promise<boolean> {
+  const fieldName = field.name;
+  // Compared as stored: a date is seconds, a bool 0/1, JSON is text. The raw
+  // input never matched a date, and an object or array made the driver throw.
+  const { encodeValue } = await import("./records.ts");
+  const value = encodeValue(raw, field);
   const tableRef = `"${userTableName(collection.name)}"`;
   const where = existingId
     ? `WHERE "${fieldName}" = ? AND "id" != ?`

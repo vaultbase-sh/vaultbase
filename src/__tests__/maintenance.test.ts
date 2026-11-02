@@ -143,3 +143,16 @@ describe("queueStats", () => {
     expect(byQueue["thumbs"]!.oldest_queued_at).toBeNull();
   });
 });
+
+describe("pruneHistory: sessions and failed sign-ins", () => {
+  it("drops expired admin sessions and old failed sign-ins, keeps current ones", async () => {
+    const t = now();
+    await db.run(`INSERT INTO vaultbase_admin_sessions (jti, admin_id, admin_email, issued_at, expires_at) VALUES ('old', 'a1', 'a@x', ?, ?), ('live', 'a1', 'a@x', ?, ?)`, [t - 10 * 86_400, t - 3 * 86_400, t, t + 3600]);
+    await db.run(`INSERT INTO vaultbase_login_failures (id, key, at) VALUES ('f-old', 'k', ?), ('f-new', 'k', ?)`, [t - 30 * 86_400, t - 60]);
+    const r = await pruneHistory();
+    expect(r.adminSessions).toBe(1);
+    expect(r.loginFailures).toBe(1);
+    expect((await db.all<{ jti: string }>(`SELECT jti FROM vaultbase_admin_sessions`)).map((x) => x.jti)).toEqual(["live"]);
+    expect((await db.all<{ id: string }>(`SELECT id FROM vaultbase_login_failures`)).map((x) => x.id)).toEqual(["f-new"]);
+  });
+});
