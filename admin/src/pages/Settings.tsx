@@ -142,6 +142,26 @@ const SectionShell: React.FC<{
  * its Save stays off (sections only enable it after a successful load) so
  * those defaults can't be written over the real ones.
  */
+/**
+ * A section's settings, read once when it opens: `apply` gets them, a
+ * failure goes to `onError` (and nothing else runs), and `onDone` runs
+ * after `apply`, as each section's own load did.
+ */
+function useSettingsLoad(apply: (data: Record<string, string>) => void, onError: (error: string) => void, onDone: () => void): void {
+  useEffect(() => {
+    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { onError(res.error); return; }
+      if (res.data) apply(res.data);
+      onDone();
+    });
+  }, []);
+}
+
+/** Save the settings in `patch`; the answer is the settings after it. */
+function saveSettings(patch: Record<string, string>) {
+  return api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
+}
+
 function LoadFailed({ error }: { error?: string | undefined }) {
   if (!error) return null;
   return (
@@ -352,31 +372,25 @@ function RateLimitSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        if (res.data["rate_limit.enabled"] !== undefined) {
-          setEnabled(res.data["rate_limit.enabled"] === "1" || res.data["rate_limit.enabled"] === "true");
-        }
-        const raw = res.data["rate_limit.rules"];
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) setRules(parsed as RateLimitRule[]);
-          } catch { /* keep defaults */ }
-        } else if (res.data["rate_limit.max"] && res.data["rate_limit.window_ms"]) {
-          // Migrate legacy single-rule to new format
-          const max = parseInt(res.data["rate_limit.max"]);
-          const ms = parseInt(res.data["rate_limit.window_ms"]);
-          if (!isNaN(max) && !isNaN(ms)) {
-            setRules([{ label: "*", max, windowMs: ms, audience: "all" }]);
-          }
-        }
+  useSettingsLoad((data) => {
+    if (data["rate_limit.enabled"] !== undefined) {
+      setEnabled(data["rate_limit.enabled"] === "1" || data["rate_limit.enabled"] === "true");
+    }
+    const raw = data["rate_limit.rules"];
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) setRules(parsed as RateLimitRule[]);
+      } catch { /* keep defaults */ }
+    } else if (data["rate_limit.max"] && data["rate_limit.window_ms"]) {
+      // Migrate legacy single-rule to new format
+      const max = parseInt(data["rate_limit.max"]);
+      const ms = parseInt(data["rate_limit.window_ms"]);
+      if (!isNaN(max) && !isNaN(ms)) {
+        setRules([{ label: "*", max, windowMs: ms, audience: "all" }]);
       }
-      setLoading(false);
-    });
-  }, []);
+    }
+  }, setLoadError, () => setLoading(false));
 
   function updateRule(idx: number, patch: Partial<RateLimitRule>) {
     setRules((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -395,7 +409,7 @@ function RateLimitSection() {
       if (!Number.isFinite(r.windowMs) || r.windowMs < 1) { toast(`Invalid window for "${r.label}"`, "info"); return; }
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "rate_limit.enabled": enabled ? "1" : "0",
       "rate_limit.rules": JSON.stringify(rules),
     });
@@ -516,20 +530,14 @@ function EgressSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        setDeny(res.data["hooks.http.deny"] ?? "");
-        setAllow(res.data["hooks.http.allow"] ?? "");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    setDeny(data["hooks.http.deny"] ?? "");
+    setAllow(data["hooks.http.allow"] ?? "");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "hooks.http.deny": deny.trim(),
       "hooks.http.allow": allow.trim(),
     });
@@ -631,20 +639,14 @@ function ScriptLimitsSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        const next: Record<string, string> = {};
-        for (const l of SCRIPT_LIMITS) {
-          const ms = res.data[l.key];
-          next[l.key] = ms === undefined || ms === "" ? "" : String(Number(ms) / 1000);
-        }
-        setValues(next);
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    const next: Record<string, string> = {};
+    for (const l of SCRIPT_LIMITS) {
+      const ms = data[l.key];
+      next[l.key] = ms === undefined || ms === "" ? "" : String(Number(ms) / 1000);
+    }
+    setValues(next);
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     const patch: Record<string, string> = {};
@@ -660,7 +662,7 @@ function ScriptLimitsSection() {
       patch[l.key] = String(Math.round(s * 1000));
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
+    const res = await saveSettings(patch);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Time limits saved");
@@ -781,7 +783,7 @@ function MaintenanceSection() {
     const untilSec = until ? Math.floor(new Date(until).getTime() / 1000) : 0;
     if (until && !(untilSec > 0)) { toast("Back at isn't a valid date and time", "info"); return; }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "maintenance_mode.enabled": enabled ? "1" : "0",
       "maintenance_mode.level": level,
       "maintenance_mode.message": message.trim(),
@@ -908,19 +910,13 @@ function ThemeSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        const seed: Record<string, string> = {};
-        for (const k of THEME_KNOBS) {
-          seed[k.key] = res.data[`theme.${k.key}`] ?? "";
-        }
-        setValues(seed);
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    const seed: Record<string, string> = {};
+    for (const k of THEME_KNOBS) {
+      seed[k.key] = data[`theme.${k.key}`] ?? "";
+    }
+    setValues(seed);
+  }, setLoadError, () => setLoaded(true));
 
   function update(key: string, value: string) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -941,7 +937,7 @@ function ThemeSection() {
     setSaving(true);
     const patch: Record<string, string> = {};
     for (const k of THEME_KNOBS) patch[`theme.${k.key}`] = (values[k.key] ?? "").trim();
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", patch);
+    const res = await saveSettings(patch);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Theme saved");
@@ -1096,23 +1092,17 @@ function CorsSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        setOrigins(res.data["cors.origins"] ?? "");
-        setMethods(res.data["cors.methods"] ?? "");
-        setHeaders(res.data["cors.headers"] ?? "");
-        setCredentials((res.data["cors.credentials"] ?? "0") === "1");
-        setMaxAge(res.data["cors.max_age"] ?? "600");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    setOrigins(data["cors.origins"] ?? "");
+    setMethods(data["cors.methods"] ?? "");
+    setHeaders(data["cors.headers"] ?? "");
+    setCredentials((data["cors.credentials"] ?? "0") === "1");
+    setMaxAge(data["cors.max_age"] ?? "600");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "cors.origins":     origins.trim(),
       "cors.methods":     methods.trim(),
       "cors.headers":     headers.trim(),
@@ -1354,23 +1344,17 @@ function BruteForceCard() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        // Unset means the server default: on, 10 attempts.
-        const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "10", 10);
-        setEnabled(m > 0);
-        setMaxAttempts(m > 0 ? String(m) : "10");
-        setDuration(res.data["auth.lockout.duration_seconds"] ?? "900");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    // Unset means the server default: on, 10 attempts.
+    const m = parseInt(data["auth.lockout.max_attempts"] ?? "10", 10);
+    setEnabled(m > 0);
+    setMaxAttempts(m > 0 ? String(m) : "10");
+    setDuration(data["auth.lockout.duration_seconds"] ?? "900");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "auth.lockout.max_attempts":     enabled ? maxAttempts.trim() || "0" : "0",
       "auth.lockout.duration_seconds": duration.trim() || "900",
     });
@@ -1433,20 +1417,14 @@ function TrustedProxiesCard() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        setValue(res.data["security.trusted_proxies"] ?? "");
-        setEnvFallback(res.data["security.trusted_proxies_env_view"] ?? "");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    setValue(data["security.trusted_proxies"] ?? "");
+    setEnvFallback(data["security.trusted_proxies_env_view"] ?? "");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "security.trusted_proxies": value.trim(),
     });
     setSaving(false);
@@ -1602,13 +1580,7 @@ function RetentionSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) setDays(res.data["maintenance.retention_days"] ?? "30");
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => { setDays(data["maintenance.retention_days"] ?? "30"); }, setLoadError, () => setLoaded(true));
 
   async function save() {
     const n = Number(days);
@@ -1617,7 +1589,7 @@ function RetentionSection() {
       return;
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "maintenance.retention_days": String(n),
     });
     setSaving(false);
@@ -1663,26 +1635,20 @@ function PasswordPolicySection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        setMinLen(res.data["password.min_length"] ?? "12");
-        setReqUpper((res.data["password.require_upper"] ?? "0") === "1");
-        setReqLower((res.data["password.require_lower"] ?? "0") === "1");
-        setReqDigit((res.data["password.require_digit"] ?? "0") === "1");
-        setReqSymbol((res.data["password.require_symbol"] ?? "0") === "1");
-        setHibp((res.data["password.hibp_check"] ?? "0") === "1");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    setMinLen(data["password.min_length"] ?? "12");
+    setReqUpper((data["password.require_upper"] ?? "0") === "1");
+    setReqLower((data["password.require_lower"] ?? "0") === "1");
+    setReqDigit((data["password.require_digit"] ?? "0") === "1");
+    setReqSymbol((data["password.require_symbol"] ?? "0") === "1");
+    setHibp((data["password.hibp_check"] ?? "0") === "1");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     const n = parseInt(minLen, 10);
     if (!Number.isFinite(n) || n < 8) { toast("Minimum length must be at least 8", "info"); return; }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "password.min_length":     String(n),
       "password.require_upper":  reqUpper  ? "1" : "0",
       "password.require_lower":  reqLower  ? "1" : "0",
@@ -1757,20 +1723,14 @@ function MetricsSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        setEnabled((res.data["metrics.enabled"] ?? "0") === "1");
-        setToken(res.data["metrics.token"] ?? "");
-      }
-      setLoaded(true);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    setEnabled((data["metrics.enabled"] ?? "0") === "1");
+    setToken(data["metrics.token"] ?? "");
+  }, setLoadError, () => setLoaded(true));
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "metrics.enabled": enabled ? "1" : "0",
       "metrics.token":   token.trim(),
     });
@@ -1881,7 +1841,7 @@ function UpdatesSection() {
 
   async function save() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "update_check.enabled": enabled ? "1" : "0",
     });
     setSaving(false);
@@ -2227,7 +2187,7 @@ function BackupSection() {
       return;
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "backups.enabled": enabled ? "1" : "0",
       "backups.cron": cron.trim(),
       "backups.keep": String(n),
@@ -2568,22 +2528,16 @@ function SmtpSection() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        const s = res.data;
-        setEnabled(s["smtp.enabled"] === "1" || s["smtp.enabled"] === "true");
-        setHost(s["smtp.host"] ?? "");
-        setPort(s["smtp.port"] ?? "587");
-        setSecure(s["smtp.secure"] === "1" || s["smtp.secure"] === "true");
-        setUser(s["smtp.user"] ?? "");
-        setPass(s["smtp.pass"] ?? "");
-        setFrom(s["smtp.from"] ?? "");
-      }
-      setLoading(false);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    const s = data;
+    setEnabled(s["smtp.enabled"] === "1" || s["smtp.enabled"] === "true");
+    setHost(s["smtp.host"] ?? "");
+    setPort(s["smtp.port"] ?? "587");
+    setSecure(s["smtp.secure"] === "1" || s["smtp.secure"] === "true");
+    setUser(s["smtp.user"] ?? "");
+    setPass(s["smtp.pass"] ?? "");
+    setFrom(s["smtp.from"] ?? "");
+  }, setLoadError, () => setLoading(false));
 
   async function handleSave() {
     const portNum = parseInt(port);
@@ -2591,7 +2545,7 @@ function SmtpSection() {
       toast("Port must be 1–65535", "info"); return;
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "smtp.enabled": enabled ? "1" : "0",
       "smtp.host": host,
       "smtp.port": String(portNum),
@@ -2759,26 +2713,20 @@ function EmailTemplatesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        const d = res.data;
-        setAppUrl(d["app.url"] ?? "");
-        setValues(Object.fromEntries(TEMPLATES.flatMap((t) => [
-          [`email.${t.kind}.subject`, d[`email.${t.kind}.subject`]?.trim() || t.subject],
-          [`email.${t.kind}.body`, d[`email.${t.kind}.body`]?.trim() || t.body],
-        ])));
-      }
-      setLoading(false);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    const d = data;
+    setAppUrl(d["app.url"] ?? "");
+    setValues(Object.fromEntries(TEMPLATES.flatMap((t) => [
+      [`email.${t.kind}.subject`, d[`email.${t.kind}.subject`]?.trim() || t.subject],
+      [`email.${t.kind}.body`, d[`email.${t.kind}.body`]?.trim() || t.body],
+    ])));
+  }, setLoadError, () => setLoading(false));
 
   const set = (key: string, v: string) => setValues((cur) => ({ ...cur, [key]: v }));
 
   async function handleSave() {
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "app.url": appUrl.trim(),
       ...values,
     });
@@ -2900,13 +2848,7 @@ function AuthFeaturesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) setConfig(res.data);
-      setLoading(false);
-    });
-  }, []);
+  useSettingsLoad((data) => { setConfig(data); }, setLoadError, () => setLoading(false));
 
   function isOn(key: string, defaultOn: boolean): boolean {
     const v = config[`auth.${key}.enabled`];
@@ -2923,7 +2865,7 @@ function AuthFeaturesSection() {
     for (const f of AUTH_FEATURES) {
       payload[`auth.${f.key}.enabled`] = isOn(f.key, f.defaultOn) ? "1" : "0";
     }
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
+    const res = await saveSettings(payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Auth features saved");
@@ -3023,21 +2965,15 @@ function SessionLifetimesSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) {
-        const next: Record<string, string> = {};
-        for (const k of SESSION_KINDS) {
-          const v = res.data[`auth.${k.kind}.window_seconds`];
-          next[k.kind] = v ?? String(k.defaultSeconds);
-        }
-        setValues(next);
-        setMaxSession(res.data["auth.session.max_seconds"] ?? String(SESSION_MAX_DEFAULT));
-      }
-      setLoading(false);
-    });
-  }, []);
+  useSettingsLoad((data) => {
+    const next: Record<string, string> = {};
+    for (const k of SESSION_KINDS) {
+      const v = data[`auth.${k.kind}.window_seconds`];
+      next[k.kind] = v ?? String(k.defaultSeconds);
+    }
+    setValues(next);
+    setMaxSession(data["auth.session.max_seconds"] ?? String(SESSION_MAX_DEFAULT));
+  }, setLoadError, () => setLoading(false));
 
   function setVal(kind: SessionKindRow["kind"], value: string) {
     setValues((prev) => ({ ...prev, [kind]: value }));
@@ -3067,7 +3003,7 @@ function SessionLifetimesSection() {
       payload[`auth.${k.kind}.window_seconds`] = String(parseInt(values[k.kind] ?? "0", 10));
     }
     payload["auth.session.max_seconds"] = String(max);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
+    const res = await saveSettings(payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("Session lifetimes saved");
@@ -3273,13 +3209,7 @@ function OAuth2Section() {
   // Collapsed by default — clicking a row's header toggles it.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
-      if (res.error) { setLoadError(res.error); return; }
-      if (res.data) setConfig(res.data);
-      setLoading(false);
-    });
-  }, []);
+  useSettingsLoad((data) => { setConfig(data); }, setLoadError, () => setLoading(false));
 
   function get(key: string): string {
     return config[key] ?? "";
@@ -3315,7 +3245,7 @@ function OAuth2Section() {
         payload[f.key] = get(f.key);
       }
     }
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", payload);
+    const res = await saveSettings(payload);
     setSaving(false);
     if (res.error) { toast(res.error, "info"); return; }
     toast("OAuth2 providers saved");
@@ -3929,7 +3859,7 @@ function StorageSection() {
       return;
     }
     setSaving(true);
-    const res = await api.patch<ApiResponse<Record<string, string>>>("/api/v1/admin/settings", {
+    const res = await saveSettings({
       "files.max_upload_size": String(Math.round(mb * MB)),
       "storage.driver": driver,
       "s3.endpoint": endpoint,
