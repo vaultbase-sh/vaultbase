@@ -16,7 +16,6 @@
 import { getSetting } from "../api/settings.ts";
 import { scriptRuns, stoppedReason, untilAborted } from "./script-signal.ts";
 
-export { currentScriptSignal } from "./script-signal.ts";
 
 export type ScriptKind = "hook" | "afterHook" | "route" | "job" | "queue";
 

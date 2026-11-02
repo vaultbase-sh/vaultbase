@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
-import { ROUTE_METHODS, dispatchCustomRoute, invalidateRoutesCache, validatePath } from "../core/routes.ts";
+import { ROUTE_METHODS, RouteParamError, dispatchCustomRoute, invalidateRoutesCache, validatePath } from "../core/routes.ts";
 import { customInnerPath } from "../core/api-paths.ts";
 import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
@@ -47,6 +47,7 @@ export async function tryDispatchCustom(request: Request, jwtSecret: string): Pr
     }
     return respond(result.status, result.body, result.headers);
   } catch (e) {
+    if (e instanceof RouteParamError) return respond(400, { error: e.message, code: 400 });
     // Details go to the log, not to the caller.
     console.error("[routes] tryDispatchCustom failed:", e);
     return respond(500, { error: "Internal error", code: 500 });

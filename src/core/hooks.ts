@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { guardedFetch } from "./hook-egress.ts";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -156,7 +156,9 @@ const compiledCache = new Map<string, { version: number; hook: CompiledHook }>()
 // write (before + after hook), most of a create's cost.
 const HOOK_ROWS_TTL_MS = 1000;
 const enabledHookRows = dbScopedTtlCache(HOOK_ROWS_TTL_MS, () =>
-  getDb().select().from(hooks).where(eq(hooks.enabled, 1)),
+  // In a fixed order (oldest first): without one, Postgres returns an edited
+  // row last, and a hook that reads what an earlier one set ran first.
+  getDb().select().from(hooks).where(eq(hooks.enabled, 1)).orderBy(asc(hooks.created_at), asc(hooks.id)),
 );
 
 /**
@@ -268,6 +270,13 @@ export async function runBeforeHook(
       await runHook(h, "hook", hookLabel(h, collection.name, event), ctx, helperCtx);
     } catch (e) {
       if (e instanceof ValidationError) throw e;
+      // A hook's own message (`throw new Error("…")`) reaches the client; a
+      // database error from helpers.sql would hand it table and column names.
+      const name = (e as { name?: unknown } | null)?.name;
+      if (name === "SQLiteError" || name === "PostgresError") {
+        console.error(`[hooks] ${hookLabel(h, collection.name, event)}:`, e);
+        throw new ValidationError({ _hook: `${hookLabel(h, collection.name, event)} failed (details in the server log)` });
+      }
       const msg = e instanceof Error ? e.message : String(e);
       throw new ValidationError({ _hook: msg });
     }

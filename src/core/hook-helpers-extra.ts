@@ -780,7 +780,10 @@ function makeCron(): CronHelpers {
       const { validateCron, nextRunFromCron, invalidateJobsCache } = await import("./jobs.ts");
       const err = validateCron(opts.schedule);
       if (err) throw new Error(`cron.add: invalid schedule — ${err}`);
-      const { databaseCodeError } = await import("./code-loader.ts");
+      const { databaseCodeError, inlineCompileError } = await import("./code-loader.ts");
+      // As the admin API checks: code that doesn't compile never runs.
+      const bad = inlineCompileError(opts.code ?? "");
+      if (bad) throw new Error(`cron.add: the code doesn't compile — ${bad}`);
       const unsupported = databaseCodeError(opts.code ?? "");
       if (unsupported) throw new Error(`cron.add: ${unsupported}`);
       const { getDb } = await import("../db/client.ts");

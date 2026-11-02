@@ -44,6 +44,29 @@ describe("cron scheduler claims each slot once", () => {
   });
 });
 
+describe("a scheduled run leaves the schedule alone", () => {
+  it("a run moved on by someone else (another server, an edit) isn't moved back when it ends", async () => {
+    const tick = _jobsTickOnce();
+    await Bun.sleep(50);
+    // While it runs: another server claimed the next slot, or an admin edited it.
+    const far = Math.floor(Date.now() / 1000) + 86_400;
+    await getDb().update(jobs).set({ next_run_at: far }).where(eq(jobs.id, "job1"));
+    await tick;
+    const row = (await getDb().select().from(jobs).where(eq(jobs.id, "job1")))[0]!;
+    expect(row.next_run_at).toBe(far);
+    expect(row.last_status).toBe("ok");
+  });
+
+  it("code that doesn't compile is recorded on the job", async () => {
+    await getDb().update(jobs).set({ code: "this is not javascript (" }).where(eq(jobs.id, "job1"));
+    const { invalidateJobsCache } = await import("../core/jobs.ts");
+    invalidateJobsCache();
+    await _jobsTickOnce();
+    const row = (await getDb().select().from(jobs).where(eq(jobs.id, "job1")))[0]!;
+    expect(row.last_status).toBe("error");
+  });
+});
+
 describe("validateCron", () => {
   it("takes five fields and @names, refuses a seconds field", async () => {
     const { validateCron } = await import("../core/jobs.ts");

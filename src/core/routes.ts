@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { accessFor, clientIp, dataPrincipal, headerBearer, verifyAuthToken } from "./sec.ts";
 import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
@@ -156,14 +156,33 @@ onPeerInvalidation("routes", invalidateRoutesCache);
 async function loadRoutes(): Promise<CompiledRoute[]> {
   if (cacheLoaded) return [...cache.values()];
   const db = getDb();
-  const rows = await db.select().from(routes).where(eq(routes.enabled, 1));
+  const rows = await db.select().from(routes).where(eq(routes.enabled, 1)).orderBy(asc(routes.created_at), asc(routes.id));
   cache.clear();
-  for (const r of rows) {
-    const c = compile(r as RouteRow);
-    if (c) cache.set(r.id, c);
-  }
+  // The most specific path first, so `/users/me` wins over `/users/:id`
+  // whichever was made first (and on Postgres, whichever was edited last).
+  const compiled = rows.map((r) => compile(r as RouteRow)).filter((c): c is CompiledRoute => !!c);
+  compiled.sort((a, b) => compareSpecificity(a.path, b.path));
+  for (const c of compiled) cache.set(c.id, c);
   cacheLoaded = true;
   return [...cache.values()];
+}
+
+/** Segment by segment: a literal before `:param` before `*`; then fewer segments. Stable otherwise. */
+function compareSpecificity(a: string, b: string): number {
+  const rank = (seg: string) => (seg === "*" ? 2 : seg.startsWith(":") ? 1 : 0);
+  const sa = a.replace(/^\/+/, "").split("/");
+  const sb = b.replace(/^\/+/, "").split("/");
+  for (let i = 0; i < Math.min(sa.length, sb.length); i++) {
+    const d = rank(sa[i]!) - rank(sb[i]!);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** A path parameter that isn't valid percent-encoding. */
+export class RouteParamError extends Error {
+  readonly status = 400;
+  constructor(param: string) { super(`Path parameter '${param}' isn't valid URL encoding`); }
 }
 
 export interface RouteMatch {
@@ -180,7 +199,9 @@ export async function findRoute(method: string, path: string): Promise<RouteMatc
     if (!m) continue;
     const params: Record<string, string> = {};
     for (let i = 0; i < r.paramNames.length; i++) {
-      params[r.paramNames[i]!] = decodeURIComponent(m[i + 1] ?? "");
+      // A malformed escape (`%E0%A4%A`) is the client's mistake: 400, not 500.
+      try { params[r.paramNames[i]!] = decodeURIComponent(m[i + 1] ?? ""); }
+      catch { throw new RouteParamError(r.paramNames[i]!); }
     }
     return { route: r, params };
   }

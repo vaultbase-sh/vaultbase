@@ -58,3 +58,25 @@ describe("webhook dispatcher claims deliveries", () => {
     expect(rows[0]!.status).toBe("succeeded");
   });
 });
+
+describe("webhook delivery timeout", () => {
+  it("covers the body: a receiver that answers 200 and then stalls is done at the timeout, not held", async () => {
+    const stall = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      fetch: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("partial")); } }), { status: 200 }),
+    });
+    try {
+      await getDb().update(webhooks).set({ url: `http://127.0.0.1:${stall.port}/hook`, timeout_ms: 1000 }).where(eq(webhooks.id, "wh1"));
+      await dispatchEvent({ event: "posts.create", data: { id: "p2" } });
+      const t0 = Date.now();
+      await _webhookTickOnce();
+      expect(Date.now() - t0).toBeLessThan(5000);
+      const row = (await getDb().select().from(webhookDeliveries).where(eq(webhookDeliveries.webhook_id, "wh1")))[0]!;
+      // The 200 answered: recorded as delivered, once.
+      expect(row.status).toBe("succeeded");
+      expect(row.response_body).toBe("partial");
+    } finally {
+      stall.stop(true);
+    }
+  });
+});

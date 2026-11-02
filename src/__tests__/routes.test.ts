@@ -79,3 +79,21 @@ describe("custom routes dispatch", () => {
     expect(res!.status).toBe(418);
   });
 });
+
+describe("route matching order and bad escapes", () => {
+  it("a literal path wins over a :param one, whichever was made first", async () => {
+    await insertRoute("GET", "/users/:id", `return { data: "by-id:" + ctx.params.id };`);
+    await insertRoute("GET", "/users/me", `return { data: "me" };`);
+    const res = await dispatchCustomRoute(new Request("http://localhost/custom/users/me"), "/users/me", "secret");
+    expect(res!.body).toEqual({ data: "me" });
+    const other = await dispatchCustomRoute(new Request("http://localhost/custom/users/42"), "/users/42", "secret");
+    expect(other!.body).toEqual({ data: "by-id:42" });
+  });
+
+  it("a malformed percent-escape in a parameter is a 400", async () => {
+    const { tryDispatchCustom } = await import("../api/routes.ts");
+    await insertRoute("GET", "/users/:id", `return { data: ctx.params.id };`);
+    const res = await tryDispatchCustom(new Request("http://localhost/api/v1/custom/users/%E0%A4%A"), "secret");
+    expect(res!.status).toBe(400);
+  });
+});

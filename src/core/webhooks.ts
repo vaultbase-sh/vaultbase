@@ -32,6 +32,13 @@ import { backgroundPaused } from "./maintenance-mode.ts";
 
 const TICK_INTERVAL_MS = 2000;
 const CLAIM_LIMIT = 50;
+/**
+ * Deliveries running at once on this server. Without a cap, slow receivers
+ * piled up thousands, past what fetch runs at once (256): the rest queued
+ * inside fetch while their timeouts ran, and failed as false timeouts.
+ */
+const MAX_IN_FLIGHT = 64;
+let inFlight = 0;
 /** Upper bound on one delivery attempt, whatever timeout_ms says. */
 const MAX_TIMEOUT_MS = 120_000;
 /** Claim lease; must outlast the longest possible attempt. */
@@ -144,11 +151,13 @@ async function tick(): Promise<Promise<void>[]> {
   if (backgroundPaused()) return [];
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
+  const room = Math.min(CLAIM_LIMIT, MAX_IN_FLIGHT - inFlight);
+  if (room <= 0) return [];
   const due = await db
     .select()
     .from(webhookDeliveries)
     .where(and(eq(webhookDeliveries.status, "pending"), lte(webhookDeliveries.scheduled_at, now)))
-    .limit(CLAIM_LIMIT) as DeliveryRow[];
+    .limit(room) as DeliveryRow[];
   const started: Promise<void>[] = [];
   for (const d of due) {
     // Claim before sending: push scheduled_at out by a lease so overlapping
@@ -165,7 +174,8 @@ async function tick(): Promise<Promise<void>[]> {
       ))
       .returning({ id: webhookDeliveries.id });
     if (claim.length === 0) continue;
-    started.push(deliverOne(d).catch(() => { /* recorded on the row */ }));
+    inFlight++;
+    started.push(deliverOne(d, now + CLAIM_LEASE_SECONDS).catch(() => { /* recorded on the row */ }).finally(() => { inFlight--; }));
   }
   return started;
 }
@@ -175,14 +185,19 @@ export async function _webhookTickOnce(): Promise<void> {
   await Promise.all(await tick());
 }
 
-async function deliverOne(d: DeliveryRow): Promise<void> {
+async function deliverOne(d: DeliveryRow, lease: number): Promise<void> {
   const db = getDb();
+  // Results are written only while this claim holds: a delivery that ran
+  // past its lease was claimed and sent again, and its late write replaced
+  // what the newer attempt recorded.
+  const held = and(eq(webhookDeliveries.id, d.id), eq(webhookDeliveries.status, "pending"),
+    eq(webhookDeliveries.attempt, d.attempt), eq(webhookDeliveries.scheduled_at, lease));
   const wRows = await db.select().from(webhooks).where(eq(webhooks.id, d.webhook_id)) as WebhookRow[];
   const w = wRows[0];
   if (!w || w.enabled !== 1) {
     await db.update(webhookDeliveries)
       .set({ status: "dead", error: w ? "webhook disabled" : "webhook deleted", delivered_at: Math.floor(Date.now() / 1000) })
-      .where(eq(webhookDeliveries.id, d.id));
+      .where(held);
     return;
   }
 
@@ -192,7 +207,7 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
     if (e instanceof EgressBlockedError) {
       await db.update(webhookDeliveries)
         .set({ status: "dead", error: e.message.replace(/^helpers\.http: /, ""), delivered_at: Math.floor(Date.now() / 1000) })
-        .where(eq(webhookDeliveries.id, d.id));
+        .where(held);
       return;
     }
     // Network errors fall through to retry path.
@@ -235,6 +250,7 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
   const timer = setTimeout(() => ac.abort(), Math.min(Math.max(1000, w.timeout_ms), MAX_TIMEOUT_MS));
   let res: Response | null = null;
   let err: Error | null = null;
+  let body = "";
   try {
     // `redirect: "manual"` blocks redirect-following (SSRF defense). The
     // egress filter validated the original URL only; following 3xx into
@@ -247,6 +263,10 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
       signal: ac.signal,
       redirect: "manual",
     });
+    // The body within the same time limit: a receiver that sent its headers
+    // and then stalled held the delivery past its lease. The status already
+    // answered, so a body cut off by the timeout doesn't change the outcome.
+    if (res.status < 300 || res.status >= 400) body = await readStart(res, 2048);
   } catch (e) {
     err = e instanceof Error ? e : new Error(String(e));
   } finally {
@@ -261,8 +281,6 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
 
   const finishedAt = Math.floor(Date.now() / 1000);
   if (res && res.ok) {
-    let body = "";
-    try { body = (await res.text()).slice(0, 2048); } catch { /* ignore */ }
     await db.update(webhookDeliveries)
       .set({
         status: "succeeded",
@@ -270,13 +288,12 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
         response_body: body,
         delivered_at: finishedAt,
       })
-      .where(eq(webhookDeliveries.id, d.id));
+      .where(held);
     return;
   }
 
   // Failure — retry or mark dead.
-  let respBody = "";
-  if (res) { try { respBody = (await res.text()).slice(0, 2048); } catch { /* ignore */ } }
+  const respBody = res ? body : "";
   const errorMsg = err ? err.message : `${res?.status ?? "no response"}`;
   if (d.attempt >= w.retry_max) {
     await db.update(webhookDeliveries)
@@ -287,7 +304,7 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
         error: errorMsg,
         delivered_at: finishedAt,
       })
-      .where(eq(webhookDeliveries.id, d.id));
+      .where(held);
     return;
   }
 
@@ -308,7 +325,27 @@ async function deliverOne(d: DeliveryRow): Promise<void> {
       error: errorMsg,
       scheduled_at: finishedAt + Math.ceil(delayMs / 1000),
     })
-    .where(eq(webhookDeliveries.id, d.id));
+    .where(held);
+}
+
+/**
+ * The first `max` characters of a response body; the rest isn't downloaded.
+ * Cut off (the timeout), it is what arrived until then.
+ */
+async function readStart(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch { /* aborted: keep what arrived */ }
+  reader.cancel().catch(() => {});
+  return text.slice(0, max);
 }
 
 async function hmacSign(secret: string, data: string): Promise<string> {
@@ -318,16 +355,4 @@ async function hmacSign(secret: string, data: string): Promise<string> {
   );
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(data));
   return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-// ── Helper for hooks: dispatch a custom event ───────────────────────────────
-
-export interface WebhookDispatchHelper {
-  dispatch(event: string, data?: unknown): Promise<{ enqueued: number }>;
-}
-
-export function makeWebhookHelper(): WebhookDispatchHelper {
-  return {
-    dispatch(event, data) { return dispatchEvent({ event, data }); },
-  };
 }

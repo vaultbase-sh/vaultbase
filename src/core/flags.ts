@@ -6,9 +6,9 @@
  * and runs deterministic targeting + percentage-rollout matching against
  * an evaluation context.
  *
- * Hash bucketing uses SHA-1(key + ":" + stickyValue) modulo 100 — same
- * input → same bucket across processes, so a fleet of vaultbase instances
- * keeps individual users on the same variation.
+ * Hash bucketing uses 32-bit FNV-1a(key + ":" + stickyValue) modulo 100 —
+ * same input → same bucket across processes, so a fleet of vaultbase
+ * instances keeps individual users on the same variation.
  *
  * Public surface:
  *   - listFlags / getFlag / upsertFlag / deleteFlag — used by the admin CRUD
@@ -387,7 +387,11 @@ function matchOp(attrPath: string, op: Operator, ruleValue: FlagValue, ctx: Eval
     case "exists":      return v !== undefined && v !== null;
     case "regex": {
       if (typeof v !== "string" || typeof ruleValue !== "string") return false;
-      try { return new RegExp(ruleValue).test(v); } catch { return false; }
+      // The context comes from the caller (`POST /flags/evaluate` is public by
+      // default): a long value against a backtracking pattern stalled the server.
+      if (v.length > MAX_REGEX_INPUT) return false;
+      const re = compiledRegex(ruleValue);
+      return re ? re.test(v) : false;
     }
     default:            return false;
   }
@@ -403,29 +407,35 @@ function readAttr(ctx: EvaluationContext, path: string): unknown {
   return cur;
 }
 
-// ── Hashing ─────────────────────────────────────────────────────────────────
+// ── Regex rules ─────────────────────────────────────────────────────────────
 
-/** SHA-1 first 4 bytes → uint32 → modulo 100. Returns 0..99. */
-async function sha1Bytes(input: string): Promise<Uint8Array> {
-  const buf = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-1", buf);
-  return new Uint8Array(digest);
+/** Longest context value a `regex` rule is tested against. */
+const MAX_REGEX_INPUT = 1000;
+const regexCache = new Map<string, RegExp | null>();
+
+/** A rule's pattern, compiled once (null when it isn't a valid pattern). */
+function compiledRegex(pattern: string): RegExp | null {
+  let re = regexCache.get(pattern);
+  if (re === undefined) {
+    try { re = new RegExp(pattern); } catch { re = null; }
+    if (regexCache.size >= 500) regexCache.clear();
+    regexCache.set(pattern, re);
+  }
+  return re;
 }
 
-function bucketHashSync(input: string): number {
-  // Synchronous FNV-1a fallback because evaluate() is hot-path and we
-  // don't want to await SHA-1 per rule. Distribution of FNV-1a is good
-  // enough for percentage rollouts (worst-case skew ~2% at 100k samples).
+// ── Hashing ─────────────────────────────────────────────────────────────────
+
+/** 32-bit FNV-1a → modulo 100. Returns 0..99. */
+function bucketHash(input: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
     h ^= input.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
+    // Math.imul: a plain `*` passed 2^53 and lost bits, so buckets were
+    // skewed (a 10 % rollout reached 11.2 %).
+    h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h % 100;
 }
-
-function bucketHash(input: string): number { return bucketHashSync(input); }
 function clampPercent(n: number): number { return Math.max(0, Math.min(100, Math.round(n))); }
 
-// keep sha1Bytes exported in case admin UI wants stable bucket preview
-export { sha1Bytes };

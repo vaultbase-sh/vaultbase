@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
@@ -139,11 +139,6 @@ export function listRegisteredWorkers(): Array<{ name: string; queue: string; co
   return [...builtinWorkers.values()].map((w) => ({ name: w.name, queue: w.queue, concurrency: w.concurrency }));
 }
 
-/** Test-only: drop all built-in worker registrations. */
-export function _resetBuiltinWorkers(): void {
-  builtinWorkers.clear();
-}
-
 export function invalidateWorkerCache(): void {
   compiledCache.clear();
   cacheLoaded = false;
@@ -184,7 +179,8 @@ function compile(row: WorkerRow): CompiledWorker | null {
 
 async function loadWorkers(): Promise<CompiledWorker[]> {
   if (cacheLoaded) return [...compiledCache.values()];
-  const rows = await getDb().select().from(workers).where(eq(workers.enabled, 1));
+  // Oldest first: the first worker on a queue serves it, the same one on every server.
+  const rows = await getDb().select().from(workers).where(eq(workers.enabled, 1)).orderBy(asc(workers.created_at), asc(workers.id));
   compiledCache.clear();
   for (const r of rows) {
     const c = compile(r as WorkerRow);
@@ -282,10 +278,18 @@ export function startQueueScheduler(): void {
   recoveryInterval.unref?.();
   leaseInterval = setInterval(() => { void renewLeases().catch(() => { /* next renewal */ }); }, LEASE_RENEW_MS);
   leaseInterval.unref?.();
-  schedulerInterval = setInterval(() => { void tick().catch(() => { /* next tick */ }); }, POLL_INTERVAL_MS);
-  // Like every tick: a failure (the database closing under it at shutdown)
-  // waits for the next one instead of going unhandled.
-  void tick().catch(() => { /* next tick */ });
+  // One tick at a time: a slow one (a busy database) overlapping the next
+  // counted the same free slots twice and ran past `concurrency`.
+  let ticking = false;
+  const runTick = () => {
+    if (ticking) return;
+    ticking = true;
+    // Like every tick: a failure (the database closing under it at shutdown)
+    // waits for the next one instead of going unhandled.
+    void tick().catch(() => { /* next tick */ }).finally(() => { ticking = false; });
+  };
+  schedulerInterval = setInterval(runTick, POLL_INTERVAL_MS);
+  runTick();
 }
 
 export function queueSchedulerRunning(): boolean {
@@ -323,6 +327,8 @@ export const PROCESS_ID = crypto.randomUUID();
 const LEASE_SECONDS = 60;
 const LEASE_RENEW_MS = 15_000;
 const RECOVERY_SWEEP_MS = 15_000;
+/** Longest wait between retries of a job (one day, as for webhook deliveries). */
+const MAX_RETRY_DELAY_MS = 24 * 60 * 60 * 1000;
 let leaseSeconds = LEASE_SECONDS;
 
 /** Tests: a shorter lease. */
@@ -330,13 +336,28 @@ export function _setLeaseSeconds(s: number | null): void {
   leaseSeconds = s ?? LEASE_SECONDS;
 }
 
-/** Renew the leases of the jobs this process is running. */
+/** Jobs this process is running now (claimed, and runJob hasn't returned). */
+const running = new Set<string>();
+
+/**
+ * Renew the leases of the jobs this process is running. Only those: a job
+ * whose result couldn't be written still names this process, and renewing
+ * every such row kept it "running" (and its unique key taken) for good.
+ * Its lease now runs out and the recovery sweep re-queues it.
+ */
 export async function renewLeases(): Promise<number> {
+  if (running.size === 0) return 0;
   const now = Math.floor(Date.now() / 1000);
-  return (await db.run(
-    `UPDATE vaultbase_jobs_log SET lease_until = ? WHERE status = 'running' AND lease_owner = ?`,
-    [now + leaseSeconds, PROCESS_ID],
-  )).changes;
+  let changed = 0;
+  const ids = [...running];
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    changed += (await db.run(
+      `UPDATE vaultbase_jobs_log SET lease_until = ? WHERE status = 'running' AND lease_owner = ? AND id IN (${chunk.map(() => "?").join(", ")})`,
+      [now + leaseSeconds, PROCESS_ID, ...chunk],
+    )).changes;
+  }
+  return changed;
 }
 
 /**
@@ -431,13 +452,17 @@ async function claimAndRun(queue: string, worker: CompiledWorker, slots: number)
     // and we move on.
     const claim = await db
       .update(jobsLog)
-      .set({ status: "running", worker_id: worker.id, started_at: now, lease_owner: PROCESS_ID, lease_until: now + leaseSeconds })
+      // The attempt limit goes on the row: recovery reads it there, and a
+      // worker registered in code has no vaultbase_workers row to read.
+      .set({ status: "running", worker_id: worker.id, started_at: now, lease_owner: PROCESS_ID, lease_until: now + leaseSeconds, retry_max: job.retry_max ?? worker.retry_max })
       .where(and(eq(jobsLog.id, job.id), eq(jobsLog.status, "queued"), eq(jobsLog.attempt, job.attempt)))
       .returning({ id: jobsLog.id });
     if (claim.length === 0) continue;
 
     inFlight.set(worker.id, (inFlight.get(worker.id) ?? 0) + 1);
+    running.add(job.id);
     void runJob(worker, job).finally(() => {
+      running.delete(job.id);
       inFlight.set(worker.id, Math.max(0, (inFlight.get(worker.id) ?? 1) - 1));
     });
   }
@@ -486,9 +511,10 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
     const baseDelayMs = job.retry_delay_ms ?? worker.retry_delay_ms;
     const willRetry = job.attempt < retryMax;
     if (willRetry) {
-      const delayMs = backoff === "exponential"
+      // Capped like webhook retries: past it, attempt 25 waited a year.
+      const delayMs = Math.min(MAX_RETRY_DELAY_MS, backoff === "exponential"
         ? baseDelayMs * Math.pow(2, job.attempt - 1)
-        : baseDelayMs;
+        : baseDelayMs);
       const next = Math.floor((Date.now() + delayMs) / 1000);
       // Re-queue: bump attempt, set status back to queued with a fresh
       // schedule. Keeping the same row preserves the audit trail; a fresh
@@ -652,6 +678,3 @@ export async function queueStats(windowSec = 86_400): Promise<QueueStatRow[]> {
   }
   return [...map.values()].sort((a, b) => a.queue.localeCompare(b.queue));
 }
-
-// Avoid unused-import warning when no scheduled-job logic uses `isNull`.
-void isNull;

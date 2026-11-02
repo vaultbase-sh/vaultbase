@@ -86,15 +86,36 @@ describe("job leases", () => {
     expect(j).toMatchObject({ status: "queued", attempt: 2, lease_owner: null, lease_until: null });
   });
 
-  it("renewal extends only this process's leases", async () => {
+  it("renewal extends only the leases of jobs this process is running", async () => {
+    await insertWorker("q", "await new Promise((r) => { globalThis.__leaseGate = r; });");
+    const { jobId: running } = await enqueue("q", {});
+    startQueueScheduler();
+    await waitFor(async () => (await job(running)).status === "running");
+    stopQueueScheduler();
     const now = Math.floor(Date.now() / 1000);
-    const { jobId: mine } = await enqueue("q", {});
-    const { jobId: theirs } = await enqueue("q", {});
-    await getDb().update(jobsLog).set({ status: "running", started_at: now, lease_owner: PROCESS_ID, lease_until: now + 1 }).where(eq(jobsLog.id, mine));
+    const { jobId: theirs } = await enqueue("other-q", {});
+    // Names this process but isn't running here: a run whose result couldn't
+    // be written. Renewing it kept it "running" for good.
+    const { jobId: stranded } = await enqueue("other-q", {});
     await getDb().update(jobsLog).set({ status: "running", started_at: now, lease_owner: "other", lease_until: now + 1 }).where(eq(jobsLog.id, theirs));
+    await getDb().update(jobsLog).set({ status: "running", started_at: now, lease_owner: PROCESS_ID, lease_until: now + 1 }).where(eq(jobsLog.id, stranded));
+    await getDb().update(jobsLog).set({ lease_until: now + 1 }).where(eq(jobsLog.id, running));
     expect(await renewLeases()).toBe(1);
-    expect((await job(mine)).lease_until!).toBeGreaterThanOrEqual(now + 59);
+    expect((await job(running)).lease_until!).toBeGreaterThanOrEqual(now + 59);
     expect((await job(theirs)).lease_until).toBe(now + 1);
+    expect((await job(stranded)).lease_until).toBe(now + 1);
+    (globalThis as { __leaseGate?: () => void }).__leaseGate?.();
+    await waitFor(async () => (await job(running)).status === "succeeded");
+  });
+
+  it("a claimed job records its attempt limit, so recovery uses the worker's and not 3", async () => {
+    await insertWorker("q", "return 1;");
+    await getDb().update(workers).set({ retry_max: 7 });
+    invalidateWorkerCache();
+    const { jobId } = await enqueue("q", {});
+    startQueueScheduler();
+    await waitFor(async () => (await job(jobId)).status === "succeeded");
+    expect((await job(jobId)).retry_max).toBe(7);
   });
 
   it("a run that lost its lease doesn't overwrite the newer attempt", async () => {

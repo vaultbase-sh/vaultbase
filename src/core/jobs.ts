@@ -97,7 +97,12 @@ export function validateMode(mode: string): string | null {
  * result when the job ran out of time: the caller holds the job's slot
  * until it ends.
  */
-export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => void): Promise<{ ok: boolean; error?: string }> {
+export async function runJob(
+  jobId: string,
+  onRun?: (run: Promise<unknown>) => void,
+  /** The scheduler claimed this slot, which already moved next_run_at. */
+  claimed = false,
+): Promise<{ ok: boolean; error?: string }> {
   const db = getDb();
   const rows = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
   const row = rows[0] as JobRow | undefined;
@@ -106,6 +111,11 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
   let nextRun: number | null = null;
   try { nextRun = nextRunFromCron(row.cron, now); }
   catch { nextRun = null; }
+  // A scheduled run leaves the schedule alone: writing the next slot it
+  // computed when it started moved next_run_at back after a run longer
+  // than the interval (another server had claimed the next slot), so that
+  // slot ran again, and undid a schedule edit made during the run.
+  const schedule = claimed ? {} : { next_run_at: nextRun };
 
   // Worker-mode: cron tick enqueues onto the named queue and returns. The
   // worker handles execution async — the job's `code` is treated as the
@@ -117,7 +127,7 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
       const msg = `Invalid mode "${row.mode}" — expected "worker:<queue>"`;
       await db.update(jobs).set({
         last_run_at: now, last_status: "error", last_error: msg,
-        next_run_at: nextRun, updated_at: now,
+        ...schedule, updated_at: now,
       }).where(eq(jobs.id, jobId));
       return { ok: false, error: msg };
     }
@@ -126,7 +136,7 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
       const r = await enqueue(queue, { jobId, jobName: row.name, scheduledAt: now });
       await db.update(jobs).set({
         last_run_at: now, last_status: "ok", last_error: null,
-        next_run_at: nextRun, updated_at: now,
+        ...schedule, updated_at: now,
       }).where(eq(jobs.id, jobId));
       appendHookLog({
         name: row.name,
@@ -137,14 +147,19 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
       const msg = e instanceof Error ? e.message : String(e);
       await db.update(jobs).set({
         last_run_at: now, last_status: "error", last_error: msg,
-        next_run_at: nextRun, updated_at: now,
+        ...schedule, updated_at: now,
       }).where(eq(jobs.id, jobId));
       return { ok: false, error: msg };
     }
   }
 
   const fn = compile(row);
-  if (!fn) return { ok: false, error: "Failed to compile job code" };
+  if (!fn) {
+    // On the row too: it otherwise never ran, with nothing to show why.
+    const msg = "Failed to compile job code";
+    await db.update(jobs).set({ last_run_at: now, last_status: "error", last_error: msg, ...schedule, updated_at: now }).where(eq(jobs.id, jobId));
+    return { ok: false, error: msg };
+  }
 
   const helpers = makeHookHelpers({ name: row.name });
 
@@ -155,7 +170,7 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
       last_run_at: now,
       last_status: "ok",
       last_error: null,
-      next_run_at: nextRun,
+      ...schedule,
       updated_at: now,
     }).where(eq(jobs.id, jobId));
     appendHookLog({
@@ -169,7 +184,7 @@ export async function runJob(jobId: string, onRun?: (run: Promise<unknown>) => v
       last_run_at: now,
       last_status: "error",
       last_error: msg,
-      next_run_at: nextRun,
+      ...schedule,
       updated_at: now,
     }).where(eq(jobs.id, jobId));
     appendHookLog({
@@ -263,7 +278,7 @@ async function scheduleTick(): Promise<Promise<unknown>[]> {
       // The slot stays taken until the script ends, also when it ran out of
       // time: another run of the same job doesn't start beside it.
       let run: Promise<unknown> | undefined;
-      const done = runJob(r.id, (p) => { run = p; });
+      const done = runJob(r.id, (p) => { run = p; }, true);
       started.push(done);
       void done.finally(() => Promise.resolve(run).catch(() => {}).finally(() => runningJobs.delete(r.id)));
     } else if (r.next_run_at === null) {

@@ -110,6 +110,20 @@ describe("loading files", () => {
     expect(rows.map((r) => [r.id, r.name])).toEqual([[id, "renamed"]]);
   });
 
+  it("doesn't re-import a file that didn't change when another one did (its top-level code ran again)", async () => {
+    const g = globalThis as { __stampLoads?: number };
+    g.__stampLoads = 0;
+    put("lib/suffix.ts", `export const suffix = () => " v1";`);
+    put("hooks/stamp.ts", `(globalThis as any).__stampLoads++;\n` + STAMP);
+    put("hooks/other.ts", STAMP.replace('"posts: stamp"', '"other"'));
+    await startCodeFiles(dir, { pollMs: 0 });
+    expect(g.__stampLoads).toBe(1);
+    put("hooks/other.ts", STAMP.replace('"posts: stamp"', '"other v2"'));
+    await syncCodeFiles();
+    expect(g.__stampLoads).toBe(1);
+    delete g.__stampLoads;
+  });
+
   it("keeps the last good version running when a file breaks, with the error on its row", async () => {
     put("lib/suffix.ts", `export const suffix = () => " ok";`);
     put("hooks/stamp.ts", STAMP);

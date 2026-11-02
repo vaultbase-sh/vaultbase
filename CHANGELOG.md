@@ -76,6 +76,55 @@ Binaries, checksums, signatures and SBOMs for every version are on
   can sign in to `users` and to `customers`.
 - Starting up no longer rewrites the job log's unique keys on every start;
   that was needed only once, before its unique index existed.
+- **Queue jobs:**
+  - A job whose result couldn't be written (a busy or briefly unreachable
+    database) stayed "running" for good, and kept its unique key taken:
+    the lease of every running row of the process was renewed, not only of
+    the jobs it was running. Such a job now goes back on the queue when its
+    lease runs out.
+  - A slow scheduler pass overlapping the next one could start more jobs
+    than a worker's `concurrency`.
+  - Retry delays are capped at one day; exponential backoff made attempt 25
+    wait about a year.
+  - A job interrupted by a restart was given 3 attempts when its worker was
+    registered in code; it now keeps its worker's limit.
+- **Cron jobs:**
+  - A run longer than its interval, with several servers on one Postgres,
+    moved the schedule back when it ended, so a slot ran twice; it also
+    undid a schedule edit made during the run. A scheduled run now leaves
+    the schedule alone.
+  - A job whose code doesn't compile now shows the error on the job instead
+    of silently never running, and `helpers.cron.add` refuses such code as
+    the admin API does.
+- **Hooks, custom routes and workers run in a fixed order.** They were
+  loaded in whatever order the database returned, which on Postgres
+  changes when a row is edited. Hooks and workers now go oldest first, and
+  custom routes most specific first, so `/users/me` wins over `/users/:id`.
+- A custom route path parameter with a broken percent-escape answers `400`
+  instead of `500`.
+- **Hooks folder:** a change re-imported every file, running each file's
+  top-level code again; unchanged files are kept now. A sync whose
+  database write failed is retried on the next poll instead of waiting
+  for another file to change.
+- **Webhooks:** the delivery timeout now covers reading the response, so a
+  receiver that sends its headers and then stalls no longer holds the
+  delivery past its lease (after which it was sent a second time). A
+  late-finishing attempt can't overwrite a newer one's result, and at most
+  64 deliveries run at once per server.
+- A before-hook that failed on a database error sent that error (with table
+  and column names) to the client. The client now gets the hook's name;
+  the error goes to the server log. A hook's own `throw new Error("…")`
+  message still reaches the client.
+- **Feature flags:** percentage rollouts reached more users than set (a
+  10 % rollout reached about 11 %, and some buckets held three times their
+  share) because the bucket hash lost precision. `regex` rules compile
+  their pattern once and skip context values over 1,000 characters.
+
+### Upgrade notes (feature flags)
+
+- The rollout fix moves some users into a different bucket: a user who was
+  in a 10 % rollout may now be out of it, and the other way round. Shares
+  match the setting from now on.
 
 ### Upgrade notes
 

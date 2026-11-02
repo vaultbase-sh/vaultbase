@@ -155,7 +155,7 @@ function formatBuildLog(log: unknown, root: string): string {
   return `${l.message ?? String(log)}${where}`;
 }
 
-async function loadFile(abs: string, root: string): Promise<Loaded> {
+async function loadFile(abs: string, root: string, prev?: Loaded): Promise<Loaded> {
   const out = await Bun.build({
     entrypoints: [abs], target: "bun", format: "esm", plugins: [vaultbasePlugin as never], throw: false,
   } as Parameters<typeof Bun.build>[0]);
@@ -163,6 +163,11 @@ async function loadFile(abs: string, root: string): Promise<Loaded> {
     throw new CodeFileError(out.logs.map((l) => formatBuildLog(l, root)).join("\n") || "build failed");
   }
   const code = await out.outputs[0].text();
+  const hash = new Bun.CryptoHasher("sha256").update(code).digest("hex");
+  // Unchanged: keep the module already loaded. Importing it again on every
+  // change in the folder ran its top-level code again (a timer it starts
+  // there ran once more per edit anywhere) and left one more module behind.
+  if (prev && prev.hash === hash) return prev;
   const unsupported = databaseCodeError(code, true);
   if (unsupported) throw new CodeFileError(unsupported);
   const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
@@ -189,7 +194,7 @@ async function loadFile(abs: string, root: string): Promise<Loaded> {
   const bound = fn.bind(def) as (ctx: unknown) => unknown;
   return {
     kind, columns, fn: async (ctx) => bound(ctx),
-    hash: new Bun.CryptoHasher("sha256").update(code).digest("hex"),
+    hash,
   };
 }
 
@@ -292,7 +297,7 @@ async function syncNow(): Promise<void> {
   const loaded = new Map<string, Loaded>();
   for (const rel of entries) {
     try {
-      const l = await loadFile(join(root, rel), root);
+      const l = await loadFile(join(root, rel), root, compiled.get(rel));
       loaded.set(rel, l);
       errors.delete(rel);
       const prev = compiled.get(rel);
@@ -306,8 +311,17 @@ async function syncNow(): Promise<void> {
     }
   }
 
-  if (writer) for (const k of await reconcileRows(entries, loaded)) changedKinds.add(k);
-  for (const k of changedKinds) SPECS[k].invalidate();
+  try {
+    if (writer) for (const k of await reconcileRows(entries, loaded)) changedKinds.add(k);
+  } catch (e) {
+    // Retried on the next poll: with the signature already taken, a failed
+    // write was never tried again until some file changed.
+    signature = "";
+    throw e;
+  } finally {
+    // Also on failure: the compiled code above already changed.
+    for (const k of changedKinds) SPECS[k].invalidate();
+  }
 }
 
 type Row = Record<string, unknown> & { id: string; file_path: string | null };
