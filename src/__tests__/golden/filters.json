@@ -541,10 +541,16 @@
   },
   "vb_gold_people | gold_via_author.status ?= \"published\"": {
     "public": {
-      "error": "array-prefix operator requires a field operand"
+      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND \"vb_gold\".\"status\" = ?)",
+      "params": [
+        "published"
+      ]
     },
     "user": {
-      "error": "array-prefix operator requires a field operand"
+      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND \"vb_gold\".\"status\" = ?)",
+      "params": [
+        "published"
+      ]
     }
   },
   "vb_gold_people | gold_via_author.price:length > 0": {
@@ -555,7 +561,10 @@
   },
   "vb_gold_people | gold_via_author.title ?~ \"x\" | client": {
     "user": {
-      "error": "array-prefix operator requires a field operand"
+      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND coalesce(\"vb_gold\".\"title\" LIKE ?, 0))",
+      "params": [
+        "%x%"
+      ]
     }
   },
   "vb_gold_people | gold_via_editors:length > 0": {

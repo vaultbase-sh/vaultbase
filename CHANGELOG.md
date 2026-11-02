@@ -54,6 +54,18 @@ Binaries, checksums, signatures and SBOMs for every version are on
   index up twice per request. Once now, and on SQLite without reading the
   index's columns. A filter or rule that joins another collection reads its
   settings once per compile, not once per field it checks.
+- **`?=` and the other `?` operators were refused on `_via_`**
+  (`comments_via_post.status ?= "flagged"`), and `:each` on one matched
+  nothing on SQLite and failed on Postgres. Both work now, comparing each
+  back-related record's value with its field's type.
+- **A filter through `@collection` or `_via_` failed for non-admins** when
+  the joined collection's list rule was admin-only (`""`) and its view rule
+  held a value: the view rule's value was left in the query with no place
+  for it. It answers with no matches, as intended.
+- **On Postgres, a fraction compared with a date, a bool, `created`,
+  `updated` or a `:length` failed the request** (`created > 1.5`,
+  `invalid input syntax for type bigint`); so did a whole number past
+  2^53. It compares as SQLite does.
 
 ## [0.36.0] — 2026-11-02
 

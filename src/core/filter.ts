@@ -311,6 +311,13 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
     return `(${lhs}) ${op} (${rhs})`;
   }
 
+  // A back-relation with a `?` operator or `:each`: matched row by row.
+  const viaOnLeft = ast.left.kind === "viaRelation";
+  const via = viaOnLeft ? ast.left : ast.right.kind === "viaRelation" ? ast.right : null;
+  if (via?.kind === "viaRelation" && (op.startsWith("?") || via.modifier === "each")) {
+    return compileViaMatch(via, viaOnLeft ? ast.right : ast.left, op, viaOnLeft, ctx);
+  }
+
   // Array-prefix operators (`?=` / `?~` / etc.) — match-any-element semantics
   // over a JSON-array column on the same table.
   if (op.startsWith("?")) {
@@ -456,10 +463,42 @@ function typedCmp(a: Compiled, op: string, b: Compiled, ctx: CompileCtx, item = 
     if (pair) { ctx.params.push(...a.params, ...b.params); return pair; }
   }
   const t = d.typedCompare;
+  const loose = t ? looseNumberCmp(a, op, b, t) ?? looseNumberCmp(b, flipOp(op), a, t) : null;
+  if (loose) { ctx.params.push(...loose.params); return loose.sql; }
   if (t) [a, b] = [lineUp(a, b, t, item), lineUp(b, a, t, item)];
   else if (item && d.itemCompare) [a, b] = [lineUpItem(a, b, d.itemCompare), lineUpItem(b, a, d.itemCompare)];
   ctx.params.push(...a.params, ...b.params);
   return `${a.sql} ${op} ${b.sql}`;
+}
+
+/**
+ * `expr op number` for a number that isn't a whole one in bigint's range
+ * (1.5, 1e20), against an expression that isn't a JSON path. Bound
+ * untyped, as lineUp does, the server read it as the expression's type and
+ * failed the query on an integer column (`created > 1.5`, a date, a bool,
+ * `:length`). Compared by what the expression holds instead: as a number,
+ * or as text (`sku = 1.5` on a text field, as before). The expression is
+ * read once.
+ */
+function looseNumberCmp(expr: Compiled, op: string, value: Compiled, t: NonNullable<Dialect["typedCompare"]>): Compiled | null {
+  if (!isBound(value) || isBound(expr) || expr.sql === "?" || t.jsonb(expr.sql)) return null;
+  const v = value.params[0];
+  if (typeof v !== "number" || Number.isSafeInteger(v) || !Number.isFinite(v)) return null;
+  return {
+    sql: `(SELECT CASE jsonb_typeof(_vb_j) WHEN 'number' THEN (_vb_j)::numeric ${op} CAST(? AS NUMERIC) WHEN 'string' THEN (_vb_j #>> '{}') ${op} ? END FROM (SELECT to_jsonb(${expr.sql}) AS _vb_j) AS _vb_n)`,
+    params: [...expr.params, String(v), String(v)],
+  };
+}
+
+/** `a op b` as `b flipOp(op) a`. */
+function flipOp(op: string): string {
+  switch (op) {
+    case "<": return ">";
+    case ">": return "<";
+    case "<=": return ">=";
+    case ">=": return "<=";
+    default: return op;
+  }
 }
 
 /** SQLite, for an item's value: a JSON path met by a bound value, typed as that value (Dialect.itemCompare). */
@@ -745,6 +784,10 @@ function joinedCollectionGuard(
   const rules: Array<string | null> = [meta.viewRule];
   if (ctx.clientFilter && meta.listRule !== undefined) rules.push(meta.listRule);
   const parts: string[] = [];
+  // Held back until every rule compiled: one that denies outright returns
+  // a clause without them, and a rule compiled before it had left its
+  // values in the statement, one more than its placeholders.
+  const params: unknown[] = [];
   for (const rule of rules) {
     if (rule === null) continue;
     if (rule === "") {
@@ -758,10 +801,12 @@ function joinedCollectionGuard(
       hostPrivateField: (n) => meta.isPrivateField(n),
       hostFilterable: (n) => meta.isFilterable(n),
       clientFilter: false,
+      params,
     });
     parts.push(compileScoped(innerAst, innerCtx));
     ctx.joinDepth = innerCtx.joinDepth;
   }
+  ctx.params.push(...params);
   if (parts.length === 0) return null;
   return parts.length === 1 ? parts[0]! : parts.map((p) => `(${p})`).join(" AND ");
 }
@@ -876,7 +921,70 @@ function compileCollectionRef(
   }
 }
 
-function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ctx: CompileCtx): string {
+type ViaOperand = Extract<Operand, { kind: "viaRelation" }>;
+
+function compileViaRelationRef(op: ViaOperand, ctx: CompileCtx): string {
+  const { table, sel, where } = viaSource(op, ctx);
+  // 1000-row cap mirrors PB's hard cap to bound back-ref expansion cost.
+  // The LIMIT sits on the rows being aggregated: on the aggregate itself
+  // it would only limit its single output row and cap nothing.
+  const rows = `(SELECT ${sel} AS _vb_v FROM ${table} WHERE ${where} LIMIT 1000) AS _vb_sub`;
+  // `:length` counts the rows: the array's length took the subquery up to
+  // four times, and on Postgres an empty json_agg is NULL, not 0.
+  if (op.modifier === "length") return `(SELECT COUNT(*) FROM ${rows})`;
+  return applyModifierToSql(`(SELECT ${dialect().jsonGroupArray("_vb_v")} FROM ${rows})`, op.modifier);
+}
+
+/**
+ * `_via_` with a `?` operator (some back-related row matches) or `:each`
+ * (there are some, and every one matches), compared row by row in the
+ * target table with the column's own type. The value read from those rows
+ * used to be a JSON array: `?` operators were refused, and `:each` matched
+ * nothing on SQLite and failed on Postgres.
+ */
+function compileViaMatch(via: ViaOperand, other: Operand, op: string, viaOnLeft: boolean, ctx: CompileCtx): string {
+  if (other.kind === "viaRelation") throw new Error("only one side of a comparison can be a _via_ back-relation");
+  const any = op.startsWith("?");
+  if (any ? via.modifier !== undefined : via.modifier !== "each") throw new Error(`_via_ with :${via.modifier} can't be compared with ${op}`);
+  const scalarOp = (any ? op.slice(1) : op) as AnyCmpOp;
+  // On the right, only = and != : `5 ?> field` on a field reads as
+  // `field ?> 5`, so an order or a match there would answer differently.
+  if (!viaOnLeft && scalarOp !== "=" && scalarOp !== "!=") throw new Error(`put the _via_ back-relation on the left of ${op}`);
+  const like = scalarOp === "~" || scalarOp === "!~";
+  // The rows' clause is compiled first but read after the comparison in
+  // :each's SQL, so each keeps its own parameters.
+  const outer = ctx.params;
+  ctx.params = [];
+  let source: ReturnType<typeof viaSource>;
+  let whereParams: unknown[];
+  let cmpParams: unknown[];
+  let cmp: string;
+  try {
+    source = viaSource(via, ctx);
+    whereParams = ctx.params;
+    ctx.params = [];
+    cmp = like
+      ? likeSql(source.sel, scalarOp as "~" | "!~", other, ctx)
+      : typedCmp({ sql: source.sel, params: [] }, scalarOp, compiled(other, ctx), ctx);
+    cmpParams = ctx.params;
+  } finally {
+    ctx.params = outer;
+  }
+  const { table, where } = source;
+  if (any) {
+    outer.push(...whereParams, ...cmpParams);
+    return `EXISTS (SELECT 1 FROM ${table} WHERE ${where} AND ${cmp})`;
+  }
+  outer.push(...cmpParams, ...whereParams);
+  return `(SELECT COUNT(*) > 0 AND COUNT(*) = COUNT(CASE WHEN ${cmp} THEN 1 END) FROM ${table} WHERE ${where})`;
+}
+
+/**
+ * The rows a `_via_` operand reads: the target table, the value selected
+ * (the id, or the path), and the clause linking them to this row under
+ * the target's rules.
+ */
+function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: string; where: string } {
   if (!IDENT_RE.test(op.targetCollection)) throw new Error(`invalid back-relation target: ${op.targetCollection}`);
   if (!IDENT_RE.test(op.refField)) throw new Error(`invalid back-relation ref field: ${op.refField}`);
   for (const p of op.path) if (!IDENT_RE.test(p)) throw new Error(`invalid back-relation path: ${p}`);
@@ -926,14 +1034,7 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
       where += ` AND ${dialect().never}`;
     }
 
-    // 1000-row cap mirrors PB's hard cap to bound back-ref expansion cost.
-    // The LIMIT sits on the rows being aggregated: on the aggregate itself
-    // it would only limit its single output row and cap nothing.
-    const rows = `(SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000) AS _vb_sub`;
-    // `:length` counts the rows: the array's length took the subquery up to
-    // four times, and on Postgres an empty json_agg is NULL, not 0.
-    if (op.modifier === "length") return `(SELECT COUNT(*) FROM ${rows})`;
-    return applyModifierToSql(`(SELECT ${dialect().jsonGroupArray("_vb_v")} FROM ${rows})`, op.modifier);
+    return { table: escapeIdent(targetTable), sel, where };
   } finally {
     ctx.joinDepth--;
   }
