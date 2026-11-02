@@ -1365,25 +1365,28 @@ async function applyCascades(
     const refCol = guard.cascadeAllowed ? await getCollection(ref.collection.name) : null;
 
     if (ref.cascade === "setNull") {
-      const affected = await db.all<{ id: string }>(`SELECT "id" FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
-      if (affected.length === 0) continue;
-      if (guard.cascadeAllowed) {
-        for (const r of affected) {
-          const rec = await getRecord(ref.collection.name, r.id);
-          if (rec && refCol && !guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, { [ref.fieldName]: null })) {
+      // The rows once: checked, then updated in one statement, then sent to
+      // realtime as they are now (the field cleared). A record read per row,
+      // before and after, was two queries per child, under the write gate.
+      const fullRef = refCol ?? await getCollection(ref.collection.name);
+      const rows = await db.all<Record<string, unknown>>(`SELECT * FROM ${refTable} WHERE ${fieldQ} = ?`, [id]);
+      if (rows.length === 0) continue;
+      const fields = fullRef ? cachedFields(fullRef.fields) : [];
+      if (guard.cascadeAllowed && refCol) {
+        for (const rec of await rowsToMeta(rows, refCol, fields)) {
+          if (!guard.cascadeAllowed(refCol, rec as unknown as Record<string, unknown>, { [ref.fieldName]: null })) {
             throw new CascadeForbiddenError(ref.collection.name);
           }
         }
       }
       const now = Math.floor(Date.now() / 1000);
-      for (const r of affected) await waitForRecordLock(`${ref.collection.name}:${r.id}`);
-      const fullRef = refCol ?? await getCollection(ref.collection.name);
+      for (const r of rows) await waitForRecordLock(`${ref.collection.name}:${String(r["id"])}`);
       await db.run(`UPDATE ${refTable} SET ${fieldQ} = NULL, "updated_at" = ? WHERE ${fieldQ} = ?`, [now, id], { table: userTableName(ref.collection.name) });
       // Realtime gets the full records; hooks and webhooks skip cascades (see
       // event-listeners.ts).
-      for (const r of affected) {
-        const rec = await getRecord(ref.collection.name, r.id);
-        if (rec && fullRef) afterCommit(() => emit("record.updated", {
+      if (fullRef) {
+        const after = await rowsToMeta(rows.map((r) => ({ ...r, [ref.fieldName]: null, updated_at: now })), fullRef, fields);
+        for (const rec of after) afterCommit(() => emit("record.updated", {
           collection: fullRef, record: rec as unknown as Record<string, unknown>, existing: null, auth, source: "cascade",
         }));
       }

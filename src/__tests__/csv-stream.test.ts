@@ -77,7 +77,8 @@ async function bufferedExport(collection: string, fields: FieldDef[]): Promise<s
   const PAGE = 500;
   let page = 1;
   while (true) {
-    const result = await listRecords(collection, { page, perPage: PAGE });
+    // The export's order: newest first, ties by id (it pages by that key).
+    const result = await listRecords(collection, { page, perPage: PAGE, sort: "-created,-id" });
     rows.push(...formatRowsForCsv(result.data, cols));
     if (result.totalItems <= page * PAGE) break;
     page++;
@@ -227,4 +228,16 @@ describe("export past the list offset cap", () => {
     const text = await res.text();
     expect(text.split("\r\n").length).toBe(100600 + 1);
   }, 60_000);
+});
+
+describe("streaming CSV export: paging", () => {
+  it("1,200 rows in one second come out once each, across pages", async () => {
+    await seedNotes(1200);
+    const token = await signAdmin();
+    const res = await makeCsvPlugin(SECRET).handle(exportReq(token, "notes"));
+    const lines = (await readAll(res.body!)).split("\r\n");
+    expect(lines.length).toBe(1201);
+    const ids = lines.slice(1).map((l) => l.split(",")[0]);
+    expect(new Set(ids).size).toBe(1200);
+  });
 });

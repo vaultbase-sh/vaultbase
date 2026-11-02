@@ -131,7 +131,6 @@ export function makeCsvPlugin(jwtSecret: string) {
       const PAGE = 500;
       const encoder = new TextEncoder();
       let cancelled = false;
-      let page = 1;
       // Pre-fetched next page kept in flight so we can `enqueue` the previous
       // batch and `await` the next one without serialising network/db latency
       // and CSV formatting time.
@@ -157,14 +156,22 @@ export function makeCsvPlugin(jwtSecret: string) {
         set.status = 400;
         return { error: e.message, code: 400 };
       }
-      const fetchPage = (p: number) => listRecords(col.name, { page: p, perPage: PAGE, allowDeepPaging: true, viewParams, ...(idFilter ? { filter: idFilter } : {}) });
+      // Keyset paging, newest first: each page starts after the last row of
+      // the one before, so a page is an index range, not an OFFSET over
+      // everything before it (and no total is counted per page). Quadratic
+      // before: page 200 skipped 100,000 rows.
+      const fetchPage = (after: { created: number; id: string } | null) => {
+        const keyset = after ? `(created < ${after.created} || (created = ${after.created} && id < "${after.id}"))` : null;
+        const filter = [idFilter ? `(${idFilter})` : null, keyset].filter(Boolean).join(" && ") || undefined;
+        return listRecords(col.name, { page: 1, perPage: PAGE, sort: "-created,-id", skipTotal: true, allowDeepPaging: true, viewParams, ...(filter ? { filter } : {}) });
+      };
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           // Header first — never delayed by a query. Writing it from start()
           // means clients see the column row immediately, even on slow tables.
           controller.enqueue(encoder.encode(encodeRow(headerCols)));
-          nextBatch = fetchPage(page);
+          nextBatch = fetchPage(null);
         },
         async pull(controller) {
           if (cancelled || !nextBatch) {
@@ -180,15 +187,11 @@ export function makeCsvPlugin(jwtSecret: string) {
           }
           if (cancelled) return; // client disconnected while we awaited
 
-          // Determine if this is the last page BEFORE enqueueing, so we can
-          // stop the next-page fetch from kicking off needlessly.
-          const isLast = result.totalItems <= page * PAGE;
-          if (!isLast) {
-            page++;
-            nextBatch = fetchPage(page);
-          } else {
-            nextBatch = null;
-          }
+          // A short page is the last one; otherwise fetch the next while
+          // this one is written.
+          const isLast = result.data.length < PAGE;
+          const tail = result.data[result.data.length - 1];
+          nextBatch = !isLast && tail ? fetchPage({ created: Number(tail.created), id: String(tail.id) }) : null;
 
           const rows = formatRowsForCsv(result.data, fields);
           for (const row of rows) {

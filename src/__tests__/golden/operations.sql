@@ -46,7 +46,7 @@ SELECT * FROM "vb_gold_people" WHERE "id" = ?;
 SELECT "id" FROM "vb_gold" WHERE "author" = ?;
 SELECT * FROM "vb_gold" WHERE "id" = ?;
 DELETE FROM "vb_gold" WHERE "id" = ?;
-SELECT "id" FROM "vb_gold" WHERE "editors" = ?;
+SELECT * FROM "vb_gold" WHERE "editors" = ?;
 DELETE FROM "vb_gold_people" WHERE "id" = ?;
 COMMIT;
 SELECT * FROM "vb_gold" WHERE "id" = ?;

@@ -13,6 +13,7 @@ import { useAuth } from "../stores/auth.ts";
 import { useSidebar } from "../stores/sidebar.ts";
 import { useMaintenance, type MaintenanceLevel } from "../stores/maintenance.ts";
 import { OPTIONAL_NAV_ITEMS } from "../lib/nav.ts";
+import { uploadInPieces } from "../lib/chunked-upload.ts";
 import { applyTheme, themeVars } from "../theme.ts";
 import {
   VbBtn,
@@ -2108,6 +2109,8 @@ function BackupSection() {
   const [loadError, setLoadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
+  /** Percent of a backup upload sent, while it is being sent. */
+  const [uploaded, setUploaded] = useState<number | null>(null);
   const [phase, setPhase] = useState<RestorePhase | null>(null);
   // Postgres: restores keep the data they replace (GET /admin/restores is 404 on SQLite).
   const [pg, setPg] = useState(false);
@@ -2299,21 +2302,32 @@ function BackupSection() {
       e.target.value = "";
       return;
     }
-    const fd = new FormData();
-    fd.append("file", file);
-    if (pg) {
-      await runPostgres("/api/v1/admin/restore", fd);
+    // In pieces: one request is capped at 128 MB, and a backup can be larger.
+    setRestoring(true);
+    const token = getMemoryToken();
+    let id: string;
+    try {
+      id = await uploadInPieces(file, { token, onProgress: (sent, total) => setUploaded(total > 0 ? Math.round((sent / total) * 100) : 100) });
+    } catch (err) {
+      toast(`Restore failed: ${err instanceof Error ? err.message : String(err)}`, "info");
+      setRestoring(false);
+      setUploaded(null);
       e.target.value = "";
       return;
     }
-    setRestoring(true);
-    const token = getMemoryToken();
+    setUploaded(null);
+    const finish = `/api/v1/admin/restore/uploads/${encodeURIComponent(id)}/finish?name=${encodeURIComponent(file.name)}`;
+    if (pg) {
+      setRestoring(false);
+      await runPostgres(finish);
+      e.target.value = "";
+      return;
+    }
     try {
-      const res = await fetch("/api/v1/admin/restore", {
+      const res = await fetch(finish, {
         method: "POST",
         credentials: "same-origin",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json.error) {
@@ -2531,7 +2545,7 @@ function BackupSection() {
             onClick={() => fileInputRef.current?.click()}
             disabled={restoring || !detected || (pg && !canRestorePg)}
           >
-            {restoring ? `Restoring…${phase ? ` (${PHASE_LABEL[phase]})` : ""}` : pg ? "Upload .dump" : "Upload .db"}
+            {uploaded !== null ? `Uploading… ${uploaded}%` : restoring ? `Restoring…${phase ? ` (${PHASE_LABEL[phase]})` : ""}` : pg ? "Upload .dump" : "Upload .db"}
           </VbBtn>
         </div>
       </VbField>

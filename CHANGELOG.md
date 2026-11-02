@@ -7,6 +7,28 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **A backup over 128 MB couldn't be restored from an upload.** A request
+  body is capped at 128 MB (for every route), so **Settings → Backup &
+  restore → Upload** refused larger files. The admin now sends a backup in
+  pieces of 32 MB and the server restores from the pieces put together, so
+  any size works; a piece that fails is sent again, and the button shows how
+  much is uploaded. The API: `POST /api/v1/admin/restore/uploads`, a `PUT`
+  per piece at its `offset`, then `POST …/uploads/<id>/finish` (the one-piece
+  `POST /api/v1/admin/restore` still works for small files).
+- **Deleting a record that many others point to with a `setNull`
+  relation ran two queries per pointing record**, under the write lock (a
+  user with 10,000 comments: about 20,000 queries while every other write
+  waited). It reads them once now.
+- **CSV export got slower the further it went.** It paged with an offset and
+  counted the whole table again for every 500 rows, so a large export spent
+  most of its time skipping rows it had already sent. Each page now starts
+  after the last row of the one before. Rows come out newest first, ties by
+  id.
+
 ## [0.36.0] — 2026-11-02
 
 ### Security

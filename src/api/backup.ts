@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, renameSync, rmSync } from "fs";
-import { dirname } from "path";
+import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync } from "fs";
+import { dirname, join } from "path";
 import { recordInstall } from "../core/install-marker.ts";
 import Elysia from "elysia";
 import { closeDb, getRawClient, initDb } from "../db/client.ts";
@@ -321,7 +321,102 @@ function notOnSqlite(set: { status?: number | string }) {
   return { error: "Previous data is kept on Postgres only; on SQLite a restore leaves the replaced file next to data.db as data.db.bak.<time>.", code: 404 };
 }
 
+/** Largest piece of a chunked restore upload (well under Bun's 128 MB body limit). */
+export const RESTORE_CHUNK_BYTES = 32 * 1024 * 1024;
+
 export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
+  /**
+   * Restore from an uploaded backup: a SQLite file, or on Postgres a pg_dump
+   * archive. `src.path` is a staged upload (the chunked route), moved into
+   * place instead of copied.
+   */
+  async function restoreUpload(
+    src: { blob: File | Bun.BunFile; name: string; path?: string },
+    progress: boolean,
+    set: { status?: number | string },
+  ): Promise<unknown> {
+    // Magic header check
+    const sliced = (src.blob as unknown as { slice(start: number, end: number): unknown }).slice(0, SQLITE_MAGIC.length);
+    const header = sliced instanceof Blob ? await sliced.text() : String(sliced);
+    if (db.name === "postgres") {
+      if (!header.startsWith(PGDUMP_MAGIC)) {
+        set.status = 422;
+        return {
+          error: header === SQLITE_MAGIC
+            ? "Can't restore this file: it is a SQLite backup, and this server runs on Postgres"
+            : "Can't restore this file: it isn't a Postgres backup (a .dump from the backups page)",
+          code: 422,
+        };
+      }
+      const upload = `${dirname(dbPath)}/.restore-upload-${Date.now()}-${process.pid}.dump`;
+      try {
+        await place(src, upload);
+      } catch (e) {
+        rmSync(upload, { force: true }); // a full disk leaves part of it
+        set.status = 500;
+        return { error: `Restore failed: the upload couldn't be saved (${e instanceof Error ? e.message : String(e)})`, code: 500 };
+      }
+      return postgresRestore(set, progress, async (onPhase) => {
+        try {
+          await restoreArchive(upload, `upload: ${src.name || "backup.dump"}`.slice(0, 200), dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
+        } finally {
+          rmSync(upload, { force: true });
+        }
+        await followRestoredDatabase();
+        return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.`;
+      });
+    }
+    if (header !== SQLITE_MAGIC) {
+      set.status = 422;
+      return {
+        error: header.startsWith(PGDUMP_MAGIC)
+          ? "File is a Postgres backup, and this server runs on SQLite"
+          : "File is not a valid SQLite database",
+        code: 422,
+      };
+    }
+
+    // Write to a staging path next to the live DB
+    const staging = `${dbPath}.restore`;
+    await place(src, staging);
+    const bad = stagedDatabaseError(staging);
+    if (bad) {
+      try { rmSync(staging, { force: true }); } catch { /* ignore */ }
+      set.status = 422;
+      return { error: `Can't restore this file: ${bad}`, code: 422 };
+    }
+    const err = await restoreDatabase(dbPath, staging);
+    if (err) {
+      set.status = 500;
+      return { error: `Restore failed: ${err}`, code: 500 };
+    }
+
+    return { data: { message: RESTORED_MESSAGE } };
+  }
+
+  const uploadsDir = () => join(dirname(dbPath), ".restore-uploads");
+  const uploadPath = (id: string) => join(uploadsDir(), `${id}.part`);
+  /** The staged file of an upload id, or null (unknown id, or not an id). */
+  const existingUpload = (id: string): string | null =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) && existsSync(uploadPath(id)) ? uploadPath(id) : null;
+  /** Uploads with a piece being written now: one at a time each. */
+  const appending = new Set<string>();
+  /** Uploads left unfinished for a day are deleted when the next one starts. */
+  function pruneRestoreUploads(): void {
+    let names: string[];
+    try { names = readdirSync(uploadsDir()); } catch { return; }
+    for (const n of names) {
+      const p = join(uploadsDir(), n);
+      try { if (Date.now() - statSync(p).mtimeMs > 86_400_000) rmSync(p, { force: true }); } catch { /* gone */ }
+    }
+  }
+
+  /** Put the upload at `target`: a staged file is renamed, anything else written. */
+  async function place(src: { blob: File | Bun.BunFile; path?: string }, target: string): Promise<void> {
+    if (src.path) renameSync(src.path, target);
+    else await Bun.write(target, src.blob);
+  }
+
   return new Elysia({ name: "backup" })
     .use(adminGuard(jwtSecret))
     // Download SQLite snapshot
@@ -455,63 +550,63 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return { error: "No file uploaded (expected multipart 'file' field)", code: 400 };
       }
 
-      // Magic header check
-      const sliced = file.slice(0, SQLITE_MAGIC.length);
-      const header = sliced instanceof Blob ? await sliced.text() : String(sliced);
-      if (db.name === "postgres") {
-        if (!header.startsWith(PGDUMP_MAGIC)) {
-          set.status = 422;
-          return {
-            error: header === SQLITE_MAGIC
-              ? "Can't restore this file: it is a SQLite backup, and this server runs on Postgres"
-              : "Can't restore this file: it isn't a Postgres backup (a .dump from the backups page)",
-            code: 422,
-          };
-        }
-        const upload = `${dirname(dbPath)}/.restore-upload-${Date.now()}-${process.pid}.dump`;
-        try {
-          await Bun.write(upload, file);
-        } catch (e) {
-          rmSync(upload, { force: true }); // a full disk leaves part of it
-          set.status = 500;
-          return { error: `Restore failed: the upload couldn't be saved (${e instanceof Error ? e.message : String(e)})`, code: 500 };
-        }
-        return postgresRestore(set, query["progress"] === "1", async (onPhase) => {
-          try {
-            await restoreArchive(upload, `upload: ${file.name || "backup.dump"}`.slice(0, 200), dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
-          } finally {
-            rmSync(upload, { force: true });
-          }
-          await followRestoredDatabase();
-          return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.`;
-        });
-      }
-      if (header !== SQLITE_MAGIC) {
-        set.status = 422;
-        return {
-          error: header.startsWith(PGDUMP_MAGIC)
-            ? "File is a Postgres backup, and this server runs on SQLite"
-            : "File is not a valid SQLite database",
-          code: 422,
-        };
-      }
+      return await restoreUpload({ blob: file, name: file.name || "backup" }, query["progress"] === "1", set);
+    }, { requireAdmin: true })
 
-      // Write to a staging path next to the live DB
-      const staging = `${dbPath}.restore`;
-      await Bun.write(staging, file);
-      const bad = stagedDatabaseError(staging);
-      if (bad) {
-        try { rmSync(staging, { force: true }); } catch { /* ignore */ }
-        set.status = 422;
-        return { error: `Can't restore this file: ${bad}`, code: 422 };
-      }
-      const err = await restoreDatabase(dbPath, staging);
-      if (err) {
-        set.status = 500;
-        return { error: `Restore failed: ${err}`, code: 500 };
-      }
+    // Restore from an upload sent in pieces. A request body is capped at
+    // 128 MB (Bun's limit, for every route), so a larger backup couldn't be
+    // uploaded in one: start an upload, append each piece at its offset (a
+    // failed piece is sent again), then restore from it.
+    .post("/admin/restore/uploads", ({ set }) => {
+      { const r = noRestore(set); if (r) return r; }
+      pruneRestoreUploads();
+      const id = crypto.randomUUID();
+      mkdirSync(uploadsDir(), { recursive: true, mode: 0o700 });
+      closeSync(openSync(uploadPath(id), "w", 0o600));
+      return { data: { id, chunk_size: RESTORE_CHUNK_BYTES } };
+    }, { requireAdmin: true })
 
-      return { data: { message: RESTORED_MESSAGE } };
+    .put("/admin/restore/uploads/:id", async ({ params, query, request, set }) => {
+      const path = existingUpload(params.id);
+      if (!path) { set.status = 404; return { error: "Upload not found", code: 404 }; }
+      if (appending.has(params.id)) { set.status = 409; return { error: "Another piece of this upload is being written", code: 409 }; }
+      appending.add(params.id);
+      try {
+        const size = statSync(path).size;
+        // The piece goes at the end only: a retried piece already written
+        // (or one sent out of order) is answered with the size to go on from.
+        if (Number(query["offset"]) !== size) { set.status = 409; return { error: "Offset doesn't match the upload", code: 409, size }; }
+        const piece = new Uint8Array(await request.arrayBuffer());
+        if (piece.byteLength === 0 || piece.byteLength > RESTORE_CHUNK_BYTES) {
+          set.status = 413; return { error: `A piece must be 1 byte to ${RESTORE_CHUNK_BYTES} bytes`, code: 413 };
+        }
+        appendFileSync(path, piece);
+        return { data: { size: size + piece.byteLength } };
+      } finally {
+        appending.delete(params.id);
+      }
+    }, { requireAdmin: true, parse: "none" })
+
+    .post("/admin/restore/uploads/:id/finish", async ({ params, query, set }) => {
+      { const r = noRestore(set); if (r) return r; }
+      const refused = clusterRestoreRefusal(set);
+      if (refused) return refused;
+      const path = existingUpload(params.id);
+      if (!path) { set.status = 404; return { error: "Upload not found", code: 404 }; }
+      if (appending.has(params.id)) { set.status = 409; return { error: "A piece of this upload is still being written", code: 409 }; }
+      try {
+        const name = typeof query["name"] === "string" && query["name"] ? query["name"] : "backup";
+        return await restoreUpload({ blob: Bun.file(path), name, path }, query["progress"] === "1", set);
+      } finally {
+        // Moved into place by the restore, or refused: either way it's done.
+        rmSync(path, { force: true });
+      }
+    }, { requireAdmin: true })
+
+    .delete("/admin/restore/uploads/:id", ({ params }) => {
+      const path = existingUpload(params.id);
+      if (path) rmSync(path, { force: true });
+      return { data: null };
     }, { requireAdmin: true })
 
     // Data a Postgres restore replaced, kept for an undo (core/pg-restore.ts)

@@ -251,3 +251,39 @@ describe.skipIf(!onSqlite)("SQLite snapshot", () => {
     copy.close();
   });
 });
+
+describe("restore from an upload sent in pieces", () => {
+  it.skipIf(!canBackUp)("puts the pieces together, refuses a wrong offset, and restores", async () => {
+    await setSetting("probe", "before");
+    const { snapshotTo } = await import("../core/backups.ts");
+    const file = join(tmpDir, `piecewise.${onSqlite ? "db" : "dump"}`);
+    await snapshotTo(file);
+    await setSetting("probe", "after");
+    const bytes = new Uint8Array(readFileSync(file));
+    const app = makeBackupPlugin(SECRET, dbPath);
+    const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    const send = (method: string, path: string, body?: Uint8Array) => app.handle(new Request(`http://localhost${path}`, {
+      method, headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/octet-stream" } : {}) }, ...(body ? { body } : {}),
+    }));
+    const started = await send("POST", "/admin/restore/uploads");
+    expect(started.status).toBe(200);
+    const id = ((await started.json()) as { data: { id: string } }).data.id;
+    const third = Math.ceil(bytes.length / 3);
+    let offset = 0;
+    for (let i = 0; i < 3; i++) {
+      const piece = bytes.subarray(offset, offset + third);
+      const res = await send("PUT", `/admin/restore/uploads/${id}?offset=${offset}`, piece);
+      expect(res.status).toBe(200);
+      // The same piece again (a retry after a lost answer) is refused, with the size to go on from.
+      const again = await send("PUT", `/admin/restore/uploads/${id}?offset=${offset}`, piece);
+      expect(again.status).toBe(409);
+      offset += piece.length;
+      expect(((await again.json()) as { size: number }).size).toBe(offset);
+    }
+    const done = await send("POST", `/admin/restore/uploads/${id}/finish?name=piecewise`);
+    if (!onSqlite && !restoreTools()) { expect(done.status).toBe(501); return; }
+    expect(done.status).toBe(200);
+    expect(getSetting("probe", "")).toBe("before");
+    expect((await send("PUT", `/admin/restore/uploads/${id}?offset=0`, bytes.subarray(0, 1))).status).toBe(404);
+  });
+});
