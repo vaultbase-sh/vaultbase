@@ -8,14 +8,14 @@
  * admin auth via the regular `PATCH /api/v1/admin/settings`.
  */
 import Elysia from "elysia";
-import { getAllSettings } from "./settings.ts";
+import { settingsWithPrefix } from "./settings.ts";
 
 const THEME_PREFIX = "theme.";
 
 export function makeThemePlugin() {
   return new Elysia({ name: "theme" })
     .get("/admin/theme", () => {
-      const all = getAllSettings();
+      const all = settingsWithPrefix(THEME_PREFIX);
       const out: Record<string, string> = {};
       for (const [k, v] of Object.entries(all)) {
         if (!k.startsWith(THEME_PREFIX)) continue;

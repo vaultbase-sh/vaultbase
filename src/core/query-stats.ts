@@ -148,6 +148,7 @@ export function resetQueryStats(): void {
   shapes.clear();
   external.clear();
   rowCounts.clear();
+  mergedPlans.clear();
 }
 
 /** This thread's shapes plus the workers', summed by SQL. Plans are cached on the merged copy. */
@@ -391,8 +392,12 @@ export async function queryStatsReport(limit = 50): Promise<QueryReport[]> {
   const sorted = mergedShapes().sort((a, b) => b.total_us - a.total_us).slice(0, limit);
   for (const e of sorted) {
     const planRows = await explain(e, schema);
-    // Keep the plan for shapes that live only on a worker, so it isn't re-explained per report.
-    if (!shapes.has(e.selectSql) && e.plan) mergedPlans.set(e.selectSql, e.plan);
+    // Keep the plan so the next report doesn't explain it again: on the
+    // shape itself (the merged copy is thrown away), or for a worker-only
+    // shape in mergedPlans.
+    const own = shapes.get(e.selectSql);
+    if (own && e.plan) own.plan = e.plan;
+    else if (e.plan) mergedPlans.set(e.selectSql, e.plan);
     const deep = / IN \(SELECT /.test(e.selectSql);
     const plan = db.capabilities.explain === "pg"
       ? analyzePgPlan(planRows.map((r) => r.detail), e.table, deep)

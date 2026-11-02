@@ -84,7 +84,7 @@ export function invalidateStorageCache(): void {
 
 interface S3LikeClient {
   write(key: string, data: ArrayBuffer | Uint8Array | Blob | string, opts?: { type?: string }): Promise<unknown>;
-  file(key: string): { arrayBuffer(): Promise<ArrayBuffer>; exists(): Promise<boolean> };
+  file(key: string): { arrayBuffer(): Promise<ArrayBuffer>; exists(): Promise<boolean>; stream(): ReadableStream<Uint8Array> };
   delete(key: string): Promise<unknown>;
   exists(key: string): Promise<boolean>;
 }
@@ -179,6 +179,13 @@ const s3Driver: StorageDriverDef = {
         return await f.arrayBuffer();
       },
       exists: (key) => client.exists(key),
+      // Streamed from the bucket: through read() every download was held in
+      // memory whole (ten 500 MB videos at once held 5 GB).
+      async response(key) {
+        const f = client.file(key);
+        if (!(await f.exists())) return null;
+        return new Response(f.stream(), { headers: OPAQUE });
+      },
       async delete(key) {
         try { await client.delete(key); } catch { /* swallow — already gone is fine */ }
       },

@@ -328,6 +328,17 @@ interface ParsedFile {
 }
 
 const parsedFiles = new Map<string, ParsedFile>();
+/**
+ * Files kept parsed, most recently read last. Unbounded, one search over a
+ * month kept every day's entries (about 1.5 million objects) for good.
+ */
+const MAX_CACHED_FILES = 4;
+
+function remember(file: string, parsed: ParsedFile): void {
+  parsedFiles.delete(file);
+  parsedFiles.set(file, parsed);
+  while (parsedFiles.size > MAX_CACHED_FILES) parsedFiles.delete(parsedFiles.keys().next().value!);
+}
 let parsedLines = 0;
 
 /** Test hook: lines parsed since process start. */
@@ -343,12 +354,12 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
   // Shrunk: truncated or replaced — start over.
   if (cached && size < cached.offset) cached = undefined;
   if (!cached) cached = { offset: 0, entries: [] };
-  if (size === cached.offset) { parsedFiles.set(file, cached); return cached.entries; }
+  if (size === cached.offset) { remember(file, cached); return cached.entries; }
 
   const chunk = await Bun.file(file).slice(cached.offset, size).text().catch(() => "");
   // Only consume complete lines; a partial trailing line waits for its newline.
   const end = chunk.lastIndexOf("\n");
-  if (end === -1) { parsedFiles.set(file, cached); return cached.entries; }
+  if (end === -1) { remember(file, cached); return cached.entries; }
   const complete = chunk.slice(0, end + 1);
   for (const raw of complete.split("\n")) {
     const ln = raw.trim();
@@ -360,7 +371,7 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
     cached.entries.splice(0, cached.entries.length - MAX_CACHED_ENTRIES_PER_FILE);
   }
   cached.offset += Buffer.byteLength(complete, "utf8");
-  parsedFiles.set(file, cached);
+  remember(file, cached);
   return cached.entries;
 }
 

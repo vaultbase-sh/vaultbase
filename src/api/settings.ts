@@ -278,6 +278,17 @@ export function getAllSettings(): Record<string, string> {
 }
 
 /**
+ * The settings whose key starts with `prefix`. Unlike getAllSettings() it
+ * decrypts only those: the public theme route and the rate limiter (every
+ * request) decrypted every secret just to read their own few keys.
+ */
+export function settingsWithPrefix(prefix: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, raw] of values()) if (k.startsWith(prefix)) out[k] = maybeDecrypt(k, raw);
+  return out;
+}
+
+/**
  * What a secret-valued setting (see shouldEncryptSettingKey) reads as through
  * the admin API and MCP. They used to come back decrypted, so anything that
  * could read one admin response had every SMTP password, OAuth client secret

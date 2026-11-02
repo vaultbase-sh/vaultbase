@@ -228,6 +228,24 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Push notifications:** an FCM error about the message (not the device)
   no longer disables every device it was sent to.
 
+- **Performance:**
+  - File downloads from S3 storage stream from the bucket instead of being
+    held in memory whole.
+  - The request-log reader keeps at most four days parsed in memory (a
+    month-long search kept every day's entries for good).
+  - The public theme route and the rate limiter no longer decrypt every
+    secret setting to read their own few keys.
+  - The SQL page's schema counts rows up to its cap on SQLite too (it
+    counted every row of every table), and a query's result past the row
+    limit is counted without being held in memory.
+  - The admin sessions list reads only those sessions' revocations, not
+    the whole table.
+  - Vector search remembers rows without a vector instead of fetching
+    them again on every search.
+  - The monitoring query report caches each query's plan.
+  - Building the OpenAPI document no longer slows down with the square of
+    the number of collections.
+
 ### Upgrade notes (feature flags)
 
 - The rollout fix moves some users into a different bucket: a user who was

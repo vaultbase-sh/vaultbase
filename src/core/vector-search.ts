@@ -64,7 +64,9 @@ export async function searchVectors(
       if (Array.isArray(arr) && arr.length > 0 && arr.every((x) => typeof x === "number")) {
         putVector(bucket, r.id, r.updated_at, Float32Array.from(arr as number[]));
       } else {
-        dropVector(bucket, r.id);
+        // Remembered as "no vector" (an empty one, which scoring skips):
+        // dropped, the row was fetched and parsed again on every search.
+        putVector(bucket, r.id, r.updated_at, new Float32Array(0));
       }
     }
   }

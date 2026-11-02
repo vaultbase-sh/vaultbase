@@ -41,8 +41,13 @@ function runStatement(db, req) {
     const params = req.params.map(dec);
     const stmt = db.prepare(req.sql);
     if (stmt.columnNames.length > 0) {
-      const rows = stmt.all(...params);
-      return { ok: true, total: rows.length, rows: rows.slice(0, req.maxRows).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, enc(v)]))) };
+      // Rows past maxRows are counted, not kept: all() held the whole result.
+      const rows = [];
+      let total = 0;
+      for (const r of stmt.iterate(...params)) {
+        if (total++ < req.maxRows) rows.push(Object.fromEntries(Object.entries(r).map(([k, v]) => [k, enc(v)])));
+      }
+      return { ok: true, total, rows };
     }
     // The prepared statement, never db.run(sql): run() executes every
     // statement in the string, and only the first one was checked.

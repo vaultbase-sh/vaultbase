@@ -273,7 +273,7 @@ export function buildOpenApi(cols: Collection[]): Schema {
   const schemas: Record<string, Schema> = {
     Error: { type: "object", properties: { error: { type: "string" }, code: { type: "integer" }, details: { type: "object", additionalProperties: { type: "string" } } } },
   };
-  let paths: Record<string, Schema> = {};
+  const paths: Record<string, Schema> = {};
   const tags: Schema[] = [];
   for (const col of [...cols].sort((a, b) => a.name.localeCompare(b.name))) {
     let T = typeName(col.name);
@@ -281,7 +281,8 @@ export function buildOpenApi(cols: Collection[]): Schema {
     const { record, input } = recordSchemas(col);
     schemas[T] = record;
     if (col.type !== "view") schemas[`${T}Input`] = input;
-    paths = { ...paths, ...collectionPaths(col, T) };
+    // In place: spreading the whole object again per collection was quadratic.
+    Object.assign(paths, collectionPaths(col, T));
     tags.push({ name: col.name, description: `${col.type} collection` });
   }
   paths["/api/v1/auth/refresh"] = {

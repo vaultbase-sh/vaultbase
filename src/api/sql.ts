@@ -397,7 +397,8 @@ function introspectSchema(dbPath: string): SchemaResponse {
       let rowCount: number | undefined;
       if (o.type === "table") {
         try {
-          const r = db.prepare(`SELECT count(*) AS n FROM "${o.name.replace(/"/g, '""')}"`).get() as { n: number };
+          // Capped as on Postgres: a full count of every table blocked the main thread.
+          const r = db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM "${o.name.replace(/"/g, '""')}" LIMIT ${ROW_COUNT_CAP + 1})`).get() as { n: number };
           if (typeof r?.n === "number" && r.n <= ROW_COUNT_CAP) rowCount = r.n;
           else if (typeof r?.n === "number") rowCount = ROW_COUNT_CAP; // saturate at cap
         } catch { /* maybe a strict table that fails count; skip */ }

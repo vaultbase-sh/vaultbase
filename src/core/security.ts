@@ -9,7 +9,7 @@
  *   - Secrets fingerprints: SHA-256 first 8 hex chars of JWT/AES keys.
  *   - Security headers preview: render what the server sends.
  */
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { adminSessions, admin as adminTable, loginFailures, tokenRevocations } from "../db/schema.ts";
 import { getSetting } from "../api/settings.ts";
@@ -72,9 +72,13 @@ export async function listAdminSessions(opts: { activeOnly?: boolean } = {}): Pr
     ? await db.select().from(adminSessions).where(gte(adminSessions.expires_at, now)).orderBy(desc(adminSessions.issued_at))
     : await db.select().from(adminSessions).orderBy(desc(adminSessions.issued_at));
 
-  // Cross-reference revocation list once.
-  const revs = await db.select({ jti: tokenRevocations.jti }).from(tokenRevocations);
-  const revoked = new Set(revs.map((r) => r.jti));
+  // Only these sessions' revocations: the table holds every user sign-out too.
+  const revoked = new Set<string>();
+  const jtis = rows.map((r) => r.jti);
+  for (let i = 0; i < jtis.length; i += 500) {
+    const revs = await db.select({ jti: tokenRevocations.jti }).from(tokenRevocations).where(inArray(tokenRevocations.jti, jtis.slice(i, i + 500)));
+    for (const r of revs) revoked.add(r.jti);
+  }
 
   return rows.map((r) => ({
     jti: r.jti,
@@ -233,9 +237,9 @@ export async function recordAttemptFailure(key: string): Promise<void> {
 /** Failed attempts recorded against `key` within the last `windowSeconds`. */
 export async function recentAttemptFailures(key: string, windowSeconds: number): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
-  const rows = await getDb().select({ id: loginFailures.id }).from(loginFailures)
+  const rows = await getDb().select({ n: count() }).from(loginFailures)
     .where(and(eq(loginFailures.key, key), gte(loginFailures.at, cutoff)));
-  return rows.length;
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**

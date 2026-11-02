@@ -1,5 +1,5 @@
 import Elysia from "elysia";
-import { getAllSettings } from "./settings.ts";
+import { settingsWithPrefix } from "./settings.ts";
 import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { isIPv6 } from "node:net";
 import { peerAddress, securityHeaders, trustedClientIp } from "../core/sec.ts";
@@ -102,8 +102,7 @@ function loadConfig(): Config {
   try {
     // From the settings store (api/settings.ts): this runs on the request
     // path and must not wait on the database.
-    const rows = Object.entries(getAllSettings())
-      .filter(([key]) => key.startsWith("rate_limit."))
+    const rows = Object.entries(settingsWithPrefix("rate_limit."))
       .map(([key, value]) => ({ key, value }));
     let rulesFromDb: RateLimitRule[] | null = null;
     let legacyMax: number | null = null;
