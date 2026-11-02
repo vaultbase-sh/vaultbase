@@ -11,30 +11,6 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Security
 
-- **A realtime connection refused for its origin could shut the server
-  down.** On the internal listener (Linux, with read workers), closing the
-  refused socket threw outside any handler. It now closes quietly.
-- **Rich-text (editor) fields: a tag left open could stall the server.**
-  An unclosed quote inside a tag made sanitizing take time growing with the
-  square of the input: about a minute for a 600 KB value. Everything from
-  such a tag on is now kept as escaped text.
-- **Thumbnails of very thin images could exhaust memory.** A 50000×1 image
-  asked for at `0x4096` meant a 204-million-pixel resize. A resize whose
-  output is over the 50-megapixel budget now serves the original instead.
-- **An empty JWT secret was accepted.** `VAULTBASE_JWT_SECRET=` (set but
-  empty) or an empty `.secret` file signed tokens with an empty key. Empty
-  counts as unset now: the secret is read from, or written to, `.secret`.
-  Cluster workers starting together on a fresh install also no longer end
-  up with different secrets.
-- **A view could expose a password field whose name has capitals.** Output
-  hid it, but filters, sort and `_aggregate` `groupBy` on a `SELECT *` view
-  accepted `PIN`, since the check compared names case-sensitively.
-- **Filter and rule strings: a value ending in a backslash escaped its
-  closing quote**, so the rest of the expression was read differently.
-  `\\` is now one backslash, as the SDKs' filter builders already write it.
-- **Two admins deleting each other at the same moment could both succeed,**
-  leaving no admin. The count and the delete now run in one transaction
-  that holds the admin rows.
 - **Old one-time links kept working after a password reset or an email
   change.** An earlier reset link, a sign-in code or a verification link
   sent to the old address could still take the account back. A reset or an
@@ -266,11 +242,40 @@ Binaries, checksums, signatures and SBOMs for every version are on
   dev dependency): the schema is created at start, so they did nothing.
   Unused internal code found by the review is gone too.
 
-### Upgrade notes (feature flags)
+### Upgrade notes
 
 - The rollout fix moves some users into a different bucket: a user who was
   in a 10 % rollout may now be out of it, and the other way round. Shares
   match the setting from now on.
+
+## [0.35.1] — 2026-11-02
+
+### Security
+
+- **A realtime connection refused for its origin could shut the server
+  down.** On the internal listener (Linux, with read workers), closing the
+  refused socket threw outside any handler. It now closes quietly.
+- **Rich-text (editor) fields: a tag left open could stall the server.**
+  An unclosed quote inside a tag made sanitizing take time growing with the
+  square of the input: about a minute for a 600 KB value. Everything from
+  such a tag on is now kept as escaped text.
+- **Thumbnails of very thin images could exhaust memory.** A 50000×1 image
+  asked for at `0x4096` meant a 204-million-pixel resize. A resize whose
+  output is over the 50-megapixel budget now serves the original instead.
+- **An empty JWT secret was accepted.** `VAULTBASE_JWT_SECRET=` (set but
+  empty) or an empty `.secret` file signed tokens with an empty key. Empty
+  counts as unset now: the secret is read from, or written to, `.secret`.
+  Cluster workers starting together on a fresh install also no longer end
+  up with different secrets.
+- **A view could expose a password field whose name has capitals.** Output
+  hid it, but filters, sort and `_aggregate` `groupBy` on a `SELECT *` view
+  accepted `PIN`, since the check compared names case-sensitively.
+- **Filter and rule strings: a value ending in a backslash escaped its
+  closing quote**, so the rest of the expression was read differently.
+  `\\` is now one backslash, as the SDKs' filter builders already write it.
+- **Two admins deleting each other at the same moment could both succeed,**
+  leaving no admin. The count and the delete now run in one transaction
+  that holds the admin rows.
 
 ### Upgrade notes
 
