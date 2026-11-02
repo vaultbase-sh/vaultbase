@@ -25,7 +25,8 @@
 import { and, eq, lte } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { webhooks, webhookDeliveries } from "../db/schema.ts";
-import { assertEgressAllowed, EgressBlockedError } from "./hook-egress.ts";
+import { EgressBlockedError, guardedFetch } from "./hook-egress.ts";
+import { hmacSha256Hex } from "./hmac.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 import { backgroundPaused } from "./maintenance-mode.ts";
@@ -201,20 +202,8 @@ async function deliverOne(d: DeliveryRow, lease: number): Promise<void> {
     return;
   }
 
-  // Egress filter — same envelope as helpers.http.
-  try { await assertEgressAllowed(w.url); }
-  catch (e) {
-    if (e instanceof EgressBlockedError) {
-      await db.update(webhookDeliveries)
-        .set({ status: "dead", error: e.message.replace(/^helpers\.http: /, ""), delivered_at: Math.floor(Date.now() / 1000) })
-        .where(held);
-      return;
-    }
-    // Network errors fall through to retry path.
-  }
-
   const ts = String(Math.floor(Date.now() / 1000));
-  const sig = await hmacSign(w.secret, `${ts}.${d.payload}`);
+  const sig = hmacSha256Hex(w.secret, `${ts}.${d.payload}`);
 
   // Reserved-header denylist. Admin-supplied custom_headers cannot override
   // the integrity headers, the SSRF-defining Host, or transport metadata.
@@ -252,11 +241,9 @@ async function deliverOne(d: DeliveryRow, lease: number): Promise<void> {
   let err: Error | null = null;
   let body = "";
   try {
-    // `redirect: "manual"` blocks redirect-following (SSRF defense). The
-    // egress filter validated the original URL only; following 3xx into
-    // RFC1918 / metadata addresses would bypass the guard. A receiver that
-    // legitimately redirects must publish the final URL up front.
-    res = await fetch(w.url, {
+    // Through the egress filter, as helpers.http. `redirect: "manual"`: a
+    // receiver that redirects must publish the final URL up front.
+    res = await guardedFetch(w.url, {
       method: "POST",
       body: d.payload,
       headers,
@@ -271,6 +258,13 @@ async function deliverOne(d: DeliveryRow, lease: number): Promise<void> {
     err = e instanceof Error ? e : new Error(String(e));
   } finally {
     clearTimeout(timer);
+  }
+  // A blocked address won't change by retrying.
+  if (err instanceof EgressBlockedError) {
+    await db.update(webhookDeliveries)
+      .set({ status: "dead", error: err.message.replace(/^helpers\.http: /, ""), delivered_at: Math.floor(Date.now() / 1000) })
+      .where(held);
+    return;
   }
 
   // Treat 3xx as failure — see redirect: "manual" comment above.
@@ -348,11 +342,3 @@ async function readStart(res: Response, max: number): Promise<string> {
   return text.slice(0, max);
 }
 
-async function hmacSign(secret: string, data: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(data));
-  return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
-}

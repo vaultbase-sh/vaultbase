@@ -92,3 +92,17 @@ describe("isSameOriginRequest", () => {
     expect(isSameOriginRequest(req({ origin: "https://vault.example.com:8443" }))).toBe(false);
   });
 });
+
+describe("the cookie's value", () => {
+  const same = { "sec-fetch-site": "same-origin" };
+  it("is read whole, and a malformed escape is no token rather than an error", () => {
+    expect(extractBearer(req({ ...same, cookie: "theme=dark; vaultbase_user_token=a%2Eb=c" }))).toBe("a.b=c");
+    expect(extractBearer(req({ ...same, cookie: "vaultbase_admin_token=%zz" }))).toBeNull();
+    expect(extractBearer(req({ ...same, cookie: "vaultbase_admin_token" }))).toBeNull();
+  });
+
+  it("isn't read when the Authorization header is there, even without a token", () => {
+    expect(extractBearer(req({ ...same, cookie: COOKIE, authorization: "Bearer " }))).toBeNull();
+    expect(extractBearer(req({ ...same, cookie: COOKIE, authorization: "Bearer vbat_x.y.z" }))).toBe("x.y.z");
+  });
+});

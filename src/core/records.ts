@@ -11,9 +11,8 @@ import {
   cachedFields,
   userTableName,
   type CascadeMode,
-  type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema } from "./collections.ts";
+  type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema, tableColumns } from "./collections.ts";
 import { parseFilter, type CollectionLookup } from "./filter.ts";
-import { tableColumns } from "./users-table.ts";
 import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { storedRowCount } from "./row-counts.ts";
@@ -280,6 +279,7 @@ import { validateRecord, type CanSeeRecord } from "./validate.ts";
 import { ViewParamError, boundViewSource, parseViewParams, resolveViewParams } from "./view-params.ts";
 import { getActiveHookRequest, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
   // Password: bcrypt-hash via Bun. Empty/null leaves column null.
@@ -475,17 +475,6 @@ export interface RecordWithMeta {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * SQLite identifier quoting — doubles up embedded `"` per spec. Mirrors
- * `core/collections.ts::quoteIdent`. All identifier inputs at this layer
- * already pass `assertSqlIdent` upstream (no quote chars possible), but the
- * defense-in-depth match prevents future bypasses if a path skips that
- * upstream check.
- */
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
 
 function isJsonField(field: FieldDef): boolean {
   return field.type === "json"

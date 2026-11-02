@@ -23,6 +23,7 @@ import { onCloseDb } from "../db/client.ts";
 import { db, getDriver } from "../db/index.ts";
 import { DeadlineExceeded, PostgresDriver } from "../db/postgres.ts";
 import { pgToolConnection } from "./backups.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 /** Roles an operator's read-only login may belong to: Postgres's own read-only ones. */
 const ALLOWED_MEMBERSHIPS = new Set([
@@ -104,10 +105,6 @@ export function withCredentials(url: string, user: string, password: string): st
   // A user= in the query would win over the one in the authority.
   const tail = rest.slice(authority.length).replace(/([?&])user=[^&#]*(&?)/, (_m, sep: string, amp: string) => (amp ? sep : ""));
   return dbname.slice(0, from) + creds + host + tail;
-}
-
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
 }
 
 function quoteLiteral(v: string): string {

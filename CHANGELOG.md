@@ -76,6 +76,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   still gets its own.
 - **Startup read the collection list five times** (once per upgrade step)
   and, on Postgres, loaded the settings twice. Once each now.
+- **A malformed session cookie answered 500.** A `vaultbase_admin_token` or
+  `vaultbase_user_token` cookie with a bad escape (`%zz`) failed the request;
+  it counts as signed out now. An `Authorization: Bearer` header with
+  nothing after it no longer passes the word `Bearer` on as the token.
 
 ## [0.36.0] — 2026-11-02
 

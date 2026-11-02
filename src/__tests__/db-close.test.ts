@@ -7,9 +7,8 @@
 import { describe, expect, it } from "bun:test";
 import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { _resetCollectionCache, getCollectionCached } from "../core/collections.ts";
+import { _resetCollectionCache, getCollectionCached, tableColumns } from "../core/collections.ts";
 import { listRecords, _preparedStatementCount } from "../core/records.ts";
-import { tableColumns } from "../core/users-table.ts";
 import { createPublicCollection } from "./_helpers.ts";
 import { onSqlite } from "./_helpers.ts";
 

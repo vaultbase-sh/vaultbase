@@ -11,13 +11,8 @@
 import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { auditLog } from "../db/schema.ts";
-import { clientIp as trustedIp } from "./sec.ts";
+import { clientIp } from "./sec.ts";
 import { normalizeApiPath } from "./api-paths.ts";
-
-/** The client IP, by the trusted-proxy rule (see sec.ts clientIp). */
-function clientIp(request: Request): string | null {
-  return trustedIp(request);
-}
 
 /** Verbs we audit. GET reads are intentionally omitted (volume + low value). */
 const AUDITED_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);

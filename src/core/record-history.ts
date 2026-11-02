@@ -175,21 +175,10 @@ export async function listRecordHistory(
     eq(recordHistory.record_id, recordId),
   );
 
-  const decode = async (r: typeof recordHistory.$inferSelect): Promise<HistoryEntry> => ({
-    id: r.id,
-    collection: r.collection,
-    record_id: r.record_id,
-    op: r.op as HistoryOp,
-    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot), r.collection),
-    actor_id: r.actor_id,
-    actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
-    at: r.at,
-  });
-
   if (opts.visible) {
     const all = await db.select().from(recordHistory).where(where)
       .orderBy(...newestFirst).limit(MAX_FILTERED_HISTORY);
-    const kept = (await Promise.all(all.map(decode))).filter(opts.visible);
+    const kept = (await Promise.all(all.map(decodeHistoryRow))).filter(opts.visible);
     return {
       data: kept.slice(offset, offset + perPage),
       page,
@@ -213,18 +202,8 @@ export async function listRecordHistory(
     .limit(perPage)
     .offset(offset);
 
-  // Decrypt at-rest-encrypted fields per row. Each row is independent, so
-  // run decryption in parallel.
-  const data: HistoryEntry[] = await Promise.all(rows.map(async (r) => ({
-    id: r.id,
-    collection: r.collection,
-    record_id: r.record_id,
-    op: r.op as HistoryOp,
-    snapshot: await decryptSnapshotFields(parseSnapshot(r.snapshot), r.collection),
-    actor_id: r.actor_id,
-    actor_type: (r.actor_type as "user" | "admin" | null) ?? null,
-    at: r.at,
-  })));
+  // Each row decrypts on its own, so in parallel.
+  const data: HistoryEntry[] = await Promise.all(rows.map(decodeHistoryRow));
 
   return {
     data,
@@ -256,7 +235,11 @@ export async function getHistoryAt(
     .orderBy(...newestFirst)
     .limit(1);
   const r = rows[0];
-  if (!r) return null;
+  return r ? decodeHistoryRow(r) : null;
+}
+
+/** A stored history row as returned: its snapshot parsed and its encrypted fields decrypted. */
+async function decodeHistoryRow(r: typeof recordHistory.$inferSelect): Promise<HistoryEntry> {
   return {
     id: r.id,
     collection: r.collection,

@@ -82,11 +82,6 @@ function cookieSecure(request: Request): boolean {
   return requestIsHttps(request) || getAppUrl().startsWith("https://");
 }
 
-/** Client IP for lockout keying, by the trusted-proxy rule (see sec.ts clientIp). */
-function clientIpForLockout(request: Request): string | null {
-  return clientIp(request);
-}
-
 /**
  * The signed-in user of `collection` behind the bearer token, through the
  * central verifier (revocation, principal recheck). A token from another
@@ -895,7 +890,7 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post(
       "/admin/auth/login",
       async ({ body, request }) => {
-        const ip = clientIpForLockout(request);
+        const ip = clientIp(request);
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
         const db = getDb();
@@ -1092,7 +1087,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
         // Per-collection email lookup (vb_<col> first, legacy fallback).
         const u = await findUserByEmail(col, body.email);
-        const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: clientIpForLockout(request) };
+        const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: clientIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
@@ -1475,7 +1470,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         // The password is the only thing a stolen session lacks here, so it
         // gets the same lockout as sign-in.
-        const lockout = { scope: `user:${col.id}`, email: u.email, subject: u.id, ip: clientIpForLockout(request) };
+        const lockout = { scope: `user:${col.id}`, email: u.email, subject: u.id, ip: clientIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
@@ -2341,7 +2336,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       let viaSession = false;
       if (typeof body.password === "string" && body.password !== "") {
         // A password guess here is a sign-in attempt: same lockout.
-        const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: clientIpForLockout(request) };
+        const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: clientIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };

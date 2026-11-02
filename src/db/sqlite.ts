@@ -16,6 +16,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, TimeBucket, TransactionOptions } from "./driver.ts";
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
+import { quoteIdent } from "./ident.ts";
 
 /** WAL file cap on disk (bytes); shared with the background checkpointer. */
 export const JOURNAL_SIZE_LIMIT = 67_108_864;
@@ -28,10 +29,6 @@ export const JOURNAL_SIZE_LIMIT = 67_108_864;
  */
 const EXPLAIN_RE = /^\s*EXPLAIN\b/i;
 const STMT_CACHE_MAX = 256;
-
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
 
 function columnDef(c: ColumnSpec): string {
   let out = `${c.name} ${c.type.toUpperCase()}`;

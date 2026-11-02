@@ -519,3 +519,41 @@ function readAtRef(ts: TokenStream): Operand {
   }
   throw new Error("expected @-reference");
 }
+
+/** The value of a date macro (`@now`, `@todayStart`, `@month`, …): Unix seconds, or the UTC part asked for. */
+export function macroValue(name: string): string | number {
+  const now = new Date();
+  // Unix seconds: the storage format of date and autodate fields, so a
+  // comparison with them is a comparison, not SQLite's type ordering.
+  const utc = (d: Date) => Math.floor(d.getTime() / 1000);
+  switch (name) {
+    case "now":        return utc(now);
+    case "yesterday":  return utc(new Date(now.getTime() - 86_400_000));
+    case "tomorrow":   return utc(new Date(now.getTime() + 86_400_000));
+    case "todayStart": return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+    case "todayEnd":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)));
+    case "monthStart": return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+    case "monthEnd":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)));
+    case "yearStart":  return utc(new Date(Date.UTC(now.getUTCFullYear(), 0, 1)));
+    case "yearEnd":    return utc(new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999)));
+    case "second":     return now.getUTCSeconds();
+    case "minute":     return now.getUTCMinutes();
+    case "hour":       return now.getUTCHours();
+    case "day":        return now.getUTCDate();
+    case "weekday":    return now.getUTCDay();
+    case "month":      return now.getUTCMonth() + 1;
+    case "year":       return now.getUTCFullYear();
+    default:           throw new Error(`unknown macro: ${name}`);
+  }
+}
+
+/** Equality for values that may be objects (JSON values compared by their text). */
+export function stableEq(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (typeof a !== typeof b) return false;
+  if (typeof a === "object") {
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+  }
+  return false;
+}

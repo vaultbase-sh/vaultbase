@@ -24,10 +24,7 @@ import type { Capabilities, DbDriver, Dialect, RunOptions, RunResult, SyncDb, Ti
 import type { ColumnSpec, IndexSpec } from "./ddl.ts";
 import { toPositional } from "./placeholders.ts";
 import { flushTableReports, noteTableWrite } from "../core/table-writes.ts";
-
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
+import { quoteIdent } from "./ident.ts";
 
 /** An identifier as it may arrive from callers: quoted or bare. */
 function bareIdent(name: string): string {

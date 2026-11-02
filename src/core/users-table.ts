@@ -17,8 +17,9 @@
  * right per-collection table.
  */
 
-import { userTableName } from "./collections.ts";
+import { loadTableColumns, userTableName } from "./collections.ts";
 import { db } from "../db/index.ts";
+import { quoteIdent } from "../db/ident.ts";
 import type { Collection } from "../db/schema.ts";
 
 /** Auth-system columns guaranteed to exist on every `vb_<auth-col>`. */
@@ -49,10 +50,6 @@ export interface AuthUserRow {
   [k: string]: unknown;
 }
 
-function quoteIdent(s: string): string {
-  return `"${s.replace(/"/g, '""')}"`;
-}
-
 /**
  * Find a user by id, scoped to a collection. Reads `vb_<name>` only —
  * `vaultbase_users` was dropped in v0.11 phase 4.
@@ -80,10 +77,6 @@ export async function findUserByEmail(col: Collection, email: string): Promise<A
   }
 }
 
-// The column cache lives next to the collection cache; the names stay
-// importable from here.
-import { tableColumns, loadTableColumns, invalidateUserTableColumnCache } from "./collections.ts";
-export { tableColumns, invalidateUserTableColumnCache };
 
 interface InsertInput {
   id: string;

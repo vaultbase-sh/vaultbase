@@ -3,6 +3,7 @@ import type { Collection } from "../db/schema.ts";
 import { getSchemaVersion, userTableName } from "./collections.ts";
 import { compileListWhere, type ListOptions } from "./records.ts";
 import { bucketFor, dropVector, enforceBudget, putVector, _resetVectorCache } from "./vector-cache.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 /** Same candidate window the list-based search used. */
 export const MAX_CANDIDATES = 10_000;
@@ -11,7 +12,6 @@ const ID_CHUNK = 500;
 
 let cacheSchemaVersion = -1;
 
-const quoteIdent = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
 function cosine(q: Float32Array, v: Float32Array, qNorm: number): number {
   let dot = 0;

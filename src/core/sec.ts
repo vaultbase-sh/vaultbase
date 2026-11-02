@@ -2,6 +2,7 @@ import * as jose from "jose";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { verifyHs256 } from "./jwt-hs256.ts";
+import { hmacSha256Hex } from "./hmac.ts";
 import type { AuthContext } from "./rules.ts";
 import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
 import { getTrustedProxiesRaw } from "./security.ts";
@@ -480,19 +481,7 @@ export function clientIp(request: Request): string | null {
 
 /** HMAC-SHA256 for recovery-code O(1) lookup. Returns hex. */
 export async function hmacRecoveryCode(code: string, jwtSecret: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(jwtSecret) as unknown as ArrayBuffer,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(code.trim().toUpperCase()) as unknown as ArrayBuffer
-  );
-  return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, "0")).join("");
+  return hmacSha256Hex(jwtSecret, code.trim().toUpperCase());
 }
 
 /**
@@ -524,6 +513,19 @@ export function isSameOriginRequest(request: Request): boolean {
 }
 
 /**
+ * The token in the Authorization header, without `Bearer ` and without the
+ * `vbat_` prefix API tokens carry. Header only (no cookie): see
+ * extractBearer for the cookie-aware form.
+ */
+export function headerBearer(request: Request): string | null {
+  const h = request.headers.get("authorization");
+  if (!h) return null;
+  const raw = h.replace(/^Bearer(?:\s+|$)/i, "").trim();
+  if (!raw) return null;
+  return raw.startsWith("vbat_") ? raw.slice(5) : raw;
+}
+
+/**
  * Extract a bearer token from `Authorization: Bearer …` OR the
  * `vaultbase_admin_token` / `vaultbase_user_token` cookie. Cookie path lets
  * the admin SPA migrate off `localStorage` without changing every API call.
@@ -542,34 +544,19 @@ export function isSameOriginRequest(request: Request): boolean {
  * callers always see a raw JWT — the prefix is purely for log-scanner /
  * secret-scanning detection on the wire.
  */
-/**
- * The token in the Authorization header, without `Bearer ` and without the
- * `vbat_` prefix API tokens carry. Header only (no cookie): see
- * extractBearer for the cookie-aware form.
- */
-export function headerBearer(request: Request): string | null {
-  const h = request.headers.get("authorization");
-  if (!h) return null;
-  const raw = h.replace(/^Bearer\s+/i, "").trim();
-  if (!raw) return null;
-  return raw.startsWith("vbat_") ? raw.slice(5) : raw;
-}
-
 export function extractBearer(request: Request): string | null {
-  const h = request.headers.get("authorization");
-  if (h) {
-    const raw = h.replace(/^Bearer\s+/i, "").trim();
-    if (!raw) return null;
-    return raw.startsWith("vbat_") ? raw.slice(5) : raw;
-  }
+  // A non-empty header decides, even with no token in it (`Bearer `).
+  if (request.headers.get("authorization")) return headerBearer(request);
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return null;
   if (!isSameOriginRequest(request)) return null;
   for (const part of cookieHeader.split(";")) {
-    const [k, v] = part.trim().split("=");
-    if (k === "vaultbase_admin_token" || k === "vaultbase_user_token") {
-      return v ? decodeURIComponent(v) : null;
-    }
+    const at = part.indexOf("=");
+    const k = (at < 0 ? part : part.slice(0, at)).trim();
+    if (k !== "vaultbase_admin_token" && k !== "vaultbase_user_token") continue;
+    const v = at < 0 ? "" : part.slice(at + 1).trim();
+    // A malformed escape (`%zz`) is no token, not an error answered with 500.
+    try { return v ? decodeURIComponent(v) : null; } catch { return null; }
   }
   return null;
 }

@@ -22,13 +22,9 @@
  */
 
 import { Database } from "bun:sqlite";
+import { quoteIdent } from "../db/ident.ts";
 
 export const SANDBOX_IDLE_TTL_SEC = 60 * 60; // 1h
-
-/** SQLite identifier quoting — doubles up embedded `"` per spec. */
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
 
 interface SandboxSlot {
   db: Database;

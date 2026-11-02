@@ -41,7 +41,7 @@ interface RecordSessionOpts {
 export async function recordAdminSession(opts: RecordSessionOpts): Promise<void> {
   const db = getDb();
   const ua = opts.request.headers.get("user-agent") ?? null;
-  const ip = clientIpFromRequest(opts.request);
+  const ip = clientIp(opts.request);
   await db.insert(adminSessions).values({
     jti: opts.jti,
     admin_id: opts.admin_id,
@@ -266,12 +266,6 @@ export async function clearAttemptFailures(key: string): Promise<void> {
 }
 
 /** GC failures older than the longest lockout window. */
-
-// ── IP extraction (mirrors ratelimit / audit-log defensive defaults) ────────
-
-function clientIpFromRequest(request: Request): string | null {
-  return clientIp(request);
-}
 
 // ── Fingerprints ────────────────────────────────────────────────────────────
 

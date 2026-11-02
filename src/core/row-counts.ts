@@ -21,13 +21,9 @@
  * SQLite only: Postgres lists count as before.
  */
 import { db } from "../db/index.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 const COUNTS = "vaultbase_row_counts";
-
-/** SQLite identifier quoting that escapes embedded `"` (DDL-safe). */
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
 
 function triggerNames(table: string): [string, string] {
   return [`vb_rowcount_ins_${table}`, `vb_rowcount_del_${table}`];

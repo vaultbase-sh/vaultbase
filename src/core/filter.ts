@@ -8,8 +8,9 @@ import type { Dialect } from "../db/driver.ts";
 function dialect(): Dialect {
   return driverOpen() ? db.dialect : SQLITE_DIALECT;
 }
-import { requestMapHas, requestMapValue } from "./expression.ts";
+import { macroValue, requestMapHas, requestMapValue, stableEq } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 /** Parameterized SQL fragment + bound values. */
 export interface CompiledSql {
@@ -258,7 +259,7 @@ function compileScoped(ast: Expr, ctx: CompileCtx): string {
   }
   for (const j of scope.joins) ctx.params.push(...j.onParams);
   ctx.params.push(...exprParams);
-  const joins = scope.joins.map((j) => `LEFT JOIN ${escapeIdent(j.table)} AS ${j.alias} ON ${j.on}`).join(" ");
+  const joins = scope.joins.map((j) => `LEFT JOIN ${quoteIdent(j.table)} AS ${j.alias} ON ${j.on}`).join(" ");
   return `EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one ${joins} WHERE ${sql})`;
 }
 
@@ -736,7 +737,7 @@ function compileFieldRef(op: Extract<Operand, { kind: "field" }>, ctx: CompileCt
   // only matters for readability.
   if (ctx.hostPrivateField(op.name)) throw new PrivateFieldError(op.name);
   if (ctx.hostFilterable && !ctx.hostFilterable(op.name)) throw new PrivateFieldError(op.name);
-  const baseCol = `${escapeIdent(ctx.tableName)}.${escapeIdent(op.name)}`;
+  const baseCol = `${quoteIdent(ctx.tableName)}.${quoteIdent(op.name)}`;
   if (op.path.length === 0 && !op.modifier) return baseCol;
 
   // Dotted path → JSON extraction
@@ -856,7 +857,7 @@ function compileCollectionRef(
         ctx.hoist.byKey.set(key, join);
         ctx.hoist.joins.push(join);
       }
-      let col = `${join.alias}.${escapeIdent(head)}`;
+      let col = `${join.alias}.${quoteIdent(head)}`;
       for (let i = 1; i < op.path.length; i++) col = dialect().jsonExtract(col, `$.${op.path[i]}`);
       return applyModifierToSql(col, op.modifier);
     }
@@ -865,7 +866,7 @@ function compileCollectionRef(
     if (targetMeta && (targetMeta.isPrivateField(head) || !targetMeta.isFilterable(head))) {
       throw new PrivateFieldError(head);
     }
-    let inner = `${escapeIdent(targetTable)}.${escapeIdent(head)}`;
+    let inner = `${quoteIdent(targetTable)}.${quoteIdent(head)}`;
     for (let i = 1; i < op.path.length; i++) {
       inner = dialect().jsonExtract(inner, `$.${op.path[i]}`);
     }
@@ -909,11 +910,11 @@ function compileCollectionRef(
 
     if (exists) {
       const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
-      const match = `EXISTS (SELECT 1 FROM ${escapeIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
+      const match = `EXISTS (SELECT 1 FROM ${quoteIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
       return negate ? `NOT ${match}` : match;
     }
     return applyModifierToSql(
-      `(SELECT ${inner} FROM ${escapeIdent(targetTable)}${where} LIMIT 1)`,
+      `(SELECT ${inner} FROM ${quoteIdent(targetTable)}${where} LIMIT 1)`,
       op.modifier,
     );
   } finally {
@@ -999,9 +1000,9 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
     // Default selection — id of the matching back-related rows. With a path,
     // pull `<path>` instead.
     const sel = op.path.length === 0
-      ? `${escapeIdent(targetTable)}.${escapeIdent("id")}`
+      ? `${quoteIdent(targetTable)}.${quoteIdent("id")}`
       : (() => {
-          let inner = `${escapeIdent(targetTable)}.${escapeIdent(systemAlias(op.path[0]!, ctx.lookup?.(op.targetCollection) ?? null))}`;
+          let inner = `${quoteIdent(targetTable)}.${quoteIdent(systemAlias(op.path[0]!, ctx.lookup?.(op.targetCollection) ?? null))}`;
           for (let i = 1; i < op.path.length; i++) {
             inner = dialect().jsonExtract(inner, `$.${op.path[i]}`);
           }
@@ -1009,7 +1010,7 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
         })();
 
     // Validate ref field if a lookup is provided.
-    let where = `${escapeIdent(targetTable)}.${escapeIdent(op.refField)} = ${escapeIdent(ctx.tableName)}.${escapeIdent(ctx.hostIdField)}`;
+    let where = `${quoteIdent(targetTable)}.${quoteIdent(op.refField)} = ${quoteIdent(ctx.tableName)}.${quoteIdent(ctx.hostIdField)}`;
     if (ctx.lookup) {
       const meta = ctx.lookup(op.targetCollection);
       if (!meta) {
@@ -1034,7 +1035,7 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
       where += ` AND ${dialect().never}`;
     }
 
-    return { table: escapeIdent(targetTable), sel, where };
+    return { table: quoteIdent(targetTable), sel, where };
   } finally {
     ctx.joinDepth--;
   }
@@ -1254,32 +1255,6 @@ function authValue(auth: AuthContext | null, prop: AuthProp): string | number | 
   return auth.email ?? null;
 }
 
-function macroValue(name: string): string | number {
-  const now = new Date();
-  // Unix seconds: the storage format of date and autodate fields, so a
-  // comparison with them is a comparison, not SQLite's type ordering.
-  const utc = (d: Date) => Math.floor(d.getTime() / 1000);
-  switch (name) {
-    case "now":          return utc(now);
-    case "yesterday":    return utc(new Date(now.getTime() - 86_400_000));
-    case "tomorrow":     return utc(new Date(now.getTime() + 86_400_000));
-    case "todayStart":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
-    case "todayEnd":     return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)));
-    case "monthStart":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-    case "monthEnd":     return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)));
-    case "yearStart":    return utc(new Date(Date.UTC(now.getUTCFullYear(), 0, 1)));
-    case "yearEnd":      return utc(new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999)));
-    case "second":       return now.getUTCSeconds();
-    case "minute":       return now.getUTCMinutes();
-    case "hour":         return now.getUTCHours();
-    case "day":          return now.getUTCDate();
-    case "weekday":      return now.getUTCDay();
-    case "month":        return now.getUTCMonth() + 1;
-    case "year":         return now.getUTCFullYear();
-    default:             throw new Error(`unknown macro: ${name}`);
-  }
-}
-
 function coerceLiteral(v: string | number | boolean | null): string | number | null {
   if (v === true) return 1;
   if (v === false) return 0;
@@ -1287,16 +1262,3 @@ function coerceLiteral(v: string | number | boolean | null): string | number | n
   return v;
 }
 
-function escapeIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-function stableEq(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return false;
-  if (typeof a !== typeof b) return false;
-  if (typeof a === "object") {
-    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
-  }
-  return false;
-}

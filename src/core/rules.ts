@@ -1,5 +1,5 @@
 import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
-import { requestMapHas, requestMapValue } from "./expression.ts";
+import { macroValue, requestMapHas, requestMapValue, stableEq } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import type { RequestContextLike } from "./filter.ts";
 
@@ -476,32 +476,6 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-function macroValue(name: string): string | number {
-  const now = new Date();
-  // Unix seconds: the storage format of date and autodate fields, so a
-  // comparison with them is a comparison, not SQLite's type ordering.
-  const utc = (d: Date) => Math.floor(d.getTime() / 1000);
-  switch (name) {
-    case "now":        return utc(now);
-    case "yesterday":  return utc(new Date(now.getTime() - 86_400_000));
-    case "tomorrow":   return utc(new Date(now.getTime() + 86_400_000));
-    case "todayStart": return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
-    case "todayEnd":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)));
-    case "monthStart": return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-    case "monthEnd":   return utc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999)));
-    case "yearStart":  return utc(new Date(Date.UTC(now.getUTCFullYear(), 0, 1)));
-    case "yearEnd":    return utc(new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999)));
-    case "second":     return now.getUTCSeconds();
-    case "minute":     return now.getUTCMinutes();
-    case "hour":       return now.getUTCHours();
-    case "day":        return now.getUTCDate();
-    case "weekday":    return now.getUTCDay();
-    case "month":      return now.getUTCMonth() + 1;
-    case "year":       return now.getUTCFullYear();
-    default:           throw new Error(`unknown macro: ${name}`);
-  }
-}
-
 function looseEq(a: unknown, b: unknown): boolean {
   if (a === UNAUTH_SENTINEL || b === UNAUTH_SENTINEL) return false;
   if (a === null || a === undefined) return b === null || b === undefined;
@@ -527,12 +501,3 @@ function cmp(a: unknown, b: unknown): number {
   return codePointOrder(String(a ?? ""), String(b ?? ""));
 }
 
-function stableEq(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return false;
-  if (typeof a !== typeof b) return false;
-  if (typeof a === "object") {
-    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
-  }
-  return false;
-}

@@ -14,6 +14,7 @@ import { ruleSyntaxError } from "./expression.ts";
 import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames, subfieldsOf, withoutRenames } from "./group-fields.ts";
 import { decryptValue, encryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 import { boundViewSource, coerceViewParam, parseViewParams, validateViewParams, viewQueryWithDefaults, type ViewParam } from "./view-params.ts";
+import { quoteIdent } from "../db/ident.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -376,11 +377,6 @@ export function colSqlType(type: FieldType): string {
     case "autodate": return "INTEGER";
     default:         return customFieldType(type)?.sqlType ?? "TEXT";
   }
-}
-
-/** SQLite identifier quoting that escapes embedded `"` (DDL-safe). */
-function quoteIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
 }
 
 /** Identifier shape allowed for collection / field / table names. */
