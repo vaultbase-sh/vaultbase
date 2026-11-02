@@ -278,7 +278,7 @@ import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { validateRecord, type CanSeeRecord } from "./validate.ts";
 import { ViewParamError, boundViewSource, parseViewParams, resolveViewParams } from "./view-params.ts";
-import { getActiveHookRequest, makeHookHelpers, runBeforeHook } from "./hooks.ts";
+import { getActiveHookRequest, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
@@ -965,8 +965,7 @@ async function createRecordImpl(
   data = data ?? {};
 
   // beforeCreate hook (can mutate data, throw to abort)
-  const helpers = makeHookHelpers();
-  await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth, helpers });
+  await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth });
 
   await validateRecord(col, data, "create", undefined, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined);
 
@@ -1060,12 +1059,10 @@ async function updateRecordImpl(
   }
 
   // beforeUpdate hook
-  const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeUpdate", {
     record: data,
     existing: existing as unknown as Record<string, unknown>,
     auth,
-    helpers,
   });
 
   await validateRecord(col, data, "update", id, guard.relationsAs ? canSeeAs(guard.relationsAs.auth, guard.relationsAs.request ?? null) : undefined, existing as unknown as Record<string, unknown>);
@@ -1486,11 +1483,10 @@ async function deleteRecordInternal(
   // deleted when the hook refused.
   await checkRestrict(col.name, id);
 
-  const helpers = makeHookHelpers();
   await runBeforeHook(col, "beforeDelete", {
     record: {},
     existing: existing as unknown as Record<string, unknown>,
-    auth, helpers,
+    auth,
   });
 
   await applyCascades(col.name, id, auth, visited, guard);

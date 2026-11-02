@@ -5,7 +5,7 @@
  */
 import { broadcast, broadcastRules } from "../realtime/manager.ts";
 import { on } from "./events.ts";
-import { makeHookHelpers, runAfterHook } from "./hooks.ts";
+import { runAfterHook } from "./hooks.ts";
 import { dispatchEvent } from "./webhooks.ts";
 import { sendToPeers, withSlim } from "./peers.ts";
 
@@ -63,15 +63,15 @@ export function registerBuiltinListeners(): void {
   // surprisingly expensive.
   on("record.created", ({ collection, record, auth, source }) => {
     if (source === "cascade") return;
-    runAfterHook(collection, "afterCreate", { record, existing: null, auth, helpers: makeHookHelpers() });
+    runAfterHook(collection, "afterCreate", { record, existing: null, auth });
   }, "after-hooks");
   on("record.updated", ({ collection, record, existing, auth, source }) => {
     if (source === "cascade") return;
-    runAfterHook(collection, "afterUpdate", { record, existing, auth, helpers: makeHookHelpers() });
+    runAfterHook(collection, "afterUpdate", { record, existing, auth });
   }, "after-hooks");
   on("record.deleted", ({ collection, existing, auth, source }) => {
     if (source === "cascade") return;
-    runAfterHook(collection, "afterDelete", { record: {}, existing, auth, helpers: makeHookHelpers() });
+    runAfterHook(collection, "afterDelete", { record: {}, existing, auth });
   }, "after-hooks");
 }
 

@@ -25,7 +25,7 @@ import {
 } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
-import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule, ruleFilter } from "./_rules.ts";
 import {
   getHistoryAt,
   listRecordHistory,
@@ -594,15 +594,16 @@ export function makeRecordsPlugin(jwtSecret: string) {
       // record as it is *now* let a new owner read everything the previous
       // owner wrote. Who made each change is only shown when it was the
       // caller.
+      // With no view rule every version passes, so the list pages in SQL
+      // as an admin's does ("" was refused above).
       const isAdminCaller = auth?.type === "admin";
+      const filter = isAdminCaller || col.view_rule === null ? null : ruleFilter(request, "view_rule", col.name, col.view_rule, auth);
       const out: HistoryListResponse = await listRecordHistory(
         params.collection,
         params.id,
-        isAdminCaller ? { perPage, page } : {
-          perPage, page,
-          visible: (e) => checkRule(request, "view_rule", col.name, col.view_rule, auth, e.snapshot),
-        },
+        filter ? { perPage, page, visible: (e) => filter.visible(e.snapshot) } : { perPage, page },
       );
+      filter?.log();
       if (!isAdminCaller) {
         for (const e of out.data) if (e.actor_id !== (auth?.id ?? null)) e.actor_id = null;
       }

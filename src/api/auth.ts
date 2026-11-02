@@ -8,7 +8,7 @@ import { db, getDriver } from "../db/index.ts";
 import { admin, authTokens, mfaRecoveryCodes, mfaRecoveryLookup, oauthLinks, tokenRevocations } from "../db/schema.ts";
 import { getCollection, parseFields, userTableName } from "../core/collections.ts";
 import { AUTH_USER_COLUMNS, findUserByEmail, findUserById, insertUser, updateUserById } from "../core/users-table.ts";
-import { runBeforeHook, makeHookHelpers } from "../core/hooks.ts";
+import { runBeforeHook } from "../core/hooks.ts";
 import { emit } from "../core/events.ts";
 import "../core/event-listeners.ts";
 import type { Collection } from "../db/schema.ts";
@@ -719,7 +719,7 @@ async function providerSignIn(
     // verified one.
     const hookData: Record<string, unknown> = { ...fromProvider };
     try {
-      await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+      await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null });
       if (typeof hookData["email"] === "string") hookData["email"] = hookData["email"].trim();
       // Removed or emptied: the account keeps the provider's address.
       if (hookData["email"] === undefined || hookData["email"] === null || hookData["email"] === "") hookData["email"] = accountEmail;
@@ -999,9 +999,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         // before the address is looked up, as the hash is: a payload the
         // hook refuses gets its 422 whether or not the address is taken.
         const hookData: Record<string, unknown> = { email: body.email, ...extra };
-        const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
         try {
-          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null });
         } catch (e) {
           if (e instanceof ValidationError) {
             set.status = 422;
@@ -1512,10 +1511,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         const data: Record<string, unknown> = { ...(body.data ?? {}) };
         delete data["email"];
         delete data["password"];
-        const helpers = makeHookHelpers({ collection: col.name, event: "beforeCreate" });
         const hookData: Record<string, unknown> = { email: given, ...data };
         try {
-          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers });
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null });
         } catch (e) {
           if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }
           throw e;
@@ -1845,7 +1843,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       // fields. A guest's address is generated: one the hook sets is ignored.
       const hookData: Record<string, unknown> = { email };
       try {
-        await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+        await runBeforeHook(col, "beforeCreate", { record: hookData, existing: null, auth: null });
         delete hookData["email"];
         await validateAuthRegister(col, hookData, "partial");
       } catch (e) {
@@ -1934,7 +1932,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         try {
           const guest = await getRecord(col.name, u.id);
           const asGuest = { id: u.id, type: "user" as const, email: u.email, collection: col.name, anonymous: true };
-          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: guest as unknown as Record<string, unknown> | null, auth: asGuest, helpers: makeHookHelpers({ collection: col.name, event: "beforeCreate" }) });
+          await runBeforeHook(col, "beforeCreate", { record: hookData, existing: guest as unknown as Record<string, unknown> | null, auth: asGuest });
           await validateAuthRegister(col, hookData);
         } catch (e) {
           if (e instanceof ValidationError) { set.status = 422; return { error: "Validation failed", code: 422, details: e.details }; }

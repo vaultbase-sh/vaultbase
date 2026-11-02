@@ -54,6 +54,9 @@ export interface HookContext {
   helpers: HookHelpers;
 }
 
+/** What a write hands its hooks; each hook run gets its own helpers. */
+export type HookInput = Omit<HookContext, "helpers">;
+
 export interface HookRecordRuleOpts {
   /** Logical name of the rule (e.g. "custom-quota"). */
   rule: string;
@@ -255,7 +258,7 @@ async function lookupEnabledHooks(
 export async function runBeforeHook(
   collection: Collection,
   event: "beforeCreate" | "beforeUpdate" | "beforeDelete",
-  ctx: HookContext,
+  ctx: HookInput,
   request?: Request
 ): Promise<void> {
   const list = await lookupEnabledHooks(collection.name, event);
@@ -284,7 +287,7 @@ export async function runBeforeHook(
 }
 
 /** One hook: under its time limit, unless it was registered from code. */
-function runHook(h: CompiledHook, kind: "hook" | "afterHook", label: string, ctx: HookContext, helperCtx: HookHelperContext): Promise<unknown> {
+function runHook(h: CompiledHook, kind: "hook" | "afterHook", label: string, ctx: HookInput, helperCtx: HookHelperContext): Promise<unknown> {
   if (h.fromCode) return h.fn({ ...ctx, helpers: makeHookHelpers(helperCtx) });
   return withTimeLimit(kind, label, (signal) => h.fn({ ...ctx, helpers: guardHelpers(makeHookHelpers(helperCtx), signal) }));
 }
@@ -297,7 +300,7 @@ function hookLabel(h: { id: string; name?: string }, collection: string, event: 
 export function runAfterHook(
   collection: Collection,
   event: "afterCreate" | "afterUpdate" | "afterDelete",
-  ctx: HookContext,
+  ctx: HookInput,
   request?: Request
 ): void {
   // Fire-and-forget; errors are logged but don't fail the request

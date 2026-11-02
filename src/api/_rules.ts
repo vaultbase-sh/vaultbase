@@ -1,6 +1,6 @@
 import type { Collection } from "../db/schema.ts";
 import type { AuthContext } from "../core/rules.ts";
-import { evaluateRule } from "../core/rules.ts";
+import { compileRule, evaluateRule } from "../core/rules.ts";
 import { recordRuleEval, type RuleOutcome } from "../core/request-context.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { viewParamsFromUrl } from "../core/view-params.ts";
@@ -112,6 +112,40 @@ export function checkRule(
     reason,
   });
   return allowed;
+}
+
+/**
+ * checkRule over many records, for a non-admin and a rule expression (the
+ * versions of a record's history): the rule is parsed and the request
+ * context built once, each record standing in as `existing`, and the request
+ * log gets one entry saying how many passed, not one per record.
+ */
+export function ruleFilter(
+  request: Request,
+  ruleName: string,
+  collectionName: string,
+  rule: string,
+  auth: AuthContext | null,
+): { visible: (record: Record<string, unknown>) => boolean; log: () => void } {
+  const check = compileRule(rule);
+  const base = buildRequestContext(request, null, null);
+  let seen = 0;
+  let passed = 0;
+  return {
+    visible: (record) => {
+      seen++;
+      const ok = check(auth, record, { ...base, existing: record });
+      if (ok) passed++;
+      return ok;
+    },
+    log: () => recordRuleEval(request, {
+      rule: ruleName,
+      collection: collectionName,
+      expression: rule,
+      outcome: "filter",
+      reason: `rule passed on ${passed} of ${seen}`,
+    }),
+  };
 }
 
 /**

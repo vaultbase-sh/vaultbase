@@ -66,6 +66,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `updated` or a `:length` failed the request** (`created > 1.5`,
   `invalid input syntax for type bigint`); so did a whole number past
   2^53. It compares as SQLite does.
+- **A record's history, read by anyone but an admin, checked the view rule
+  on up to 2,000 versions per page**, parsing the rule and writing a
+  request-log entry for each. The rule is parsed once and logged once (how
+  many versions passed). With no view rule the list pages in the database,
+  as an admin's does, and counts past 2,000.
+- **Every record write made a full set of hook helpers** (and up to three)
+  that nothing used, whether the collection had hooks or not. Each hook run
+  still gets its own.
 
 ## [0.36.0] — 2026-11-02
 

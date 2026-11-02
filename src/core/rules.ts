@@ -59,6 +59,23 @@ export function evaluateRule(
   }
 }
 
+/**
+ * A non-admin's check of one rule expression, parsed once, for checking
+ * many records (evaluateRule parses on every call). An expression that
+ * doesn't parse denies, as there.
+ */
+export function compileRule(rule: string): (auth: AuthContext | null, record: Record<string, unknown> | null, request: RequestContextLike | null) => boolean {
+  const ast = parseExpression(rule);
+  return (auth, record, request) => {
+    if (!ast) return false;
+    try {
+      return evaluateExpr(ast, { auth, record, request });
+    } catch {
+      return false;
+    }
+  };
+}
+
 // ── AST evaluation ──────────────────────────────────────────────────────────
 
 /**
