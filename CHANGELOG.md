@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.36.0] — 2026-11-02
 
 ### Security
 
@@ -244,9 +244,27 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Upgrade notes
 
-- The rollout fix moves some users into a different bucket: a user who was
-  in a 10 % rollout may now be out of it, and the other way round. Shares
-  match the setting from now on.
+- **Feature flags:** the rollout fix moves some users into a different
+  bucket: a user who was in a 10 % rollout may now be out of it, and the
+  other way round. Shares match the setting from now on.
+- **MCP:** tools of a collection named like an admin tool (`hook`,
+  `setting`, `flag`, …) are now `…_records` (`vaultbase.delete_hook_records`).
+  An agent prompt that used the old name for the collection needs the new
+  one. `list_webhooks` no longer returns signing secrets.
+- **Errors:** an error no handler answered is JSON now instead of plain
+  text, and a request body that fails a route's schema answers
+  `{ "error": "Validation failed", "code": 422, "details": {…} }` rather
+  than Elysia's own shape.
+- **Custom routes and hooks run in a fixed order:** routes most specific
+  first, hooks oldest first. If two of yours matched the same path, check
+  which one answers.
+- **Multiple relations:** a new relation field with `options.multiple` is
+  refused; existing ones are kept.
+- **Database:** the first start adds a column to the record history table
+  and replaces the unique index on OAuth links with one per auth collection.
+  Both are automatic.
+- **SDKs:** the JS SDK 0.10.0 and Dart `vaultbase` 0.6.0 filter builders
+  throw on an array or list (the server refused them anyway).
 
 ## [0.35.1] — 2026-11-02
 
