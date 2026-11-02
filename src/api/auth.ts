@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import { recordInstall } from "../core/install-marker.ts";
 import { clearSetupKey, requiredSetupKey } from "../core/setup-key.ts";
 import Elysia, { t } from "elysia";
@@ -180,6 +180,21 @@ async function consumeToken(id: string, now: number): Promise<boolean> {
     .where(and(eq(authTokens.id, id), isNull(authTokens.used_at)))
     .returning({ id: authTokens.id });
   return rows.length > 0;
+}
+
+/** Links and codes that act for a user without their password. */
+const ACCOUNT_TOKEN_PURPOSES = ["password_reset", "otp", "email_verify", "email_change", "invite", "mfa_ticket"];
+
+/**
+ * A password reset or an email change ends the user's other open links and
+ * codes: one sent to the old address, or an older reset link, would
+ * otherwise still take the account back.
+ */
+async function voidAccountTokens(collectionId: string, userId: string, now: number): Promise<void> {
+  await getDb().update(authTokens).set({ used_at: now }).where(and(
+    eq(authTokens.collection_id, collectionId), eq(authTokens.user_id, userId),
+    isNull(authTokens.used_at), inArray(authTokens.purpose, ACCOUNT_TOKEN_PURPOSES),
+  ));
 }
 
 function isRedirectUriAllowed(provider: string, uri: string): boolean {
@@ -623,12 +638,9 @@ async function providerSignIn(
   const linked = await db
     .select()
     .from(oauthLinks)
-    .where(and(eq(oauthLinks.provider, provider), eq(oauthLinks.provider_user_id, profile.id)))
+    .where(and(eq(oauthLinks.collection_id, col.id), eq(oauthLinks.provider, provider), eq(oauthLinks.provider_user_id, profile.id)))
     .limit(1);
-  let userId: string | null = null;
-  if (linked.length > 0 && linked[0]!.collection_id === col.id) {
-    userId = linked[0]!.user_id;
-  }
+  let userId: string | null = linked[0]?.user_id ?? null;
 
   // 2. Email-match (only if provider verified the email).
   //    Instead of auto-linking, return a 200 with `merge_required: true`
@@ -1316,15 +1328,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        const db = getDb();
         const rows = await findOneTimeToken(body.token);
         const tok = rows[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "email_verify" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
+        // Spent before it acts, so two requests racing one token can't both use it.
+        if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
         await updateUserById(col, tok.user_id, { email_verified: 1, updated_at: now });
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
         return { data: { verified: true } };
       },
       { body: t.Object({ token: t.String() }) }
@@ -1368,10 +1380,11 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400; return { error: "Invalid or expired token", code: 400 };
         }
         const hash = await hashPassword(body.password);
+        if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
         // password_reset_at ends every session issued before the reset, so a
         // stolen token stops working once the owner resets their password.
         await updateUserById(col, tok.user_id, { password_hash: hash, password_reset_at: now, updated_at: now });
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        await voidAccountTokens(col.id, tok.user_id, now);
         // A reset is how an owner takes their account back: a provider linked
         // by whoever had it (merge-confirm with a leaked password) would
         // otherwise keep signing them in.
@@ -1447,7 +1460,6 @@ export function makeAuthPlugin(jwtSecret: string) {
         const col = await getCollection(params.collection);
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
-        const db = getDb();
         const tok = (await findOneTimeToken(body.token))[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "email_change" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now || !tok.payload) {
@@ -1469,8 +1481,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (taken && taken.id !== u.id) { set.status = 422; return { error: "Email already in use", code: 422 }; }
         // The link proves the new address; ending old sessions makes every
         // device sign in again with it.
+        if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
         await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: now, updated_at: now });
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        await voidAccountTokens(col.id, u.id, now);
         return { data: { changed: true, email: tok.payload } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1551,17 +1564,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         const pwErr = await validatePassword(typeof body.password === "string" ? body.password : "");
         if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
-        const db = getDb();
         const tok = (await findOneTimeToken(body.token))[0];
         const now = Math.floor(Date.now() / 1000);
         if (!tok || tok.purpose !== "invite" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400; return { error: "Invalid or expired invitation", code: 400 };
         }
         if (!await findUserById(col, tok.user_id)) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
-        await updateUserById(col, tok.user_id, {
-          password_hash: await hashPassword(body.password), email_verified: 1, password_reset_at: now, updated_at: now,
-        });
-        await db.update(authTokens).set({ used_at: now }).where(eq(authTokens.id, tok.id));
+        const hash = await hashPassword(body.password);
+        if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
+        await updateUserById(col, tok.user_id, { password_hash: hash, email_verified: 1, password_reset_at: now, updated_at: now });
         return { data: { accepted: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }

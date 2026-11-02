@@ -560,10 +560,11 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     requiredScope: "mcp:read",
     definition: {
       name: "vaultbase.list_webhooks",
-      description: "List configured webhooks (URL, events, retry config, secret). Secret values are NOT redacted — treat the response as sensitive.",
+      description: "List configured webhooks (URL, events, retry config). Signing secrets are not included.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
-    handler: async () => asJsonText(await getDb().select().from(webhooks)),
+    // A signing secret lets its holder forge deliveries; this tool is mcp:read.
+    handler: async () => asJsonText((await getDb().select().from(webhooks)).map(({ secret, ...w }) => ({ ...w, has_secret: !!secret }))),
   });
 
   reg.register({

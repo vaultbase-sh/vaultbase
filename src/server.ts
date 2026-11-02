@@ -1,4 +1,4 @@
-import Elysia, { t } from "elysia";
+import Elysia, { ElysiaCustomStatusResponse, t } from "elysia";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { INTERNAL_HEADER, PEER_HEADER } from "./core/worker-listeners.ts";
 import { runsSingletonDuties } from "./core/cluster-role.ts";
@@ -79,6 +79,48 @@ import {
 import { openSSEStream } from "./realtime/sse.ts";
 import { maintenanceRefusal, maintenanceState, realtimeClosed } from "./core/maintenance-mode.ts";
 import { answeredStatus, thrownStatus } from "./core/http-status.ts";
+import { db } from "./db/index.ts";
+
+/**
+ * An error no handler answered, in the API's `{ error, code }` shape and with
+ * the headers every response gets. Elysia's default sent the raw message as
+ * text (a database error with table and column names) without CORS, so a
+ * browser on another origin saw only a CORS failure.
+ */
+function errorResponse(request: Request, code: unknown, error: unknown): Response {
+  let status: number;
+  let body: { error: string; code: number; details?: Record<string, string> };
+  const own = thrownStatus(error);
+  if (code === "NOT_FOUND") {
+    status = 404;
+    body = { error: "Not found", code: 404 };
+  } else if (code === "VALIDATION" || code === "PARSE") {
+    status = own ?? (code === "PARSE" ? 400 : 422);
+    const details: Record<string, string> = {};
+    for (const e of ((error as { all?: unknown }).all as Array<{ path?: string; message?: string }> | undefined) ?? []) {
+      const key = (e.path ?? "").replace(/^\//, "").replace(/\//g, ".") || "body";
+      if (e.message && !details[key]) details[key] = e.message;
+    }
+    body = { error: code === "PARSE" ? "The request body couldn't be parsed" : "Validation failed", code: status, ...(Object.keys(details).length ? { details } : {}) };
+  } else if (db.dialect.isUniqueViolation(error)) {
+    // Two writes raced past the uniqueness check; the index refused the second.
+    status = 422;
+    body = { error: "A record with this value already exists", code: 422 };
+  } else if (own !== null && own >= 400 && own < 500) {
+    status = own;
+    body = { error: error instanceof Error ? error.message : "Request failed", code: own };
+  } else {
+    status = 500;
+    body = { error: "Internal error", code: 500 };
+    console.error(`[server] ${request.method} ${new URL(request.url).pathname}:`, error);
+  }
+  const path = new URL(request.url).pathname;
+  const set = { headers: { ...securityHeaders({ isApi: path.startsWith("/api/") }), "Content-Type": "application/json", "Cache-Control": "no-store" } as Record<string, string | undefined> };
+  applyCorsHeaders(request, set);
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(set.headers)) if (v !== undefined) headers.set(k, v);
+  return new Response(JSON.stringify(body), { status, headers });
+}
 
 /** Status an error path ends in, for the metrics status-class counters. */
 function errorStatus(code: unknown, error: unknown, setStatus: unknown): number {
@@ -515,6 +557,9 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       // Make sure we don't leak timers on error paths.
       const t = detachTimer(request);
       if (t) t.finish(request.method, errorStatus(code, error, set.status));
+      // `status(…)` thrown on purpose: Elysia answers it as before.
+      if (error instanceof ElysiaCustomStatusResponse) return;
+      return errorResponse(request, code, error);
     })
     // Custom user routes fire before built-in route resolution so they can't
     // collide with /api/:collection or any other built-in pattern.

@@ -1494,10 +1494,12 @@ async function renameCollectionStorage(
   type: string,
   viewQuery: string | null | undefined,
   viewParams: ViewParam[] = [],
+  /** Undoing a rename: the collection's own row still holds `newName`. */
+  revert = false,
 ): Promise<void> {
   assertNewCollectionName(newName);
   const orm = getDb();
-  const clash = await orm.select({ id: collections.id }).from(collections)
+  const clash = revert ? [] : await orm.select({ id: collections.id }).from(collections)
     .where(eq(collections.name, newName)).limit(1);
   if (clash.length > 0) throw new Error(`A collection named '${newName}' already exists`);
 
@@ -1579,6 +1581,28 @@ async function renameInHookFiles(newName: string): Promise<void> {
   }
 }
 
+/** Throws for an update the field or view checks would refuse, before anything changes. */
+async function assertUpdatable(before: Collection, data: Partial<Omit<NewCollection, "id" | "created_at">>, type: string): Promise<void> {
+  if (type === "view") {
+    const query = data.view_query !== undefined ? data.view_query : before.view_query;
+    if (!query) throw new Error("View collections require a view_query");
+    if (data.view_query !== undefined || data.view_params !== undefined) {
+      await loadSensitiveSchema();
+      validateViewQuery(query);
+      checkedViewParams(query, data.view_params !== undefined ? data.view_params : before.view_params);
+    }
+    return;
+  }
+  if (data.fields === undefined || data.fields === before.fields) return;
+  const oldFields = parseFields(before.fields);
+  const incoming = parseFields(data.fields);
+  assertValidFieldsForType(type, incoming);
+  const present = new Set(incoming.filter((f) => f.implicit).map((f) => f.name));
+  const newFields = ensureImplicitFields(type, [...oldFields.filter((f) => f.implicit && !present.has(f.name)), ...incoming]);
+  for (const f of newFields) if (!f.system && !f.implicit) assertSqlIdent(f.name, "field");
+  assertFieldOptions(newFields.filter((f) => !f.implicit), oldFields.filter((f) => !f.implicit));
+}
+
 export async function updateCollection(
   id: string,
   data: Partial<Omit<NewCollection, "id" | "created_at">>
@@ -1608,14 +1632,20 @@ export async function updateCollection(
   // new table.
   let currentName = before.name;
   let savedWithFields = false;
-  if (data.name !== undefined && data.name !== before.name) {
+  const newName = data.name !== undefined && data.name !== before.name ? data.name : null;
+  const renaming = newName !== null;
+  if (newName !== null) {
+    // The rename commits on its own, so what can refuse this update is checked
+    // first: a refusal after it left the table renamed under the old row.
+    await assertUpdatable(before, data, effectiveType);
     if (before.type !== "view") await assertNoViewUses(userTableName(before.name), null, `rename '${before.name}'`);
     // The view is rebuilt under the new name with the parameters it has now;
     // a query or parameter change in the same update rebuilds it again below.
-    await renameCollectionStorage(before, data.name, effectiveType, before.view_query, parseViewParams(before.view_params));
-    currentName = data.name;
+    await renameCollectionStorage(before, newName, effectiveType, before.view_query, parseViewParams(before.view_params));
+    currentName = newName;
   }
 
+  try {
   // View collections: drop & recreate the SQLite VIEW if the query changed,
   // then re-derive fields when the caller didn't provide them. Skip the
   // table-altering path entirely — views have no real columns.
@@ -1674,6 +1704,15 @@ export async function updateCollection(
   }
 
   if (!savedWithFields) await db.update(collections).set({ ...data, updated_at: now }).where(eq(collections.id, id));
+  } catch (e) {
+    // Something the checks above couldn't foresee (the database refused the
+    // DDL): put the storage back under the old name.
+    if (renaming) {
+      await renameCollectionStorage({ ...before, name: currentName }, before.name, before.type, before.view_query, parseViewParams(before.view_params), true)
+        .catch((undo) => console.error(`[collections] renaming '${currentName}' back to '${before.name}' failed:`, undo));
+    }
+    throw e;
+  }
   cache.delete(id);
   cache.delete(before.name);
   broadcast({ type: "bus", kind: "collections" });

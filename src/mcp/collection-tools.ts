@@ -178,7 +178,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
       reg.register({
         requiredScope: "mcp:read",
         definition: {
-          name: `vaultbase.get_${slug}`,
+          name: reg.freeName(`vaultbase.get_${slug}`),
           description: `Read the '${slug}' singleton: the collection's one record.`,
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
         },
@@ -187,7 +187,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
       reg.register({
         requiredScope: "mcp:write",
         definition: {
-          name: `vaultbase.update_${slug}`,
+          name: reg.freeName(`vaultbase.update_${slug}`),
           description: `Update the '${slug}' singleton (its one record). PATCH semantics — only provided fields are touched. Validation + update_rule apply.`,
           inputSchema: {
             type: "object",
@@ -210,7 +210,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     reg.register({
       requiredScope: "mcp:read",
       definition: {
-        name: `vaultbase.list_${slug}`,
+        name: reg.freeName(`vaultbase.list_${slug}`),
         description: `List records in the '${slug}' collection. Supports filter expressions, sort, pagination, and field projection. Cap: ${HARD_PER_PAGE_CAP} records per page.`,
         inputSchema: {
           type: "object",
@@ -247,7 +247,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     reg.register({
       requiredScope: "mcp:read",
       definition: {
-        name: `vaultbase.get_${slug}`,
+        name: reg.freeName(`vaultbase.get_${slug}`),
         description: `Fetch a single '${slug}' record by id. Returns null if not found.`,
         inputSchema: {
           type: "object",
@@ -270,7 +270,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     reg.register({
       requiredScope: "mcp:write",
       definition: {
-        name: `vaultbase.create_${slug}`,
+        name: reg.freeName(`vaultbase.create_${slug}`),
         description: `Create a new '${slug}' record. Validation + collection rules (create_rule) apply. Returns the created record with server-assigned id + timestamps.`,
         inputSchema: {
           type: "object",
@@ -293,7 +293,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     reg.register({
       requiredScope: "mcp:write",
       definition: {
-        name: `vaultbase.update_${slug}`,
+        name: reg.freeName(`vaultbase.update_${slug}`),
         description: `Update an existing '${slug}' record. PATCH semantics — only provided fields are touched. Validation + update_rule apply.`,
         inputSchema: {
           type: "object",
@@ -318,7 +318,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     reg.register({
       requiredScope: "mcp:write",
       definition: {
-        name: `vaultbase.delete_${slug}`,
+        name: reg.freeName(`vaultbase.delete_${slug}`),
         description: `Delete a '${slug}' record by id. delete_rule + cascade behaviour apply per the collection schema.`,
         inputSchema: {
           type: "object",

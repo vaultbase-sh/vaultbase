@@ -45,7 +45,9 @@ export const FIXED_INDEXES: IndexSpec[] = [
   ix("idx_vaultbase_auth_tokens_code", "vaultbase_auth_tokens", ["code", "purpose"]),
   ix("idx_vaultbase_token_revocations_exp", "vaultbase_token_revocations", ["expires_at"]),
   ix("idx_vaultbase_mfa_recovery_codes_user", "vaultbase_mfa_recovery_codes", ["user_id", "collection_id"]),
-  ix("idx_vaultbase_oauth_links_provider", "vaultbase_oauth_links", ["provider", "provider_user_id"], { unique: true }),
+  // One link per provider identity in each auth collection: the same Google
+  // account may sign in to `users` and to `customers` as two accounts.
+  ix("idx_vaultbase_oauth_links_collection_provider", "vaultbase_oauth_links", ["collection_id", "provider", "provider_user_id"], { unique: true }),
   ix("idx_vaultbase_oauth_links_user", "vaultbase_oauth_links", ["user_id"]),
   ix("idx_vaultbase_admin_email", "vaultbase_admin", ["email"], { unique: true }),
   ix("idx_vaultbase_files_filename", "vaultbase_files", ["filename"]),

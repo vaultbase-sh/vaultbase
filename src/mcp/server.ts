@@ -44,26 +44,18 @@ export interface ServerOptions {
   readOnly: boolean;
   /** stderr writer — defaults to process.stderr.write. Tests inject. */
   stderr?: (s: string) => void;
+  /** Whether the token is still good (not revoked or expired); asked before each call. */
+  tokenValid?: () => Promise<boolean>;
 }
 
 /** Build the server's tool registry. Runs once at boot. */
 export async function buildRegistry(readOnly: boolean): Promise<ToolRegistry> {
   const reg = new ToolRegistry();
-  await registerCollectionTools(reg);
+  // Admin tools first: a collection named like one gets a suffixed name.
   registerAdminTools(reg);
   registerAdminWriteTools(reg);
-  if (readOnly) {
-    // Filter to read-only tools by re-creating a fresh registry.
-    const filtered = new ToolRegistry();
-    for (const t of (reg as unknown as { tools: Map<string, { definition: unknown; requiredScope: string; handler: unknown }> }).tools.values()) {
-      if (t.requiredScope === "mcp:read") {
-        // Re-register on the filtered registry.
-        filtered.register(t as unknown as Parameters<ToolRegistry["register"]>[0]);
-      }
-    }
-    return filtered;
-  }
-  return reg;
+  await registerCollectionTools(reg);
+  return readOnly ? reg.filter((t) => t.requiredScope === "mcp:read") : reg;
 }
 
 // ── JSON-RPC dispatch ─────────────────────────────────────────────────────
@@ -240,6 +232,10 @@ export async function runStdioServer(opts: ServerOptions): Promise<void> {
         error: { code: RPC_ERR.ParseError, message: "Failed to parse JSON-RPC message" },
       };
       writeMessage(err);
+      return;
+    }
+    if (opts.tokenValid && req.method === "tools/call" && !(await opts.tokenValid())) {
+      if (req.id !== undefined) writeMessage({ jsonrpc: "2.0", id: req.id, error: { code: RPC_ERR.InvalidRequest, message: "The token was revoked or has expired" } });
       return;
     }
     const res = await dispatcher.handle(req);

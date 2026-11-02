@@ -122,6 +122,28 @@ describe("MCP — tools/list", () => {
     expect(names).toContain("vaultbase.delete_posts");
   });
 
+  it("a collection named like an admin tool doesn't take its name (it gets a _records suffix)", async () => {
+    await createCollection({ name: "hook", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    const reg = await buildRegistry(false);
+    const names = reg.list().map((t) => t.name);
+    expect(names).toContain("vaultbase.delete_hook_records");
+    expect(names).toContain("vaultbase.list_hooks");
+    // The admin tool keeps its name and its own schema (a hook id, not a record).
+    const del = reg.list().find((t) => t.name === "vaultbase.delete_hook")!;
+    expect(JSON.stringify(del.description)).not.toContain("'hook' collection");
+  });
+
+  it("list_webhooks leaves out signing secrets", async () => {
+    const { getDb } = await import("../db/client.ts");
+    const { webhooks } = await import("../db/schema.ts");
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(webhooks).values({ id: "w1", name: "w", url: "https://example.com/h", events: "[]", secret: "whsec-very-secret", enabled: 1, created_at: now, updated_at: now } as typeof webhooks.$inferInsert);
+    const r = await dispatch({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "vaultbase.list_webhooks", arguments: {} } }, mkCtx(["mcp:read"])) as JsonRpcSuccess;
+    const text = JSON.stringify(r.result);
+    expect(text).not.toContain("whsec-very-secret");
+    expect(text).toContain("has_secret");
+  });
+
   it("read-only registry omits create/update/delete tools", async () => {
     await seedPostsCollection();
     const r = await dispatch(

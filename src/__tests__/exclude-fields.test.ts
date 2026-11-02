@@ -124,7 +124,7 @@ describe("exclude", () => {
 
   it("is offered by the MCP list tool", async () => {
     const tools = new Map<string, any>();
-    await registerCollectionTools({ register: (t: any) => tools.set(t.definition.name, t) } as any);
+    await registerCollectionTools({ register: (t: any) => tools.set(t.definition.name, t), freeName: (n: string) => n } as any);
     const list = tools.get("vaultbase.list_posts");
     expect(list.definition.inputSchema.properties.exclude.type).toBe("string");
     const out = await list.handler({ exclude: "body" });

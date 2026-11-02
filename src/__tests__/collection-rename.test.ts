@@ -76,3 +76,29 @@ describe("collection rename", () => {
     expect(await getCollection("alpha")).not.toBeNull();
   });
 });
+
+describe("a rename refused by a later check", () => {
+  it("leaves the collection under its old name, still working (the rename used to commit first)", async () => {
+    const col = await createCollection({ name: "drafts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    await createRecord("drafts", { title: "kept" });
+    const target = await createCollection({ name: "notes", fields: JSON.stringify([{ name: "draft", type: "relation", collection: "drafts" }]) });
+    // Two fields with one name: refused, after the rename in the old order.
+    await expect(updateCollection(col.id, {
+      name: "posts",
+      fields: JSON.stringify([{ name: "title", type: "text" }, { name: "title", type: "text" }]),
+    })).rejects.toThrow();
+    _resetCollectionCache();
+    expect((await getCollection(col.id))!.name).toBe("drafts");
+    expect((await listRecords("drafts", {})).data.map((r) => r["title"])).toEqual(["kept"]);
+    expect(await getCollection("posts")).toBeNull();
+    const rel = parseFields((await getCollection(target.id))!.fields).find((f) => f.name === "draft")!;
+    expect(rel.collection).toBe("drafts");
+  });
+
+  it("a valid rename with a field change still goes through (legitimate path)", async () => {
+    const col = await createCollection({ name: "drafts", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    await updateCollection(col.id, { name: "posts", fields: JSON.stringify([{ name: "title", type: "text" }, { name: "body", type: "text" }]) });
+    await createRecord("posts", { title: "t", body: "b" });
+    expect((await listRecords("posts", {})).data.length).toBe(1);
+  });
+});

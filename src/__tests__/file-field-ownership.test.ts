@@ -139,3 +139,23 @@ describe("file fields take only the record's own uploads", () => {
     expect((await patch(mine, { cover: f }, adminToken)).status).toBe(200);
   });
 });
+
+describe("file upload and delete check update_rule with the request's context", () => {
+  async function send(method: string, path: string, headers: Record<string, string>, body?: FormData) {
+    return makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost${path}`, { method, headers: { authorization: `Bearer ${token}`, ...headers }, ...(body ? { body } : {}) }));
+  }
+  const form = () => { const f = new FormData(); f.append("file", new File([new Uint8Array(64).fill(7)], "a.png", { type: "image/png" })); return f; };
+
+  it("a rule reading @request.headers passes for upload and delete, as it does for PATCH", async () => {
+    const { updateCollection, getCollection } = await import("../core/collections.ts");
+    const col = (await getCollection("posts"))!;
+    await updateCollection(col.id, { update_rule: `@request.headers.x_tenant = "acme"` });
+    expect((await send("POST", `/files/posts/${mine}/cover`, { "x-tenant": "acme" }, form())).status).toBe(200);
+    expect((await send("POST", `/files/posts/${mine}/cover`, { "x-tenant": "other" }, form())).status).toBe(403);
+    expect((await send("DELETE", `/files/posts/${mine}/cover`, { "x-tenant": "acme" })).status).not.toBe(403);
+  });
+
+  it("deleting a file of a record that doesn't exist is a 404", async () => {
+    expect((await send("DELETE", `/files/posts/no-such-record/cover`, {})).status).toBe(404);
+  });
+});

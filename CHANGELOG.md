@@ -35,6 +35,47 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Two admins deleting each other at the same moment could both succeed,**
   leaving no admin. The count and the delete now run in one transaction
   that holds the admin rows.
+- **Old one-time links kept working after a password reset or an email
+  change.** An earlier reset link, a sign-in code or a verification link
+  sent to the old address could still take the account back. A reset or an
+  email change now ends all of them. Reset, verification and invitation
+  links are also spent before they act, so two requests racing one link
+  can't both use it.
+- **MCP:**
+  - A collection named like an admin tool (`hook`, `setting`, `flag`, …)
+    took over that tool's name, so `vaultbase.delete_hook` deleted a record.
+    Admin tools keep their names now; such a collection's tools get a
+    `_records` suffix (`vaultbase.delete_hook_records`).
+  - `list_webhooks` (an `mcp:read` tool) returned webhook signing secrets.
+    It now says only whether a webhook has one.
+  - `vaultbase mcp` (stdio) checked its token only at start: a token revoked
+    or expired later kept working. It is re-checked at least once a minute.
+    It also accepts the same scopes as MCP over HTTP.
+- **An error no handler answered went out as plain text** with the error
+  message (a database error named tables and columns) and without the CORS
+  and security headers. It is now JSON, `{ "error", "code" }`, with the
+  usual headers, and the message of a server error stays in the log.
+  Request bodies that fail a route's schema get `422` with `details`.
+- **File uploads and file deletes checked `update_rule` without the
+  request:** a rule reading `@request.headers.*`, `@request.query.*` or
+  `@request.method` refused them while the same PATCH passed. A protected
+  file's `viewRule` could also read credential headers (`x-api-key`,
+  `x-auth-token`, `proxy-authorization`) that every other rule has removed.
+
+### Fixed
+
+- **A collection rename refused by a later check left it broken.** The
+  rename committed first, so a refused field change or view query left the
+  table renamed while the collection kept its old name, and every request
+  to it failed. Everything that can refuse the update is now checked
+  before the rename, and a rename whose later step fails is undone.
+- **OAuth sign-in to a second auth collection failed for good.** A provider
+  account could be linked in only one auth collection: signing in to
+  another left a half-made account and then answered 500 on every try. Each
+  auth collection now links its own accounts, so the same Google account
+  can sign in to `users` and to `customers`.
+- Starting up no longer rewrites the job log's unique keys on every start;
+  that was needed only once, before its unique index existed.
 
 ### Upgrade notes
 

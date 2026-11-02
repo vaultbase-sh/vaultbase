@@ -26,7 +26,7 @@ import { verifyAuthToken } from "../core/sec.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { setUploadDir } from "../core/storage.ts";
 import { runStdioServer } from "../mcp/server.ts";
-import type { ToolContext } from "../mcp/tools.ts";
+import { MCP_SCOPES, type ToolContext } from "../mcp/tools.ts";
 
 interface CliFlags {
   token: string | null;
@@ -121,9 +121,8 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
   }
 
   const scopes = ctx.scopes ?? [];
-  // Require at least one mcp:* scope (or admin) — a token with only
-  // 'read'/'write' (REST scopes) shouldn't be usable over MCP.
-  const ok = hasScope(scopes, "mcp:read") || hasScope(scopes, "mcp:write");
+  // The same scopes HTTP MCP accepts; a REST-only token ('read'/'write') isn't one.
+  const ok = MCP_SCOPES.some((s) => hasScope(scopes, s));
   if (!ok) {
     process.stderr.write(
       `vaultbase mcp: token lacks any mcp:* scope. Has: [${scopes.join(", ")}]. ` +
@@ -140,5 +139,15 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
     adminEmail: ctx.email ?? "",
   };
 
-  await runStdioServer({ ctx: toolCtx, readOnly: flags.readOnly });
+  // Checked once a minute while it runs: a token revoked or expired after
+  // start must stop working, as it does over HTTP.
+  let checkedAt = Date.now();
+  let valid = true;
+  const tokenValid = async (): Promise<boolean> => {
+    if (valid && Date.now() - checkedAt < 60_000) return true;
+    checkedAt = Date.now();
+    valid = !!(await verifyAuthToken(stripApiTokenPrefix(tokenRaw), jwtSecret, { audience: "api" }));
+    return valid;
+  };
+  await runStdioServer({ ctx: toolCtx, readOnly: flags.readOnly, tokenValid });
 }

@@ -27,6 +27,7 @@ import { getRecord, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
+import { buildRequestContext, checkRule } from "./_rules.ts";
 import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import { getSetting, MAX_UPLOAD_BYTES, MIN_UPLOAD_BYTES } from "./settings.ts";
@@ -83,29 +84,21 @@ function buildFileRequestContext(
   meta: { mime_type: string; size: number; field_name: string },
   collectionName: string,
 ): RequestContextLike & { headers: Record<string, string> } {
-  const headers: Record<string, string> = {};
-  for (const [k, v] of request.headers.entries()) {
-    const lower = k.toLowerCase();
-    if (lower === "authorization" || lower === "cookie" || lower === "set-cookie") continue;
-    headers[lower.replace(/-/g, "_")] = v;
-  }
+  // The headers every rule sees, credentials removed (the same list as
+  // records); this used to drop only authorization and cookies.
+  const base = buildRequestContext(request, null, null, "protectedFile");
   // `@request.ip` and `@file.*` are read-only — surfaced via the `headers` map
   // so the existing rule engine doesn't need a new operand kind. Rule authors
-  // write `@request.headers.x_vb_ip = '1.2.3.4'`-style — but for ergonomics we
-  // also expose them under conventional names.
-  headers["x_vb_ip"]            = ip;
-  headers["x_vb_file_field"]    = meta.field_name;
-  headers["x_vb_file_mime"]     = meta.mime_type;
-  headers["x_vb_file_size"]     = String(meta.size);
-  headers["x_vb_collection"]    = collectionName;
-  return {
-    method: request.method.toUpperCase(),
-    context: "protectedFile",
-    headers,
-    query: {},
-    body: null,
-    existing: null,
+  // write `@request.headers.x_vb_ip = '1.2.3.4'`-style.
+  const headers: Record<string, string> = {
+    ...base.headers,
+    x_vb_ip: ip,
+    x_vb_file_field: meta.field_name,
+    x_vb_file_mime: meta.mime_type,
+    x_vb_file_size: String(meta.size),
+    x_vb_collection: collectionName,
   };
+  return { ...base, headers, query: {} };
 }
 
 interface FileTokenClaims {
@@ -431,13 +424,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const existing = await getRecord(params.collection, params.recordId);
       if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
       // Authz — admin always; otherwise uploading is an update of the record.
-      if (auth.type !== "admin") {
-        const rule = col.update_rule;
-        if (rule === "") { set.status = 403; return { error: "Forbidden", code: 403 }; }
-        if (rule !== null) {
-          const ok = evaluateRule(rule, auth, existing as unknown as Record<string, unknown>);
-          if (!ok) { set.status = 403; return { error: "Forbidden", code: 403 }; }
-        }
+      // With the request's context and logged, as a PATCH is.
+      const record = existing as unknown as Record<string, unknown>;
+      if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+        set.status = 403; return { error: "Forbidden", code: 403 };
       }
 
       // The multipart body is buffered in memory while parsing, so refuse
@@ -812,11 +802,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (auth.type !== "admin") {
         const existing = await getRecord(params.collection, params.recordId);
-        const rule = col.update_rule;
-        if (rule === "") { set.status = 403; return { error: "Forbidden", code: 403 }; }
-        if (rule !== null) {
-          const ok = evaluateRule(rule, auth, (existing ?? {}) as Record<string, unknown>);
-          if (!ok) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
+        const record = existing as unknown as Record<string, unknown>;
+        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
         }
       }
       const db = getDb();
@@ -851,11 +840,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (auth.type !== "admin") {
         const existing = await getRecord(params.collection, params.recordId);
-        const rule = col.update_rule;
-        if (rule === "") { set.status = 403; return { error: "Forbidden", code: 403 }; }
-        if (rule !== null) {
-          const ok = evaluateRule(rule, auth, (existing ?? {}) as Record<string, unknown>);
-          if (!ok) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
+        const record = existing as unknown as Record<string, unknown>;
+        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+          set.status = 403; return { error: "Forbidden", code: 403 };
         }
       }
       const db = getDb();

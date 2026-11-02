@@ -92,6 +92,25 @@ async function signIn(provider: "apple" | "google", tokenOver: Parameters<typeof
   return { status: res.status, body: (await res.json()) as Body, nonce, token };
 }
 
+describe("the same provider account in two auth collections", () => {
+  it("signs in to each as its own account (the link was unique across collections: an orphan, then 500s)", async () => {
+    const { createCollection } = await import("../core/collections.ts");
+    await createCollection({ name: "customers", type: "auth", create_rule: null });
+    const inUsers = await signIn("google");
+    expect(inUsers.status).toBe(200);
+    const nonce = await nonceFor("google", "customers");
+    const res = await post("/auth/customers/oauth2/id-token", { provider: "google", id_token: await idToken("google", { nonce }), nonce });
+    expect(res.status).toBe(200);
+    const customer = (((await res.json()) as Body).data!["record"] as { id: string }).id;
+    expect(customer).not.toBe((inUsers.body.data!["record"] as { id: string }).id);
+    expect(await getDb().select().from(oauthLinks)).toHaveLength(2);
+    // And again: each collection finds its own account.
+    const nonce2 = await nonceFor("google", "customers");
+    const again = await post("/auth/customers/oauth2/id-token", { provider: "google", id_token: await idToken("google", { nonce: nonce2 }), nonce: nonce2 });
+    expect((((await again.json()) as Body).data!["record"] as { id: string }).id).toBe(customer);
+  });
+});
+
 describe("signing in", () => {
   it("Google: a new account, linked; signing in again finds it", async () => {
     const first = await signIn("google");

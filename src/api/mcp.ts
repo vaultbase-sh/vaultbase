@@ -21,14 +21,13 @@ import { verifyAuthToken, extractBearer, peerAddress, trustedClientIp } from "..
 import { hasScope } from "../core/api-tokens.ts";
 import { buildRegistry, createDispatcher } from "../mcp/server.ts";
 import { RPC_ERR, type JsonRpcRequest, type JsonRpcResponse } from "../mcp/types.ts";
-import type { ToolContext } from "../mcp/tools.ts";
+import { MCP_SCOPES, type ToolContext } from "../mcp/tools.ts";
 import {
   registerMcpEventClient,
   unregisterMcpEventClient,
   type McpEventClient,
 } from "../mcp/events.ts";
 
-const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:admin", "mcp:sql", "admin"] as const;
 
 interface AuthOk {
   ctx: ToolContext;

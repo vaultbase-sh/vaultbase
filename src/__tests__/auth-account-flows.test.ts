@@ -77,6 +77,33 @@ describe("password reset", () => {
   });
 });
 
+describe("one-time tokens after a reset", () => {
+  it("an older reset link stops working once the password was reset with a newer one", async () => {
+    await user();
+    expect((await post("/auth/users/request-password-reset", { email: "old@test.local" })).status).toBe(200);
+    const older = tokenFrom(await waitForMail("reset"));
+    // Past the one-mail-a-minute cooldown.
+    await db.run(`UPDATE vaultbase_auth_tokens SET created_at = created_at - 3600`);
+    smtp.messages.length = 0;
+    expect((await post("/auth/users/request-password-reset", { email: "old@test.local" })).status).toBe(200);
+    const newer = tokenFrom(await waitForMail("reset"));
+    expect(newer).not.toBe(older);
+    expect((await post("/auth/users/confirm-password-reset", { token: newer, password: "a-new-password-9" })).status).toBe(200);
+    expect((await post("/auth/users/confirm-password-reset", { token: older, password: "attacker-pass-99" })).status).toBe(400);
+  });
+
+  it("one reset link can't be spent twice by racing it", async () => {
+    await user();
+    await post("/auth/users/request-password-reset", { email: "old@test.local" });
+    const t = tokenFrom(await waitForMail("reset"));
+    const statuses = (await Promise.all([
+      post("/auth/users/confirm-password-reset", { token: t, password: "first-password-11" }),
+      post("/auth/users/confirm-password-reset", { token: t, password: "second-password-22" }),
+    ])).map((r) => r.status).sort();
+    expect(statuses).toEqual([200, 400]);
+  });
+});
+
 describe("email change", () => {
   it("sends a link to the new address and switches after password confirm", async () => {
     const { id, token } = await user();

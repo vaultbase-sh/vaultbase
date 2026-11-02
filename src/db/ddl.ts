@@ -82,6 +82,12 @@ async function schemaSnapshot(): Promise<{ columns: Map<string, Set<string>>; in
   };
 }
 
+/** [table, index]: dropped at start where present (a newer index replaced each). */
+const RETIRED_INDEXES: ReadonlyArray<readonly [string, string]> = [
+  // Unique on (provider, provider_user_id) across all auth collections; now per collection.
+  ["vaultbase_oauth_links", "idx_vaultbase_oauth_links_provider"],
+];
+
 /** What {@link ensureFixedSchema} would add, as `table`, `table.column` and `index name`. Reads only. */
 export async function missingFixedSchema(): Promise<string[]> {
   const { columns, indexes } = await schemaSnapshot();
@@ -140,7 +146,9 @@ export async function ensureFixedSchema(): Promise<void> {
   // enqueues could leave several active jobs with one key. Keep one (a
   // running job over a queued one, then the oldest) and clear the key on the
   // rest, which still run as before, so the unique index can be created.
-  await db.exec(`UPDATE vaultbase_jobs_log SET unique_key = NULL
+  // Only until that index exists: on every start it was a write (under the
+  // migration lock on Postgres) that found nothing to do.
+  if (!indexes.get("vaultbase_jobs_log")?.has("idx_vaultbase_jobs_log_unique_active")) await db.exec(`UPDATE vaultbase_jobs_log SET unique_key = NULL
     WHERE unique_key IS NOT NULL AND status IN ('queued', 'running') AND EXISTS (
       SELECT 1 FROM vaultbase_jobs_log o
       WHERE o.unique_key = vaultbase_jobs_log.unique_key AND o.id <> vaultbase_jobs_log.id
@@ -150,6 +158,10 @@ export async function ensureFixedSchema(): Promise<void> {
           OR (o.status = vaultbase_jobs_log.status AND (o.enqueued_at < vaultbase_jobs_log.enqueued_at
             OR (o.enqueued_at = vaultbase_jobs_log.enqueued_at AND o.id < vaultbase_jobs_log.id)))
         ))`);
+  // Indexes an older version made that a newer one replaced.
+  for (const [table, name] of RETIRED_INDEXES) {
+    if (indexes.get(table)?.has(name)) await db.exec(`DROP INDEX IF EXISTS ${d.quoteIdent(name)}`);
+  }
   const missingIndexes = FIXED_INDEXES.filter((ix) => !indexes.get(ix.table)?.has(ix.name));
   if (missingIndexes.length > 0) await db.exec(missingIndexes.map((ix) => d.createIndex(ix)).join(";\n"));
 }
