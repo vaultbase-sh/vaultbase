@@ -37,7 +37,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
     const r = parseFilter(`comments_via_post:length > 0`, "vb_posts", { auth: USER, lookup });
     expect(r).not.toBeNull();
     expect(r?.sql).toContain("vb_comments");
-    expect(r?.sql).toContain("json_group_array");
+    expect(r?.sql).toContain("COUNT(*)");
     expect(r?.sql).toContain('"vb_comments"."post" = "vb_posts"."id"');
   });
 

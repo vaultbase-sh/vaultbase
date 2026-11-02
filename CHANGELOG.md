@@ -46,6 +46,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Vector search loaded its matches 20 at a time**: `nearLimit=1000` ran 50
   list queries, each parsing a filter and checking the access rule. They're
   loaded in one query now.
+- **`_via_` with `:length` on Postgres was NULL, not 0, with no matching
+  rows**, so `comments_via_post:length = 0` matched nothing there (SQLite
+  was right). It counts the rows now, on both, and runs the subquery once:
+  the length took it up to four times.
+- **A search compiled its filter and rule twice**, and looked the search
+  index up twice per request. Once now, and on SQLite without reading the
+  index's columns. A filter or rule that joins another collection reads its
+  settings once per compile, not once per field it checks.
 
 ## [0.36.0] — 2026-11-02
 

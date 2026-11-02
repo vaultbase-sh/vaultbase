@@ -93,6 +93,8 @@ export async function ftsColumns(collection: string): Promise<string[] | null> {
 }
 
 export async function hasFts(collection: string): Promise<boolean> {
+  // Asked on every search: on SQLite the table is enough, not its columns.
+  if (kind() === "fts5") return !!db.sync.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, [ftsTableName(collection)]);
   return (await ftsColumns(collection)) !== null;
 }
 

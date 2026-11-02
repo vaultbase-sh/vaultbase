@@ -149,6 +149,27 @@ describe("search", () => {
     expect(plain.data.length).toBe(2);
   });
 
+  it("looks the search index up once per list, on every path", async () => {
+    // The filter and rule were compiled twice for a search, and the index
+    // looked up twice (with its columns on SQLite).
+    await notes(FIELDS, { list_rule: `status != "hidden"` });
+    await createRecord("notes", { title: "gamma one", status: "x" });
+    await createRecord("notes", { title: "gamma two", status: "hidden" });
+    for (const sort of [undefined, "@rank", "-created"]) {
+      const statements: string[] = [];
+      db.trace((sql) => statements.push(sql));
+      let got: unknown[];
+      try {
+        got = (await listRecords("notes", { search: "gamma", filter: `title != ""`, accessRule: `status != "hidden"`, ...(sort ? { sort } : {}) })).data.map((r) => r["title"]);
+      } finally {
+        db.trace(null);
+      }
+      expect(got).toEqual(["gamma one"]);
+      expect(statements.filter((q) => q.includes("sqlite_master") || q.includes("col_description"))).toHaveLength(1);
+      expect(statements.filter((q) => q.includes("PRAGMA table_info"))).toEqual([]);
+    }
+  });
+
   it("counts a search exactly, with and without a filter, on every path", async () => {
     await notes();
     for (let i = 0; i < 7; i++) await createRecord("notes", { title: `gamma ${i}`, status: i < 3 ? "x" : "y" });

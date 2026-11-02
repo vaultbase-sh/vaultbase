@@ -755,8 +755,8 @@ function joinedCollectionGuard(
     if (!innerAst) return dialect().never;
     const innerCtx: CompileCtx = guardCtx(ctx, {
       tableName: table,
-      hostPrivateField: (n) => ctx.lookup?.(collection)?.isPrivateField(n) ?? false,
-      hostFilterable: (n) => ctx.lookup?.(collection)?.isFilterable(n) ?? true,
+      hostPrivateField: (n) => meta.isPrivateField(n),
+      hostFilterable: (n) => meta.isFilterable(n),
       clientFilter: false,
     });
     parts.push(compileScoped(innerAst, innerCtx));
@@ -929,8 +929,11 @@ function compileViaRelationRef(op: Extract<Operand, { kind: "viaRelation" }>, ct
     // 1000-row cap mirrors PB's hard cap to bound back-ref expansion cost.
     // The LIMIT sits on the rows being aggregated: on the aggregate itself
     // it would only limit its single output row and cap nothing.
-    const subq = `(SELECT ${dialect().jsonGroupArray("_vb_v")} FROM (SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000) AS _vb_sub)`;
-    return applyModifierToSql(subq, op.modifier);
+    const rows = `(SELECT ${sel} AS _vb_v FROM ${escapeIdent(targetTable)} WHERE ${where} LIMIT 1000) AS _vb_sub`;
+    // `:length` counts the rows: the array's length took the subquery up to
+    // four times, and on Postgres an empty json_agg is NULL, not 0.
+    if (op.modifier === "length") return `(SELECT COUNT(*) FROM ${rows})`;
+    return applyModifierToSql(`(SELECT ${dialect().jsonGroupArray("_vb_v")} FROM ${rows})`, op.modifier);
   } finally {
     ctx.joinDepth--;
   }

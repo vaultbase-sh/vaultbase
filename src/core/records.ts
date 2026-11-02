@@ -196,25 +196,34 @@ function filterableColumns(col: Collection): ReadonlySet<string> {
 }
 
 function makeCollectionLookup(): CollectionLookup {
+  // One compile asks about the same collections per field it checks.
+  const seen = new Map<string, ReturnType<CollectionLookup>>();
   return (name: string) => {
-    const col = getCollectionCached(name);
-    if (!col) return null;
-    let fieldNames: Set<string>;
-    try {
-      const parsed = cachedFields(col.fields);
-      fieldNames = new Set(parsed.map((f) => f.name));
-    } catch {
-      fieldNames = new Set();
-    }
-    const priv = privateFieldNames(col);
-    const cols = filterableColumns(col);
-    return {
-      viewRule: col.view_rule,
-      listRule: col.list_rule,
-      hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
-      isPrivateField: (n) => priv.has(n),
-      isFilterable: (n) => cols.has(n),
-    };
+    if (seen.has(name)) return seen.get(name)!;
+    const meta = lookupCollection(name);
+    seen.set(name, meta);
+    return meta;
+  };
+}
+
+function lookupCollection(name: string): ReturnType<CollectionLookup> {
+  const col = getCollectionCached(name);
+  if (!col) return null;
+  let fieldNames: Set<string>;
+  try {
+    const parsed = cachedFields(col.fields);
+    fieldNames = new Set(parsed.map((f) => f.name));
+  } catch {
+    fieldNames = new Set();
+  }
+  const priv = privateFieldNames(col);
+  const cols = filterableColumns(col);
+  return {
+    viewRule: col.view_rule,
+    listRule: col.list_rule,
+    hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
+    isPrivateField: (n) => priv.has(n),
+    isFilterable: (n) => cols.has(n),
   };
 }
 export const DEFAULT_PER_PAGE = 30;
@@ -605,6 +614,24 @@ export async function compileListWhere(
   col: Collection,
   opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request" | "ids">,
 ): Promise<{ whereSql: string; whereParams: Binding[] }> {
+  const { whereParts, whereParams } = await compileWhereParts(col, opts);
+  const match = await searchMatch(col, opts.search);
+  if (match) {
+    whereParts.push(searchPredicate(col.name, quoteIdent(userTableName(col.name))));
+    whereParams.push(match.query);
+  }
+  return { whereSql: whereSqlOf(whereParts), whereParams };
+}
+
+function whereSqlOf(parts: readonly string[]): string {
+  return parts.length > 0 ? `WHERE ${parts.join(" AND ")}` : "";
+}
+
+/** The filter, access rule and `ids` of a list, without its search. */
+async function compileWhereParts(
+  col: Collection,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "request" | "ids">,
+): Promise<{ whereParts: string[]; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
   const whereParts: string[] = [];
   const whereParams: Binding[] = [];
@@ -665,13 +692,7 @@ export async function compileListWhere(
     whereParts.push(ids.length === 0 ? "1 = 0" : `${quoteIdent(tname)}.${quoteIdent("id")} IN (${ids.map(() => "?").join(", ")})`);
     whereParams.push(...ids);
   }
-  const match = await searchMatch(col, opts.search);
-  if (match) {
-    whereParts.push(searchPredicate(col.name, quoteIdent(tname)));
-    whereParams.push(match.query);
-  }
-  const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(" AND ")}` : "";
-  return { whereSql, whereParams };
+  return { whereParts, whereParams };
 }
 
 /**
@@ -725,11 +746,15 @@ export async function listRecords(
   const byRank = opts.sort === "@rank";
   const sortGiven = opts.sort !== undefined && !byRank;
   const listOpts = byRank ? { ...opts, sort: undefined } : opts;
-  const { whereSql, whereParams } = await compileListWhere(col, listOpts);
-  const match = !sortGiven && (byRank || db.capabilities.fts === "fts5") ? await searchMatch(col, opts.search) : null;
-  // These SELECTs join the match set themselves, so they skip the search
-  // clause in WHERE.
-  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), ...(opts.ids !== undefined ? { ids: opts.ids } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
+  // The filter and rule are compiled once: the plain SELECT adds the search
+  // clause to them, the ranked and newest-first ones join the match set
+  // themselves.
+  const parts = await compileWhereParts(col, listOpts);
+  const searched = await searchMatch(col, opts.search);
+  const whereSql = whereSqlOf(searched ? [...parts.whereParts, searchPredicate(col.name, tableRef)] : parts.whereParts);
+  const whereParams = searched ? [...parts.whereParams, searched.query] : parts.whereParams;
+  const match = !sortGiven && (byRank || db.capabilities.fts === "fts5") ? searched : null;
+  const rankedWhere = match ? { whereSql: whereSqlOf(parts.whereParts), whereParams: parts.whereParams } : null;
   const newest = match !== null && !byRank;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
