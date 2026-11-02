@@ -6,6 +6,7 @@ import { createRecord, deleteRecord, updateRecord } from "../core/records.ts";
 import { cosineSimilarity } from "../core/vector.ts";
 import { _vectorCacheStats, _resetVectorCache } from "../core/vector-cache.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
+import { db } from "../db/index.ts";
 
 // nearVector used to load up to 10k candidate records and JSON-parse every
 // stored vector on every search (158 ms at 10k x 384 dims, blocking the event
@@ -80,6 +81,43 @@ describe("vector search with parsed-vector cache", () => {
       .slice(0, 45)
       .map((r) => r.id);
     expect((await search(q, 45)).map((r) => r.id)).toEqual(expected);
+  });
+
+  it("loads the ranked matches in one query, not 20 at a time", async () => {
+    await setup();
+    const rows: Array<{ id: string; v: number[] }> = [];
+    for (let i = 0; i < 300; i++) {
+      const v = vec(i);
+      rows.push({ id: (await createRecord("docs", { owner: "x", emb: v })).id, v });
+    }
+    const q = vec(777);
+    const expected = rows
+      .map((r) => ({ id: r.id, s: cosineSimilarity(q, r.v) }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 300)
+      .map((r) => r.id);
+    await search(q, 300); // warm the vector cache
+    const statements: string[] = [];
+    db.trace((sql) => statements.push(sql));
+    let got: string[];
+    try {
+      got = (await search(q, 300)).map((r) => r.id);
+    } finally {
+      db.trace(null);
+    }
+    expect(got).toEqual(expected);
+    expect(statements.filter((sql) => /^SELECT \* FROM "vb_docs"/.test(sql))).toHaveLength(1);
+  });
+
+  it("still applies the list rule to the matches it loads", async () => {
+    await setup(`owner = "x"`);
+    const kept: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      const r = await createRecord("docs", { owner: i % 3 === 0 ? "y" : "x", emb: vec(i) });
+      if (i % 3 !== 0) kept.push(r.id);
+    }
+    const got = await search(vec(3), 30);
+    expect(got.map((r) => r.id).sort()).toEqual(kept.sort());
   });
 
   it("a repeat search parses no vectors", async () => {

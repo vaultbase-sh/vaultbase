@@ -355,21 +355,20 @@ export function makeRecordsPlugin(jwtSecret: string) {
               limit,
               ...(minScore !== undefined && Number.isFinite(minScore) ? { minScore } : {}),
             });
-            // Load by id in chunks: the filter parser caps an expression at
-            // 50 operands, so one `id = … || …` for more than 25 matches was
-            // refused with 400. The ranking already applied the caller's
-            // filter; listRecords still applies the access rule.
-            const ID_CHUNK = 20;
-            for (let i = 0; i < ranked.length; i += ID_CHUNK) {
-              const idFilter = ranked.slice(i, i + ID_CHUNK).map((m) => `id = "${m.id.replace(/["\\]/g, "\\$&")}"`).join(" || ");
-              const chunk = await listRecords(params.collection, {
-                ...opts,
-                filter: idFilter,
+            // Load the matches in one query (it was 20 ids at a time: the
+            // filter parser caps an expression at 50 operands). The ranking
+            // already applied the caller's filter and search; listRecords
+            // still applies the access rule.
+            if (ranked.length > 0) {
+              const { filter: _filter, search: _search, ...rest } = opts;
+              const found = await listRecords(params.collection, {
+                ...rest,
+                ids: ranked.map((m) => m.id),
                 page: 1,
-                perPage: ID_CHUNK,
+                perPage: ranked.length,
                 skipTotal: true,
               });
-              loaded.push(...chunk.data);
+              loaded.push(...found.data);
             }
           } catch (e) {
             const r = listErrorResponse(set, e);

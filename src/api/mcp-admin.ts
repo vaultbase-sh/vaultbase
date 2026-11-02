@@ -12,7 +12,7 @@
 
 import Elysia from "elysia";
 import { listMcpEventClients } from "../mcp/events.ts";
-import { buildRegistry } from "../mcp/server.ts";
+import { sharedRegistry } from "../mcp/server.ts";
 import { listResources, listResourceTemplates } from "../mcp/resources.ts";
 import { listPrompts } from "../mcp/prompts.ts";
 import { adminGuard } from "./_admin.ts";
@@ -24,7 +24,7 @@ export function makeMcpAdminPlugin(jwtSecret: string) {
       return { data: listMcpEventClients() };
     }, { requireAdmin: { cookie: true } })
     .get("/admin/mcp/catalog", async () => {
-      const reg = await buildRegistry(false);
+      const reg = await sharedRegistry();
       const tools = reg.list();
       const resources = listResources();
       const templates = listResourceTemplates();

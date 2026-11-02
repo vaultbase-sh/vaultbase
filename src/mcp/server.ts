@@ -31,6 +31,8 @@ import {
   type ListToolsResult,
 } from "./types.ts";
 import { ToolRegistry, type ToolContext } from "./tools.ts";
+import { getSchemaVersion } from "../core/collections.ts";
+import { db } from "../db/index.ts";
 import { registerCollectionTools } from "./collection-tools.ts";
 import { registerAdminTools } from "./admin-tools.ts";
 import { registerAdminWriteTools } from "./admin-write-tools.ts";
@@ -56,6 +58,22 @@ export async function buildRegistry(readOnly: boolean): Promise<ToolRegistry> {
   registerAdminWriteTools(reg);
   await registerCollectionTools(reg);
   return readOnly ? reg.filter((t) => t.requiredScope === "mcp:read") : reg;
+}
+
+/**
+ * The HTTP endpoint's registry, built again only when the collections
+ * change (here, on another server, or by another connection): building one
+ * read every collection and made every tool on every request. The version
+ * is read before the build, so a change during one is seen next time.
+ */
+let shared: { key: string; reg: Promise<ToolRegistry> } | null = null;
+export function sharedRegistry(): Promise<ToolRegistry> {
+  const key = `${getSchemaVersion()}:${db.schemaToken()}`;
+  if (shared?.key === key) return shared.reg;
+  const entry = { key, reg: buildRegistry(false) };
+  shared = entry;
+  entry.reg.catch(() => { if (shared === entry) shared = null; });
+  return entry.reg;
 }
 
 // ── JSON-RPC dispatch ─────────────────────────────────────────────────────

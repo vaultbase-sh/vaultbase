@@ -19,7 +19,7 @@
 import Elysia from "elysia";
 import { verifyAuthToken, extractBearer, peerAddress, trustedClientIp } from "../core/sec.ts";
 import { hasScope } from "../core/api-tokens.ts";
-import { buildRegistry, createDispatcher } from "../mcp/server.ts";
+import { createDispatcher, sharedRegistry } from "../mcp/server.ts";
 import { RPC_ERR, type JsonRpcRequest, type JsonRpcResponse } from "../mcp/types.ts";
 import { MCP_SCOPES, type ToolContext } from "../mcp/tools.ts";
 import {
@@ -100,11 +100,8 @@ export function makeMcpPlugin(jwtSecret: string) {
         return err;
       }
 
-      // Build a fresh registry per request — collections may have changed
-      // since the last request (a previous tools/call could have minted a
-      // new collection). This is cheap; the per-collection tool synthesis
-      // walks the metadata table only.
-      const reg = await buildRegistry(false);
+      // Rebuilt when the collections change (a tools/call can make one).
+      const reg = await sharedRegistry();
       const dispatcher = createDispatcher(reg, auth.ctx);
       const res = await dispatcher.handle(body);
       if (res === null) {

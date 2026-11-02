@@ -39,6 +39,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   thumbnail folder again for each file it deleted. It looks records up per
   batch of 500 and lists thumbnails once. Pruning the backup file store no
   longer holds the server for its whole scan.
+- **The MCP endpoint built its tool registry on every request**: every
+  `POST /api/v1/mcp` (a `ping` too) read every collection and made all their
+  tools. It's built once and again only when the collections change, here
+  or on another server.
+- **Vector search loaded its matches 20 at a time**: `nearLimit=1000` ran 50
+  list queries, each parsing a filter and checking the access rule. They're
+  loaded in one query now.
 
 ## [0.36.0] — 2026-11-02
 

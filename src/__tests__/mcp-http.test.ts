@@ -17,6 +17,8 @@ import { setLogsDir } from "../core/file-logger.ts";
 import { admin } from "../db/schema.ts";
 import { mintApiToken } from "../core/api-tokens.ts";
 import { makeMcpPlugin } from "../api/mcp.ts";
+import { createCollection, deleteCollection, updateCollection } from "../core/collections.ts";
+import { db } from "../db/index.ts";
 
 const SECRET = "test-secret-mcp-http";
 let tmpDir: string;
@@ -150,5 +152,46 @@ describe("MCP HTTP transport", () => {
     const body = (await res.json()) as { result: { tools: Array<{ name: string }> } };
     const names = body.result.tools.map((t) => t.name);
     expect(names).toContain("vaultbase.list_collections");
+  });
+});
+
+describe("MCP HTTP tool registry", () => {
+  const toolNames = async (app: Elysia, token: string): Promise<string[]> => {
+    const res = await rpc(app, { jsonrpc: "2.0", id: 1, method: "tools/list" }, token);
+    return ((await res.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name);
+  };
+
+  it("is built once, and again when the collections change", async () => {
+    const a = await seedAdmin();
+    const { token } = await mintApiToken({
+      name: "claude", scopes: ["mcp:read"], ttlSeconds: 600,
+      createdBy: a.id, createdByEmail: a.email,
+    }, SECRET);
+    const app = mkApp();
+    await createCollection({ name: "notes", fields: JSON.stringify([{ name: "title", type: "text" }]) });
+    expect(await toolNames(app, token)).toContain("vaultbase.list_notes");
+
+    // A second request doesn't read the collection list again.
+    const statements: string[] = [];
+    db.trace((sql) => statements.push(sql));
+    try {
+      expect(await toolNames(app, token)).toContain("vaultbase.list_notes");
+    } finally {
+      db.trace(null);
+    }
+    expect(statements.filter((s) => s.includes("vaultbase_collections"))).toEqual([]);
+
+    await updateCollection("notes", { name: "memos" });
+    let names = await toolNames(app, token);
+    expect(names).toContain("vaultbase.list_memos");
+    expect(names).not.toContain("vaultbase.list_notes");
+
+    await createCollection({ name: "tags", fields: JSON.stringify([{ name: "label", type: "text" }]) });
+    expect(await toolNames(app, token)).toContain("vaultbase.list_tags");
+
+    await deleteCollection("tags");
+    names = await toolNames(app, token);
+    expect(names).not.toContain("vaultbase.list_tags");
+    expect(names).toContain("vaultbase.list_memos");
   });
 });

@@ -1473,6 +1473,8 @@ export async function createCollection(
     // answers 500 to every request.
     await db.delete(collections).where(eq(collections.id, id)).catch(() => {});
     if (type !== "view") await dropUserTable(row.name).catch(() => {});
+    // Something may have been built from the row while it was there.
+    schemaVersion++;
     throw e;
   }
 
@@ -1730,6 +1732,7 @@ export async function updateCollection(
       await renameCollectionStorage({ ...before, name: currentName }, before.name, before.type, before.view_query, parseViewParams(before.view_params), true)
         .catch((undo) => console.error(`[collections] renaming '${currentName}' back to '${before.name}' failed:`, undo));
     }
+    schemaVersion++;
     throw e;
   }
   cache.delete(id);
@@ -1762,4 +1765,7 @@ export async function deleteCollection(idOrName: string): Promise<void> {
   cache.delete(col.name);
   broadcast({ type: "bus", kind: "collections" });
   await db.delete(collections).where(eq(collections.id, col.id));
+  // Again once the row is gone: something built from the collection list
+  // between the first bump and the delete still had it.
+  schemaVersion++;
 }

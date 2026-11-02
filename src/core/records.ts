@@ -440,6 +440,11 @@ export interface ListOptions {
   allowDeepPaging?: boolean;
   /** A view's parameters for this read (`?params[name]=…`, view-params.ts). */
   viewParams?: Record<string, unknown> | null;
+  /**
+   * Only these records (vector search loads its ranked matches in one
+   * query). Never set from client input.
+   */
+  ids?: readonly string[];
 }
 
 export interface ListResult {
@@ -598,7 +603,7 @@ export function withViewParamValues(
  */
 export async function compileListWhere(
   col: Collection,
-  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request">,
+  opts: Pick<ListOptions, "filter" | "accessRule" | "auth" | "search" | "request" | "ids">,
 ): Promise<{ whereSql: string; whereParams: Binding[] }> {
   const tname = userTableName(col.name);
   const whereParts: string[] = [];
@@ -651,6 +656,14 @@ export async function compileListWhere(
     if (!compiled) throw new AccessRuleError(col.name, "rule compiled to nothing");
     whereParts.push(compiled.sql);
     whereParams.push(...(compiled.params as Binding[]));
+  }
+  if (opts.ids) {
+    // Padded to a power of two with the last id, so a few statement shapes
+    // serve every count instead of one per count.
+    const ids = [...opts.ids];
+    if (ids.length > 0) while (ids.length & (ids.length - 1)) ids.push(ids[ids.length - 1]!);
+    whereParts.push(ids.length === 0 ? "1 = 0" : `${quoteIdent(tname)}.${quoteIdent("id")} IN (${ids.map(() => "?").join(", ")})`);
+    whereParams.push(...ids);
   }
   const match = await searchMatch(col, opts.search);
   if (match) {
@@ -716,7 +729,7 @@ export async function listRecords(
   const match = !sortGiven && (byRank || db.capabilities.fts === "fts5") ? await searchMatch(col, opts.search) : null;
   // These SELECTs join the match set themselves, so they skip the search
   // clause in WHERE.
-  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
+  const rankedWhere = match ? await compileListWhere(col, { ...(opts.filter !== undefined ? { filter: opts.filter } : {}), ...(opts.accessRule !== undefined ? { accessRule: opts.accessRule } : {}), ...(opts.ids !== undefined ? { ids: opts.ids } : {}), auth: opts.auth ?? null, request: opts.request ?? null }) : null;
   const newest = match !== null && !byRank;
 
   // Build ORDER BY. View collections don't necessarily expose created_at /
