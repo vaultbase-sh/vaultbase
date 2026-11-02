@@ -335,6 +335,39 @@ export function storableRequest(r: ApiRequest): ApiRequest {
   return { ...r, auth, form: r.form.map((f) => ({ key: f.key, value: f.value, on: f.on })) };
 }
 
+const SECRET_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", "x-api-key"]);
+const SECRET_KEY = /password/i;
+
+function redactJson(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(redactJson);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_KEY.test(k) ? "" : redactJson(x)]));
+  }
+  return v;
+}
+
+/**
+ * A request as kept in this browser's history (localStorage): also blanks
+ * hand-typed credential headers and password fields in the body or form.
+ */
+export function historyRequest(r: ApiRequest): ApiRequest {
+  const s = storableRequest(r);
+  let body = s.body;
+  if (body.trim()) {
+    try {
+      const parsed = JSON.parse(body) as unknown;
+      const clean = redactJson(parsed);
+      if (JSON.stringify(clean) !== JSON.stringify(parsed)) body = JSON.stringify(clean, null, 2);
+    } catch { /* not JSON: kept as typed */ }
+  }
+  return {
+    ...s,
+    headers: s.headers.map((h) => (SECRET_HEADERS.has(h.key.trim().toLowerCase()) ? { ...h, value: "" } : h)),
+    form: s.form.map((f) => (SECRET_KEY.test(f.key) ? { ...f, value: "" } : f)),
+    body,
+  };
+}
+
 export interface HistoryEntry { at: number; status: number; req: ApiRequest }
 export interface SavedRequest { name: string; req: ApiRequest }
 

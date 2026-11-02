@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type ApiResponse } from "../api.ts";
+import { api, type ApiResponse, type ListResponse } from "../api.ts";
 import "../styles/dashboard-next.css";
 
 // ── Shapes returned by the API ───────────────────────────────────────────────
@@ -131,19 +131,15 @@ export default function Dashboard() {
       api.get<ApiResponse<QueueStat[]>>(`/api/v1/admin/queues/stats?window=${windowSec}`),
       api.get<ApiResponse<JobLogRow[]>>("/api/v1/admin/queues/jobs?status=dead&perPage=6"),
       api.get<ApiResponse<CollectionStat[]>>(`/api/v1/admin/collections/stats?window=${windowSec}`),
-      // `logs/search` is the only tail available; `$[*]` matches every entry
-      // and readLogs() emits newest-first, so this is the recent-request list.
-      api.post<ApiResponse<{ results: { entry: LogEntry }[] }>>("/api/v1/admin/logs/search", {
-        jsonpath: "$[*]",
-        limit: 7,
-      }),
+      // Newest first, admin API traffic left out (as on the Logs page).
+      api.get<ListResponse<LogEntry> & { error?: string }>("/api/v1/admin/logs?perPage=7"),
     ]);
     if (!alive.current) return;
     setHealth(h?.data ?? null);
     setQueues(q.data ?? []);
     setDead(d.data ?? []);
     setColls(c.data ?? []);
-    setReqs((l.data?.results ?? []).map((r) => r.entry).filter(Boolean));
+    setReqs(l.data ?? []);
     setLoading(false);
     setFirstLoad(false);
   }, []);

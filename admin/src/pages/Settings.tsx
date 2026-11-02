@@ -109,8 +109,10 @@ const SectionShell: React.FC<{
   sub?: React.ReactNode;
   /** Right-aligned header slot (status pill, enable toggle, etc.). */
   right?: React.ReactNode;
+  /** Set when the section's settings failed to load: shown above the form. */
+  loadError?: string;
   children: React.ReactNode;
-}> = ({ id, sub, right, children }) => {
+}> = ({ id, sub, right, loadError, children }) => {
   const tab = SETTINGS_TABS.find((t) => t.id === id);
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -127,11 +129,35 @@ const SectionShell: React.FC<{
         gap: 24,
         minWidth: 0,
       }}>
+        <LoadFailed error={loadError} />
         {children}
       </div>
     </div>
   );
 };
+
+/**
+ * A section whose settings didn't load shows defaults, not the real values;
+ * its Save stays off (sections only enable it after a successful load) so
+ * those defaults can't be written over the real ones.
+ */
+function LoadFailed({ error }: { error?: string | undefined }) {
+  if (!error) return null;
+  return (
+    <div role="alert" style={{
+      padding: "10px 12px",
+      fontSize: 12.5,
+      lineHeight: 1.5,
+      color: "var(--vb-fg)",
+      background: "color-mix(in srgb, var(--vb-status-danger) 10%, transparent)",
+      border: "1px solid color-mix(in srgb, var(--vb-status-danger) 40%, transparent)",
+      borderRadius: 6,
+    }}>
+      <strong>Couldn't load these settings:</strong> {error}. The values below are defaults, so saving is off.
+      Reload the page to try again.
+    </div>
+  );
+}
 
 /**
  * Card-style container used by sub-sections inside a SectionShell. Keeps the
@@ -142,8 +168,9 @@ const SubCard: React.FC<{
   title: React.ReactNode;
   meta?: React.ReactNode;
   right?: React.ReactNode;
+  loadError?: string;
   children: React.ReactNode;
-}> = ({ title, meta, right, children }) => (
+}> = ({ title, meta, right, loadError, children }) => (
   <div style={{
     background: "var(--vb-bg-2)",
     border: "1px solid var(--vb-border)",
@@ -167,7 +194,10 @@ const SubCard: React.FC<{
       </div>
       {right && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{right}</div>}
     </div>
-    <div style={{ padding: "14px" }}>{children}</div>
+    <div style={{ padding: "14px" }}>
+      {loadError && <div style={{ marginBottom: 12 }}><LoadFailed error={loadError} /></div>}
+      {children}
+    </div>
   </div>
 );
 
@@ -315,6 +345,7 @@ const AUDIENCE_OPTIONS = [
 ];
 
 function RateLimitSection() {
+  const [loadError, setLoadError] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [rules, setRules] = useState<RateLimitRule[]>(DEFAULT_RULES);
   const [loading, setLoading] = useState(true);
@@ -322,6 +353,7 @@ function RateLimitSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         if (res.data["rate_limit.enabled"] !== undefined) {
           setEnabled(res.data["rate_limit.enabled"] === "1" || res.data["rate_limit.enabled"] === "true");
@@ -372,7 +404,7 @@ function RateLimitSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="rate-limit"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -477,6 +509,7 @@ const DEFAULT_DENY_HUMAN =
   "172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7, fe80::/10";
 
 function EgressSection() {
+  const [loadError, setLoadError] = useState("");
   const [deny, setDeny] = useState("");
   const [allow, setAllow] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -484,6 +517,7 @@ function EgressSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         setDeny(res.data["hooks.http.deny"] ?? "");
         setAllow(res.data["hooks.http.allow"] ?? "");
@@ -506,7 +540,7 @@ function EgressSection() {
   const off = deny.trim().toLowerCase() === "off";
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="egress"
       sub={<>Filters <VbCode>helpers.http(...)</VbCode> outbound calls.</>}
     >
@@ -591,12 +625,14 @@ const SCRIPT_LIMITS: { key: string; label: string; defaultSeconds: number; hint:
 ];
 
 function ScriptLimitsSection() {
+  const [loadError, setLoadError] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const next: Record<string, string> = {};
         for (const l of SCRIPT_LIMITS) {
@@ -630,7 +666,7 @@ function ScriptLimitsSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="script-limits"
       sub={<>How long a script may run before its caller stops waiting. Blank uses the default; <VbCode>0</VbCode> means no limit.</>}
     >
@@ -689,6 +725,7 @@ function MaintenanceSection() {
   const [openRoutes, setOpenRoutes] = useState<string[]>([]);
   const [customRoutes, setCustomRoutes] = useState<CustomRouteRow[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -696,6 +733,9 @@ function MaintenanceSection() {
       api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings"),
       api.get<ApiResponse<CustomRouteRow[]>>("/api/v1/admin/routes"),
     ]).then(([settings, routes]) => {
+      // Without the routes list, saving would drop the open-route choices.
+      const failed = settings.error ?? routes.error;
+      if (failed) { setLoadError(failed); return; }
       const s = settings.data ?? {};
       const on = s["maintenance_mode.enabled"] === "1";
       setEnabled(on);
@@ -758,6 +798,7 @@ function MaintenanceSection() {
 
   return (
     <SectionShell
+      loadError={loadError}
       id="maintenance"
       sub="Close the API to clients while you work. The admin panel, admin API tokens, MCP and /api/health stay open."
       right={
@@ -861,12 +902,14 @@ const THEME_KNOBS: ThemeKnob[] = [
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 function ThemeSection() {
+  const [loadError, setLoadError] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const seed: Record<string, string> = {};
         for (const k of THEME_KNOBS) {
@@ -912,7 +955,7 @@ function ThemeSection() {
   }
 
   return (
-    <SectionShell id="theme">
+    <SectionShell loadError={loadError} id="theme">
       <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)", lineHeight: 1.6 }}>
         Hex colors: <VbCode>#e85a4f</VbCode>, <VbCode>#fff</VbCode>, <VbCode>#e85a4f80</VbCode>{" "}
         (alpha). Empty falls back to the built-in default. Changes apply on next page load — and
@@ -1043,6 +1086,7 @@ function SidebarSection() {
 
 // ── CORS ────────────────────────────────────────────────────────────────────
 function CorsSection() {
+  const [loadError, setLoadError] = useState("");
   const [origins, setOrigins] = useState("");
   const [methods, setMethods] = useState("");
   const [headers, setHeaders] = useState("");
@@ -1053,6 +1097,7 @@ function CorsSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         setOrigins(res.data["cors.origins"] ?? "");
         setMethods(res.data["cors.methods"] ?? "");
@@ -1081,7 +1126,7 @@ function CorsSection() {
   const wildcardWithCreds = credentials && origins.split(",").map((s) => s.trim()).includes("*");
 
   return (
-    <SectionShell id="cors">
+    <SectionShell loadError={loadError} id="cors">
       <VbField
         label="Allowed origins (comma-separated)"
         hint={
@@ -1301,6 +1346,7 @@ function ActiveSessionsCard() {
 }
 
 function BruteForceCard() {
+  const [loadError, setLoadError] = useState("");
   const [enabled, setEnabled] = useState(false);
   const [maxAttempts, setMaxAttempts] = useState("10");
   const [duration, setDuration] = useState("900");
@@ -1309,6 +1355,7 @@ function BruteForceCard() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         // Unset means the server default: on, 10 attempts.
         const m = parseInt(res.data["auth.lockout.max_attempts"] ?? "10", 10);
@@ -1332,7 +1379,7 @@ function BruteForceCard() {
   }
 
   return (
-    <SubCard
+    <SubCard loadError={loadError}
       title="Brute-force lockout"
       meta="per-account + per-IP failed-login throttle (admins and users)"
       right={
@@ -1379,6 +1426,7 @@ function BruteForceCard() {
 }
 
 function TrustedProxiesCard() {
+  const [loadError, setLoadError] = useState("");
   const [value, setValue] = useState("");
   const [envFallback, setEnvFallback] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -1386,6 +1434,7 @@ function TrustedProxiesCard() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         setValue(res.data["security.trusted_proxies"] ?? "");
         setEnvFallback(res.data["security.trusted_proxies_env_view"] ?? "");
@@ -1405,7 +1454,7 @@ function TrustedProxiesCard() {
   }
 
   return (
-    <SubCard
+    <SubCard loadError={loadError}
       title="Trusted proxies"
       meta={<>CIDRs allowed to set <VbCode>X-Forwarded-For</VbCode></>}
     >
@@ -1547,12 +1596,14 @@ function HeadersPreviewCard() {
 
 // ── Password policy ─────────────────────────────────────────────────────────
 function RetentionSection() {
+  const [loadError, setLoadError] = useState("");
   const [days, setDays] = useState("30");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) setDays(res.data["maintenance.retention_days"] ?? "30");
       setLoaded(true);
     });
@@ -1574,7 +1625,7 @@ function RetentionSection() {
   }
 
   return (
-    <SectionShell id="retention">
+    <SectionShell loadError={loadError} id="retention">
       <VbField
         label="Keep job, webhook and request-log history for"
         hint="Finished queue jobs (succeeded / failed / dead), finished webhook deliveries and daily request-log files older than this are deleted once a day. 0 keeps them forever. Queued / running jobs and pending deliveries are never touched. Expired tokens are always cleaned up."
@@ -1601,6 +1652,7 @@ function RetentionSection() {
 }
 
 function PasswordPolicySection() {
+  const [loadError, setLoadError] = useState("");
   const [minLen, setMinLen] = useState("12");
   const [reqUpper, setReqUpper] = useState(false);
   const [reqLower, setReqLower] = useState(false);
@@ -1612,6 +1664,7 @@ function PasswordPolicySection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         setMinLen(res.data["password.min_length"] ?? "12");
         setReqUpper((res.data["password.require_upper"] ?? "0") === "1");
@@ -1642,7 +1695,7 @@ function PasswordPolicySection() {
   }
 
   return (
-    <SectionShell id="password-policy">
+    <SectionShell loadError={loadError} id="password-policy">
       <VbField
         label="Minimum length"
         hint="NIST 800-63B recommends at least 8 characters; OWASP recommends 12. Floor is 8."
@@ -1697,6 +1750,7 @@ function PasswordPolicySection() {
 
 // ── Health & metrics ────────────────────────────────────────────────────────
 function MetricsSection() {
+  const [loadError, setLoadError] = useState("");
   const [enabled, setEnabled] = useState(false);
   const [token, setToken] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -1704,6 +1758,7 @@ function MetricsSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         setEnabled((res.data["metrics.enabled"] ?? "0") === "1");
         setToken(res.data["metrics.token"] ?? "");
@@ -1731,7 +1786,7 @@ function MetricsSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="metrics"
       sub={<>Prometheus exposition at <VbCode>/api/v1/metrics</VbCode>.</>}
       right={
@@ -1802,6 +1857,7 @@ function UpdatesSection() {
   const [enabled, setEnabled] = useState(true);
   const [status, setStatus] = useState<UpdateStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
 
@@ -1811,10 +1867,16 @@ function UpdatesSection() {
         setStatus(res.data);
         setEnabled(res.data.enabled);
       }
+      return res;
     });
   }
 
-  useEffect(() => { loadStatus().finally(() => setLoaded(true)); }, []);
+  useEffect(() => {
+    void loadStatus().then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
+      setLoaded(true);
+    });
+  }, []);
 
   async function save() {
     setSaving(true);
@@ -1837,6 +1899,7 @@ function UpdatesSection() {
 
   return (
     <SectionShell
+      loadError={loadError}
       id="updates"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2042,6 +2105,7 @@ async function downloadAuthed(url: string, fallbackName: string): Promise<void> 
 }
 
 function BackupSection() {
+  const [loadError, setLoadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
   const [phase, setPhase] = useState<RestorePhase | null>(null);
@@ -2129,6 +2193,7 @@ function BackupSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const s = res.data;
         setEnabled(s["backups.enabled"] === "1");
@@ -2266,7 +2331,7 @@ function BackupSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="backup"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2476,6 +2541,7 @@ function BackupSection() {
 
 // ── SMTP / Email ─────────────────────────────────────────────────────────────
 function SmtpSection() {
+  const [loadError, setLoadError] = useState("");
   const [enabled, setEnabled] = useState(false);
   const [host, setHost] = useState("");
   const [port, setPort] = useState("587");
@@ -2490,6 +2556,7 @@ function SmtpSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const s = res.data;
         setEnabled(s["smtp.enabled"] === "1" || s["smtp.enabled"] === "true");
@@ -2536,7 +2603,7 @@ function SmtpSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="smtp"
       right={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2671,6 +2738,7 @@ const TEMPLATES: TemplateSpec[] = [
 const COMMON_VARS = ["email", "token", "link", "appUrl", "collection"];
 
 function EmailTemplatesSection() {
+  const [loadError, setLoadError] = useState("");
   const [appUrl, setAppUrl] = useState("");
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(TEMPLATES.flatMap((t) => [[`email.${t.kind}.subject`, t.subject], [`email.${t.kind}.body`, t.body]])));
@@ -2679,6 +2747,7 @@ function EmailTemplatesSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const d = res.data;
         setAppUrl(d["app.url"] ?? "");
@@ -2713,7 +2782,7 @@ function EmailTemplatesSection() {
   };
 
   return (
-    <SectionShell id="templates">
+    <SectionShell loadError={loadError} id="templates">
       <VbField
         label="App URL"
         hint={<>Base URL of your frontend. Used to build the <VbCode>{`{{link}}`}</VbCode> in emails.</>}
@@ -2812,12 +2881,14 @@ const AUTH_FEATURES: AuthFeatureRow[] = [
 ];
 
 function AuthFeaturesSection() {
+  const [loadError, setLoadError] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) setConfig(res.data);
       setLoading(false);
     });
@@ -2845,7 +2916,7 @@ function AuthFeaturesSection() {
   }
 
   return (
-    <SectionShell id="auth">
+    <SectionShell loadError={loadError} id="auth">
       <div style={{ fontSize: 11.5, color: "var(--vb-fg-3)" }}>
         Disabled features return <VbCode>422</VbCode> from their endpoints. Disabling MFA blocks
         new enrollment only — already-enrolled users keep working.
@@ -2931,6 +3002,7 @@ const PRESETS: Array<{ label: string; seconds: number }> = [
 const SESSION_MAX_DEFAULT = 30 * 86400;
 
 function SessionLifetimesSection() {
+  const [loadError, setLoadError] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   // Absolute cap on how long refreshing can keep one sign-in alive.
   const [maxSession, setMaxSession] = useState(String(SESSION_MAX_DEFAULT));
@@ -2939,6 +3011,7 @@ function SessionLifetimesSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const next: Record<string, string> = {};
         for (const k of SESSION_KINDS) {
@@ -2994,6 +3067,7 @@ function SessionLifetimesSection() {
       borderTop: "1px solid var(--vb-border)",
       display: "flex", flexDirection: "column", gap: 16,
     }}>
+      <LoadFailed error={loadError} />
       <div>
         <h2 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--vb-fg)", marginBottom: 4 }}>
           Session lifetimes
@@ -3178,6 +3252,7 @@ const OAUTH_PROVIDERS: OAuthProviderRow[] = [
 ];
 
 function OAuth2Section() {
+  const [loadError, setLoadError] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3186,6 +3261,7 @@ function OAuth2Section() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) setConfig(res.data);
       setLoading(false);
     });
@@ -3234,7 +3310,7 @@ function OAuth2Section() {
   const enabledCount = OAUTH_PROVIDERS.filter((p) => isOn(p.name)).length;
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="oauth2"
       right={
         <VbPill tone={enabledCount > 0 ? "success" : "neutral"} dot>
@@ -3771,6 +3847,7 @@ const MIN_UPLOAD_MB = 0.01;
 const MAX_UPLOAD_MB = 128;
 
 function StorageSection() {
+  const [loadError, setLoadError] = useState("");
   const [driver, setDriver] = useState<"local" | "s3">("local");
   const [endpoint, setEndpoint] = useState("");
   const [bucket, setBucket] = useState("");
@@ -3787,6 +3864,7 @@ function StorageSection() {
 
   useEffect(() => {
     api.get<ApiResponse<Record<string, string>>>("/api/v1/admin/settings").then((res) => {
+      if (res.error) { setLoadError(res.error); return; }
       if (res.data) {
         const s = res.data;
         setDriver(s["storage.driver"] === "s3" ? "s3" : "local");
@@ -3869,7 +3947,7 @@ function StorageSection() {
   }
 
   return (
-    <SectionShell
+    <SectionShell loadError={loadError}
       id="storage"
       right={status && (
         <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontFamily: "var(--font-mono)" }}>
@@ -4630,8 +4708,10 @@ function DangerZone() {
             kind="danger"
             size="sm"
             icon="logout"
-            onClick={() => {
-              useAuth.getState().signOut();
+            onClick={async () => {
+              // Wait for the logout call: leaving first can cancel it and
+              // keep the session cookie alive.
+              await useAuth.getState().signOut();
               window.location.href = "/_/login";
             }}
           >

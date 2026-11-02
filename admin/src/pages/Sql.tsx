@@ -341,6 +341,8 @@ export default function SqlPage() {
   const [sql, setSql] = useState<string>(STARTER_SQL);
   const [mode, setMode] = useState<Mode>("readonly");
   const [running, setRunning] = useState(false);
+  // Read by ⌘↵ and the saved-query list, whose callbacks outlive a render.
+  const runningRef = useRef(false);
   const [result, setResult] = useState<RunResult | null>(null);
   const [sandbox, setSandbox] = useState<SandboxInfo | null>(null);
   const [sandboxBusy, setSandboxBusy] = useState(false);
@@ -380,13 +382,19 @@ export default function SqlPage() {
   // ── actions ───────────────────────────────────────────────────────────
   const run = useCallback(async () => {
     const currentSql = sqlRef.current.trim();
-    if (!currentSql) return;
+    if (!currentSql || runningRef.current) return;
+    runningRef.current = true;
     setRunning(true);
     const res = await api.post<ApiResponse<RunResult>>("/api/v1/admin/sql/run", {
       sql: currentSql,
       mode: modeRef.current,
     });
+    runningRef.current = false;
     setRunning(false);
+    showRunResult(res);
+  }, [loadSandbox]);
+
+  function showRunResult(res: ApiResponse<RunResult>) {
     if (res.data) {
       setResult(res.data);
       // After sandbox runs, refresh sandbox info (mtime changed).
@@ -397,21 +405,24 @@ export default function SqlPage() {
         error: res.error,
       });
     }
-  }, [loadSandbox]);
+  }
 
   const onRunSavedFromList = useCallback(async (q: SavedQuery) => {
+    if (runningRef.current) return;
     setSelectedId(q.id);
     setSql(q.sql);
     sqlRef.current = q.sql;
+    runningRef.current = true;
     setRunning(true);
     const res = await api.post<ApiResponse<RunResult>>(
       `/api/v1/admin/sql/queries/${encodeURIComponent(q.id)}/run`,
       { mode: modeRef.current },
     );
+    runningRef.current = false;
     setRunning(false);
-    if (res.data) setResult(res.data);
+    showRunResult(res);
     void loadSaved(); // last_run_* updated
-  }, [loadSaved]);
+  }, [loadSaved, loadSandbox]);
 
   // Keyboard shortcut: ⌘↵ / Ctrl+↵ runs. Listened for in the capture phase:
   // the editor keeps ⌘↵ ("insert line below") and stops it reaching window.

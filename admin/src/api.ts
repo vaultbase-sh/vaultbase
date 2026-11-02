@@ -4,6 +4,9 @@ const PUBLIC_PATHS = ["/api/v1/admin/setup", "/api/v1/admin/auth/login", "/api/v
 
 const TOKEN_STORAGE_KEY = "vaultbase_admin_token";
 
+/** Error text for a request that never got an answer; such responses carry `code: 0`. */
+export const NETWORK_ERROR = "Network error: the server can't be reached";
+
 /**
  * Token stored in `sessionStorage`. Survives F5 refresh within the same tab
  * but is cleared on tab close — a smaller XSS-persistence window than
@@ -29,12 +32,19 @@ async function req<T>(method: string, path: string, body?: unknown, extraHeaders
   const headers: Record<string, string> = { ...(form ? {} : { "Content-Type": "application/json" }), ...extraHeaders };
   const memToken = getMemoryToken();
   if (memToken) headers.Authorization = `Bearer ${memToken}`;
-  const res = await fetch(BASE + path, {
-    method,
-    credentials: "same-origin",
-    headers,
-    body: form ? body : body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      credentials: "same-origin",
+      headers,
+      body: form ? body : body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // Server unreachable or restarting: answer with the usual error shape so
+    // callers clear their busy flags instead of hanging on a rejection.
+    return { error: NETWORK_ERROR, code: 0 } as T;
+  }
   if (res.status === 401 && !PUBLIC_PATHS.some((p) => path.startsWith(p))) {
     setMemoryToken(null);
     if (!window.location.pathname.startsWith("/_/login") && !window.location.pathname.startsWith("/_/setup")) {

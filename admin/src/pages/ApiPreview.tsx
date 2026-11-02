@@ -15,7 +15,7 @@ import {
 } from "../lib/api-presets.ts";
 import {
   applyUrlEdit, displayUrl, exportFile, hasBody, missingPathValues, newRequest, parseSaved,
-  pushHistory, requestFromPreset, requestHeaders, resolvedUrl, savedRequestsKey, storableRequest,
+  historyRequest, pushHistory, requestFromPreset, requestHeaders, resolvedUrl, savedRequestsKey, storableRequest,
   type ApiRequest, type HistoryEntry, type SavedRequest,
 } from "../lib/api-client.ts";
 import "../styles/api-preview.css";
@@ -198,7 +198,7 @@ export default function ApiPreview() {
     }
     setResponses((rs) => ({ ...rs, [req.id]: info }));
     setHistory((h) => {
-      const next = pushHistory(h, { at: Date.now(), status: info.status, req: { ...storableRequest(req), id: newRequest().id } });
+      const next = pushHistory(h, { at: Date.now(), status: info.status, req: { ...historyRequest(req), id: newRequest().id } });
       saveHistory(next);
       return next;
     });

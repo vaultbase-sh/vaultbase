@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation, useParams } from "react-router-dom";
 import "./styles/globals.css";
 // ADMIN THEME: redesign token layer. Remove this line to revert the whole
 // app to the previous look — see src/styles/theme-next.css.
@@ -8,10 +8,12 @@ import "./styles/overlays.css";
 import { api, type ApiResponse } from "./api.ts";
 import { Sidebar } from "./components/Shell.tsx";
 import { ToastHost } from "./components/UI.tsx";
+import { VbBtn } from "./components/Vb.tsx";
 import { ConfirmHost } from "./components/Confirm.tsx";
 import { CommandPalette, useCommandPalette } from "./components/CommandPalette.tsx";
 import { useAuth } from "./stores/auth.ts";
 import { useMaintenance } from "./stores/maintenance.ts";
+import { retryDelay } from "./lib/retry.ts";
 import Login from "./pages/Login.tsx";
 import Setup from "./pages/Setup.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
@@ -34,10 +36,41 @@ const McpPage = lazy(() => import("./pages/Mcp.tsx"));
 const SqlPage = lazy(() => import("./pages/Sql.tsx"));
 const MonitoringPage = lazy(() => import("./pages/Monitoring.tsx"));
 
+/**
+ * The boot-time /me probe got no answer (server down or restarting, e.g.
+ * right after a restore). Retries on its own with backoff, or on demand.
+ */
+function ServerUnreachable() {
+  const [attempt, setAttempt] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const retry = async () => {
+    setBusy(true);
+    await useAuth.getState().load();
+    setBusy(false);
+    setAttempt((a) => a + 1);
+  };
+  useEffect(() => {
+    const t = window.setTimeout(() => { void retry(); }, retryDelay(attempt));
+    return () => window.clearTimeout(t);
+  }, [attempt]);
+  return (
+    <div role="alert" style={{
+      minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", gap: 12, color: "var(--vb-fg-2)", fontSize: 13,
+    }}>
+      <strong style={{ color: "var(--vb-fg)" }}>Can't reach the server</strong>
+      <span>{busy ? "Trying again…" : "It may be restarting. Retrying automatically."}</span>
+      <VbBtn kind="ghost" disabled={busy} onClick={() => { void retry(); }}>Retry</VbBtn>
+    </div>
+  );
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthed = useAuth((s) => s.isAuthed);
   const loaded = useAuth((s) => s.loaded);
+  const unreachable = useAuth((s) => s.unreachable);
   if (!loaded) return null;
+  if (unreachable) return <ServerUnreachable />;
   if (!isAuthed) return <Navigate to="/_/login" replace />;
   return <>{children}</>;
 }
@@ -45,7 +78,9 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 function RequireUnauth({ children }: { children: React.ReactNode }) {
   const isAuthed = useAuth((s) => s.isAuthed);
   const loaded = useAuth((s) => s.loaded);
+  const unreachable = useAuth((s) => s.unreachable);
   if (!loaded) return null;
+  if (unreachable) return <ServerUnreachable />;
   if (isAuthed) return <Navigate to="/_/" replace />;
   return <>{children}</>;
 }
@@ -80,6 +115,15 @@ function SetupRedirect({ children }: { children: React.ReactNode }) {
   if (hasAdmin && onSetup) return <Navigate to={isAuthed ? "/_/" : "/_/login"} replace />;
 
   return <>{children}</>;
+}
+
+/**
+ * Remount a page when its `:id` changes, so per-collection state (page,
+ * filter, sort, selection, previews) never carries over to the next one.
+ */
+function KeyedById({ children }: { children: (id: string) => React.ReactNode }) {
+  const { id = "" } = useParams();
+  return <>{children(id)}</>;
 }
 
 function PageFallback() {
@@ -161,8 +205,8 @@ export default function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="collections" element={<Collections />} />
-            <Route path="collections/:id/edit" element={<CollectionEdit />} />
-            <Route path="collections/:id/records" element={<Records />} />
+            <Route path="collections/:id/edit" element={<KeyedById>{(id) => <CollectionEdit key={id} />}</KeyedById>} />
+            <Route path="collections/:id/records" element={<KeyedById>{(id) => <Records key={id} />}</KeyedById>} />
             <Route path="logs" element={<Logs />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="api-preview" element={<ApiPreview />} />

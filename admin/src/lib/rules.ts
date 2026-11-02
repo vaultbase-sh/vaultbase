@@ -63,8 +63,6 @@ export type RuleOpId = "list" | "view" | "create" | "update" | "delete";
 
 export type RuleSet = Record<RuleOpId, RuleValue>;
 
-export const RULE_OP_IDS: RuleOpId[] = ["list", "view", "create", "update", "delete"];
-
 export function toRuleSet(c: Partial<StoredRules>): RuleSet {
   return {
     list: toRuleValue(c.list_rule),

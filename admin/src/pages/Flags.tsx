@@ -138,6 +138,7 @@ export default function Flags() {
   const load = useCallback(() => {
     api.get<ApiResponse<Flag[]>>("/api/v1/admin/flags").then((res) => {
       if (res.data) setFlags(res.data);
+      else if (res.error) toast(`Couldn't load flags: ${res.error}`, "info");
     });
   }, []);
   useEffect(() => { load(); }, [load]);

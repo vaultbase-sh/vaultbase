@@ -64,12 +64,19 @@ export default function Logs() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  // Typed value, and the one the list uses (applied on Enter or blur, so
+  // every keystroke doesn't fire a request).
+  const [minDurationDraft, setMinDurationDraft] = useState("0");
   const [minDuration, setMinDuration] = useState("0");
   const [loading, setLoading] = useState(true);
   const [openLog, setOpenLog] = useState<LogEntry | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Only the latest request may land: a slow answer for old filters must not
+  // overwrite a newer one.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async (p: number) => {
+    const seq = ++loadSeq.current;
     const params = new URLSearchParams({
       page: String(p),
       perPage: "50",
@@ -81,6 +88,7 @@ export default function Logs() {
     if (minDuration && parseInt(minDuration) > 0) params.set("minDuration", minDuration);
     if (ruleOutcomeFilter !== "all") params.set("ruleOutcome", ruleOutcomeFilter);
     const res = await api.get<ListResponse<LogEntry>>(`/api/v1/admin/logs?${params}`);
+    if (seq !== loadSeq.current) return;
     if (res.data) {
       setEntries(res.data);
       setTotal(res.totalItems);
@@ -95,12 +103,21 @@ export default function Logs() {
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    if (!autoRefresh) return;
-    intervalRef.current = setInterval(() => load(page), 2000);
+    // No polling behind the JSONPath search tab or in a hidden browser tab.
+    if (!autoRefresh || mode !== "live") return;
+    intervalRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") void load(page);
+    }, 2000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [autoRefresh, load, page]);
+  }, [autoRefresh, load, page, mode]);
+
+  function applyMinDuration() {
+    if (minDurationDraft === minDuration) return;
+    setMinDuration(minDurationDraft);
+    setPage(1);
+  }
 
   const statusClass = (s: number) =>
     s < 300 ? "status-2xx" : s < 400 ? "status-3xx" : s < 500 ? "status-4xx" : "status-5xx";
@@ -224,8 +241,10 @@ export default function Logs() {
               style={{ width: 80 }}
               type="number"
               min={0}
-              value={minDuration}
-              onChange={(e) => { setMinDuration(e.target.value); setPage(1); }}
+              value={minDurationDraft}
+              onChange={(e) => setMinDurationDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") applyMinDuration(); }}
+              onBlur={applyMinDuration}
               placeholder="0"
             />
             <span style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>ms</span>

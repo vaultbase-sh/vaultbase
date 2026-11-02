@@ -33,30 +33,6 @@ export const Toggle: React.FC<{
   </button>
 );
 
-// ── StatCard ─────────────────────────────────────────────────────────────────
-export const StatCard: React.FC<{
-  label: string;
-  value: string | number;
-  delta?: string;
-  deltaDir?: "up" | "down";
-  spark?: number[];
-}> = ({ label, value, delta, deltaDir, spark }) => (
-  <div className="stat-card">
-    <div className="stat-label">{label}</div>
-    <div className="stat-value">
-      <span className="num">{value}</span>
-      {delta && <span className={`delta ${deltaDir ?? "up"}`}>{delta}</span>}
-    </div>
-    {spark && (
-      <div className="stat-spark">
-        {spark.map((h, i) => (
-          <span key={i} style={{ height: `${h * 100}%`, opacity: 0.3 + h * 0.6 }} />
-        ))}
-      </div>
-    )}
-  </div>
-);
-
 // ── Overlays: Modal and Drawer ───────────────────────────────────────────────
 // Rendered into a `.vb-layer` on <body>, so the admin theme's `.app`-scoped
 // rules (square corners, mono inputs and labels) reach them as they reach the

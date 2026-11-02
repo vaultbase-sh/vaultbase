@@ -708,38 +708,6 @@ export const VbSubHeader: React.FC<{
   </header>
 );
 
-// ── Sort menu (presentational button — caller wires the menu) ───────────────
-
-export const SortMenu: React.FC<{
-  label?: string;
-  value: string;
-  onClick?: () => void;
-}> = ({ label = "Sort", value, onClick }) => (
-  <button
-    onClick={onClick}
-    style={{
-      appearance: "none",
-      border: "1px solid var(--vb-border-2)",
-      background: "var(--vb-bg-2)",
-      color: "var(--vb-fg-2)",
-      height: 32,
-      padding: "0 10px",
-      borderRadius: 5,
-      fontFamily: "inherit",
-      fontSize: 12,
-      fontWeight: 500,
-      cursor: "pointer",
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 6,
-    }}
-  >
-    <span style={{ color: "var(--vb-fg-3)" }}>{label}</span>
-    <span style={{ fontFamily: "var(--font-mono)", color: "var(--vb-fg)" }}>{value}</span>
-    <Icon name="chevronDown" size={11} />
-  </button>
-);
-
 // ── VbTable ────────────────────────────────────────────────────────────────
 //
 // Custom data table matching the design's aesthetic. Used in place of the
@@ -869,6 +837,13 @@ export function VbTable<Row>({
     else onSortChange(col.key);
   }
 
+  function ariaSort(col: VbTableColumn<Row>): "ascending" | "descending" | "none" {
+    const cur = sort ?? "";
+    if (cur === col.key) return "ascending";
+    if (cur === `-${col.key}`) return "descending";
+    return "none";
+  }
+
   function sortIndicator(col: VbTableColumn<Row>): React.ReactNode {
     if (!col.sortable) return null;
     const cur = sort ?? "";
@@ -892,6 +867,7 @@ export function VbTable<Row>({
 
   return (
     <div
+      role="table"
       className={["vb-table", className].filter(Boolean).join(" ")}
       style={{
         background: "var(--vb-bg-2)",
@@ -905,6 +881,7 @@ export function VbTable<Row>({
     >
       {/* Header */}
       <div
+        role="row"
         style={{
           display: "grid",
           gridTemplateColumns: gridTemplate,
@@ -936,7 +913,13 @@ export function VbTable<Row>({
         {columns.map((c) => (
           <span
             key={c.key}
+            role="columnheader"
+            aria-sort={c.sortable ? ariaSort(c) : undefined}
+            tabIndex={c.sortable && onSortChange ? 0 : undefined}
             onClick={() => clickHeader(c)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); clickHeader(c); }
+            }}
             style={{
               cursor: c.sortable ? "pointer" : "default",
               userSelect: "none",
@@ -981,7 +964,15 @@ export function VbTable<Row>({
             return (
               <div
                 key={key}
+                role="row"
+                tabIndex={onRowClick ? 0 : undefined}
                 onClick={() => onRowClick?.(row)}
+                onKeyDown={onRowClick ? (e) => {
+                  // Only the row itself: keys typed into a checkbox or a
+                  // link inside a cell keep their own meaning.
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick(row); }
+                } : undefined}
                 style={{
                   display: "grid",
                   gridTemplateColumns: gridTemplate,
@@ -1022,6 +1013,7 @@ export function VbTable<Row>({
                   return (
                     <span
                       key={c.key}
+                      role="cell"
                       style={{
                         fontSize: 12,
                         color: "var(--vb-fg)",

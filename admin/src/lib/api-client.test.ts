@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   applyUrlEdit, curlSnippet, displayUrl, fetchSnippet, missingPathValues, newRequest, parseUrl,
   pathParamNames, requestFromPreset, requestHeaders, resolvedUrl, sdkSnippet, toHttpFile,
-  toInsomnia, toPostman, storableRequest, pushHistory, parseSaved, savedRequestsKey, HISTORY_LIMIT,
+  toInsomnia, toPostman, storableRequest, historyRequest, pushHistory, parseSaved, savedRequestsKey, HISTORY_LIMIT,
 } from "./api-client.ts";
 import type { Preset } from "./api-presets.ts";
 
@@ -139,6 +139,33 @@ describe("history and saved requests", () => {
     expect(s.auth).toEqual({ mode: "bearer" });
     expect(JSON.stringify(s)).not.toContain("secret");
     expect(s.form[0]).toEqual({ key: "f", value: "", on: true });
+  });
+
+  it("keep no credentials in browser history", () => {
+    const r = newRequest({
+      method: "POST",
+      headers: [
+        { key: "authorization", value: "Bearer abc", on: true },
+        { key: "Cookie", value: "vb=xyz", on: true },
+        { key: "X-Trace", value: "keep", on: true },
+      ],
+      bodyMode: "json",
+      body: JSON.stringify({ email: "a@b.c", password: "hunter2", nested: { newPassword: "p2", passwordConfirm: "p3" } }),
+      form: [{ key: "Password", value: "p4", on: true }, { key: "name", value: "n", on: true }],
+    });
+    const h = historyRequest(r);
+    const text = JSON.stringify(h);
+    for (const secret of ["abc", "xyz", "hunter2", "p2", "p3", "p4"]) expect(text).not.toContain(secret);
+    expect(h.headers.map((x) => x.key)).toEqual(["authorization", "Cookie", "X-Trace"]);
+    expect(h.headers[2]!.value).toBe("keep");
+    expect(JSON.parse(h.body)).toEqual({ email: "a@b.c", password: "", nested: { newPassword: "", passwordConfirm: "" } });
+    expect(h.form[1]!.value).toBe("n");
+  });
+
+  it("leave a body without secrets as typed", () => {
+    const body = '{"title":"a"}';
+    expect(historyRequest(newRequest({ body })).body).toBe(body);
+    expect(historyRequest(newRequest({ body: "not json password=x" })).body).toBe("not json password=x");
   });
 
   it("keep history newest first, capped, without back-to-back repeats", () => {

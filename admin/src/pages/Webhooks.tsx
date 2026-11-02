@@ -105,6 +105,7 @@ export default function Webhooks() {
   const load = useCallback(() => {
     api.get<ApiResponse<Webhook[]>>("/api/v1/admin/webhooks").then((res) => {
       if (res.data) setList(res.data);
+      else if (res.error) toast(`Couldn't load webhooks: ${res.error}`, "info");
     });
   }, []);
   useEffect(() => { load(); }, [load]);

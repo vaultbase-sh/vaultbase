@@ -4,7 +4,7 @@ import { Chips } from "primereact/chips";
 import {
   api, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, parseFields,
 } from "../api.ts";
-import { CodeEditor, type SqlSchema } from "../components/CodeEditor.tsx";
+import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   CollectionAvatar,
@@ -26,6 +26,7 @@ import {
 } from "../lib/rules.ts";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
+import { useCollections } from "../stores/collections.ts";
 import {
   GROUP_MAX_ITEMS, GROUP_SUBFIELD_TYPES, groupItemBounds, groupSchemaProblem, isGroupList, moveItem,
   subfieldsForSave, subfieldsOf, withStoredSubfieldNames,
@@ -264,6 +265,7 @@ export default function CollectionEdit() {
       setSaving(false);
       if (res.error) { toast(res.error, "info"); return; }
       toast("Changes saved");
+      void useCollections.getState().load(true);
       navigate(`/_/collections/${collId}/records`);
       return;
     }
@@ -310,6 +312,7 @@ export default function CollectionEdit() {
       return;
     }
     toast("Changes saved");
+    void useCollections.getState().load(true);
     navigate(`/_/collections/${collId}/records`);
   }
 
@@ -324,6 +327,7 @@ export default function CollectionEdit() {
     const res = await api.delete<ApiResponse<null>>(`/api/v1/collections/${collId}`);
     if (res?.error) { toast(`Couldn't delete: ${res.error}`, "x"); return; }
     toast(`Collection deleted`, "trash");
+    void useCollections.getState().load(true);
     navigate("/_/collections");
   }
 

@@ -6,6 +6,7 @@ import { api, type ListResponse } from "../api.ts";
 import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
+import { toast } from "../stores/toast.ts";
 
 interface AuditEntry {
   id: string;
@@ -59,7 +60,8 @@ export default function AuditLog() {
       const t = Math.floor(new Date(to + "T23:59:59Z").getTime() / 1000);
       if (Number.isFinite(t)) params.set("to", String(t));
     }
-    const res = await api.get<{ data: ListResponse<AuditEntry> }>(`/api/v1/admin/audit-log?${params}`);
+    const res = await api.get<{ data: ListResponse<AuditEntry>; error?: string }>(`/api/v1/admin/audit-log?${params}`);
+    if (res.error) toast(`Couldn't load the audit log: ${res.error}`, "info");
     if (res.data) {
       setEntries(res.data.data ?? []);
       setTotal(res.data.totalItems ?? 0);

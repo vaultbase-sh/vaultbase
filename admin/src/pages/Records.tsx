@@ -1124,12 +1124,18 @@ export default function Records() {
     if (res.data) setCollection(res.data);
   }
 
+  // Each list request takes a number; only the latest one may land, so a
+  // slow answer for an old page / filter / sort can't overwrite a newer one.
+  const loadSeq = useRef(0);
+
   async function loadRecords(p = 1, f = appliedFilter) {
     if (!collection) return;
+    const seq = ++loadSeq.current;
     setLoading(true);
     if (collection.type === "singleton") {
       // A singleton answers its own path with its one record, not a list.
       const res = await api.get<ApiResponse<RecordRow>>(`/api/v1/${encodeURIComponent(collection.name)}`);
+      if (seq !== loadSeq.current) return;
       setLoading(false);
       if (res.data) {
         setRecords([res.data]);
@@ -1152,6 +1158,7 @@ export default function Records() {
     // is retained server-side for back-compat but no longer needed here.
     const url = `/api/v1/${encodeURIComponent(collection.name)}?${params}`;
     const res = await api.get<ListResponse<RecordRow> & { error?: string }>(url);
+    if (seq !== loadSeq.current) return;
     setLoading(false);
     if (res.data) {
       setRecords(res.data);
@@ -1365,26 +1372,36 @@ export default function Records() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file || !collection) return;
-    file.text().then(async (text) => {
-      const token = getMemoryToken();
-      const headers: Record<string, string> = { "Content-Type": "text/csv" };
-      if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch(`/api/v1/admin/import/${collection.name}`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers,
-        body: text,
-      });
-      const j = (await res.json()) as { data?: { created: number; failed: number; total: number; errors: unknown[] }; error?: string };
-      if (j.error) { toast(`Import failed: ${j.error}`, "info"); return; }
-      const d = j.data!;
+    void (async () => {
+      type ImportResult = { data?: { created: number; failed: number; total: number; errors: unknown[] }; error?: string };
+      let j: ImportResult;
+      try {
+        const text = await file.text();
+        const token = getMemoryToken();
+        const headers: Record<string, string> = { "Content-Type": "text/csv" };
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch(`/api/v1/admin/import/${encodeURIComponent(collection.name)}`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers,
+          body: text,
+        });
+        const raw = await res.text();
+        try { j = JSON.parse(raw) as ImportResult; } catch { j = { error: raw.slice(0, 300) || `HTTP ${res.status}` }; }
+        if (!res.ok && !j.error) j = { error: `HTTP ${res.status}` };
+      } catch (err) {
+        toast(`Import failed: ${err instanceof Error ? err.message : String(err)}`, "info");
+        return;
+      }
+      if (j.error || !j.data) { toast(`Import failed: ${j.error ?? "the server returned no result"}`, "info"); return; }
+      const d = j.data;
       if (d.failed === 0) {
         toast(`Imported ${d.created} of ${d.total} rows`, "check");
       } else {
         setImportErrors({ created: d.created, failed: d.failed, errors: d.errors as ImportRowError[] });
       }
-      loadRecords(page);
-    });
+      void loadRecords(page);
+    })();
   }
 
   async function handleImpersonate(id: string) {

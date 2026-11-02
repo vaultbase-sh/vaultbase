@@ -7,6 +7,8 @@ interface AuthState {
   isAuthed: boolean;
   expiresAt: number | null;
   loaded: boolean;
+  /** The last load() got no answer from the server. */
+  unreachable: boolean;
   /** Pull auth state from the server (cookie-based). */
   load: () => Promise<void>;
   /** Called after a successful POST /api/v1/admin/auth/login. */
@@ -23,8 +25,15 @@ export const useAuth = create<AuthState>((set) => ({
   isAuthed: false,
   expiresAt: null,
   loaded: false,
+  unreachable: false,
   load: async () => {
-    const res = await api.get<ApiResponse<MePayload>>("/api/v1/admin/auth/me");
+    // Always settle `loaded`, or the route guards render nothing forever.
+    let res: ApiResponse<MePayload>;
+    try {
+      res = await api.get<ApiResponse<MePayload>>("/api/v1/admin/auth/me");
+    } catch (e) {
+      res = { error: String(e), code: 0 };
+    }
     if (res.data?.id) {
       set({
         id: res.data.id,
@@ -32,9 +41,12 @@ export const useAuth = create<AuthState>((set) => ({
         expiresAt: res.data.exp ?? null,
         isAuthed: true,
         loaded: true,
+        unreachable: false,
       });
+    } else if (res.code === 0) {
+      set({ isAuthed: false, loaded: true, unreachable: true });
     } else {
-      set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true });
+      set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true, unreachable: false });
     }
   },
   signIn: async () => {
@@ -45,13 +57,9 @@ export const useAuth = create<AuthState>((set) => ({
     try { await api.post<ApiResponse<unknown>>("/api/v1/auth/logout", {}); } catch { /* noop */ }
     const { setMemoryToken } = await import("../api.ts");
     setMemoryToken(null);
-    set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true });
+    set({ id: "", email: "", expiresAt: null, isAuthed: false, loaded: true, unreachable: false });
   },
   refresh: async () => {
     await useAuth.getState().load();
   },
 }));
-
-export function tokenValid(): boolean {
-  return useAuth.getState().isAuthed;
-}

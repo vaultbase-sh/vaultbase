@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dropdown } from "primereact/dropdown";
 import cronstrue from "cronstrue";
 import { CronExpressionParser } from "cron-parser";
@@ -9,7 +9,7 @@ import {
   type VbTableColumn,
 } from "../components/Vb.tsx";
 import { Modal, Toggle } from "../components/UI.tsx";
-import { CodeEditor } from "../components/CodeEditor.tsx";
+import { CodeEditor } from "../components/LazyCodeEditor.tsx";
 import Icon from "../components/Icon.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -584,6 +584,18 @@ const EDITOR_CONTENT_STYLE: React.CSSProperties = {
   background: "var(--vb-bg-2)",
 };
 
+/**
+ * Close an editor, asking first when the form differs from the snapshot it
+ * opened with, so Escape or a click outside doesn't silently drop code.
+ */
+async function closeEditor(start: string, now: unknown, onClose: () => void) {
+  if (JSON.stringify(now) !== start) {
+    const ok = await confirm({ title: "Discard changes?", message: "This editor has changes that aren't saved.", confirmLabel: "Discard", danger: true });
+    if (!ok) return;
+  }
+  onClose();
+}
+
 function HookEditor({
   hook,
   open,
@@ -605,25 +617,24 @@ function HookEditor({
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const start = useRef("");
 
   useEffect(() => {
     if (!open) return;
-    if (hook) {
-      setName(hook.name ?? "");
-      setCollName(hook.collection_name);
-      setEvent(hook.event);
-      setCode(hook.code);
-      setEnabled(!!hook.enabled);
-    } else {
-      setName("");
-      setCollName("");
-      setEvent("beforeCreate");
-      setCode(HOOK_TEMPLATE);
-      setEnabled(true);
-    }
+    const init = hook
+      ? { name: hook.name ?? "", collName: hook.collection_name, event: hook.event, code: hook.code, enabled: !!hook.enabled }
+      : { name: "", collName: "", event: "beforeCreate" as HookEvent, code: HOOK_TEMPLATE, enabled: true };
+    setName(init.name);
+    setCollName(init.collName);
+    setEvent(init.event);
+    setCode(init.code);
+    setEnabled(init.enabled);
+    start.current = JSON.stringify(init);
     setError("");
     setSaving(false);
   }, [open, hook]);
+
+  const requestClose = () => { void closeEditor(start.current, { name, collName, event, code, enabled }, onClose); };
 
   const collOptions = useMemo(
     () => [
@@ -656,7 +667,7 @@ function HookEditor({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={<EditorHeader title={isNew ? "New hook" : (name || "Edit hook")} idHint={hook ? `${hook.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
@@ -887,26 +898,32 @@ function RouteEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const start = useRef("");
+
   useEffect(() => {
     if (!open) return;
-    if (route) {
-      setName(route.name ?? "");
-      setMethod((route.method as typeof ROUTE_METHODS[number]) ?? "GET");
-      setPath(route.path);
-      setCode(route.code);
-      setEnabled(!!route.enabled);
-      setRequireAuth(!!route.require_auth);
-    } else {
-      setName("");
-      setMethod("GET");
-      setPath("/");
-      setCode(ROUTE_TEMPLATE);
-      setEnabled(true);
-      setRequireAuth(false);
-    }
+    const init = route
+      ? {
+          name: route.name ?? "",
+          method: (route.method as typeof ROUTE_METHODS[number]) ?? "GET",
+          path: route.path,
+          code: route.code,
+          enabled: !!route.enabled,
+          requireAuth: !!route.require_auth,
+        }
+      : { name: "", method: "GET" as typeof ROUTE_METHODS[number], path: "/", code: ROUTE_TEMPLATE, enabled: true, requireAuth: false };
+    setName(init.name);
+    setMethod(init.method);
+    setPath(init.path);
+    setCode(init.code);
+    setEnabled(init.enabled);
+    setRequireAuth(init.requireAuth);
+    start.current = JSON.stringify(init);
     setError("");
     setSaving(false);
   }, [open, route]);
+
+  const requestClose = () => { void closeEditor(start.current, { name, method, path, code, enabled, requireAuth }, onClose); };
 
   async function handleSave() {
     if (!path.trim() || !path.startsWith("/")) {
@@ -928,7 +945,7 @@ function RouteEditor({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={<EditorHeader title={isNew ? "New route" : (name || `${method} ${path}`)} idHint={route ? `${route.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
@@ -1199,27 +1216,33 @@ function JobEditor({
   const [error, setError] = useState("");
   const cronAnalysis = useMemo(() => analyzeCron(cron), [cron]);
 
+  const start = useRef("");
+
   useEffect(() => {
     if (!open) return;
-    if (job) {
-      setName(job.name ?? "");
-      setCron(job.cron);
-      setCode(job.code);
-      setEnabled(!!job.enabled);
-      const m = /^worker:(.+)$/.exec(job.mode ?? "inline");
-      if (m) { setModeKind("worker"); setModeQueue(m[1]!.trim()); }
-      else   { setModeKind("inline"); setModeQueue(""); }
-    } else {
-      setName("");
-      setCron("0 * * * *");
-      setCode(JOB_TEMPLATE);
-      setEnabled(true);
-      setModeKind("inline");
-      setModeQueue("");
-    }
+    const m = job ? /^worker:(.+)$/.exec(job.mode ?? "inline") : null;
+    const init = job
+      ? {
+          name: job.name ?? "",
+          cron: job.cron,
+          code: job.code,
+          enabled: !!job.enabled,
+          modeKind: (m ? "worker" : "inline") as "inline" | "worker",
+          modeQueue: m ? m[1]!.trim() : "",
+        }
+      : { name: "", cron: "0 * * * *", code: JOB_TEMPLATE, enabled: true, modeKind: "inline" as "inline" | "worker", modeQueue: "" };
+    setName(init.name);
+    setCron(init.cron);
+    setCode(init.code);
+    setEnabled(init.enabled);
+    setModeKind(init.modeKind);
+    setModeQueue(init.modeQueue);
+    start.current = JSON.stringify(init);
     setError("");
     setSaving(false);
   }, [open, job]);
+
+  const requestClose = () => { void closeEditor(start.current, { name, cron, code, enabled, modeKind, modeQueue }, onClose); };
 
   async function handleSave() {
     if (!cron.trim()) { setError("Cron expression required"); return; }
@@ -1248,7 +1271,7 @@ function JobEditor({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={<EditorHeader title={isNew ? "New cron job" : (name || "Edit job")} idHint={job ? `${job.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}
@@ -1560,30 +1583,41 @@ function WorkerEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const start = useRef("");
+
   useEffect(() => {
     if (!open) return;
-    if (worker) {
-      setName(worker.name ?? "");
-      setQueue(worker.queue);
-      setCode(worker.code);
-      setEnabled(!!worker.enabled);
-      setConcurrency(worker.concurrency);
-      setRetryMax(worker.retry_max);
-      setBackoff(worker.retry_backoff);
-      setRetryDelayMs(worker.retry_delay_ms);
-    } else {
-      setName("");
-      setQueue("default");
-      setCode(WORKER_TEMPLATE);
-      setEnabled(true);
-      setConcurrency(1);
-      setRetryMax(3);
-      setBackoff("exponential");
-      setRetryDelayMs(1000);
-    }
+    const init = worker
+      ? {
+          name: worker.name ?? "",
+          queue: worker.queue,
+          code: worker.code,
+          enabled: !!worker.enabled,
+          concurrency: worker.concurrency,
+          retryMax: worker.retry_max,
+          backoff: worker.retry_backoff,
+          retryDelayMs: worker.retry_delay_ms,
+        }
+      : {
+          name: "", queue: "default", code: WORKER_TEMPLATE, enabled: true,
+          concurrency: 1, retryMax: 3, backoff: "exponential" as "exponential" | "fixed", retryDelayMs: 1000,
+        };
+    setName(init.name);
+    setQueue(init.queue);
+    setCode(init.code);
+    setEnabled(init.enabled);
+    setConcurrency(init.concurrency);
+    setRetryMax(init.retryMax);
+    setBackoff(init.backoff);
+    setRetryDelayMs(init.retryDelayMs);
+    start.current = JSON.stringify(init);
     setError("");
     setSaving(false);
   }, [open, worker]);
+
+  const requestClose = () => {
+    void closeEditor(start.current, { name, queue, code, enabled, concurrency, retryMax, backoff, retryDelayMs }, onClose);
+  };
 
   async function handleSave() {
     if (!queue.trim()) { setError("Queue name required"); return; }
@@ -1611,7 +1645,7 @@ function WorkerEditor({
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={<EditorHeader title={isNew ? "New worker" : (name || "Edit worker")} idHint={worker ? `${worker.id.slice(0, 12)}…` : null} />}
       maximizable
       style={EDITOR_DIALOG_STYLE}

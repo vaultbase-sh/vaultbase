@@ -4,17 +4,18 @@ import { createPortal } from "react-dom";
 import Icon from "./Icon.tsx";
 import { useCollections } from "../stores/collections.ts";
 import { NAV_ITEMS as PAGES } from "../lib/nav.ts";
+import { groupInOrder } from "../lib/group-order.ts";
 
 interface CmdItem {
   id: string;
   label: string;
-  group: "Navigate" | "Collections" | "Actions";
-  to?: string;
-  shortcut?: string;
-  run?: () => void;
+  group: "Navigate" | "Collections";
+  to: string;
   /** Tokens for fuzzy matching beyond the label. */
   hay?: string;
 }
+
+const GROUP_ORDER = ["Navigate", "Collections"] as const;
 
 // Every page, hidden-from-the-sidebar ones included.
 const NAV_ITEMS: CmdItem[] = PAGES.map((p) => ({
@@ -52,6 +53,8 @@ export const CommandPalette: React.FC<{
 
   useEffect(() => {
     if (!open) { setQ(""); setActive(0); return; }
+    // The list is otherwise only fetched by the Collections / API Preview pages.
+    void useCollections.getState().load();
     queueMicrotask(() => inputRef.current?.focus());
   }, [open]);
 
@@ -82,17 +85,13 @@ export const CommandPalette: React.FC<{
 
   function run(it: CmdItem) {
     onClose();
-    if (it.run) it.run();
-    else if (it.to) navigate(it.to);
+    navigate(it.to);
   }
 
   if (!open) return null;
 
-  const groups = filtered.reduce<Record<string, CmdItem[]>>((acc, it) => {
-    (acc[it.group] ??= []).push(it);
-    return acc;
-  }, {});
-  const flatOrder = filtered;
+  // Keyboard order follows the grouped list as shown, not the score order.
+  const { groups, flat: flatOrder } = groupInOrder(filtered, GROUP_ORDER);
 
   return createPortal(
     <div
@@ -120,21 +119,7 @@ export const CommandPalette: React.FC<{
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search collections, pages, actions…"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              else if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setActive((a) => Math.min(a + 1, flatOrder.length - 1));
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setActive((a) => Math.max(a - 1, 0));
-              } else if (e.key === "Enter") {
-                e.preventDefault();
-                const sel = flatOrder[active];
-                if (sel) run(sel);
-              }
-            }}
+            placeholder="Search collections and pages…"
           />
           <span className="kbd-key">esc</span>
         </div>
@@ -142,9 +127,7 @@ export const CommandPalette: React.FC<{
           {flatOrder.length === 0 ? (
             <div className="cmd-empty">No matches for "{q}"</div>
           ) : (
-            (["Navigate", "Collections", "Actions"] as const).map((g) => {
-              const list = groups[g];
-              if (!list || list.length === 0) return null;
+            groups.map(({ group: g, items: list }) => {
               return (
                 <div className="cmd-group" key={g}>
                   <div className="cmd-group-label">{g}</div>
