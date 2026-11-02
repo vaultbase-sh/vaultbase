@@ -424,7 +424,7 @@ async function backupLocked(): Promise<BackupInfo> {
 
   const keep = keepCount();
   for (const old of listBackups().slice(keep)) deleteBackup(old.name);
-  pruneBlobs(backupsDir);
+  await pruneBlobs(backupsDir);
 
   const s3 = s3Target();
   if (s3) {

@@ -11,6 +11,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Fixed
 
+- **A queue worker or cron job that never ended held its slot for good.**
+  A script past its time limit is failed, but the slot it held stayed taken
+  until the script itself ended; one waiting on something that never
+  answers blocked its queue (or its cron job) until the server restarted.
+  The slot now waits one more time limit for the run to end, then is
+  released with a warning in the log.
 - **A backup over 128 MB couldn't be restored from an upload.** A request
   body is capped at 128 MB (for every route), so **Settings → Backup &
   restore → Upload** refused larger files. The admin now sends a backup in

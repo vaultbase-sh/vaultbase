@@ -64,6 +64,29 @@ async function setup(opts: { history?: boolean; multiple?: boolean } = {}) {
 const stored = (f: string) => existsSync(join(dir, f));
 const rows = async () => (await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM vaultbase_files`))!.n;
 
+describe("sweepOrphanFiles: cost", () => {
+  it("looks records up per batch, not per file", async () => {
+    await setup();
+    // 300 file rows on 150 records, half of them gone: written directly, as
+    // only the rows matter here.
+    const ids: string[] = [];
+    for (let i = 0; i < 150; i++) ids.push(String((await createRecord("pics", {})).id));
+    const old = Math.floor(Date.now() / 1000) - GRACE_SECONDS - 60;
+    const col = (await db.get<{ id: string }>(`SELECT id FROM vaultbase_collections WHERE name = 'pics'`))!.id;
+    for (let i = 0; i < 300; i++) {
+      await db.run(`INSERT INTO vaultbase_files (id, collection_id, record_id, field_name, filename, original_name, mime_type, size, created_at) VALUES (?, ?, ?, 'img', ?, 'a.png', 'image/png', 1, ?)`,
+        [crypto.randomUUID(), col, ids[i % 150]!, `f${i}.png`, old]);
+    }
+    const statements: string[] = [];
+    db.trace((sql) => statements.push(sql));
+    let r;
+    try { r = await sweepOrphanFiles(); } finally { db.trace(null); }
+    expect(r.checked).toBe(300);
+    expect(r.deleted).toBe(300); // none of them is in its record's field
+    expect(statements.filter((x) => x.includes('"vb_pics"')).length).toBeLessThanOrEqual(2);
+  });
+});
+
 describe("sweepOrphanFiles", () => {
   it("keeps referenced files and removes ones whose record is gone", async () => {
     const { upload } = await setup();

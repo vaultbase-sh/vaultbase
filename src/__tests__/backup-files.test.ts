@@ -100,10 +100,10 @@ describe("the file store", () => {
     writeFileSync(join(uploads, "b.png"), "b");
     await snapshotFiles(uploads, backups, join(backups, "two.files.json"), null);
     writeFileSync(join(backups, "broken.files.json"), "{not json");
-    expect(pruneBlobs(backups)).toBe(0);
+    expect(await pruneBlobs(backups)).toBe(0);
     rmSync(join(backups, "broken.files.json"));
     rmSync(join(backups, "two.files.json"));
-    expect(pruneBlobs(backups)).toBe(1);
+    expect(await pruneBlobs(backups)).toBe(1);
     expect(blobs()).toHaveLength(1);
   });
 });
@@ -213,7 +213,7 @@ describe("review fixes", () => {
     writeFileSync(fresh, "x");
     const twoDays = Date.now() / 1000 - 2 * 86_400;
     utimesSync(old, twoDays, twoDays);
-    pruneBlobs(backups);
+    await pruneBlobs(backups);
     expect(existsSync(old)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
   });

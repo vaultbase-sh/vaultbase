@@ -199,8 +199,10 @@ export async function snapshotFiles(uploadDir: string, backupsDir: string, manif
 /**
  * Delete stored files no manifest in `backupsDir` lists, and temp files left
  * by a run that died more than a day ago. Returns how many stored files went.
+ * Yields to the event loop as it goes, as snapshotFiles does: run in one go,
+ * a store of 100,000 files held the server for the whole scan.
  */
-export function pruneBlobs(backupsDir: string): number {
+export async function pruneBlobs(backupsDir: string): Promise<number> {
   const store = join(backupsDir, "files");
   if (!existsSync(store)) return 0;
   const dayAgo = Date.now() - 86_400_000;
@@ -213,6 +215,7 @@ export function pruneBlobs(backupsDir: string): number {
   const kept = new Set<string>();
   for (const n of readdirSync(backupsDir)) {
     if (!n.endsWith(".files.json")) continue;
+    await yieldNow();
     const m = readManifest(join(backupsDir, n));
     // A manifest that doesn't read keeps everything: never prune on a guess.
     if (!m) {
@@ -222,13 +225,16 @@ export function pruneBlobs(backupsDir: string): number {
     for (const f of m.files) kept.add(f.sha256);
   }
   let removed = 0;
+  let n = 0;
   for (const shard of readdirSync(store)) {
     if (shard === "tmp") continue;
     const dir = join(store, shard);
     let entries: string[];
     try { entries = readdirSync(dir); } catch { continue; }
+    await yieldNow();
     for (const b of entries) {
       if (SHA_RE.test(b) && !kept.has(b)) { rmSync(join(dir, b), { force: true }); removed++; }
+      if (++n % 1000 === 0) await yieldNow();
     }
   }
   return removed;

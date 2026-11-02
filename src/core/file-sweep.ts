@@ -35,16 +35,33 @@ interface ColRow { id: string; name: string; type: string; fields: string; histo
 
 const q = (name: string) => `"${name.replace(/"/g, '""')}"`;
 
-function deleteThumbs(filename: string): void {
+/**
+ * The thumbnail cache by source file (`<filename>__<spec>`), listed once per
+ * sweep: listing the whole folder for every deleted file was a full scan of
+ * it per orphan.
+ */
+function thumbIndex(): Map<string, string[]> {
   const dir = thumbCacheDir();
-  forgetThumbVariants(filename);
-  if (!existsSync(dir)) return;
-  const prefix = `${filename}__`;
+  const index = new Map<string, string[]>();
+  if (!existsSync(dir)) return index;
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(prefix)) {
-      try { unlinkSync(join(dir, name)); } catch { /* gone */ }
-    }
+    const cut = name.indexOf("__");
+    if (cut <= 0) continue;
+    const source = name.slice(0, cut);
+    let list = index.get(source);
+    if (!list) { list = []; index.set(source, list); }
+    list.push(name);
   }
+  return index;
+}
+
+function deleteThumbs(filename: string, index: Map<string, string[]>): void {
+  forgetThumbVariants(filename);
+  const dir = thumbCacheDir();
+  for (const name of index.get(filename) ?? []) {
+    try { unlinkSync(join(dir, name)); } catch { /* gone */ }
+  }
+  index.delete(filename);
 }
 
 /** True when the stored field value still names `filename`. */
@@ -70,6 +87,14 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
       .map((c) => [c.id, c]),
   );
   const cutoff = nowSec - GRACE_SECONDS;
+  // Field names per collection, parsed once (not per file).
+  const fieldNames = new Map<string, Set<string>>();
+  const fieldsOf = (col: ColRow) => {
+    let names = fieldNames.get(col.id);
+    if (!names) { names = new Set(parseFields(col.fields).map((x) => x.name)); fieldNames.set(col.id, names); }
+    return names;
+  };
+  let thumbs: Map<string, string[]> | null = null;
   let after = "";
   for (;;) {
     const rows = await db.all<FileRow>(
@@ -79,6 +104,29 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
     );
     if (rows.length === 0) break;
     after = rows[rows.length - 1]!.id;
+    // The records these files belong to: one query per collection and field
+    // in this batch, instead of one per file (100,000 files meant 100,000
+    // queries an hour, on every server).
+    const values = new Map<string, Map<string, unknown> | null>();
+    const groups = new Map<string, { col: ColRow; field: string; ids: Set<string> }>();
+    for (const f of rows) {
+      const col = cols.get(f.collection_id);
+      if (!col || col.history_enabled === 1 || col.type === "view" || !fieldsOf(col).has(f.field_name)) continue;
+      const key = `${col.id}\u0000${f.field_name}`;
+      let g = groups.get(key);
+      if (!g) { g = { col, field: f.field_name, ids: new Set() }; groups.set(key, g); }
+      g.ids.add(f.record_id);
+    }
+    for (const [key, g] of groups) {
+      const ids = [...g.ids];
+      try {
+        const found = await db.all<{ id: string; v: unknown }>(
+          `SELECT id, ${q(g.field)} AS v FROM ${q(`vb_${g.col.name}`)} WHERE id IN (${ids.map(() => "?").join(", ")})`, ids);
+        values.set(key, new Map(found.map((r) => [r.id, r.v])));
+      } catch {
+        values.set(key, null); // table or column in flux; try again next sweep
+      }
+    }
     for (const f of rows) {
       result.checked++;
       const col = cols.get(f.collection_id);
@@ -88,23 +136,18 @@ export async function sweepOrphanFiles(nowSec = Math.floor(Date.now() / 1000)): 
       } else if (col.history_enabled === 1 || col.type === "view") {
         continue;
       } else {
-        const hasField = parseFields(col.fields).some((x) => x.name === f.field_name);
-        if (!hasField) {
+        if (!fieldsOf(col).has(f.field_name)) {
           orphan = true;
         } else {
-          let row: Record<string, unknown> | null;
-          try {
-            row = await db.get<Record<string, unknown>>(`SELECT ${q(f.field_name)} AS v FROM ${q(`vb_${col.name}`)} WHERE id = ?`, [f.record_id]);
-          } catch {
-            continue; // table or column in flux; try again next sweep
-          }
-          orphan = !row || !references(row["v"], f.filename);
+          const records = values.get(`${col.id}\u0000${f.field_name}`);
+          if (!records) continue; // the query failed: next sweep
+          orphan = !records.has(f.record_id) || !references(records.get(f.record_id), f.filename);
         }
       }
       if (!orphan) continue;
       try {
         await deleteFile(f.filename);
-        deleteThumbs(f.filename);
+        deleteThumbs(f.filename, thumbs ??= thumbIndex());
         await db.run(`DELETE FROM vaultbase_files WHERE id = ?`, [f.id]);
         result.deleted++;
       } catch (e) {
