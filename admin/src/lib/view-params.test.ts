@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { appendViewParams, draftsFromJson, draftsToPayload, queryParamNames } from "./ViewParams.tsx";
+import { appendViewParams, draftsFromJson, draftsToPayload, queryParamNames } from "./view-params.ts";
 
 describe("queryParamNames", () => {
   it("finds :name once each, in order", () => {
