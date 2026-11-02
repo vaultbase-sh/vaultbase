@@ -54,6 +54,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   index up twice per request. Once now, and on SQLite without reading the
   index's columns. A filter or rule that joins another collection reads its
   settings once per compile, not once per field it checks.
+- **A plain comparison on `_via_` is refused** (`comments_via_post.status
+  = "x"`, `!=`, `<`, `= null`, …): it holds the values of many records, and
+  it never matched on SQLite while Postgres failed the query (or, for
+  `= null`, answered differently). The error says what to use: `?=` (some
+  record matches), `:each` (every one does) or `:length`. `~` and `!~`
+  keep working.
 - **`?=` and the other `?` operators were refused on `_via_`**
   (`comments_via_post.status ?= "flagged"`), and `:each` on one matched
   nothing on SQLite and failed on Postgres. Both work now, comparing each
@@ -80,6 +86,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
   `vaultbase_user_token` cookie with a bad escape (`%zz`) failed the request;
   it counts as signed out now. An `Authorization: Bearer` header with
   nothing after it no longer passes the word `Bearer` on as the token.
+
+### Upgrade notes
+
+- **Rules with a plain comparison on `_via_`** are refused when saved, and
+  one saved before denies every request (it couldn't match on SQLite, and
+  failed on Postgres); the server log names each at startup. Change it to
+  `?=`, `:each` or `:length`.
 
 ## [0.36.0] — 2026-11-02
 

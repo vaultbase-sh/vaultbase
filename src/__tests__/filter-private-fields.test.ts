@@ -80,7 +80,7 @@ describe("filters cannot reach auth secrets", () => {
 
   it("rejects it through a _via_ back-relation path", async () => {
     await expect(
-      listWith("users", `posts_via_author.secret > "a"`),
+      listWith("users", `posts_via_author.secret ?> "a"`),
     ).rejects.toThrow(FilterError);
   });
 

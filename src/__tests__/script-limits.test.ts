@@ -215,6 +215,12 @@ describe("queue workers", () => {
     startQueueScheduler();
     await sleep(1_500);
     expect(((globalThis as Record<string, unknown>)["__vbRuns"] as { peak: number }).peak).toBe(1);
+    // Let every run end and record its result before the database closes.
+    for (let i = 0; i < 60; i++) {
+      const rows = await getDb().select({ status: jobsLog.status }).from(jobsLog).where(eq(jobsLog.queue, "hang"));
+      if (rows.every((r) => r.status === "dead") && ((globalThis as Record<string, unknown>)["__vbRuns"] as { now: number }).now === 0) break;
+      await sleep(50);
+    }
   });
 
   it("free a job's slot one more limit after it, when its script never ends", async () => {

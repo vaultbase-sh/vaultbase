@@ -8,7 +8,7 @@ import type { Dialect } from "../db/driver.ts";
 function dialect(): Dialect {
   return driverOpen() ? db.dialect : SQLITE_DIALECT;
 }
-import { macroValue, requestMapHas, requestMapValue, stableEq } from "./expression.ts";
+import { macroValue, requestMapHas, requestMapValue, stableEq, viaCompareError } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import { quoteIdent } from "../db/ident.ts";
 
@@ -271,6 +271,9 @@ function compileNode(ast: Expr, ctx: CompileCtx): string {
   }
 
   const op = ast.op;
+  // A back-relation compared without `?`, `:each`, `:length` or `~`.
+  const viaRefused = viaCompareError(ast);
+  if (viaRefused) throw new Error(viaRefused);
 
   // NULL-aware shortcuts for `=` / `!=` only
   if (op === "=" || op === "!=") {

@@ -8,6 +8,7 @@ import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache, createCollection } from "../core/collections.ts";
 import { listRecords, createRecord } from "../core/records.ts";
+import { ruleSyntaxError } from "../core/expression.ts";
 import { createPublicCollection } from "./_helpers.ts";
 
 const ADMIN = { id: "a", type: "admin" as const };
@@ -81,6 +82,28 @@ describe("_via_ with :each", () => {
     expect(await names(`posts_via_author.n:each > 5`)).toEqual(["one"]);
     expect(await names(`posts_via_author.n:each > 0`)).toEqual(["one", "two"]);
     expect(await names(`posts_via_author.title:each ~ "u"`)).toEqual(["one", "two"]);
+  });
+});
+
+describe("_via_ with a plain comparison", () => {
+  it("is refused, saying what to use, in a filter and in a saved rule", async () => {
+    // It never matched on SQLite and failed the query on Postgres.
+    for (const f of [`posts_via_author.title = "u1"`, `posts_via_author.n != 1`, `posts_via_author.n > 5`, `"u1" = posts_via_author.title`, `posts_via_author = null`]) {
+      await expect(names(f)).rejects.toThrow(/holds the values of many records/);
+    }
+    expect(ruleSyntaxError(`posts_via_author.title = "u1"`)).toContain("use ?= (some record matches), :each (every one does) or :length");
+    await expect(createCollection({
+      name: "drafts", fields: JSON.stringify([{ name: "t", type: "text" }]),
+      list_rule: `posts_via_author.title = "x" || t != ""`,
+    })).rejects.toThrow();
+  });
+
+  it("keeps :length, ~ and !~", async () => {
+    expect(await names(`posts_via_author:length = 0`)).toEqual(["none"]);
+    expect(await names(`posts_via_author.title ~ "u12"`)).toEqual(["one", "two"]);
+    expect(await names(`posts_via_author.title !~ "u1"`)).toEqual(["none"]);
+    expect(ruleSyntaxError(`posts_via_author:length > 0 && posts_via_author.title ?= "u1"`)).toBeNull();
+    expect(ruleSyntaxError(`items:any(posts_via_author.id = 1)`)).toBeNull(); // an item's key there
   });
 });
 

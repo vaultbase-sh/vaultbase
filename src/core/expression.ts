@@ -216,10 +216,10 @@ export function ruleSyntaxError(input: string): string | null {
   if (trimmed.length > 4096) return "rule is longer than 4096 characters";
   const ts = new TokenStream(trimmed);
   try {
-    parseOr(ts);
+    const expr = parseOr(ts);
     ts.skipWs();
     if (ts.pos !== ts.src.length) return `unexpected input at position ${ts.pos + 1}: '${ts.src.slice(ts.pos, ts.pos + 20)}'`;
-    return null;
+    return viaCompareError(expr);
   } catch (e) {
     // The parser's own errors say what's wrong; anything else (an operand
     // missing at the end, which it reads past) gets the position instead.
@@ -228,6 +228,33 @@ export function ruleSyntaxError(input: string): string | null {
       ? "the rule ends too early: something is missing at the end"
       : `doesn't parse near position ${ts.pos + 1}: '${ts.src.slice(ts.pos, ts.pos + 20)}'`;
   }
+}
+
+/**
+ * The refusal for a plain comparison (`=`, `!=`, `<`, …) on a `_via_`
+ * operand, which holds the values of many records: such a comparison
+ * doesn't say whether some or every one should match (SQLite never matched
+ * and Postgres failed the query). `:length`, `:each`, the `?` operators and
+ * `~` / `!~` are fine. Null when `expr` has none.
+ */
+export function viaCompareError(expr: Expr): string | null {
+  switch (expr.kind) {
+    case "and":
+    case "or": return viaCompareError(expr.left) ?? viaCompareError(expr.right);
+    case "any": return viaCompareError(expr.where);
+    case "cmp": {
+      if (expr.op.startsWith("?") || expr.op === "~" || expr.op === "!~") return null;
+      for (const side of [expr.left, expr.right]) {
+        if (side.kind === "viaRelation" && side.modifier !== "length" && side.modifier !== "each") return viaCompareMessage(side, expr.op);
+      }
+      return null;
+    }
+  }
+}
+
+function viaCompareMessage(op: Extract<Operand, { kind: "viaRelation" }>, cmp: string): string {
+  const name = `${op.targetCollection}_via_${op.refField}${op.path.length > 0 ? `.${op.path.join(".")}` : ""}`;
+  return `${name} holds the values of many records, so ${cmp} can't compare it: use ?${cmp} (some record matches), :each (every one does) or :length (how many there are)`;
 }
 
 export function parseExpression(input: string): Expr | null {

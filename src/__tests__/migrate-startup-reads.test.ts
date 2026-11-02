@@ -31,4 +31,20 @@ describe("startup", () => {
     }
     expect(statements.filter((q) => /FROM vaultbase_collections/i.test(q))).toHaveLength(1);
   });
+
+  it("warns about a saved rule that compares a back-relation plainly", async () => {
+    await createCollection({ name: "authors", fields: JSON.stringify([{ name: "name", type: "text" }]) });
+    await createCollection({ name: "posts", fields: JSON.stringify([{ name: "author", type: "relation", collection: "authors" }]) });
+    // Saved by an older version, which accepted it.
+    await db.run(`UPDATE vaultbase_collections SET list_rule = ? WHERE name = 'authors'`, [`posts_via_author.id = "x"`]);
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      await runMigrations();
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings.some((w) => w.includes("authors.list_rule denies every request") && w.includes("?="))).toBe(true);
+  });
 });

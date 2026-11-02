@@ -19,6 +19,8 @@ import { db, getDriver } from "./index.ts";
 import { PostgresDriver } from "./postgres.ts";
 import { ensureFixedSchema } from "./ddl.ts";
 
+const RULE_COLUMNS = ["list_rule", "view_rule", "create_rule", "update_rule", "delete_rule"] as const;
+
 /**
  * `ALTER TABLE … ADD COLUMN`, tolerating only "the column is already there".
  * Every other failure — a locked or read-only database, a full disk, a typo —
@@ -80,8 +82,25 @@ async function runMigrationsNow() {
 
   // The collections the steps below work through, read once: none of them
   // adds, removes or changes one.
-  const collectionRows = await db.all<{ name: string; type: string; fields: string }>(`SELECT name, type, fields FROM vaultbase_collections`);
+  const collectionRows = await db.all<{ name: string; type: string; fields: string } & Record<(typeof RULE_COLUMNS)[number], string | null>>(
+    `SELECT name, type, fields, ${RULE_COLUMNS.join(", ")} FROM vaultbase_collections`,
+  );
   const tables = collectionRows.filter((c) => c.type !== "view");
+
+  // ── v0.37: a plain comparison on `_via_` is refused ──
+  // Saved before, such a rule now denies (it doesn't compile); say which.
+  {
+    const { parseExpression, viaCompareError } = await import("../core/expression.ts");
+    for (const row of collectionRows) {
+      for (const key of RULE_COLUMNS) {
+        const rule = row[key];
+        if (!rule || !rule.includes("_via_")) continue;
+        const expr = parseExpression(rule);
+        const err = expr ? viaCompareError(expr) : null;
+        if (err) console.warn(`[migrate] ${row.name}.${key} denies every request until it's changed: ${err}`);
+      }
+    }
+  }
 
   // ── v0.29: index names past 63 bytes, cut by Postgres, are fitted ──
   // Before the timestamp step below, which looks for the fitted names.

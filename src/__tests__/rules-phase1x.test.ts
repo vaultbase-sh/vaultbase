@@ -71,7 +71,7 @@ describe("Phase 1.x — _via_ back-relations", () => {
     const lookup: CollectionLookup = (n) => n === "comments"
       ? { viewRule: null, hasField: () => false, isPrivateField: () => false, isFilterable: () => true }
       : null;
-    expect(() => parseFilter(`comments_via_post = "x"`, "vb_posts", { auth: USER, lookup })).toThrow();
+    expect(() => parseFilter(`comments_via_post ?= "x"`, "vb_posts", { auth: USER, lookup })).toThrow(/ref field/);
   });
 
   it("rejects identifiers with shell metacharacters", () => {
