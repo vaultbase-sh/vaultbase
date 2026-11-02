@@ -120,6 +120,32 @@ Binaries, checksums, signatures and SBOMs for every version are on
   share) because the bucket hash lost precision. `regex` rules compile
   their pattern once and skip context values over 1,000 characters.
 
+- **Admin:**
+  - When the server couldn't be reached (restarting after a restore, for
+    instance), the admin showed a blank page, and buttons stayed busy after
+    a failed request. It now says the server can't be reached and retries,
+    and a failed request ends with an error message.
+  - Opening another collection kept the previous one's page, filter and
+    sort; the schema editor kept the previous collection's selection.
+  - The collections list (and ⌘K) still listed a collection deleted from
+    its schema page.
+  - ⌘K moved two items per arrow key and ran a command twice on Enter, and
+    listed no collections until the Collections page had been opened.
+  - Records and logs could show an older request's results after quick
+    sorting, paging or typing; logs no longer refresh behind the JSONPath
+    search tab or in a hidden browser tab.
+  - Escape or a click outside the hook, route, job and worker editors
+    discarded unsaved code without asking.
+  - Settings that failed to load showed defaults, and saving them wrote the
+    defaults over the real values. The section now shows the error and
+    keeps Save off.
+  - CSV import failures and errors of saved SQL queries are shown.
+  - API preview history no longer keeps `Authorization`, `Cookie` or
+    API-key headers, or password fields, in the browser.
+  - Table rows and sortable column headers work with the keyboard.
+  - The dashboard's recent requests read the request log directly instead
+    of scanning it with a search.
+
 ### Upgrade notes (feature flags)
 
 - The rollout fix moves some users into a different bucket: a user who was
