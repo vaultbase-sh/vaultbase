@@ -1,18 +1,14 @@
-import { eq } from "drizzle-orm";
-import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { invalidateJobsCache, nextRunFromCron, runJob, validateCron, validateMode } from "../core/jobs.ts";
-import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
+import { codeRefusal, createInFiles, deleteCodeRow, findCodeRow, insertCodeRow, listCodeRows, updateCodeRow, updateInFiles } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
 
 export function makeJobsPlugin(jwtSecret: string) {
   return new Elysia({ name: "jobs" })
     .use(adminGuard(jwtSecret))
     .get("/admin/jobs", async () => {
-      const rows = await getDb().select().from(jobs);
-      return { data: rows.map(withVersion) };
+      return listCodeRows(jobs);
     }, { requireAdmin: true })
 
     .post(
@@ -27,16 +23,12 @@ export function makeJobsPlugin(jwtSecret: string) {
           name: body.name ?? "", cron: body.cron, mode, enabled: body.enabled === false ? 0 : 1,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
+        const refused = codeRefusal(set, body.code);
+        if (refused) return refused;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
         const next = nextRunFromCron(body.cron, now);
-        await getDb().insert(jobs).values({
+        return insertCodeRow(jobs, {
           id,
           name: body.name ?? "",
           cron: body.cron,
@@ -49,10 +41,7 @@ export function makeJobsPlugin(jwtSecret: string) {
           last_error: null,
           created_at: now,
           updated_at: now,
-        });
-        invalidateJobsCache();
-        const row = await getDb().select().from(jobs).where(eq(jobs.id, id)).limit(1);
-        return { data: row[0] };
+        }, invalidateJobsCache);
       },
       {
         requireAdmin: true,
@@ -86,23 +75,14 @@ export function makeJobsPlugin(jwtSecret: string) {
           if (modeErr) { set.status = 422; return { error: modeErr, code: 422 }; }
           update.mode = body.mode;
         }
-        const current = (await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1))[0];
+        const current = await findCodeRow(jobs, params.id);
         if (!current) { set.status = 404; return { error: "Job not found", code: 404 }; }
         const { updated_at: _u, code: _c, next_run_at: _n, ...settings } = update;
         const inFiles = updateInFiles(set, "job", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          // Enabling checks the stored code: it may predate this check.
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
-        await getDb().update(jobs).set(update).where(eq(jobs.id, params.id));
-        invalidateJobsCache();
-        const row = await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1);
-        if (row.length === 0) { set.status = 404; return { error: "Job not found", code: 404 }; }
-        return { data: row[0] };
+        const refused = codeRefusal(set, body.code as string | undefined, body.enabled ? String(current.code ?? "") : undefined);
+        if (refused) return refused;
+        return updateCodeRow(set, jobs, params.id, update, invalidateJobsCache, "Job");
       },
       {
         requireAdmin: true,
@@ -117,12 +97,7 @@ export function makeJobsPlugin(jwtSecret: string) {
     )
 
     .delete("/admin/jobs/:id", async ({ params, set }) => {
-      const current = (await getDb().select().from(jobs).where(eq(jobs.id, params.id)).limit(1))[0];
-      const inFiles = current && deleteInFiles(set, current);
-      if (inFiles) return await inFiles;
-      await getDb().delete(jobs).where(eq(jobs.id, params.id));
-      invalidateJobsCache();
-      return { data: null };
+      return deleteCodeRow(set, jobs, params.id, invalidateJobsCache);
     }, { requireAdmin: true })
 
     .post("/admin/jobs/:id/run", async ({ params, set }) => {

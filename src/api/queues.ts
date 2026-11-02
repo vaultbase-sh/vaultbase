@@ -1,7 +1,4 @@
-import { eq } from "drizzle-orm";
-import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
 import { workers } from "../db/schema.ts";
 import {
   invalidateWorkerCache,
@@ -14,7 +11,7 @@ import {
   VALID_BACKOFF,
   validateQueueName,
 } from "../core/queues.ts";
-import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
+import { codeRefusal, createInFiles, deleteCodeRow, findCodeRow, insertCodeRow, listCodeRows, updateCodeRow, updateInFiles } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
 import { positiveIntParam } from "../core/records.ts";
 
@@ -25,8 +22,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
     .use(adminGuard(jwtSecret))
     // ── Workers CRUD ──────────────────────────────────────────────────────
     .get("/admin/workers", async () => {
-      const rows = await getDb().select().from(workers);
-      return { data: rows.map(withVersion) };
+      return listCodeRows(workers);
     }, { requireAdmin: true })
 
     .post(
@@ -45,15 +41,11 @@ export function makeQueuesPlugin(jwtSecret: string) {
           retry_backoff: backoff, retry_delay_ms: Math.max(50, body.retry_delay_ms ?? 1000),
         }, body.code ?? "");
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
+        const refused = codeRefusal(set, body.code);
+        if (refused) return refused;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
-        await getDb().insert(workers).values({
+        return insertCodeRow(workers, {
           id,
           name: body.name ?? "",
           queue: body.queue,
@@ -65,10 +57,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
           retry_delay_ms: Math.max(50, body.retry_delay_ms ?? 1000),
           created_at: now,
           updated_at: now,
-        });
-        invalidateWorkerCache();
-        const row = await getDb().select().from(workers).where(eq(workers.id, id)).limit(1);
-        return { data: row[0] };
+        }, invalidateWorkerCache);
       },
       {
         requireAdmin: true,
@@ -107,23 +96,14 @@ export function makeQueuesPlugin(jwtSecret: string) {
           update["retry_backoff"] = body.retry_backoff;
         }
         if (body.retry_delay_ms !== undefined) update["retry_delay_ms"] = Math.max(50, body.retry_delay_ms);
-        const current = (await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1))[0];
+        const current = await findCodeRow(workers, params.id);
         if (!current) { set.status = 404; return { error: "Worker not found", code: 404 }; }
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "worker", current, settings, body.code as string | undefined, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          // Enabling checks the stored code: it may predate this check.
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
-        await getDb().update(workers).set(update).where(eq(workers.id, params.id));
-        invalidateWorkerCache();
-        const row = await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1);
-        if (row.length === 0) { set.status = 404; return { error: "Worker not found", code: 404 }; }
-        return { data: row[0] };
+        const refused = codeRefusal(set, body.code as string | undefined, body.enabled ? String(current.code ?? "") : undefined);
+        if (refused) return refused;
+        return updateCodeRow(set, workers, params.id, update, invalidateWorkerCache, "Worker");
       },
       {
         requireAdmin: true,
@@ -141,12 +121,7 @@ export function makeQueuesPlugin(jwtSecret: string) {
     )
 
     .delete("/admin/workers/:id", async ({ params, set }) => {
-      const current = (await getDb().select().from(workers).where(eq(workers.id, params.id)).limit(1))[0];
-      const inFiles = current && deleteInFiles(set, current);
-      if (inFiles) return await inFiles;
-      await getDb().delete(workers).where(eq(workers.id, params.id));
-      invalidateWorkerCache();
-      return { data: null };
+      return deleteCodeRow(set, workers, params.id, invalidateWorkerCache);
     }, { requireAdmin: true })
 
     // ── Jobs log + admin actions ──────────────────────────────────────────

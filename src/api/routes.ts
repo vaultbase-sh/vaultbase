@@ -1,14 +1,11 @@
 import { checkRateLimit } from "./ratelimit.ts";
-import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import { applyCorsHeaders } from "../core/cors.ts";
 import { rememberedPeer, securityHeaders } from "../core/sec.ts";
-import { eq } from "drizzle-orm";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ROUTE_METHODS, RouteParamError, dispatchCustomRoute, invalidateRoutesCache, validatePath } from "../core/routes.ts";
 import { customInnerPath } from "../core/api-paths.ts";
-import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
+import { codeRefusal, createInFiles, deleteCodeRow, findCodeRow, insertCodeRow, listCodeRows, updateCodeRow, updateInFiles } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
 
 /**
@@ -58,8 +55,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
   return new Elysia({ name: "routes" })
     .use(adminGuard(jwtSecret))
     .get("/admin/routes", async () => {
-      const rows = await getDb().select().from(routes);
-      return { data: rows.map(withVersion) };
+      return listCodeRows(routes);
     }, { requireAdmin: true })
 
     .post(
@@ -76,15 +72,11 @@ export function makeRoutesPlugin(jwtSecret: string) {
           require_auth: body.require_auth === true ? 1 : 0,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
+        const refused = codeRefusal(set, body.code);
+        if (refused) return refused;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
-        await getDb().insert(routes).values({
+        return insertCodeRow(routes, {
           id,
           name: body.name ?? "",
           method,
@@ -94,10 +86,7 @@ export function makeRoutesPlugin(jwtSecret: string) {
           require_auth: body.require_auth === true ? 1 : 0,
           created_at: now,
           updated_at: now,
-        });
-        invalidateRoutesCache();
-        const row = await getDb().select().from(routes).where(eq(routes.id, id)).limit(1);
-        return { data: row[0] };
+        }, invalidateRoutesCache);
       },
       {
         requireAdmin: true,
@@ -134,23 +123,14 @@ export function makeRoutesPlugin(jwtSecret: string) {
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
         if (body.require_auth !== undefined) update.require_auth = body.require_auth ? 1 : 0;
-        const current = (await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1))[0];
+        const current = await findCodeRow(routes, params.id);
         if (!current) { set.status = 404; return { error: "Route not found", code: 404 }; }
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "route", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          // Enabling checks the stored code: it may predate this check.
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
-        await getDb().update(routes).set(update).where(eq(routes.id, params.id));
-        invalidateRoutesCache();
-        const row = await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1);
-        if (row.length === 0) { set.status = 404; return { error: "Route not found", code: 404 }; }
-        return { data: row[0] };
+        const refused = codeRefusal(set, body.code as string | undefined, body.enabled ? String(current.code ?? "") : undefined);
+        if (refused) return refused;
+        return updateCodeRow(set, routes, params.id, update, invalidateRoutesCache, "Route");
       },
       {
         requireAdmin: true,
@@ -166,11 +146,6 @@ export function makeRoutesPlugin(jwtSecret: string) {
     )
 
     .delete("/admin/routes/:id", async ({ params, set }) => {
-      const current = (await getDb().select().from(routes).where(eq(routes.id, params.id)).limit(1))[0];
-      const inFiles = current && deleteInFiles(set, current);
-      if (inFiles) return await inFiles;
-      await getDb().delete(routes).where(eq(routes.id, params.id));
-      invalidateRoutesCache();
-      return { data: null };
+      return deleteCodeRow(set, routes, params.id, invalidateRoutesCache);
     }, { requireAdmin: true });
 }

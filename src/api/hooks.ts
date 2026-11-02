@@ -1,18 +1,14 @@
-import { eq } from "drizzle-orm";
-import { databaseCodeError, inlineCompileError } from "../core/code-loader.ts";
 import Elysia, { t } from "elysia";
-import { getDb } from "../db/client.ts";
 import { hooks } from "../db/schema.ts";
 import { HOOK_EVENTS, invalidateHookCache } from "../core/hooks.ts";
-import { createInFiles, deleteInFiles, updateInFiles, withVersion } from "./_code-files.ts";
+import { codeRefusal, createInFiles, deleteCodeRow, findCodeRow, insertCodeRow, listCodeRows, updateCodeRow, updateInFiles } from "./_code-files.ts";
 import { adminGuard } from "./_admin.ts";
 
 export function makeHooksPlugin(jwtSecret: string) {
   return new Elysia({ name: "hooks" })
     .use(adminGuard(jwtSecret))
     .get("/admin/hooks", async () => {
-      const rows = await getDb().select().from(hooks);
-      return { data: rows.map(withVersion) };
+      return listCodeRows(hooks);
     }, { requireAdmin: true })
 
     .post(
@@ -25,15 +21,11 @@ export function makeHooksPlugin(jwtSecret: string) {
           name: body.name ?? "", collection_name: body.collection_name ?? "", event: body.event, enabled: body.enabled === false ? 0 : 1,
         }, body.code ?? "");
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? "");
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
+        const refused = codeRefusal(set, body.code);
+        if (refused) return refused;
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);
-        await getDb().insert(hooks).values({
+        return insertCodeRow(hooks, {
           id,
           name: body.name ?? "",
           collection_name: body.collection_name ?? "",
@@ -42,10 +34,7 @@ export function makeHooksPlugin(jwtSecret: string) {
           enabled: body.enabled === false ? 0 : 1,
           created_at: now,
           updated_at: now,
-        });
-        invalidateHookCache();
-        const row = await getDb().select().from(hooks).where(eq(hooks.id, id)).limit(1);
-        return { data: row[0] };
+        }, invalidateHookCache);
       },
       {
         requireAdmin: true,
@@ -75,23 +64,14 @@ export function makeHooksPlugin(jwtSecret: string) {
         }
         if (body.code !== undefined) update.code = body.code;
         if (body.enabled !== undefined) update.enabled = body.enabled ? 1 : 0;
-        const current = (await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1))[0];
+        const current = await findCodeRow(hooks, params.id);
         if (!current) { set.status = 404; return { error: "Hook not found", code: 404 }; }
         const { updated_at: _u, code: _c, ...settings } = update;
         const inFiles = updateInFiles(set, "hook", current, settings, body.code, request.headers.get("if-match"));
         if (inFiles) return await inFiles;
-        {
-          const bad = body.code !== undefined ? inlineCompileError(body.code as string) : null;
-          if (bad) { set.status = 422; return { error: `Code does not compile: ${bad}`, code: 422 }; }
-          // Enabling checks the stored code: it may predate this check.
-          const unsupported = databaseCodeError((body.code as string | undefined) ?? (body.enabled ? String(current.code ?? "") : ""));
-          if (unsupported) { set.status = 422; return { error: unsupported, code: 422 }; }
-        }
-        await getDb().update(hooks).set(update).where(eq(hooks.id, params.id));
-        invalidateHookCache();
-        const row = await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1);
-        if (row.length === 0) { set.status = 404; return { error: "Hook not found", code: 404 }; }
-        return { data: row[0] };
+        const refused = codeRefusal(set, body.code as string | undefined, body.enabled ? String(current.code ?? "") : undefined);
+        if (refused) return refused;
+        return updateCodeRow(set, hooks, params.id, update, invalidateHookCache, "Hook");
       },
       {
         requireAdmin: true,
@@ -106,11 +86,6 @@ export function makeHooksPlugin(jwtSecret: string) {
     )
 
     .delete("/admin/hooks/:id", async ({ params, set }) => {
-      const current = (await getDb().select().from(hooks).where(eq(hooks.id, params.id)).limit(1))[0];
-      const inFiles = current && deleteInFiles(set, current);
-      if (inFiles) return await inFiles;
-      await getDb().delete(hooks).where(eq(hooks.id, params.id));
-      invalidateHookCache();
-      return { data: null };
+      return deleteCodeRow(set, hooks, params.id, invalidateHookCache);
     }, { requireAdmin: true });
 }
