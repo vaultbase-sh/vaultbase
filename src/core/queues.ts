@@ -3,7 +3,7 @@ import { getDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
-import { guardHelpers, ScriptTimeoutError, withTimeLimit } from "./script-limits.ts";
+import { guardHelpers, ScriptTimeoutError, slotReleased, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
@@ -524,8 +524,9 @@ async function runJob(worker: CompiledWorker, job: typeof jobsLog.$inferSelect):
       if (await settle({ status: "dead", finished_at: finishedAt(), error: msg })) console.error(`[queues] Job ${job.id} dead after ${job.attempt} attempts: ${msg}`);
     }
   }
-  // Its slot is freed (inFlight) when this returns: after the run itself.
-  await Promise.resolve(run).catch(() => {});
+  // Its slot is freed (inFlight) when this returns: after the run itself,
+  // or once a run that outlived its limit has had one more limit's time.
+  await slotReleased("queue", worker.name || worker.queue, run);
 }
 
 // ── Admin operations ────────────────────────────────────────────────────────

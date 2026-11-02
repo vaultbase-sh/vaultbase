@@ -3,7 +3,7 @@ import { CronExpressionParser } from "cron-parser";
 import { getDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
-import { guardHelpers, withTimeLimit } from "./script-limits.ts";
+import { guardHelpers, slotReleased, withTimeLimit } from "./script-limits.ts";
 import { makeHookHelpers, type HookHelpers } from "./hooks.ts";
 import { appendHookLog } from "./file-logger.ts";
 import { compileCode } from "./code-loader.ts";
@@ -280,7 +280,7 @@ async function scheduleTick(): Promise<Promise<unknown>[]> {
       let run: Promise<unknown> | undefined;
       const done = runJob(r.id, (p) => { run = p; }, true);
       started.push(done);
-      void done.finally(() => Promise.resolve(run).catch(() => {}).finally(() => runningJobs.delete(r.id)));
+      void done.finally(() => slotReleased("job", r.name || r.id.slice(0, 8), run).finally(() => runningJobs.delete(r.id)));
     } else if (r.next_run_at === null) {
       // Newly created or never run — initialize next_run_at
       try {

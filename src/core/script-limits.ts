@@ -104,6 +104,35 @@ export async function withTimeLimit<T>(
 }
 
 /**
+ * Wait for a script run before giving its slot back (a queue worker's
+ * concurrency, a cron job's "running" mark), so runs left behind by a time
+ * limit can't pile up. But not forever: a run still going one more time
+ * limit after it timed out (an `await` that never settles) gets its slot
+ * released with a warning. It keeps running, since it can't be stopped, but
+ * no longer holds the queue or the cron job; before, it held them until a
+ * restart.
+ */
+export async function slotReleased(kind: ScriptKind, script: string, run: Promise<unknown> | undefined): Promise<void> {
+  if (!run) return;
+  const settled = run.then(() => {}, () => {});
+  const ms = scriptTimeoutMs(kind);
+  if (ms === 0) return settled;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[scripts] ${LABELS[kind]} '${script}' is still running ${ms} ms after its time limit; its slot is released, the run goes on`);
+      resolve();
+    }, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  try {
+    await Promise.race([settled, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * `helpers` refusing every use once `signal` is aborted: a run past its
  * limit can't start a query, a write, a mail or a job any more. A helper
  * call that returns a promise rejects when the limit runs out, so the

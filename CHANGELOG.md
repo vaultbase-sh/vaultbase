@@ -34,6 +34,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   most of its time skipping rows it had already sent. Each page now starts
   after the last row of the one before. Rows come out newest first, ties by
   id.
+- **The hourly orphaned-file sweep ran a query per stored file** (100,000
+  files: 100,000 queries an hour, on every server) and listed the whole
+  thumbnail folder again for each file it deleted. It looks records up per
+  batch of 500 and lists thumbnails once. Pruning the backup file store no
+  longer holds the server for its whole scan.
 
 ## [0.36.0] — 2026-11-02
 

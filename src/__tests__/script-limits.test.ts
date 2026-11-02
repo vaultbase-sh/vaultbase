@@ -200,13 +200,14 @@ describe("cron jobs", () => {
 });
 
 describe("queue workers", () => {
-  it("keep a job's slot until its script really ends, so runs left behind don't pile up", async () => {
-    setSetting("queues.timeout_ms", "100");
-    // Counts the runs going at once: each waits 600 ms, well past its limit.
+  it("keep a job's slot while its script runs on past the limit, so runs left behind don't pile up", async () => {
+    setSetting("queues.timeout_ms", "200");
+    // Counts the runs going at once: each waits 300 ms, past its limit but
+    // inside the extra limit the slot is held for.
     (globalThis as Record<string, unknown>)["__vbRuns"] = { now: 0, peak: 0 };
     await getDb().insert(workers).values({
       id: crypto.randomUUID(), name: "hanging", queue: "hang",
-      code: `const c = globalThis.__vbRuns; c.now++; c.peak = Math.max(c.peak, c.now); await new Promise((r) => setTimeout(r, 600)); c.now--;`,
+      code: `const c = globalThis.__vbRuns; c.now++; c.peak = Math.max(c.peak, c.now); await new Promise((r) => setTimeout(r, 300)); c.now--;`,
       enabled: 1, concurrency: 1, retry_max: 1, retry_backoff: "fixed", retry_delay_ms: 10, created_at: now(), updated_at: now(),
     });
     invalidateWorkerCache();
@@ -214,6 +215,28 @@ describe("queue workers", () => {
     startQueueScheduler();
     await sleep(1_500);
     expect(((globalThis as Record<string, unknown>)["__vbRuns"] as { peak: number }).peak).toBe(1);
+  });
+
+  it("free a job's slot one more limit after it, when its script never ends", async () => {
+    setSetting("queues.timeout_ms", "100");
+    (globalThis as Record<string, unknown>)["__vbStuck"] = 0;
+    await getDb().insert(workers).values({
+      id: crypto.randomUUID(), name: "stuck", queue: "stuck",
+      code: `globalThis.__vbStuck++; await new Promise(() => {});`,
+      enabled: 1, concurrency: 1, retry_max: 1, retry_backoff: "fixed", retry_delay_ms: 10, created_at: now(), updated_at: now(),
+    });
+    invalidateWorkerCache();
+    await enqueue("stuck", { i: 1 });
+    await enqueue("stuck", { i: 2 });
+    startQueueScheduler();
+    for (let i = 0; i < 60 && ((globalThis as Record<string, unknown>)["__vbStuck"] as number) < 2; i++) await sleep(50);
+    expect((globalThis as Record<string, unknown>)["__vbStuck"]).toBe(2);
+    // Let the second run hit its limit before the database closes.
+    for (let i = 0; i < 40; i++) {
+      const rows = await getDb().select({ status: jobsLog.status }).from(jobsLog).where(eq(jobsLog.queue, "stuck"));
+      if (rows.every((r) => r.status === "dead")) break;
+      await sleep(50);
+    }
   });
 
   it("a worker registered from code has no limit", async () => {
