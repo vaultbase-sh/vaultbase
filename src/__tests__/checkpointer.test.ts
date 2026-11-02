@@ -71,21 +71,35 @@ describe.skipIf(!onSqlite)("background checkpointer", () => {
     // about the checkpointer. It counts frames not yet copied, not the WAL's
     // size: a WAL the worker has caught up on keeps its size until the next
     // write, so pausing on that would wait for nothing.
+    //
+    // The worker reports every 250 ms, so "behind" is that old. A loaded
+    // machine let the writer add tens of thousands of frames between two
+    // reports, past the runaway threshold, which handed checkpointing back to
+    // SQLite (mode "inline") and failed this test in about a second, though
+    // the worker had done nothing wrong. So the writer also stops after
+    // ~10,000 frames until the worker reports a new pass.
     const row = "x".repeat(3_000);
     const until = Date.now() + 15_000;
     let peak = 0;
+    let lastPasses = checkpointStats()?.passes ?? 0;
+    let sincePass = 0;
     const behind = () => { const c = checkpointStats(); return c ? c.wal_frames - c.checkpointed_frames : 0; };
     while (Date.now() < until && (checkpointStats()?.restarts ?? 0) < 3) {
-      if (behind() > 30_000) { await Bun.sleep(20); continue; }
+      const passes = checkpointStats()?.passes ?? 0;
+      if (passes !== lastPasses) { lastPasses = passes; sincePass = 0; }
+      if (behind() > 30_000 || sincePass >= 10_000) { await Bun.sleep(20); continue; }
       for (let i = 0; i < 500; i++) ins.run(row);
+      sincePass += 500;
       await Bun.sleep(1);
       peak = Math.max(peak, checkpointStats()?.wal_frames ?? 0);
     }
     ins.finalize();
     let s = checkpointStats()!;
-    expect(s.mode).toBe("worker");
-    expect(s.restarts).toBeGreaterThan(0);
-    expect(peak).toBeLessThan(100_000);
+    // With the worker's numbers, so a failure says what happened.
+    const seen = () => JSON.stringify({ ...checkpointStats(), peak });
+    if (s.mode !== "worker") throw new Error(`checkpointing fell back to SQLite: ${seen()}`);
+    if (s.restarts === 0) throw new Error(`the worker never rewound the WAL: ${seen()}`);
+    if (peak >= 100_000) throw new Error(`the WAL reached ${peak} frames: ${seen()}`);
     // Writes stopped: once the worker has copied what was left (a pass over
     // tens of thousands of frames takes seconds on a loaded machine, and over
     // 30 s on a slow CI runner's disk), the next write starts the WAL over.
