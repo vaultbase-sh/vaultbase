@@ -64,6 +64,7 @@ import {
   reverifyRealtimeAuth,
   setSSEOwner,
   setWSAuth,
+  isConnectionLive,
   sseOwnerOf,
   subscribe,
   unsubscribe,
@@ -233,10 +234,13 @@ function realtimeSocket(jwtSecret: string) {
         return;
       }
       // Auth ad-hoc — lets clients refresh credentials over an open connection.
+      // A socket refused at open (origin, connection cap) is closing: ignore it.
+      if (!isConnectionLive(ws)) return;
       if (msg.type === "auth") {
         if (typeof msg.token !== "string") return;
         const auth = await verifyTokenForWS(msg.token, jwtSecret);
-        setWSAuth(ws, auth);
+        // Closed while the token was checked: don't bring back its entry.
+        if (isConnectionLive(ws)) setWSAuth(ws, auth);
         return;
       }
       // The SDK's 30 s keepalive. Answered, so it isn't an invalid_topics error.
@@ -319,9 +323,11 @@ export function startInternalListener(app: { handle(request: Request): Promise<R
       maxPayloadLength: 64 * 1024,
       backpressureLimit: MAX_WS_QUEUED_BYTES,
       closeOnBackpressureLimit: true,
-      open: (ws) => realtime.open(ws),
-      message: (ws, message) => realtime.message(ws, message),
-      close: (ws) => realtime.close(ws),
+      // A raw Bun.serve: a throw here is an uncaughtException, which shuts the
+      // server down. Elysia's /realtime route catches its own.
+      open: (ws) => realtime.open(ws).catch((e) => console.error("[realtime] open:", e)),
+      message: (ws, message) => realtime.message(ws, message).catch((e) => console.error("[realtime] message:", e)),
+      close: (ws) => { try { realtime.close(ws); } catch (e) { console.error("[realtime] close:", e); } },
     },
   });
   return { port: server.port!, secret, stop: () => { void server.stop(true); } };

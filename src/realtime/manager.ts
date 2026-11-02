@@ -183,20 +183,27 @@ const topicsByConn = new Map<string, Set<string>>();
 const wsAuth = new Map<string, WSAuth>();
 
 /** Pull the persistent connection id off `ws.data` (set by the WS open handler). */
-function connId(ws: WSLike): string {
+function connIdOf(ws: WSLike): string | undefined {
   const id = (ws as unknown as { data?: { connId?: string } }).data?.connId;
-  if (typeof id !== "string") throw new Error("realtime: ws.data.connId missing — open handler must mint one");
+  return typeof id === "string" ? id : undefined;
+}
+
+function connId(ws: WSLike): string {
+  const id = connIdOf(ws);
+  if (id === undefined) throw new Error("realtime: ws.data.connId missing — open handler must mint one");
   return id;
+}
+
+/** Whether this socket was admitted and hasn't disconnected since. */
+export function isConnectionLive(ws: WSLike): boolean {
+  const id = connIdOf(ws);
+  return id !== undefined && liveConns.has(id);
 }
 
 export function setWSAuth(ws: WSLike, auth: WSAuth | null): void {
   const id = connId(ws);
   if (auth) wsAuth.set(id, auth);
   else wsAuth.delete(id);
-}
-
-export function getWSAuth(ws: WSLike): WSAuth | undefined {
-  return wsAuth.get(connId(ws));
 }
 
 /** Live auth for `id`: none once the token has expired. */
@@ -368,7 +375,9 @@ function leaveAll(id: string): void {
 }
 
 export function disconnectAll(ws: WSLike): void {
-  const id = connId(ws);
+  // A socket refused at open (origin) never got an id: nothing to release.
+  const id = connIdOf(ws);
+  if (id === undefined) return;
   leaveAll(id);
   wsAuth.delete(id);
   releaseConnection(id);

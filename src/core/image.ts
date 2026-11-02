@@ -367,6 +367,9 @@ export async function generateThumbnail(
   const width = Math.max(meta.width, gif?.width ?? 0);
   const height = Math.max(meta.height, gif?.height ?? 0);
   if (!(meta.width > 0 && meta.height > 0) || width * height > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
+  // The output too: a sliver (50000×1) scaled to one side's 4096 asks for a
+  // 204-million-pixel resize.
+  if (resizePixels(width, height, spec) > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
   if (gif && !spec.format && gif.frames * width * height > MAX_ANIMATION_PIXELS) {
     // Too much to decode every frame: render the first one.
     return await thumbnailStill(bytes, spec, "png");
@@ -374,6 +377,14 @@ export async function generateThumbnail(
   if (spec.format) return await thumbnailStill(bytes, spec, spec.format);
   if (format === "gif") return await withAnimatedDecodeSlot(() => thumbnailGif(bytes, spec));
   return await thumbnailStill(bytes, spec, format);
+}
+
+/** The largest bitmap a resize to `spec` allocates (cover scales before it crops). */
+function resizePixels(width: number, height: number, spec: ThumbSpec): number {
+  const dims = fitDimensions(width, height, spec);
+  if (spec.fit === "contain") return dims.newW * dims.newH;
+  const scale = spec.width / dims.cropW;
+  return Math.max(spec.width, Math.round(width * scale)) * Math.max(spec.height, Math.round(height * scale));
 }
 
 type StillFormat = OutputFormat;

@@ -19,19 +19,28 @@ export interface Config {
  * (forced log-out for everyone) requires deleting the file. The on-disk
  * file is created with mode `0600` so other UIDs can't read it.
  */
-async function loadJwtSecret(dataDir: string): Promise<string> {
-  const secretPath = join(dataDir, ".secret");
-  const f = Bun.file(secretPath);
-  if (await f.exists()) {
-    return (await f.text()).trim();
+function loadJwtSecret(dataDir: string): string {
+  const path = join(dataDir, ".secret");
+  const read = (): string | null => {
+    try { return readFileSync(path, "utf8").trim() || null; } catch { return null; }
+  };
+  const existing = read();
+  if (existing) return existing;
+  // An empty file would sign tokens with an empty key: replace it (that only
+  // signs everyone out). 64 random bytes hex-encoded, 512 bits.
+  if (existsSync(path)) console.warn(`[config] ${path} is empty or unreadable; writing a new JWT secret (existing sessions end)`);
+  const fresh = Buffer.from(crypto.getRandomValues(new Uint8Array(64))).toString("hex");
+  // Written aside and linked into place, so cluster workers starting together
+  // on a fresh install all end up with the one secret that won.
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, fresh, { mode: 0o600, flag: "wx" });
+    try { linkSync(tmp, path); } catch { if (!read()) renameSync(tmp, path); }
+  } finally {
+    try { unlinkSync(tmp); } catch { /* linked or renamed away */ }
   }
-  // 64 random bytes hex-encoded → 512 bits of entropy.
-  const bytes = new Uint8Array(64);
-  crypto.getRandomValues(bytes);
-  const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  await Bun.write(secretPath, secret);
-  try { chmodSync(secretPath, 0o600); } catch { /* Windows or non-POSIX: best-effort */ }
-  return secret;
+  try { chmodSync(path, 0o600); } catch { /* Windows or non-POSIX: best-effort */ }
+  return read() ?? fresh;
 }
 
 /**
@@ -99,8 +108,8 @@ export async function loadConfig(): Promise<Config> {
   const secretsFromDataDir: string[] = [];
   if (!process.env["VAULTBASE_JWT_SECRET"]) secretsFromDataDir.push("VAULTBASE_JWT_SECRET");
   if (!process.env["VAULTBASE_ENCRYPTION_KEY"]) secretsFromDataDir.push("VAULTBASE_ENCRYPTION_KEY");
-  const jwtSecret =
-    process.env["VAULTBASE_JWT_SECRET"] ?? (await loadJwtSecret(dataDir));
+  // An empty value counts as unset: it would be an empty signing key.
+  const jwtSecret = process.env["VAULTBASE_JWT_SECRET"] || loadJwtSecret(dataDir);
 
   return {
     port: parseInt(process.env["VAULTBASE_PORT"] ?? "8091"),

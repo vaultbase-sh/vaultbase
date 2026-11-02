@@ -123,4 +123,18 @@ describe("review 13 follow-ups", () => {
     const agg = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/vaultview/_aggregate?agg=count&groupBy=pin"));
     expect(agg.status).toBe(400);
   });
+  it("a password field with capitals (PIN) can't be grouped, filtered or sorted on through a view", async () => {
+    const { createRecord } = await import("../core/records.ts");
+    await createCollection({ name: "vault3", fields: JSON.stringify([{ name: "label", type: "text" }, { name: "PIN", type: "password" }]) });
+    await createRecord("vault3", { label: "a", PIN: "pin-secret-111" }, null);
+    await createRecord("vault3", { label: "b", PIN: "pin-secret-999" }, null);
+    await createCollection({ name: "vaultview3", type: "view", view_query: "SELECT * FROM vb_vault3", list_rule: null, view_rule: null });
+    await loadSensitiveSchema();
+    const get = (q: string) => makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/vaultview3${q}`));
+    expect((await get("/_aggregate?agg=count&groupBy=PIN")).status).toBe(400);
+    expect((await get(`?filter=${encodeURIComponent('PIN > "$"')}`)).status).toBe(400);
+    const order = async (sort: string) => ((await (await get(`?sort=${sort}`)).json()) as { data: Array<{ id: string }> }).data.map((r) => r.id);
+    expect(await order("PIN")).toEqual(await order("-PIN"));
+    expect(await (await get("")).text()).not.toContain("PIN");
+  });
 });

@@ -161,3 +161,17 @@ describe("sanitizeHtml — edge cases", () => {
     expect(sanitizeHtml(`<!DOCTYPE html><p>x</p>`)).toBe(`<p>x</p>`);
   });
 });
+
+describe("sanitizeHtml — a tag that never closes", () => {
+  it("keeps the rest as escaped text", () => {
+    expect(sanitizeHtml(`<b>ok</b><p title='open <i>x</i>`)).toBe(`<b>ok</b>&lt;p title='open &lt;i>x&lt;/i>`);
+  });
+
+  it("stays linear on many unclosed quotes (was quadratic: 160 KB took seconds)", () => {
+    const input = "<p a='".repeat(200_000); // 1.2 MB
+    const t = performance.now();
+    const out = sanitizeHtml(input);
+    expect(performance.now() - t).toBeLessThan(1000);
+    expect(out.includes("<p")).toBe(false);
+  });
+});

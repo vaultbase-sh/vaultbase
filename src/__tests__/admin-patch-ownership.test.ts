@@ -74,3 +74,27 @@ describe("adminByEmail", () => {
     expect((await adminByEmail("ONE@TEST.LOCAL"))).toHaveLength(1);
   });
 });
+
+describe("DELETE /admin/admins/:id", () => {
+  const del = async (target: string, actor: string) =>
+    makeAdminsPlugin(SECRET).handle(new Request(`http://localhost/admin/admins/${target}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${await as(actor)}` },
+    }));
+
+  it("two admins deleting each other at once leave one admin (the count and the delete were separate)", async () => {
+    // In one process the guard's own lookup usually turns the second into a
+    // 401; across servers on Postgres both passed it, which the row lock covers.
+    const statuses = (await Promise.all([del("a2", "a1"), del("a1", "a2")])).map((r) => r.status);
+    expect(statuses.filter((s) => s === 200).length).toBe(1);
+    expect((await getDb().select().from(admin)).length).toBe(1);
+  });
+
+  it("deletes another admin, refuses the last one and a missing id (legitimate path)", async () => {
+    expect((await del("nope", "a1")).status).toBe(404);
+    expect((await del("a2", "a1")).status).toBe(200);
+    await getDb().insert(admin).values({ id: "a3", email: "three@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    await getDb().delete(admin).where(eq(admin.id, "a1"));
+    expect((await del("a3", "a3x")).status).not.toBe(200);
+  });
+});

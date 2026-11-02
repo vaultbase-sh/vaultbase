@@ -1,6 +1,7 @@
-import { count, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
+import { db as driver } from "../db/index.ts";
 import { admin } from "../db/schema.ts";
 import { HASH_OPTS } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
@@ -109,16 +110,18 @@ export function makeAdminsPlugin(jwtSecret: string) {
         set.status = 400;
         return { error: "Cannot delete your own account", code: 400 };
       }
-      const db = getDb();
-      const countRows = await db.select({ c: count() }).from(admin);
-      const total = countRows[0]?.c ?? 0;
-      if (total <= 1) {
-        set.status = 400;
-        return { error: "Cannot delete the last admin", code: 400 };
-      }
-      const target = await db.select().from(admin).where(eq(admin.id, params.id)).limit(1);
-      if (target.length === 0) { set.status = 404; return { error: "Admin not found", code: 404 }; }
-      await db.delete(admin).where(eq(admin.id, params.id));
+      // Count and delete in one transaction holding the admin rows (Postgres:
+      // FOR UPDATE; SQLite: the write lock from BEGIN IMMEDIATE). Separately,
+      // two admins deleting each other both saw two admins and both went.
+      const outcome = await driver.transaction(async () => {
+        const rows = await driver.all<{ id: string }>(`SELECT id FROM vaultbase_admin${driver.name === "sqlite" ? "" : " FOR UPDATE"}`);
+        if (!rows.some((r) => r.id === params.id)) return "missing";
+        if (rows.length <= 1) return "last";
+        await driver.run(`DELETE FROM vaultbase_admin WHERE id = ?`, [params.id]);
+        return "deleted";
+      });
+      if (outcome === "missing") { set.status = 404; return { error: "Admin not found", code: 404 }; }
+      if (outcome === "last") { set.status = 400; return { error: "Cannot delete the last admin", code: 400 }; }
       return { data: null };
     }, { requireAdmin: true });
 }

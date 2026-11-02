@@ -163,8 +163,11 @@ class TokenStream {
     this.pos++;
     let s = "";
     while (this.pos < this.src.length && this.src[this.pos] !== quote) {
-      if (this.src[this.pos] === "\\" && this.src[this.pos + 1] === quote) {
-        s += quote; this.pos += 2;
+      // `\"` is a quote and `\\` a backslash, so a value ending in `\` can be
+      // written ("C:\\") instead of escaping the closing quote.
+      const next = this.src[this.pos + 1];
+      if (this.src[this.pos] === "\\" && (next === quote || next === "\\")) {
+        s += next; this.pos += 2;
       } else {
         s += this.src[this.pos++];
       }

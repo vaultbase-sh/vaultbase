@@ -246,6 +246,29 @@ describe("the main thread's internal listener", () => {
     }
   });
 
+  it("survives a realtime socket refused for its Origin (its close handler used to throw)", async () => {
+    const errors: unknown[] = [];
+    const onError = (e: unknown) => { errors.push(e); };
+    process.on("uncaughtException", onError);
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${internal.port}/realtime`, {
+        headers: { [INTERNAL_HEADER]: internal.secret, origin: "https://not-allowed.example" },
+      } as unknown as string[]);
+      const reason = await new Promise<string>((resolve, reject) => {
+        let got = "";
+        ws.onmessage = (e) => { got = (JSON.parse(String(e.data)) as { reason?: string }).reason ?? got; ws.send(JSON.stringify({ type: "subscribe", topics: ["posts"] })); };
+        ws.onclose = () => resolve(got);
+        ws.onerror = () => reject(new Error("socket error"));
+      });
+      expect(reason).toBe("origin_not_allowed");
+      await Bun.sleep(50);
+      expect(errors).toEqual([]);
+      expect((await internalFetch("/api/health", { [INTERNAL_HEADER]: internal.secret })).status).toBe(200);
+    } finally {
+      process.off("uncaughtException", onError);
+    }
+  });
+
   it("treats the peer a worker reports as the client's address", async () => {
     // Per-address buckets: the reported peer, not loopback, is the key.
     setSetting("rate_limit.enabled", "1");

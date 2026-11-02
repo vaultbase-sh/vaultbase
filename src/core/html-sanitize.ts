@@ -91,10 +91,10 @@ export function sanitizeHtml(input: string): string {
       // Find the end of the tag.
       const tagEnd = findTagEnd(input, i + 1);
       if (tagEnd < 0) {
-        // Stray `<` — escape it as text.
-        out += "&lt;";
-        i += 1;
-        continue;
+        // A tag that never closes (an open quote runs to the end): the rest is
+        // text. Rescanning from every later `<` made this quadratic.
+        out += input.slice(i).replace(/</g, "&lt;");
+        break;
       }
       const raw = input.slice(i + 1, tagEnd);
       const isClose = raw.startsWith("/");

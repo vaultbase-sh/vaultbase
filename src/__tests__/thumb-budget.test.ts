@@ -31,6 +31,14 @@ describe("thumbnail decode budget", () => {
       .rejects.toBeInstanceOf(ImageTooLargeError);
   });
 
+  it("an output over the budget isn't resized (a sliver scaled to one side)", async () => {
+    // 50000×1 passes the source budget; ?thumb=0x4096 would ask for 204.8M×4096.
+    await expect(generateThumbnail(pngClaiming(50_000, 1), { width: 0, height: 4096, fit: "contain" }, "png"))
+      .rejects.toBeInstanceOf(ImageTooLargeError);
+    await expect(generateThumbnail(pngClaiming(50_000, 1), { width: 4096, height: 4096, fit: "cover" }, "png"))
+      .rejects.toBeInstanceOf(ImageTooLargeError);
+  });
+
   it("normal images still thumbnail (legitimate path)", async () => {
     const png = await new Bun.Image(pngClaiming(1, 1)).metadata().then(() => null).catch(() => null);
     void png;

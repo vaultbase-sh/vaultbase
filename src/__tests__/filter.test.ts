@@ -91,3 +91,17 @@ describe("parseFilter", () => {
     expect(r!.params).toContain("user");
   });
 });
+
+describe("string literals: backslash escapes", () => {
+  it("a value ending in a backslash stays one value (it used to escape the closing quote)", () => {
+    // The SDK filter builders write `\` as `\\`: title = "\" && owner = "x" must stay two conditions.
+    const r = parseFilter(String.raw`title = "\\" && owner = "x"`, "vb_t");
+    expect(r).not.toBeNull();
+    expect(r!.params).toEqual(["\\", "x"]);
+  });
+
+  it("an escaped quote is still a quote (legitimate path)", () => {
+    expect(parseFilter(String.raw`title = "say \"hi\""`, "vb_t")!.params).toEqual(['say "hi"']);
+    expect(parseFilter(String.raw`path = "C:\\dir"`, "vb_t")!.params).toEqual(["C:\\dir"]);
+  });
+});

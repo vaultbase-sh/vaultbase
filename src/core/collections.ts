@@ -325,6 +325,12 @@ export const AUTH_PRIVATE_COLUMNS: ReadonlySet<string> = new Set([
 const PRIVATE_CACHE_MAX = 256;
 const privateCache = new Map<string, ReadonlySet<string>>();
 
+/** A set that stores and looks names up lowercased. */
+class LowercaseSet extends Set<string> {
+  override add(name: string): this { return super.add(name.toLowerCase()); }
+  override has(name: string): boolean { return super.has(name.toLowerCase()); }
+}
+
 export function privateFieldNames(col: Pick<Collection, "type" | "fields">): ReadonlySet<string> {
   // Views depend on sensitiveSchema(), which is cached per schema token.
   const cacheKey = col.type === "view" ? null : `${col.type}\u0000${col.fields}`;
@@ -332,7 +338,9 @@ export function privateFieldNames(col: Pick<Collection, "type" | "fields">): Rea
     const hit = privateCache.get(cacheKey);
     if (hit) return hit;
   }
-  const out = new Set<string>();
+  // A view's columns keep the case of the source's field names (`PIN`), while
+  // the password names it checks against are lowercased: compare that way.
+  const out = col.type === "view" ? new LowercaseSet() : new Set<string>();
   // Views too: a view over an auth table (`SELECT * FROM vb_users`) carries
   // the same columns under the same names, and `SELECT *` over a collection
   // with a password field carries that field.
