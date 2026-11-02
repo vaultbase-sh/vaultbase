@@ -15,6 +15,7 @@ import { createCollection } from "../core/collections.ts";
 import { signAuthToken } from "../core/sec.ts";
 import { setSetting } from "../api/settings.ts";
 import { makeOpenApiPlugin } from "../api/openapi.ts";
+import { createWithLegacyMultipleRelations } from "./_helpers.ts";
 
 const SECRET = "test-secret-openapi";
 let tmpDir: string;
@@ -25,7 +26,8 @@ beforeEach(async () => {
   await initDb(":memory:");
   await runMigrations();
   await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
-  await createCollection({
+  // `tags` is a multiple relation, as schemas made before they were refused have.
+  await createWithLegacyMultipleRelations({
     name: "blog_posts", type: "base",
     fields: JSON.stringify([
       { name: "title", type: "text", required: true },

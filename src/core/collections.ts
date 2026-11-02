@@ -494,6 +494,15 @@ function assertFieldOptions(fields: FieldDef[], previous: FieldDef[]): void {
     errors[f.name] = `'${f.name}': an encrypted field can't be unique (only ciphertext is stored)`;
   }
   for (const f of fields) {
+    // A relation holds one record id: writes, expand and cascades read it
+    // that way, so a `multiple` one was accepted but couldn't be written.
+    // A schema that has one already keeps it.
+    if (f.system || f.type !== "relation" || f.options?.multiple !== true) continue;
+    const prev = previousByName.get(f.renamedFrom ?? f.name) ?? previousByName.get(f.name);
+    if (prev?.type === "relation" && prev.options?.multiple === true) continue;
+    errors[f.name] = `'${f.name}': a relation holds one record. For several, add a relation to this collection on the other one`;
+  }
+  for (const f of fields) {
     // Renaming onto a name this change removes: the column of that name is
     // still there when the rename runs. Two saves do it.
     const from = f.renamedFrom;

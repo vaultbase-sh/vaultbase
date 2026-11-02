@@ -227,3 +227,27 @@ describe("settings validation", () => {
     expect((await app.handle(await adminReq("PATCH", "/admin/settings", { "backups.keep": "14" }))).status).toBe(200);
   });
 });
+
+describe.skipIf(!onSqlite)("SQLite snapshot", () => {
+  it("runs off the main thread: timers keep firing while a large database is copied", async () => {
+    const { snapshotTo } = await import("../core/backups.ts");
+    const { db } = await import("../db/index.ts");
+    await db.exec(`CREATE TABLE big (id INTEGER PRIMARY KEY, pad TEXT)`);
+    await db.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600000)
+      INSERT INTO big (pad) SELECT hex(randomblob(100)) FROM n`);
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
+    const t0 = Date.now();
+    try {
+      await snapshotTo(join(tmpDir, "big-snap.db"));
+    } finally {
+      clearInterval(timer);
+    }
+    const ms = Date.now() - t0;
+    // Blocked, it fired at most once (after the copy); free, about every 5 ms.
+    if (ms > 30) expect(ticks).toBeGreaterThan(2);
+    const copy = new Database(join(tmpDir, "big-snap.db"), { readonly: true });
+    expect((copy.prepare(`SELECT count(*) AS n FROM big`).get() as { n: number }).n).toBe(600000);
+    copy.close();
+  });
+});

@@ -22,7 +22,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { _resetCollectionCache } from "../core/collections.ts";
 import { parseFilter, type CollectionLookup, type ParseFilterOpts } from "../core/filter.ts";
 import type { AuthContext } from "../core/rules.ts";
-import { onSqlite, createPublicCollection } from "./_helpers.ts";
+import { onSqlite, createPublicCollection, createWithLegacyMultipleRelations } from "./_helpers.ts";
 import { db } from "../db/index.ts";
 import { createRecord, deleteRecord, getRecord, listRecords, updateRecord } from "../core/records.ts";
 
@@ -273,7 +273,7 @@ describe.skipIf(!onSqlite)("golden SQL", () => {
 
   it("user table with every field type", async () => {
     await createPublicCollection({ name: "gold_people", fields: JSON.stringify(PEOPLE_FIELDS) });
-    await createPublicCollection({ name: "gold", fields: JSON.stringify(GOLD_FIELDS) });
+    await createWithLegacyMultipleRelations({ list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null, name: "gold", fields: JSON.stringify(GOLD_FIELDS) });
     await check("user-table.sql", dumpSchema("(tbl_name LIKE 'vb_gold%' OR name LIKE '%vb_gold%')"));
   });
 
@@ -312,7 +312,7 @@ describe.skipIf(!onSqlite)("golden SQL: operations", () => {
     await initDb(":memory:");
     await runMigrations();
     await createPublicCollection({ name: "gold_people", fields: JSON.stringify(CASCADE_PEOPLE) });
-    await createPublicCollection({ name: "gold", fields: JSON.stringify(CASCADE_GOLD) });
+    await createWithLegacyMultipleRelations({ list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null, name: "gold", fields: JSON.stringify(CASCADE_GOLD) });
   });
   afterEach(async () => {
     _resetCollectionCache();

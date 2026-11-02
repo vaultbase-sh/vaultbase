@@ -110,3 +110,24 @@ export const onSqlite = !/^postgres/i.test(process.env["VAULTBASE_TEST_DB"] ?? "
 export function testDb(path: string): string {
   return onSqlite ? path : ":memory:";
 }
+
+/**
+ * A collection whose schema has `multiple` relations, as made before they
+ * were refused: created with single relations, then the stored fields put
+ * back and the index a single relation gets dropped. For tests that cover
+ * how such schemas keep working.
+ */
+export async function createWithLegacyMultipleRelations(
+  init: Parameters<typeof createCollection>[0] & { fields: string },
+): Promise<Awaited<ReturnType<typeof createCollection>>> {
+  const { db } = await import("../db/index.ts");
+  const { _resetCollectionCache, userTableName } = await import("../core/collections.ts");
+  const fields = JSON.parse(init.fields) as Array<{ name: string; type: string; options?: Record<string, unknown> }>;
+  const multiple = fields.filter((f) => f.type === "relation" && f.options?.["multiple"] === true).map((f) => f.name);
+  const single = fields.map((f) => (multiple.includes(f.name) ? { ...f, options: { ...f.options, multiple: undefined } } : f));
+  const col = await createCollection({ ...init, fields: JSON.stringify(single) });
+  await db.run(`UPDATE vaultbase_collections SET fields = ? WHERE id = ?`, [init.fields, col.id]);
+  for (const name of multiple) await db.exec(`DROP INDEX IF EXISTS ${db.dialect.quoteIdent(db.dialect.fitIdent(`idx_${userTableName(col.name)}_${name}`))}`);
+  _resetCollectionCache();
+  return col;
+}

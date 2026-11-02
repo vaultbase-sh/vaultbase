@@ -229,6 +229,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   no longer disables every device it was sent to.
 
 - **Performance:**
+  - **SQLite backups no longer block the server.** `VACUUM INTO` (scheduled
+    backups, **Back up now**, the download) ran on the main thread, so every
+    write, sign-in and admin request waited for the whole copy: seconds to
+    minutes on a large database. It now runs on its own read-only
+    connection in a background thread.
   - File downloads from S3 storage stream from the bucket instead of being
     held in memory whole.
   - The request-log reader keeps at most four days parsed in memory (a
@@ -245,6 +250,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
   - The monitoring query report caches each query's plan.
   - Building the OpenAPI document no longer slows down with the square of
     the number of collections.
+
+### Changed
+
+- **A relation field can't be made `multiple` any more.** The schema API
+  accepted `options.multiple` on a relation, but no record could be written
+  with it, and expand and cascades ignored it. A new or changed relation
+  field with it is refused with a field error; a collection that already
+  has one keeps it. For several related records, put a relation to this
+  collection on the other one (and read them back with `_via_`).
 
 ### Removed
 

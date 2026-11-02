@@ -217,7 +217,12 @@ export async function snapshotTo(path: string): Promise<void> {
   if (existsSync(path)) rmSync(path);
   const engine = backupEngine();
   if (engine === "sqlite") {
-    getRawClient().exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
+    const file = getRawClient().filename;
+    // On its own connection in a worker: on the main thread the copy blocked
+    // every request (writes, auth, admin) for as long as it took, seconds to
+    // minutes on a large database. An in-memory database has no file to open.
+    if (file && file !== ":memory:") await vacuumIntoInWorker(file, path);
+    else getRawClient().exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
     return;
   }
   if (engine !== "pg_dump") throw new Error(`backups are not available on ${getDriver().name}`);
@@ -235,6 +240,47 @@ export async function snapshotTo(path: string): Promise<void> {
     if (existsSync(path)) rmSync(path);
     throw new Error(`pg_dump failed (exit ${code}): ${err.trim().slice(0, 300)}`);
   }
+}
+
+/**
+ * `VACUUM INTO` on a read-only connection of its own, in a worker (an inline
+ * blob, as the checkpointer is: a worker file wouldn't be found inside the
+ * compiled binary). It copies the committed state, WAL included.
+ */
+const VACUUM_WORKER = `
+import { Database } from "bun:sqlite";
+onmessage = (e) => {
+  const { source, target } = e.data;
+  let db;
+  try {
+    db = new Database(source, { readonly: true });
+    db.exec("PRAGMA busy_timeout = 5000;");
+    db.exec("VACUUM INTO '" + target.replace(/'/g, "''") + "'");
+    postMessage({ ok: true });
+  } catch (err) {
+    postMessage({ ok: false, message: String(err && err.message || err) });
+  } finally {
+    try { db && db.close(); } catch {}
+  }
+};
+`;
+
+function vacuumIntoInWorker(source: string, target: string): Promise<void> {
+  const url = URL.createObjectURL(new Blob([VACUUM_WORKER], { type: "application/javascript" }));
+  const w = new Worker(url);
+  return new Promise<void>((resolve, reject) => {
+    const done = (err?: Error) => {
+      w.terminate();
+      URL.revokeObjectURL(url);
+      if (err) reject(err); else resolve();
+    };
+    w.onmessage = (e: MessageEvent) => {
+      const m = e.data as { ok: boolean; message?: string };
+      done(m.ok ? undefined : new Error(m.message ?? "VACUUM INTO failed"));
+    };
+    w.onerror = (e) => done(new Error(e.message || "backup worker failed"));
+    w.postMessage({ source, target });
+  });
 }
 
 export function listBackups(): BackupInfo[] {
