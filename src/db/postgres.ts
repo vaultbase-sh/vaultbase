@@ -288,6 +288,17 @@ export class PostgresDriver implements DbDriver {
   readonly url: string;
   private readonly als = new AsyncLocalStorage<SQL>();
   private readonly migrationLockHeld = new AsyncLocalStorage<true>();
+  /** Each open transaction's table reports, flushed at its own COMMIT. */
+  private readonly reportsByTx = new WeakMap<SQL, Map<string, number>>();
+
+  /** The current transaction's report list; undefined outside one (reported at once). */
+  private txReports(): Map<string, number> | undefined {
+    const tx = this.als.getStore();
+    if (!tx) return undefined;
+    let m = this.reportsByTx.get(tx);
+    if (!m) { m = new Map(); this.reportsByTx.set(tx, m); }
+    return m;
+  }
   private token = 1;
   private traceFn: ((sql: string) => void) | null = null;
   private savepointSeq = 0;
@@ -379,7 +390,7 @@ export class PostgresDriver implements DbDriver {
     // INSERT ... RETURNING and writes in a CTE come back as rows.
     const table = rawWriteTarget(sql);
     if (table) {
-      noteTableWrite(table, (rows as Rows).count ?? 0);
+      noteTableWrite(table, (rows as Rows).count ?? 0, this.txReports());
       if (!this.inTransaction) flushTableReports();
     }
     return plainRows<T>(rows as Rows);
@@ -406,7 +417,7 @@ export class PostgresDriver implements DbDriver {
     const changes = rows.count ?? 0;
     const table = opts?.table ?? rawWriteTarget(sql);
     if (table) {
-      noteTableWrite(table, changes);
+      noteTableWrite(table, changes, this.txReports());
       if (!this.inTransaction) flushTableReports();
     }
     return { changes, lastInsertRowid: 0, trackedChanges: changes };
@@ -419,7 +430,7 @@ export class PostgresDriver implements DbDriver {
     // rawWriteTarget gives "*" for a script of several statements.
     const table = rawWriteTarget(sql);
     if (table) {
-      noteTableWrite(table, 0);
+      noteTableWrite(table, 0, this.txReports());
       if (!this.inTransaction) flushTableReports();
     }
   }
@@ -459,8 +470,12 @@ export class PostgresDriver implements DbDriver {
     if (this.als.getStore()) return this.savepoint(fn);
     this.traceFn?.("BEGIN");
     try {
-      const out = await this.pool.begin(async (tx) => this.als.run(tx as unknown as SQL, fn)) as T;
-      flushTableReports({ bump: true });
+      let reports: Map<string, number> | undefined;
+      const out = await this.pool.begin(async (tx) => this.als.run(tx as unknown as SQL, async () => {
+        try { return await fn(); } finally { reports = this.reportsByTx.get(tx as unknown as SQL); }
+      })) as T;
+      // This transaction's own reports, now committed; a rollback drops them.
+      if (reports) flushTableReports({ bump: true, from: reports });
       return out;
     } finally {
       this.traceFn?.("COMMIT");
@@ -547,13 +562,19 @@ export class PostgresDriver implements DbDriver {
           } finally {
             reserved.release();
           }
-          flushTableReports();
+          const reports = this.reportsByTx.get(reserved as unknown as SQL);
+          if (reports) flushTableReports({ from: reports });
         } else {
+          let reports: Map<string, number> | undefined;
           await conn.begin(async (tx) => {
-            out = await run(tx as unknown as SQL);
+            try {
+              out = await run(tx as unknown as SQL);
+            } finally {
+              reports = this.reportsByTx.get(tx as unknown as SQL);
+            }
             if (opts.tx === "rollback") throw rollback;
           });
-          flushTableReports({ bump: true });
+          if (reports) flushTableReports({ bump: true, from: reports });
         }
       } catch (e) {
         if (e !== rollback) throw e;

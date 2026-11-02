@@ -64,6 +64,12 @@ export const recordHistory = sqliteTable("vaultbase_record_history", {
   actor_type: text("actor_type"),
   /** Unix-seconds timestamp of the write. */
   at: integer("at").notNull().default(EPOCH_NOW),
+  /**
+   * Write order within a second: microseconds, kept increasing per process.
+   * `at` alone left two writes in one second (a create and its hook's
+   * update) in no particular order. Null on rows from before 0.36.
+   */
+  seq: integer("seq"),
 });
 
 export const authTokens = sqliteTable("vaultbase_auth_tokens", {

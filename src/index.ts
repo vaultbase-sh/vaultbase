@@ -607,6 +607,11 @@ async function main() {
       stopServer: async () => {
         const { setWorkerListen } = await import("./core/read-pool.ts");
         setWorkerListen(null);
+        // Long-lived streams never end on their own: close them, or every
+        // stop waited the full 10 s for them.
+        const { closeConnections } = await import("./realtime/manager.ts");
+        closeConnections(() => false, { type: "shutdown" });
+        (await import("./mcp/events.ts")).closeMcpEventClients();
         return (server.server as { stop?: (force?: boolean) => unknown } | null)?.stop?.(false);
       },
       cleanup: [
@@ -618,6 +623,10 @@ async function main() {
         () => stopCheckpointer(),
         async () => { const { stopReadPool } = await import("./core/read-pool.ts"); await stopReadPool(); },
         () => internalListener?.stop(),
+        // Before the database closes: last API-token usage counts and the
+        // peer outbox (realtime events for the other servers).
+        async () => { await (await import("./core/api-tokens.ts")).flushApiTokenUsage(); },
+        async () => { await (await import("./core/peers.ts")).stopPeers(); },
         () => closeDb(),
       ],
       timeoutMs: 10_000,

@@ -112,6 +112,13 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
     return op === "=" ? isNull : !isNull;
   }
   if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
+  // A pattern written in the rule: `%` and `_` are wildcards, as the SQL
+  // (LIKE) has them. Here they were plain text, so a list showed records
+  // that the same rule refused by id and over realtime.
+  if ((op === "~" || op === "!~") && ast.right.kind === "literal" && typeof r === "string" && /[%_]/.test(r)) {
+    const m = likeMatch(l, r);
+    return op === "~" ? m : !m;
+  }
   return compareScalar(l, op, r, ctx.item === true);
 }
 
@@ -124,6 +131,13 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
 function contains(haystack: unknown, needle: unknown): boolean {
   const n = needle === null || needle === undefined ? "" : String(needle);
   return n !== "" && asciiLower(String(haystack ?? "")).includes(asciiLower(n));
+}
+
+/** SQLite's `x LIKE '%pattern%'`: `%` any run, `_` one character, ASCII letters in either case. */
+function likeMatch(haystack: unknown, pattern: string): boolean {
+  if (haystack === null || haystack === undefined || pattern === "") return false;
+  const re = asciiLower(pattern).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, "[\\s\\S]*").replace(/_/g, "[\\s\\S]");
+  return new RegExp(re, "u").test(asciiLower(String(haystack)));
 }
 
 function asciiLower(s: string): string {
@@ -482,15 +496,23 @@ function looseEq(a: unknown, b: unknown): boolean {
   if (b === null || b === undefined) return false;
   if (typeof a === "boolean") a = a ? 1 : 0;
   if (typeof b === "boolean") b = b ? 1 : 0;
-  if (typeof a === "number" || typeof b === "number") return Number(a) === Number(b);
+  if (typeof a === "number" || typeof b === "number") {
+    // Number("") is 0, but in SQL '' isn't 0.
+    if (a === "" || b === "") return false;
+    return Number(a) === Number(b);
+  }
   return String(a) === String(b);
 }
 
 function cmp(a: unknown, b: unknown): number {
-  const na = typeof a === "boolean" ? (a ? 1 : 0) : Number(a);
-  const nb = typeof b === "boolean" ? (b ? 1 : 0) : Number(b);
+  // Two strings compare as text, by code point, as the SQL does ("B" < "a",
+  // "10" < "9"); turning numeric-looking ones into numbers, or comparing by
+  // locale, made a single record pass where the list refused it.
+  if (typeof a === "string" && typeof b === "string") return codePointOrder(a, b);
+  const na = typeof a === "boolean" ? (a ? 1 : 0) : a === "" ? NaN : Number(a);
+  const nb = typeof b === "boolean" ? (b ? 1 : 0) : b === "" ? NaN : Number(b);
   if (!isNaN(na) && !isNaN(nb)) return na - nb;
-  return String(a ?? "").localeCompare(String(b ?? ""));
+  return codePointOrder(String(a ?? ""), String(b ?? ""));
 }
 
 function stableEq(a: unknown, b: unknown): boolean {

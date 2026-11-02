@@ -28,7 +28,7 @@ function indexColumnsFromSql(sql: string): string[] {
   return sql.slice(open + 1, close).split(",").map((c) => c.trim().replace(/\s+(ASC|DESC)$/i, "").replace(/^"(.*)"$/, "$1")).filter(Boolean);
 }
 
-async function listIndexes(tableName: string): Promise<IndexInfo[]> {
+export async function listIndexes(tableName: string): Promise<IndexInfo[]> {
   // Only indexes we created, named with our prefix; the database's own
   // (primary keys, inline UNIQUEs) have no definition text or another name.
   const rows = await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [tableName]);

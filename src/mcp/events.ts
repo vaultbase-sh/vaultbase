@@ -30,6 +30,8 @@ export interface McpEventClient {
   connectedAt: number;
   /** Send a JSON-RPC payload to this client (already JSON-stringified). */
   send(payload: string): void;
+  /** End the stream (token revoked, server stopping). */
+  close(): void;
 }
 
 const clients = new Map<string, McpEventClient>();
@@ -77,22 +79,14 @@ export function unregisterMcpEventClient(id: string): void {
   clients.delete(id);
 }
 
-/** Best-effort broadcast — failures are swallowed (the SSE handler cleans up). */
-export function broadcastMcpEvent(payload: unknown): void {
-  const text = JSON.stringify(payload);
-  for (const c of clients.values()) {
-    try { c.send(text); } catch { /* handler cleans up */ }
+/** End the streams of a token (on revoke), or every stream (at shutdown). */
+export function closeMcpEventClients(tokenId?: string): number {
+  let n = 0;
+  for (const [id, c] of [...clients.entries()]) {
+    if (tokenId !== undefined && c.tokenId !== tokenId) continue;
+    clients.delete(id);
+    try { c.close(); } catch { /* already closed */ }
+    n++;
   }
-}
-
-/** Number of currently connected clients — for tests + admin metrics. */
-export function mcpEventClientCount(): number {
-  return clients.size;
-}
-
-/** Disconnect every client whose token jti matches. Called on token revoke. */
-export function disconnectMcpClientsByToken(tokenId: string): void {
-  for (const [id, c] of clients.entries()) {
-    if (c.tokenId === tokenId) clients.delete(id);
-  }
+  return n;
 }

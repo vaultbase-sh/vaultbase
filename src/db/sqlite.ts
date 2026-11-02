@@ -200,6 +200,10 @@ export class SqliteDriver implements DbDriver {
     // database together (a CLI next to the server) it used to fail with
     // SQLITE_BUSY before any timeout applied.
     raw.exec("PRAGMA busy_timeout = 5000;");
+    // A REPLACE (raw SQL from the SQL page or a hook) deletes the row it
+    // replaces; without this its delete triggers don't fire, so the stored
+    // row count and the search index kept the replaced row for good.
+    raw.exec("PRAGMA recursive_triggers = ON;");
     if (!isMemory) {
       // WAL: concurrent readers + single writer.
       raw.exec("PRAGMA journal_mode = WAL;");

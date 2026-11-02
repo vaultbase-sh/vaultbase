@@ -169,6 +169,7 @@ export function makeMcpPlugin(jwtSecret: string) {
                   cleanup();
                 }
               },
+              close: cleanup,
             };
             clientId = registerMcpEventClient(adapter);
 

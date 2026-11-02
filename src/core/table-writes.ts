@@ -24,10 +24,14 @@ export function applyTableReport(table: string, changes: number): void {
   versions.set(table, (versions.get(table) ?? 0) + 1);
 }
 
-/** A write this thread made: `changes` rows in `table` (the SQLite table name). */
-export function noteTableWrite(table: string, changes: number): void {
+/**
+ * A write this thread made: `changes` rows in `table` (the SQLite table name).
+ * `into`: the reports of one open transaction (Postgres runs several at once;
+ * one shared list let a commit flush another transaction's uncommitted write).
+ */
+export function noteTableWrite(table: string, changes: number, into: Map<string, number> = pending): void {
   applyTableReport(table, changes);
-  pending.set(table, (pending.get(table) ?? 0) + changes);
+  into.set(table, (into.get(table) ?? 0) + changes);
 }
 
 /**
@@ -36,10 +40,11 @@ export function noteTableWrite(table: string, changes: number): void {
  * it recounts; a worker that sees the commit first (its `data_version`
  * moved with nothing reported) empties its cache instead, which is safe.
  */
-export function flushTableReports(opts?: { bump?: boolean }): void {
-  if (pending.size === 0) return;
-  const tables = [...pending.entries()];
-  pending.clear();
+export function flushTableReports(opts?: { bump?: boolean; from?: Map<string, number> }): void {
+  const src = opts?.from ?? pending;
+  if (src.size === 0) return;
+  const tables = [...src.entries()];
+  src.clear();
   // Postgres: other connections could read (and count) between the write
   // and its COMMIT without seeing it, and cache that under the version the
   // write had already moved. Moving it again at COMMIT retires those.

@@ -334,17 +334,30 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       // Snapshot rather than stream the live file: under WAL the main file
       // alone can miss committed pages. On Postgres, a pg_dump archive.
       const snap = `${dbPath}.download-${Date.now()}`;
-      let bytes: Uint8Array;
       try {
         await snapshotTo(snap);
-        bytes = await Bun.file(snap).bytes();
-      } finally {
+      } catch (e) {
         rmSync(snap, { force: true });
+        throw e;
       }
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       set.headers["Content-Type"] = "application/octet-stream";
       set.headers["Content-Disposition"] = `attachment; filename="vaultbase-backup-${stamp}.${backupFormat().ext}"`;
-      return new Response(bytes);
+      // Streamed from disk, and deleted once sent (or abandoned): reading it
+      // whole held the entire database in memory for the download.
+      const file = Bun.file(snap);
+      set.headers["Content-Length"] = String(file.size);
+      const reader = file.stream().getReader();
+      const done = () => rmSync(snap, { force: true });
+      return new Response(new ReadableStream<Uint8Array>({
+        async pull(c) {
+          try {
+            const { done: end, value } = await reader.read();
+            if (end) { c.close(); done(); } else c.enqueue(value);
+          } catch (e) { done(); c.error(e); }
+        },
+        cancel() { void reader.cancel().catch(() => {}); done(); },
+      }));
     }, { requireAdmin: true })
 
     // Stored backups + schedule status

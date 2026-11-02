@@ -27,6 +27,10 @@ export interface CollectionSnapshot {
   create_rule?: string | null;
   update_rule?: string | null;
   delete_rule?: string | null;
+  /** Record history on or off; left out, an existing collection keeps its own. */
+  history_enabled?: boolean;
+  /** Indexes made in the admin; applied when missing (never dropped). */
+  indexes?: Array<{ fields: string[]; unique: boolean }>;
 }
 
 export interface Snapshot {
@@ -110,6 +114,7 @@ export function isCollectionInSync(
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) return false;
   if (viewParamsJson(parseViewParams(existing.view_params)) !== viewParamsJson(snap.view_params)) return false;
   if (RULES.some((r) => ruleDiffers(existing[r], snap[r]))) return false;
+  if (snap.history_enabled !== undefined && !!existing.history_enabled !== snap.history_enabled) return false;
   return fieldsEqual(parseFields(existing.fields), snap.fields);
 }
 
@@ -148,6 +153,7 @@ export function describeCollectionChanges(existing: ExistingCollection, snap: Co
   if ((existing.view_query ?? null) !== (snap.view_query ?? null)) changes.push("view_query changed");
   if (viewParamsJson(parseViewParams(existing.view_params)) !== viewParamsJson(snap.view_params)) changes.push("view_params changed");
   for (const r of RULES) if (ruleDiffers(existing[r], snap[r])) changes.push(`${r} changed`);
+  if (snap.history_enabled !== undefined && !!existing.history_enabled !== snap.history_enabled) changes.push("history_enabled changed");
 
   return changes;
 }
@@ -277,6 +283,7 @@ export async function applySnapshot(
           ...(c.create_rule !== undefined ? { create_rule: c.create_rule } : {}),
           ...(c.update_rule !== undefined ? { update_rule: c.update_rule } : {}),
           ...(c.delete_rule !== undefined ? { delete_rule: c.delete_rule } : {}),
+          ...(c.history_enabled !== undefined ? { history_enabled: c.history_enabled ? 1 : 0 } : {}),
         });
         result.created.push(c.name);
       } catch (e) {
@@ -319,6 +326,7 @@ export async function applySnapshot(
         view_params: viewParamsJson(c.view_params),
         // Only the rules the snapshot carries; the others stay as they are.
         ...Object.fromEntries(RULES.filter((r) => c[r] !== undefined).map((r) => [r, c[r]])),
+        ...(c.history_enabled !== undefined ? { history_enabled: c.history_enabled ? 1 : 0 } : {}),
       });
       result.updated.push(c.name);
     } catch (e) {
@@ -328,6 +336,22 @@ export async function applySnapshot(
              : e instanceof Error ? e.message
              : String(e),
       });
+    }
+  }
+
+  // Indexes, in either mode, on the collections there now: a missing one is
+  // created; one already there (or another by that name) is left as it is.
+  const { createCollectionIndex } = await import("../api/indexes.ts");
+  for (const c of snapshot.collections) {
+    if (!c.indexes?.length) continue;
+    const col = await getCollection(c.name);
+    if (!col) continue;
+    for (const ix of c.indexes) {
+      try {
+        await createCollectionIndex(col, ix.fields, ix.unique);
+      } catch (e) {
+        result.errors.push({ collection: c.name, error: `index (${ix.fields.join(", ")}): ${e instanceof Error ? e.message : String(e)}` });
+      }
     }
   }
 

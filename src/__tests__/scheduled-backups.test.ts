@@ -212,6 +212,10 @@ describe.skipIf(!canBackUp)("admin API", () => {
     db.close();
     expect(row.value).toBe("wal-only");
     expect(readFileSync(out).length).toBeGreaterThan(0);
+    // The temporary snapshot is gone once the download was read.
+    const { readdirSync } = await import("fs");
+    const { dirname, basename } = await import("path");
+    expect(readdirSync(dirname(dbPath)).filter((f) => f.startsWith(`${basename(dbPath)}.download-`))).toEqual([]);
   });
 });
 

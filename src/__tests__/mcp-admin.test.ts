@@ -93,6 +93,7 @@ describe("GET /admin/mcp/clients", () => {
       userAgent: "Claude/1.0",
       connectedAt: Math.floor(Date.now() / 1000),
       send: () => {},
+      close: () => {},
     });
 
     try {
@@ -147,5 +148,18 @@ describe("GET /admin/mcp/catalog", () => {
     expect(body.data.prompts.map((p) => p.name)).toContain("design-collection");
     expect(body.data.counts.tools).toBe(toolNames.length);
     expect(body.data.counts.prompts).toBeGreaterThan(0);
+  });
+});
+
+describe("revoking an API token", () => {
+  it("ends its open MCP event stream", async () => {
+    const { registerMcpEventClient: reg, listMcpEventClients } = await import("../mcp/events.ts");
+    const { mintApiToken, revokeApiToken } = await import("../core/api-tokens.ts");
+    const minted = await mintApiToken({ name: "t", scopes: ["mcp:read"], createdBy: "a1", createdByEmail: "a@x" }, "test-secret");
+    let closed = 0;
+    reg({ tokenId: minted.id, tokenName: "t", scopes: ["mcp:read"], adminId: "a1", adminEmail: "a@x", connectedAt: 0, send: () => {}, close: () => { closed++; } });
+    await revokeApiToken(minted.id);
+    expect(closed).toBe(1);
+    expect(listMcpEventClients().some((c) => c.tokenId === minted.id)).toBe(false);
   });
 });

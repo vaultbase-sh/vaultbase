@@ -123,8 +123,19 @@ export async function maybeRecordHistory(col: Collection, recordId: string, opts
     actor_id: opts.auth?.id ?? null,
     actor_type: (opts.auth?.type as "user" | "admin" | undefined) ?? null,
     at: Math.floor(Date.now() / 1000),
+    seq: nextSeq(),
   });
 }
+
+let lastSeq = 0;
+/** Microseconds since the epoch, never the same twice in this process. */
+function nextSeq(): number {
+  lastSeq = Math.max(Date.now() * 1000, lastSeq + 1);
+  return lastSeq;
+}
+
+/** Newest first; `seq` orders writes within one second (null on older rows sorts as 0). */
+const newestFirst = [desc(recordHistory.at), desc(sql`coalesce(${recordHistory.seq}, 0)`)] as const;
 
 export interface ListHistoryOpts {
   /** Default 50, max 200. */
@@ -177,7 +188,7 @@ export async function listRecordHistory(
 
   if (opts.visible) {
     const all = await db.select().from(recordHistory).where(where)
-      .orderBy(desc(recordHistory.at)).limit(MAX_FILTERED_HISTORY);
+      .orderBy(...newestFirst).limit(MAX_FILTERED_HISTORY);
     const kept = (await Promise.all(all.map(decode))).filter(opts.visible);
     return {
       data: kept.slice(offset, offset + perPage),
@@ -198,7 +209,7 @@ export async function listRecordHistory(
     .select()
     .from(recordHistory)
     .where(where)
-    .orderBy(desc(recordHistory.at))
+    .orderBy(...newestFirst)
     .limit(perPage)
     .offset(offset);
 
@@ -242,7 +253,7 @@ export async function getHistoryAt(
       eq(recordHistory.record_id, recordId),
       sql`${recordHistory.at} <= ${atUnixSec}`,
     ))
-    .orderBy(desc(recordHistory.at))
+    .orderBy(...newestFirst)
     .limit(1);
   const r = rows[0];
   if (!r) return null;

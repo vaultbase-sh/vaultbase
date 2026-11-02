@@ -105,3 +105,25 @@ describe("snapshot rules", () => {
     expect((await computeSnapshotDiff(snap)).modified).toEqual([]);
   });
 });
+
+describe("snapshots carry history and admin indexes", () => {
+  it("export them, and apply them to a fresh install", async () => {
+    const { updateCollection } = await import("../core/collections.ts");
+    const { createCollectionIndex, listIndexes } = await import("../api/indexes.ts");
+    const col = await createCollection({ name: "notes", fields: JSON.stringify([{ name: "title", type: "text" }, { name: "rank", type: "number" }]) });
+    await updateCollection(col.id, { history_enabled: 1 });
+    await createCollectionIndex((await getCollection("notes"))!, ["title", "rank"]);
+    const snap = await exportSnapshot();
+    const notes = snap.collections.find((c) => c.name === "notes")!;
+    expect(notes.history_enabled).toBe(true);
+    expect(notes.indexes).toEqual([{ fields: ["title", "rank"], unique: false }]);
+
+    // A fresh install.
+    await closeDb(); _resetCollectionCache();
+    await initDb(":memory:"); await runMigrations();
+    const r = await applySnapshot(snap, { mode: "additive" });
+    expect(r.errors).toEqual([]);
+    expect((await getCollection("notes"))!.history_enabled).toBe(1);
+    expect((await listIndexes("vb_notes")).some((i) => i.fields.join(",") === "title,rank")).toBe(true);
+  });
+});

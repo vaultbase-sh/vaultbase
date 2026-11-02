@@ -170,6 +170,9 @@ export async function revokeApiToken(id: string): Promise<{ revoked: boolean }> 
     await db.update(apiTokens).set({ revoked_at: now }).where(eq(apiTokens.id, id));
   }
   await revokeToken(id, row.expires_at);
+  // Its open MCP event stream ends too; it kept running after a revoke.
+  const { closeMcpEventClients } = await import("../mcp/events.ts");
+  closeMcpEventClients(id);
   return { revoked: true };
 }
 

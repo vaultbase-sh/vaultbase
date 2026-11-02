@@ -199,6 +199,7 @@
   actor_id TEXT
   actor_type TEXT
   at INTEGER NOT NULL DEFAULT unixepoch()
+  seq INTEGER
 
 -- table vaultbase_routes
   id TEXT PK

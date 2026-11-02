@@ -13,6 +13,8 @@ import {
   type Snapshot,
 } from "../core/migrations.ts";
 import { adminGuard } from "./_admin.ts";
+import { listIndexes } from "./indexes.ts";
+import { userTableName } from "../core/collections.ts";
 import { parseViewParams } from "../core/view-params.ts";
 
 /**
@@ -47,9 +49,19 @@ export function makeMigrationsPlugin(jwtSecret: string) {
           out.create_rule = c.create_rule ?? null;
           out.update_rule = c.update_rule ?? null;
           out.delete_rule = c.delete_rule ?? null;
+          out.history_enabled = !!c.history_enabled;
           return out;
         }),
       };
+      // Indexes made in the admin (built-in ones come with the schema).
+      for (const out of snapshot.collections) {
+        if (out.type === "view") continue;
+        // Admin-made ones are named after the collection (idx_<name>_…,
+        // uniq_<name>_…); the server's own after the table (idx_vb_<name>_…).
+        const mine = (await listIndexes(userTableName(out.name)).catch(() => []))
+          .filter((i) => i.name.startsWith(`idx_${out.name}_`) || i.name.startsWith(`uniq_${out.name}_`));
+        if (mine.length > 0) out.indexes = mine.map((i) => ({ fields: i.fields, unique: i.unique }));
+      }
       set.headers["Content-Type"] = "application/json; charset=utf-8";
       set.headers["Content-Disposition"] = `attachment; filename="vaultbase-snapshot-${snapshot.generated_at.slice(0, 10)}.json"`;
       return snapshot;

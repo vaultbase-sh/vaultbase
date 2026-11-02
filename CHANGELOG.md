@@ -204,6 +204,30 @@ Binaries, checksums, signatures and SBOMs for every version are on
   subscription answer lists the topics accepted, not the ones asked for.
   `db:reset` also removes `database.json`.
 
+- **Record history:** two writes in the same second could be listed, and
+  restored, in either order. Each entry now records its write order too.
+- **Row counts:** an `INSERT OR REPLACE` from the SQL page or a hook
+  replaced a row without its delete triggers firing, so the stored total
+  (and the search index) kept the old row for good.
+- **Postgres:** with several transactions open at once, one transaction's
+  commit announced another's uncommitted write, which could leave a list
+  total out of date.
+- **Shutdown** closes realtime and MCP event streams first (a stop waited
+  the full 10 seconds for them), and flushes API-token usage and the
+  messages for other servers before the database closes. **Revoking an
+  API token** now also ends its open MCP event stream.
+- **Backup download** streams from disk instead of holding the whole
+  database in memory.
+- **Uploads** are written to a temporary file and renamed into place, so a
+  crash or a full disk can't leave a truncated file under its real name.
+- **Snapshots** carry each collection's record-history setting and the
+  indexes made in the admin; applying one creates the missing indexes.
+- **Access rules on single records and realtime** now match lists:
+  `%` and `_` in a pattern written in the rule are wildcards, text compares
+  as text (`"10" < "9"`), and an empty string isn't 0.
+- **Push notifications:** an FCM error about the message (not the device)
+  no longer disables every device it was sent to.
+
 ### Upgrade notes (feature flags)
 
 - The rollout fix moves some users into a different bucket: a user who was

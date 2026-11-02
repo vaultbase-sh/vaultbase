@@ -1,5 +1,5 @@
-import { existsSync, unlinkSync, statSync, rmSync } from "fs";
-import { join, resolve, sep } from "path";
+import { existsSync, renameSync, unlinkSync, statSync, rmSync } from "fs";
+import { basename, dirname, join, resolve, sep } from "path";
 import { getAllSettings } from "../api/settings.ts";
 import { forgetThumbVariants } from "./image.ts";
 
@@ -120,7 +120,20 @@ const OPAQUE = { "content-type": "application/octet-stream" } as const;
 const localDriver: StorageDriverDef = {
   name: "local",
   create: ({ uploadDir }) => ({
-    async write(key, data) { await Bun.write(safeLocalPath(uploadDir, key), data); },
+    async write(key, data) {
+      // Written aside and renamed into place: a crash or a full disk mid-write
+      // left a truncated file under the real name, and readers saw it partial.
+      const path = safeLocalPath(uploadDir, key);
+      // A dotfile: backups and the uploads walk skip those.
+      const tmp = join(dirname(path), `.${basename(path)}.tmp-${crypto.randomUUID()}`);
+      try {
+        await Bun.write(tmp, data);
+        renameSync(tmp, path);
+      } catch (e) {
+        try { unlinkSync(tmp); } catch { /* not written */ }
+        throw e;
+      }
+    },
     async read(key) {
       let path: string;
       try { path = safeLocalPath(uploadDir, key); } catch { return null; }

@@ -159,3 +159,34 @@ describe("rule engine agrees with the SQL", () => {
     expect(evaluateRule(`strftime('%Y%%', '2024-05-01') = "2024%"`, { id: "u1", type: "user" }, {})).toBe(true);
   });
 });
+
+describe("~ with wildcards written in the rule", () => {
+  const u = { id: "u1", type: "user" as const };
+  it("% and _ match as they do in the SQL", () => {
+    expect(evaluateRule(`email ~ "%@corp.com"`, u, { email: "a@corp.com" })).toBe(true);
+    expect(evaluateRule(`code ~ "a_c"`, u, { code: "xABCx" })).toBe(true);
+    expect(evaluateRule(`email ~ "%@corp.com"`, u, { email: "a@other.com" })).toBe(false);
+    expect(evaluateRule(`email !~ "%@corp.com"`, u, { email: "a@other.com" })).toBe(true);
+  });
+
+  it("a value from the request stays plain text (legitimate path)", () => {
+    expect(evaluateRule(`email ~ @request.query.q`, u, { email: "a@corp.com" }, { query: { q: "%corp" } } as never)).toBe(false);
+  });
+});
+
+describe("comparisons agree with the SQL", () => {
+  const u = { id: "u1", type: "user" as const };
+  it("text compares by code point, without turning digits into numbers", () => {
+    expect(evaluateRule(`name > "a"`, u, { name: "B" })).toBe(false);
+    expect(evaluateRule(`code > "9"`, u, { code: "10" })).toBe(false);
+    expect(evaluateRule(`code < "9"`, u, { code: "10" })).toBe(true);
+  });
+
+  it("an empty string isn't 0", () => {
+    expect(evaluateRule(`n = 0`, u, { n: "" })).toBe(false);
+  });
+
+  it("numbers still compare as numbers (legitimate path)", () => {
+    expect(evaluateRule(`n > 9`, u, { n: 10 })).toBe(true);
+  });
+});
