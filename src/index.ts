@@ -453,8 +453,11 @@ async function main() {
   await runMigrations();
   installMarker.configureInstallRecord(config.dataDir);
   await installMarker.recordInstall();
-  const { loadSettings } = await import("./api/settings.ts");
-  await loadSettings();
+  // runMigrations filled the settings store on other databases.
+  if (getDriver().name === "sqlite") {
+    const { loadSettings } = await import("./api/settings.ts");
+    await loadSettings();
+  }
   // Other servers on the same Postgres database (core/peers.ts).
   if (getDriver().name === "postgres") {
     await import("./core/peer-handlers.ts");

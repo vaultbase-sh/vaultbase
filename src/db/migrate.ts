@@ -78,13 +78,17 @@ async function runMigrationsNow() {
     openExistingAuthSignup(client);
   }
 
+  // The collections the steps below work through, read once: none of them
+  // adds, removes or changes one.
+  const collectionRows = await db.all<{ name: string; type: string; fields: string }>(`SELECT name, type, fields FROM vaultbase_collections`);
+  const tables = collectionRows.filter((c) => c.type !== "view");
+
   // ── v0.29: index names past 63 bytes, cut by Postgres, are fitted ──
   // Before the timestamp step below, which looks for the fitted names.
   if (db.name === "postgres") {
     await runOnce("v0_29_0_fit_index_names", async () => {
       const { fitIndexNames, parseFields } = await import("../core/collections.ts");
-      const rows = await db.all<{ name: string; type: string; fields: string }>(`SELECT name, type, fields FROM vaultbase_collections WHERE type != 'view'`);
-      for (const { name, type, fields } of rows) {
+      for (const { name, type, fields } of tables) {
         try { await fitIndexNames(name, type, parseFields(fields)); } catch (e) {
           console.error(`[migrate] index names of '${name}':`, e instanceof Error ? e.message : e);
         }
@@ -95,7 +99,6 @@ async function runMigrationsNow() {
   // ── v0.12: created_at / updated_at indexes on record tables ──
   // New tables get them in createUserTable; backfill existing ones.
   const { ensureTimestampIndexes } = await import("../core/collections.ts");
-  const tables = await db.all<{ name: string }>(`SELECT name FROM vaultbase_collections WHERE type != 'view'`);
   for (const { name } of tables) {
     try { await ensureTimestampIndexes(name); } catch { /* table missing — skip */ }
   }
@@ -106,8 +109,7 @@ async function runMigrationsNow() {
   // server still on an older version may have made a new one.
   {
     const { relaxAuthFieldColumns, strictAuthFieldColumns, parseFields } = await import("../core/collections.ts");
-    const auth = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type = 'auth'`);
-    for (const { name, fields } of auth) {
+    for (const { name, fields } of collectionRows.filter((c) => c.type === "auth")) {
       try {
         if (db.name === "postgres") {
           const changed = await relaxAuthFieldColumns(name, parseFields(fields));
@@ -138,8 +140,7 @@ async function runMigrationsNow() {
   // index an admin dropped stays dropped.
   await runOnce("v0_26_5_relation_indexes", async () => {
     const { ensureRelationIndexes } = await import("../core/collections.ts");
-    const rows = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
-    for (const { name, fields } of rows) {
+    for (const { name, fields } of tables) {
       try { await ensureRelationIndexes(name, JSON.parse(fields)); } catch { /* table missing — skip */ }
     }
   });
@@ -148,8 +149,7 @@ async function runMigrationsNow() {
   // No-op when the index already matches; (re)builds it otherwise.
   if (db.capabilities.fts !== "none") {
     const { syncFts } = await import("../core/fts.ts");
-    const ftsRows = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
-    for (const { name, fields } of ftsRows) {
+    for (const { name, fields } of tables) {
       try {
         const parsed = (JSON.parse(fields) as Array<{ name: string; type: string; implicit?: boolean }>)
           .filter((f) => !f.implicit);
@@ -161,7 +161,7 @@ async function runMigrationsNow() {
   }
 
   // ── v0.22.1: autodate fields get their column ──
-  await ensureAutodateColumns();
+  await ensureAutodateColumns(tables);
 
   // The settings store, read synchronously on every request: filled here
   // for a driver that cannot answer synchronously (api/settings.ts). SQLite
@@ -177,8 +177,7 @@ async function runMigrationsNow() {
  * value and then skipped it on insert and update. Add the column on every
  * collection that declares one, so records written from now on keep it.
  */
-async function ensureAutodateColumns(): Promise<void> {
-  const cols = await db.all<{ name: string; fields: string }>(`SELECT name, fields FROM vaultbase_collections WHERE type != 'view'`);
+async function ensureAutodateColumns(cols: ReadonlyArray<{ name: string; fields: string }>): Promise<void> {
   for (const col of cols) {
     let fields: Array<{ name?: unknown; type?: unknown; system?: unknown; implicit?: unknown }> = [];
     try { fields = JSON.parse(col.fields || "[]") as typeof fields; } catch { continue; }

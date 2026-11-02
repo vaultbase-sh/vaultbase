@@ -74,6 +74,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Every record write made a full set of hook helpers** (and up to three)
   that nothing used, whether the collection had hooks or not. Each hook run
   still gets its own.
+- **Startup read the collection list five times** (once per upgrade step)
+  and, on Postgres, loaded the settings twice. Once each now.
 
 ## [0.36.0] — 2026-11-02
 
