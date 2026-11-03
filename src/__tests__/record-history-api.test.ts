@@ -111,7 +111,13 @@ describe("POST /:collection/:id/restore", () => {
     const res = await app.handle(new Request(`http://localhost/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
       method: "POST",
     }));
-    expect(res.status).toBe(403);
+    // Every rule admin-only: the collection answers as missing.
+    expect(res.status).toBe(404);
+    await updateCollection("posts", { view_rule: null } as Parameters<typeof updateCollection>[1]);
+    const visible = await app.handle(new Request(`http://localhost/posts/${r.id}/restore?at=${Math.floor(Date.now() / 1000)}`, {
+      method: "POST",
+    }));
+    expect(visible.status).toBe(403);
   });
 
   it("rejects without ?at query parameter", async () => {

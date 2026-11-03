@@ -732,9 +732,11 @@ export async function ensureAuthColumns(collectionName: string): Promise<void> {
 
 /**
  * Validate that a view query is a single SELECT — no semicolons, no DML/DDL
- * verbs, no PRAGMA. Admin-supplied so this is a guard against silly mistakes
- * and obvious abuse, not a sandbox: a sufficiently determined admin can still
- * read sensitive tables in their SELECT and that's their responsibility.
+ * verbs, no PRAGMA. Admin-supplied, but its rows can be public, so it also
+ * keeps auth secrets and password fields out of view rows: internal tables
+ * are refused, private columns can't be named, renamed by position or
+ * serialized in a whole row. On Postgres the created view is checked too
+ * (checkCreatedView).
  */
 const VIEW_BANNED_WORDS = new Set([
   "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "ATTACH", "DETACH", "PRAGMA",
@@ -760,6 +762,18 @@ export function validateViewQuery(query: string): void {
   if (names.some((w) => w.startsWith("PRAGMA_") || w.startsWith("SQLITE_"))) {
     throw new Error("View query may not reference SQLite metadata");
   }
+  // Vaultbase's own tables (admins, tokens, settings, audit) are never view
+  // material: `… UNION SELECT * FROM vaultbase_admin` renamed the admin's
+  // password hash by position, and no name check can follow every column.
+  if (names.some((w) => w.startsWith("VAULTBASE_"))) {
+    throw new Error("View query may not read Vaultbase's internal tables");
+  }
+  // Postgres `U&"password\005fhash"` spells a name the checks below can't see.
+  if (/\bU&\s*"/i.test(q)) throw new Error("View query may not use Unicode-escaped identifiers (U&\"…\")");
+  // These run SQL given as a string, past every check here.
+  if (names.some((w) => VIEW_QUERY_STRING_FUNCTIONS.has(w))) {
+    throw new Error("View query may not call functions that run SQL from a string");
+  }
   // Auth secrets and password-type fields can't be selected by name (or
   // renamed with AS). `SELECT *` keeps their names, and those are stripped
   // from view rows and filters.
@@ -774,6 +788,105 @@ export function validateViewQuery(query: string): void {
       [...words, ...identifiers].some((w) => sensitive.tables.has(w.toLowerCase()))) {
     throw new Error("View query may not combine (UNION / INTERSECT / EXCEPT) results from tables with private columns");
   }
+  if (!names.some((w) => sensitive.tables.has(w.toLowerCase()))) return;
+  // A whole row of such a table carries its secrets inside one value under
+  // another name: `row_to_json(u)`, `ROW(u.*)`, `(VALUES (u.*))`. The other
+  // whole-row forms (`u::text`, `to_jsonb(u)`) are caught on the created
+  // view, where Postgres has resolved them (checkCreatedView).
+  if (words.some((w) => VIEW_ROW_SERIALIZERS.has(w)) || /\bROW\s*\(/i.test(blankLiterals(q))) {
+    throw new Error("View query may not serialize whole rows of tables with private columns");
+  }
+  // A column alias list (`FROM vb_users AS u(a, b, c, …)`) renames every
+  // column by position, the secrets too.
+  if (db.name === "postgres" && hasColumnAliasList(q)) {
+    throw new Error("View query may not rename columns with an alias list (AS t(a, b, …)) when it reads tables with private columns");
+  }
+}
+
+const VIEW_QUERY_STRING_FUNCTIONS = new Set([
+  "QUERY_TO_XML", "QUERY_TO_XMLSCHEMA", "QUERY_TO_XML_AND_XMLSCHEMA",
+  "TABLE_TO_XML", "TABLE_TO_XMLSCHEMA", "TABLE_TO_XML_AND_XMLSCHEMA",
+  "CURSOR_TO_XML", "CURSOR_TO_XMLSCHEMA",
+  "SCHEMA_TO_XML", "SCHEMA_TO_XMLSCHEMA", "SCHEMA_TO_XML_AND_XMLSCHEMA",
+  "DATABASE_TO_XML", "DATABASE_TO_XMLSCHEMA", "DATABASE_TO_XML_AND_XMLSCHEMA",
+  "TS_STAT", "DBLINK", "DBLINK_EXEC",
+]);
+
+// VALUES expands `u.*` into columns named column1, column2, …
+const VIEW_ROW_SERIALIZERS = new Set(["ROW_TO_JSON", "HSTORE", "VALUES"]);
+
+/**
+ * `<FROM item> [AS] alias (` — a FROM/JOIN item followed by an alias with a
+ * parenthesised column list. Strings, quoted names and comments are blanked
+ * first so their contents can't match; nested subqueries are skipped by
+ * matching parentheses.
+ */
+function hasColumnAliasList(sql: string): boolean {
+  const s = blankLiterals(sql);
+  const ident = /^\s*(?:AS\s+)?([A-Za-z_][A-Za-z0-9_$]*|"[^"]*")\s*\(/i;
+  const keywords = new Set(["ON", "USING", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "NATURAL", "LATERAL", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "WINDOW", "TABLESAMPLE", "FETCH", "FOR"]);
+  const re = /\b(FROM|JOIN)\b|,/gi;
+  for (let m: RegExpExecArray | null; (m = re.exec(s));) {
+    let i = m.index + m[0].length;
+    // Skip the FROM item: `(subquery)`, `name(args)` / `schema.name`, ONLY, LATERAL.
+    i = skipSpace(s, i);
+    for (const kw of ["ONLY", "LATERAL"]) {
+      if (s.slice(i, i + kw.length).toUpperCase() === kw && !/[A-Za-z0-9_$]/.test(s[i + kw.length] ?? "")) i = skipSpace(s, i + kw.length);
+    }
+    if (s[i] === "(") i = skipParens(s, i);
+    else {
+      const name = /^(?:[A-Za-z_][A-Za-z0-9_$]*|"[^"]*")(?:\s*\.\s*(?:[A-Za-z_][A-Za-z0-9_$]*|"[^"]*"))*/.exec(s.slice(i));
+      if (!name) continue;
+      i += name[0].length;
+      const after = skipSpace(s, i);
+      if (s[after] === "(") i = skipParens(s, after); // a function in FROM
+    }
+    const alias = ident.exec(s.slice(i));
+    if (alias && !keywords.has(alias[1]!.toUpperCase())) return true;
+  }
+  return false;
+}
+
+function skipSpace(s: string, i: number): number {
+  while (i < s.length && /\s/.test(s[i]!)) i++;
+  return i;
+}
+
+function skipParens(s: string, i: number): number {
+  let depth = 0;
+  for (; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")" && --depth === 0) return i + 1;
+  }
+  return s.length;
+}
+
+/** Replace string literals and comments with spaces; quoted names keep their quotes but lose their content. */
+function blankLiterals(sql: string): string {
+  let out = "";
+  for (let i = 0; i < sql.length;) {
+    const c = sql[i]!;
+    if (c === "-" && sql[i + 1] === "-") {
+      const end = sql.indexOf("\n", i);
+      const j = end < 0 ? sql.length : end;
+      out += " ".repeat(j - i); i = j;
+    } else if (c === "/" && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      const j = end < 0 ? sql.length : end + 2;
+      out += " ".repeat(j - i); i = j;
+    } else if (c === "'" || c === '"') {
+      let j = i + 1;
+      for (;;) {
+        const k = sql.indexOf(c, j);
+        if (k < 0) { j = sql.length; break; }
+        if (sql[k + 1] === c) { j = k + 2; continue; }
+        j = k + 1; break;
+      }
+      out += c === "'" ? " ".repeat(j - i) : `"${"x".repeat(Math.max(0, j - i - 2))}"`;
+      i = j;
+    } else { out += c; i++; }
+  }
+  return out;
 }
 
 /**
@@ -995,12 +1108,54 @@ export async function inferViewFields(query: string, params: ViewParam[] = []): 
  * Create the database view backing a view collection: its query with each
  * parameter's default written in (view-params.ts).
  */
-export async function createUserView(collectionName: string, query: string, params: ViewParam[] = []): Promise<void> {
+export async function createUserView(
+  collectionName: string,
+  query: string,
+  params: ViewParam[] = [],
+  /** Putting back a view that already existed (a failed alter): its query was accepted when it was saved. */
+  restoring = false,
+): Promise<void> {
   assertSqlIdent(collectionName, "collection");
-  validateViewQuery(query);
+  if (!restoring) validateViewQuery(query);
   const tname = quoteIdent(userTableName(collectionName));
   const body = viewQueryWithDefaults(query, params).trim().replace(/;\s*$/, "");
   await db.exec(db.dialect.createView(tname, body));
+  if (restoring) return;
+  try {
+    await checkCreatedView(tname);
+  } catch (e) {
+    try { await db.exec(`DROP VIEW IF EXISTS ${tname}`); } catch { /* the refusal below is what matters */ }
+    throw e;
+  }
+}
+
+/**
+ * The text checks can't follow every way Postgres spells a whole row
+ * (`u`, `u::text`, `to_jsonb(u)`, `format('%s', u)`), but the view Postgres
+ * created has them resolved: its query tree holds a whole-row Var
+ * (`:varattno 0`) and its dependencies name the real tables read. A view
+ * that reads a table with private columns (or an internal one) and holds a
+ * whole row is refused. SQLite has no whole-row values.
+ */
+async function checkCreatedView(quotedName: string): Promise<void> {
+  if (db.name !== "postgres") return;
+  const rule = await db.get<{ oid: unknown; tree: string }>(
+    "SELECT r.oid AS oid, r.ev_action::text AS tree FROM pg_rewrite r WHERE r.ev_class = to_regclass(?) AND r.rulename = '_RETURN'",
+    [quotedName],
+  );
+  if (!rule) return;
+  const rels = await db.all<{ name: string }>(
+    `SELECT DISTINCT c.relname AS name FROM pg_depend d JOIN pg_class c ON c.oid = d.refobjid
+     WHERE d.classid = 'pg_rewrite'::regclass AND d.objid = ? AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> to_regclass(?)`,
+    [rule.oid, quotedName],
+  );
+  if (rels.some((r) => r.name.toLowerCase().startsWith("vaultbase_"))) {
+    throw new Error("View query may not read Vaultbase's internal tables");
+  }
+  const sensitive = await loadSensitiveSchema();
+  if (rels.some((r) => sensitive.tables.has(r.name.toLowerCase())) && /:varattno 0\b/.test(rule.tree)) {
+    throw new Error("View query may not serialize whole rows of tables with private columns");
+  }
 }
 
 /** Drop the SQLite VIEW backing a view collection. */
@@ -1695,7 +1850,7 @@ export async function updateCollection(
         await createUserView(currentName, newQuery, newParams);
       } catch (e) {
         // Put the old query back, then report the new one's problem.
-        if (before.view_query) await createUserView(currentName, before.view_query, parseViewParams(before.view_params)).catch(() => {});
+        if (before.view_query) await createUserView(currentName, before.view_query, parseViewParams(before.view_params), true).catch(() => {});
         throw new CollectionValidationError({ view_query: `View query: ${e instanceof Error ? e.message : String(e)}` });
       }
       // Re-infer fields if the caller didn't supply explicit field defs.

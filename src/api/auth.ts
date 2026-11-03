@@ -25,7 +25,8 @@ import {
   revokeToken,
   signAuthToken,
   verifyAuthToken,
-  waitPastResetSecond,
+  waitPastReset,
+  principalResetStamp,
   lockoutIp,
   accessFor,
   dataPrincipal,
@@ -186,7 +187,7 @@ async function deleteRecoveryCodes(userId: string, collectionId: string): Promis
 }
 
 /** Links and codes that act for a user without their password. */
-const ACCOUNT_TOKEN_PURPOSES = ["password_reset", "otp", "email_verify", "email_change", "invite", "mfa_ticket"];
+const ACCOUNT_TOKEN_PURPOSES = ["password_reset", "otp", "email_verify", "email_change", "invite", "mfa_ticket", "oauth2_merge"];
 
 /**
  * A password reset or an email change ends the user's other open links and
@@ -578,10 +579,10 @@ async function repeatRefresh(token: string, jwtSecret: string): Promise<string |
     const row = (await getDb().select().from(authTokens)
       .where(eq(authTokens.id, `refresh_rotation:${payload.jti}`)).limit(1))[0];
     if (!row || row.purpose !== "refresh_rotation" || row.expires_at < Math.floor(Date.now() / 1000) || !row.payload) return null;
-    const r = JSON.parse(row.payload) as { claims: jose.JWTPayload; audience: "user" | "admin"; ttl: number; jti: string; iat: number };
+    const r = JSON.parse(row.payload) as { claims: jose.JWTPayload; audience: "user" | "admin"; ttl: number; jti: string; iat: number; iatMs?: number };
     const { token: again } = await signAuthToken({
       payload: r.claims, audience: r.audience, expiresInSeconds: r.ttl, jwtSecret,
-      reissue: { jti: r.jti, iat: r.iat },
+      reissue: { jti: r.jti, iat: r.iat, ...(r.iatMs !== undefined ? { iatMs: r.iatMs } : {}) },
     });
     return (await verifyAuthToken(again, jwtSecret)) ? again : null;
   } catch {
@@ -636,7 +637,10 @@ async function providerSignIn(
   jwtSecret: string,
 ): Promise<{ status?: number; body: unknown }> {
   const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
+  // Dated before the link is read: a reset (which deletes links) landing
+  // during this sign-in ends the session it gets.
+  const checkedAt = Date.now();
+  const now = Math.floor(checkedAt / 1000);
 
   // 1. Existing link?
   const linked = await db
@@ -765,31 +769,66 @@ async function providerSignIn(
   // provider vouches for who the user is at the provider, not for this
   // account's MFA.
   const signedIn = await findUserById(col, userId);
-  if (signedIn?.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId) } };
+  if (signedIn?.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId, { checkedAt }) } };
   const tokenEmail = signedIn?.email ?? accountEmail;
   const { token } = await signAuthToken({
     payload: { id: userId, email: tokenEmail, collection: col.name },
     audience: "user",
     expiresInSeconds: tokenWindowSeconds("user"),
     jwtSecret,
+    issuedAtMs: checkedAt,
   });
   return { body: { data: { token, record: { id: userId, email: tokenEmail } } } };
 }
 
+/**
+ * What an MFA ticket carries to `/login/mfa`: when the first factor was
+ * checked and the `password_reset_at` that check read, so the session it
+ * ends in is ended by a reset that lands in between; and work to finish once
+ * the second factor is in (a provider link waiting on merge-confirm), so
+ * nothing changes on the password alone.
+ */
+interface MfaTicketPayload { checked_at?: number; rs?: number; link?: PendingLink }
+
 /** Issue an MFA ticket for step 2 of a sign-in (`/login/mfa`). */
-async function mfaTicketFor(collectionId: string, userId: string, pending?: { link: PendingLink }): Promise<{ mfa_required: true; mfa_token: string }> {
+async function mfaTicketFor(
+  collectionId: string,
+  userId: string,
+  first: { checkedAt: number; resetSeen?: number; link?: PendingLink },
+): Promise<{ mfa_required: true; mfa_token: string }> {
   const ticket = newToken();
+  const payload: MfaTicketPayload = { checked_at: first.checkedAt };
+  if (first.resetSeen !== undefined) payload.rs = first.resetSeen;
+  if (first.link) payload.link = first.link;
   await getDb().insert(authTokens).values({
     id: storedTokenId(ticket),
     user_id: userId,
     collection_id: collectionId,
     purpose: "mfa_ticket",
-    // Work to finish once the second factor is in (a provider link waiting
-    // on merge-confirm), so nothing changes on the password alone.
-    ...(pending ? { payload: JSON.stringify(pending) } : {}),
+    payload: JSON.stringify(payload),
     expires_at: Math.floor(Date.now() / 1000) + MFA_TICKET_TTL_SECONDS,
   });
   return { mfa_required: true, mfa_token: ticket };
+}
+
+/** Remove the provider link `applyProviderLink` made. */
+async function removeProviderLink(colId: string, userId: string, link: PendingLink): Promise<void> {
+  await getDb().delete(oauthLinks).where(and(
+    eq(oauthLinks.user_id, userId), eq(oauthLinks.collection_id, colId),
+    eq(oauthLinks.provider, link.provider), eq(oauthLinks.provider_user_id, link.provider_user_id),
+  ));
+}
+
+/**
+ * Whether the user's `password_reset_at` moved off `seen` (read with the
+ * credential check): a reset, or the user is gone. Checked after a provider
+ * link is inserted: a reset stamps before it deletes links, so either this
+ * read sees the stamp or the reset's delete runs after the insert and
+ * removes the link.
+ */
+async function resetSince(col: Parameters<typeof findUserById>[0], userId: string, seen: number): Promise<boolean> {
+  const fresh = await findUserById(col, userId);
+  return !fresh || (fresh.password_reset_at ?? 0) !== seen;
 }
 
 interface PendingLink { provider: string; provider_user_id: string; email: string }
@@ -898,7 +937,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
         const db = getDb();
-        const checkedAt = Math.floor(Date.now() / 1000);
+        const checkedAt = Date.now();
         const rows = await adminByEmail(body.email);
         const a = rows[0];
         const attempt = await reserveLoginAttempt({ email: body.email, subject: a?.id, ip });
@@ -923,7 +962,8 @@ export function makeAuthPlugin(jwtSecret: string) {
           audience: "admin",
           expiresInSeconds: ttl,
           jwtSecret,
-          issuedAt: checkedAt,
+          issuedAtMs: checkedAt,
+          resetSeen: a.password_reset_at,
         });
         await recordAdminSession({
           jti, admin_id: a.id, admin_email: a.email,
@@ -1092,7 +1132,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Per-account lockout, charged before the password is checked. The
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
         // Per-collection email lookup (vb_<col> first, legacy fallback).
-        const checkedAt = Math.floor(Date.now() / 1000);
+        const checkedAt = Date.now();
         const u = await findUserByEmail(col, body.email);
         const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: lockoutIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
@@ -1105,18 +1145,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u || !valid) { set.status = 401; return { error: "Invalid credentials", code: 401 }; }
         await loginSucceeded(attempt);
 
-        const db = getDb();
         if (u.totp_enabled === 1) {
-          const ticket = newToken();
-          const now = Math.floor(Date.now() / 1000);
-          await db.insert(authTokens).values({
-            id: storedTokenId(ticket),
-            user_id: u.id,
-            collection_id: col.id,
-            purpose: "mfa_ticket",
-            expires_at: now + MFA_TICKET_TTL_SECONDS,
-          });
-          return { data: { mfa_required: true, mfa_token: ticket } };
+          return { data: await mfaTicketFor(col.id, u.id, { checkedAt, resetSeen: u.password_reset_at ?? 0 }) };
         }
 
         const { token } = await signAuthToken({
@@ -1128,7 +1158,8 @@ export function makeAuthPlugin(jwtSecret: string) {
           jwtSecret,
           // A reset that lands while this sign-in is verifying the old
           // password ends the session it is about to get.
-          issuedAt: checkedAt,
+          issuedAtMs: checkedAt,
+          resetSeen: u.password_reset_at ?? 0,
         });
         return { data: { token, record: { id: u.id, email: u.email } } };
       },
@@ -1150,9 +1181,10 @@ export function makeAuthPlugin(jwtSecret: string) {
           return { error: "Provide exactly one of code or recovery_code", code: 422 };
         }
         const db = getDb();
+        const startedAt = Date.now();
         const rows = await findOneTimeToken(body.mfa_token);
         const tok = rows[0];
-        const now = Math.floor(Date.now() / 1000);
+        const now = Math.floor(startedAt / 1000);
         if (!tok || tok.purpose !== "mfa_ticket" || tok.collection_id !== col.id || tok.used_at || tok.expires_at < now) {
           set.status = 400;
           return { error: "Invalid or expired MFA ticket", code: 400 };
@@ -1229,18 +1261,29 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400;
           return { error: "Invalid or expired MFA ticket", code: 400 };
         }
-        // A merge-confirm waiting on this second factor: link the provider now.
+        let first: MfaTicketPayload = {};
         if (tok.payload) {
-          try {
-            const pending = JSON.parse(tok.payload) as { link?: PendingLink };
-            if (pending.link) await applyProviderLink(col.id, col, u.id, pending.link);
-          } catch { /* not a pending-work payload */ }
+          try { first = JSON.parse(tok.payload) as MfaTicketPayload; } catch { /* not a ticket payload */ }
+        }
+        // The session dates from the first factor (password, provider), not
+        // from this step: a reset in between ends it. Tickets from before
+        // the payload carried this fall back to this request.
+        const checkedAt = typeof first.checked_at === "number" ? first.checked_at : startedAt;
+        const seen = typeof first.rs === "number" ? first.rs : (u.password_reset_at ?? 0);
+        // A merge-confirm waiting on this second factor: link the provider now.
+        if (first.link) await applyProviderLink(col.id, col, u.id, first.link);
+        if (await resetSince(col, u.id, seen)) {
+          if (first.link) await removeProviderLink(col.id, u.id, first.link);
+          set.status = 400;
+          return { error: "Invalid or expired MFA ticket", code: 400 };
         }
         const { token } = await signAuthToken({
           payload: { id: u.id, email: u.email, collection: col.name },
           audience: "user",
           expiresInSeconds: tokenWindowSeconds("user"),
           jwtSecret,
+          issuedAtMs: checkedAt,
+          resetSeen: seen,
         });
         return { data: { token, record: { id: u.id, email: u.email } } };
       },
@@ -1394,14 +1437,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
         // password_reset_at ends every session issued before the reset, so a
         // stolen token stops working once the owner resets their password.
-        await updateUserById(col, tok.user_id, { password_hash: hash, password_reset_at: now, updated_at: now });
+        const resetAt = Date.now();
+        await updateUserById(col, tok.user_id, { password_hash: hash, password_reset_at: resetAt, updated_at: now });
         await voidAccountTokens(col.id, tok.user_id, now);
         // A reset is how an owner takes their account back: a provider linked
         // by whoever had it (merge-confirm with a leaked password) would
         // otherwise keep signing them in.
         await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, tok.user_id), eq(oauthLinks.collection_id, col.id)));
         await disableUserDevices(col.name, tok.user_id);
-        await waitPastResetSecond(now);
+        await waitPastReset(resetAt);
         return { data: { reset: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1495,10 +1539,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         // The link proves the new address; ending old sessions makes every
         // device sign in again with it.
         if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
-        await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: now, updated_at: now });
+        const resetAt = Date.now();
+        await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: resetAt, updated_at: now });
         await voidAccountTokens(col.id, u.id, now);
         await disableUserDevices(col.name, u.id);
-        await waitPastResetSecond(now);
+        await waitPastReset(resetAt);
         return { data: { changed: true, email: tok.payload } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1586,8 +1631,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!await findUserById(col, tok.user_id)) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
         const hash = await hashPassword(body.password);
         if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
-        await updateUserById(col, tok.user_id, { password_hash: hash, email_verified: 1, password_reset_at: now, updated_at: now });
-        await waitPastResetSecond(now);
+        const resetAt = Date.now();
+        await updateUserById(col, tok.user_id, { password_hash: hash, email_verified: 1, password_reset_at: resetAt, updated_at: now });
+        await waitPastReset(resetAt);
         return { data: { accepted: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1714,15 +1760,16 @@ export function makeAuthPlugin(jwtSecret: string) {
         let claimed = false;
         if (!u.email_verified) {
           const unusable = await hashPassword(crypto.randomUUID() + crypto.randomUUID());
+          const resetAt = Date.now();
           await updateUserById(col, u.id, {
             email_verified: 1, password_hash: unusable, totp_enabled: 0, totp_secret: null,
-            password_reset_at: now, updated_at: now,
+            password_reset_at: resetAt, updated_at: now,
           });
           await deleteRecoveryCodes(u.id, col.id);
           await voidAccountTokens(col.id, u.id, now);
           await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, u.id), eq(oauthLinks.collection_id, col.id)));
           await disableUserDevices(col.name, u.id);
-          await waitPastResetSecond(now);
+          await waitPastReset(resetAt);
           claimed = true;
         }
         // OTP MFA gate would defeat the purpose of magic-link sign-in (no password).
@@ -1997,10 +2044,11 @@ export function makeAuthPlugin(jwtSecret: string) {
         Object.assign(update, await encodeUserFields(col, custom, "update"));
         // Ending the guest's sessions: the anonymous token (and any copy of
         // it) stops working once the account has a real owner.
-        update["password_reset_at"] = now;
+        const resetAt = Date.now();
+        update["password_reset_at"] = resetAt;
         await updateUserById(col, u.id, update);
         if (session.jti && session.exp) await revokeToken(session.jti, session.exp);
-        await waitPastResetSecond(now);
+        await waitPastReset(resetAt);
         const { token: jwt } = await signAuthToken({
           payload: { id: u.id, email: email as string, collection: col.name },
           audience: "user",
@@ -2034,6 +2082,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         audience: "user",
         expiresInSeconds: tokenWindowSeconds("impersonate"),
         jwtSecret,
+        resetSeen: u.password_reset_at ?? 0,
       });
       return { data: { token: jwt, record: { id: u.id, email: u.email }, impersonated_by: adminId } };
     }, { requireAdmin: true })
@@ -2341,8 +2390,11 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post("/auth/:collection/oauth2/merge-confirm", async ({ params, body, request, set }) => {
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
+      if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
+      // Dated before the account is read: the session this ends in is ended
+      // by a reset that lands while the password is being checked.
+      const checkedAt = Date.now();
+      const now = Math.floor(checkedAt / 1000);
 
       const tokRows = await findOneTimeToken(body.merge_token);
       const tok = tokRows[0];
@@ -2364,6 +2416,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         set.status = 401;
         return { error: "Account no longer exists", code: 401 };
       }
+      // The stamp the password below is checked against.
+      const seen = user.password_reset_at ?? 0;
 
       // Proof of ownership — accept either:
       //   1. password (verify against the existing user's hash), OR
@@ -2406,15 +2460,24 @@ export function makeAuthPlugin(jwtSecret: string) {
       // in — the password alone changes nothing. (A caller proving it with a
       // session already passed MFA to get that session.)
       if (!viaSession && user.totp_enabled === 1) {
-        return { data: { ...(await mfaTicketFor(col.id, user.id, { link })), linked_provider: stored.provider } };
+        return { data: { ...(await mfaTicketFor(col.id, user.id, { checkedAt, resetSeen: seen, link })), linked_provider: stored.provider } };
       }
       await applyProviderLink(col.id, col, user.id, link);
+      // A reset since the check (the password may be the leaked one it
+      // replaced) took the account back: undo the link it would have missed.
+      if (await resetSince(col, user.id, seen)) {
+        await removeProviderLink(col.id, user.id, link);
+        set.status = 401;
+        return { error: "Invalid or expired merge token", code: 401 };
+      }
 
       const { token } = await signAuthToken({
         payload: { id: user.id, email: user.email, collection: col.name },
         audience: "user",
         expiresInSeconds: tokenWindowSeconds("user"),
         jwtSecret,
+        issuedAtMs: checkedAt,
+        resetSeen: seen,
       });
       return { data: { token, record: { id: user.id, email: user.email }, linked_provider: stored.provider } };
     }, {
@@ -2485,6 +2548,9 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post("/auth/refresh", async ({ request, set }) => {
       const token = (headerBearer(request) ?? undefined);
       if (!token) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
+      // The replacement is dated by this check, not by when it is signed: a
+      // reset stamped after the check ends it.
+      const checkedAt = Date.now();
       const ctx = await verifyAuthToken(token, jwtSecret);
       if (!ctx) {
         // A token refreshed moments ago (another tab, a retried request)
@@ -2522,7 +2588,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u || u.is_anonymous !== 1) anonymous = false;
       }
       if (anonymous) claims["anonymous"] = true;
-      const now = Math.floor(Date.now() / 1000);
+      // Carry the stamp the check read: a reset whose write lands after it
+      // ends the replacement, whichever clock dated the reset.
+      if (typeof ctx.resetSeen === "number") claims["rs"] = ctx.resetSeen;
+      const now = Math.floor(checkedAt / 1000);
       let ttl = tokenWindowSeconds(anonymous ? "anonymous" : "refresh");
       // Absolute session lifetime. `auth_time` is the original sign-in and is
       // carried through every refresh (tokens minted at sign-in don't carry it,
@@ -2540,7 +2609,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         ttl = Math.min(ttl, remaining);
       }
-      let reissue: { jti: string; iat: number } | undefined;
+      let reissue: { jti: string; iat: number; iatMs?: number } | undefined;
       if (ctx.jti) {
         // Remember how to re-mint the replacement for REFRESH_REPEAT_SECONDS
         // (claims only, never the token), and do it before revoking the old
@@ -2555,7 +2624,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           user_id: ctx.id,
           collection_id: "",
           purpose: "refresh_rotation",
-          payload: JSON.stringify({ claims, audience: ctx.type, ttl, jti: crypto.randomUUID(), iat: now }),
+          payload: JSON.stringify({ claims, audience: ctx.type, ttl, jti: crypto.randomUUID(), iat: now, iatMs: checkedAt }),
           expires_at: now + REFRESH_REPEAT_SECONDS,
         }).onConflictDoNothing();
         // Revoke the token being replaced, so refreshing doesn't leave two
@@ -2570,10 +2639,24 @@ export function makeAuthPlugin(jwtSecret: string) {
           if (again) return { data: { token: again } };
           set.status = 401; return { error: "Token expired or invalid", code: 401 };
         }
+        // A reset whose stamp predates the check but whose write landed after
+        // it was invisible to it: look again now that the replacement is on
+        // record, and drop it if the account moved on.
+        const current = await principalResetStamp(ctx);
+        if (current === null || current !== ctx.resetSeen) {
+          await getDb().delete(authTokens).where(eq(authTokens.id, rowId));
+          set.status = 401; return { error: "Token expired or invalid", code: 401 };
+        }
         const row = (await getDb().select().from(authTokens).where(eq(authTokens.id, rowId)).limit(1))[0];
         if (row?.payload && row.expires_at >= now) {
-          const r = JSON.parse(row.payload) as { jti: string; iat: number };
-          reissue = { jti: r.jti, iat: r.iat };
+          const r = JSON.parse(row.payload) as { jti: string; iat: number; iatMs?: number };
+          reissue = { jti: r.jti, iat: r.iat, ...(r.iatMs !== undefined ? { iatMs: r.iatMs } : {}) };
+        }
+      }
+      if (!ctx.jti) {
+        const current = await principalResetStamp(ctx);
+        if (current === null || current !== ctx.resetSeen) {
+          set.status = 401; return { error: "Token expired or invalid", code: 401 };
         }
       }
       const { token: newToken, jti, exp, iat } = await signAuthToken({
@@ -2581,7 +2664,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         audience: ctx.type,
         expiresInSeconds: ttl,
         jwtSecret,
-        ...(reissue ? { reissue } : {}),
+        ...(reissue ? { reissue } : { issuedAtMs: checkedAt }),
       });
       if (ctx.type === "admin") {
         await recordAdminSession({ jti, admin_id: ctx.id, admin_email: ctx.email ?? "", issued_at: iat, expires_at: exp, request });

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as jose from "jose";
-import { initDb, closeDb } from "../db/client.ts";
+import { initDb, closeDb, getDb } from "../db/client.ts";
+import { admin } from "../db/schema.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { signAuthToken, verifyAuthToken } from "../core/sec.ts";
@@ -59,6 +60,8 @@ describe("POST /auth/refresh", () => {
 
   it("refuses to refresh an impersonation token (sessions stay time-boxed)", async () => {
     const id = await seedAuthUser({ collection: "users", email: "b@test.local" });
+    // The impersonating admin must exist: a token whose admin is gone doesn't verify at all.
+    await getDb().insert(admin).values({ id: "admin-1", email: "admin-1@test.local", password_hash: "x", password_reset_at: 0, created_at: 1 });
     const { token } = await signAuthToken({
       payload: { id, email: "b@test.local", collection: "users", impersonated_by: "admin-1" },
       audience: "user",

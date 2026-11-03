@@ -151,7 +151,8 @@ describe("forwarding", () => {
     await updateCollection(col.id, { list_rule: "" });
     const denied = await get("/api/v1/posts?perPage=1");
     expect(fromWorker(denied)).not.toBeNull();
-    expect(denied.status).toBe(mainDenied);
+    // posts stays viewable, so it isn't hidden like secrets: a 403, not 404.
+    expect(denied.status).toBe(403);
     await updateCollection(col.id, { list_rule: null });
     const open = await get("/api/v1/posts?perPage=1");
     expect(fromWorker(open)).not.toBeNull();

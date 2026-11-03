@@ -6,6 +6,11 @@ name: Docker image
 #
 # Runs after every successful Release run, by hand for a given tag, and when
 # the image's files change on main (then for the latest release).
+#
+# Only binaries signed by this repository's release.yml for that exact tag
+# go in (the identity install.sh --verify-sig checks), and only the newest
+# release moves :latest and the newest patch of a minor moves :X.Y, so
+# rebuilding an old tag can't roll default deployments back.
 
 on:
   workflow_run:
@@ -35,23 +40,35 @@ jobs:
     name: Build and push the image
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # workflow_run matches workflows by name only: a fork's pull request can
+    # add one called "Release" on a branch named like an old tag. Accept only
+    # this repository's release.yml, run from this repository by a push.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.repository.full_name == github.repository &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        (github.event.workflow_run.path == '.github/workflows/release.yml' ||
+         startsWith(github.event.workflow_run.path, '.github/workflows/release.yml@'))
+      )
     steps:
       - id: tag
         name: Resolve the release tag
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -eu
-          case "${{ github.event_name }}" in
+          case "$EVENT" in
             workflow_dispatch) tag="$INPUT_TAG" ;;
             workflow_run)      tag="$RUN_TAG" ;;
             *)                 tag="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r .tag_name)" ;;
           esac
           if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::'$tag' is not a release tag (vX.Y.Z)"; exit 1
+            echo "::error::not a release tag (vX.Y.Z)"; exit 1
           fi
           ver="${tag#v}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -62,12 +79,39 @@ jobs:
       # The Dockerfile and entrypoint as of that tag, when they exist there;
       # otherwise (a release made before the image existed) as on main.
       - uses: actions/checkout@v4
-      - name: Use the tag's image files if it has them
+      - id: channels
+        name: Use the tag's image files if it has them
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          MINOR: ${{ steps.tag.outputs.minor }}
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          git fetch --depth=1 origin "refs/tags/${{ steps.tag.outputs.tag }}:refs/tags/${{ steps.tag.outputs.tag }}"
-          if git cat-file -e "${{ steps.tag.outputs.tag }}:deploy/docker/Dockerfile" 2>/dev/null; then
-            git checkout "${{ steps.tag.outputs.tag }}" -- deploy/docker
+          set -eu
+          git fetch --depth=1 --force origin "+refs/tags/*:refs/tags/*"
+          commit="$(git rev-parse --verify "refs/tags/$TAG^{commit}")" || { echo "::error::tag $TAG does not exist"; exit 1; }
+          # After a Release run the tag must still be the commit it built and
+          # signed: moved since, the image would mix files and binaries.
+          if [ "$EVENT" = workflow_run ] && [ "$commit" != "$RUN_SHA" ]; then
+            echo "::error::$TAG points at $commit, but the Release run built $RUN_SHA"; exit 1
           fi
+          if git cat-file -e "$commit:deploy/docker/Dockerfile" 2>/dev/null; then
+            git checkout "$commit" -- deploy/docker
+          fi
+          # Channel tags only move forward: :latest for the newest release,
+          # :X.Y for the newest patch of X.Y.
+          releases="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)"
+          newest="$(printf '%s\n' "$releases" | tail -n1)"
+          newest_minor="$(printf '%s\n' "$releases" | awk -v p="v$MINOR." 'index($0, p) == 1' | tail -n1)"
+          tags="$IMAGE:$VERSION"
+          if [ "$newest_minor" = "$TAG" ]; then tags="$(printf '%s\n%s' "$tags" "$IMAGE:$MINOR")"; else echo "::notice::$newest_minor is newer, :$MINOR stays"; fi
+          if [ "$newest" = "$TAG" ]; then tags="$(printf '%s\n%s' "$tags" "$IMAGE:latest")"; else echo "::notice::$newest is newer, :latest stays"; fi
+          printf 'tags<<EOF\n%s\nEOF\n' "$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Download and verify the release binaries
         env:
@@ -77,6 +121,18 @@ jobs:
           base="https://github.com/${{ github.repository }}/releases/download/$TAG"
           mkdir -p deploy/docker/bin
           curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
+          curl -fsSL -o SHA256SUMS.sig "$base/SHA256SUMS.sig"
+          curl -fsSL -o SHA256SUMS.pem "$base/SHA256SUMS.pem"
+          # A SHA256SUMS from the same release proves nothing on its own: who
+          # can replace the binaries can replace it too. Its signature must
+          # come from this repository's release.yml run for this tag, the
+          # same identity install.sh --verify-sig and vaultbase update check.
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature SHA256SUMS.sig \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/$TAG" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            SHA256SUMS
           for arch in x64:amd64 arm64:arm64; do
             src="vaultbase-linux-${arch%%:*}"; dst="deploy/docker/bin/vaultbase-linux-${arch##*:}"
             curl -fsSL -o "$dst" "$base/$src"
@@ -100,10 +156,7 @@ jobs:
           file: deploy/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.version }}
-            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.minor }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.channels.outputs.tags }}
           labels: |
             org.opencontainers.image.title=Vaultbase
             org.opencontainers.image.description=Self-hosted backend in a single binary

@@ -30,7 +30,7 @@ import { getAllSettings, shouldEncryptSettingKey } from "../api/settings.ts";
 import { getRecord } from "../core/records.ts";
 import { hasScope } from "../core/api-tokens.ts";
 import { MCP_PROTOCOL_VERSION } from "./types.ts";
-import type { ToolContext } from "./tools.ts";
+import { untrustedJsonText, type ToolContext } from "./tools.ts";
 
 export interface Resource {
   uri: string;
@@ -121,7 +121,8 @@ export async function readResource(uri: string, ctx: ToolContext): Promise<Resou
     case "vaultbase://collections":
       return jsonContents(uri, await readCollectionsList());
     case "vaultbase://audit/recent":
-      return jsonContents(uri, await readRecentAudit());
+      // Same marker as the read_audit_log tool: entries carry request paths and summaries.
+      return untrustedContents(uri, "vaultbase audit log", await readRecentAudit());
     case "vaultbase://settings":
       return jsonContents(uri, readSettingsResource());
     case "vaultbase://server/info":
@@ -143,7 +144,7 @@ export async function readResource(uri: string, ctx: ToolContext): Promise<Resou
     }
     const collection = rest.slice(0, slash);
     const id = rest.slice(slash + 1);
-    return jsonContents(uri, await readSingleRecord(collection, id, ctx));
+    return untrustedContents(uri, `${collection} record`, await readSingleRecord(collection, id, ctx));
   }
 
   if (uri.startsWith("vaultbase://logs/")) {
@@ -151,7 +152,8 @@ export async function readResource(uri: string, ctx: ToolContext): Promise<Resou
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new Error("Logs URI date must be YYYY-MM-DD");
     }
-    return jsonContents(uri, await readLogs({ from: date, to: date, limit: 1000 }));
+    // Paths are chosen by any caller and hook messages may quote records.
+    return untrustedContents(uri, "vaultbase logs", await readLogs({ from: date, to: date, limit: 1000 }));
   }
 
   throw new Error(`Unknown resource URI: ${uri}`);
@@ -165,6 +167,15 @@ function jsonContents(uri: string, value: unknown): ResourceContents {
     mimeType: "application/json",
     text: JSON.stringify(value, null, 2),
   };
+}
+
+/**
+ * Content other principals wrote (records, logs, audit entries): in the
+ * same <user-data> marker as the tools, so the instructions hold for
+ * resources too. Plain text, since the marker isn't JSON.
+ */
+function untrustedContents(uri: string, label: string, value: unknown): ResourceContents {
+  return { uri, mimeType: "text/plain", text: untrustedJsonText(label, value) };
 }
 
 async function readCollectionsList(): Promise<unknown> {

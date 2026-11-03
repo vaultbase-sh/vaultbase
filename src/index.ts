@@ -146,9 +146,11 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     // Email already taken → reset that admin's password. `password_reset_at`
     // bump invalidates any tokens minted before this update (forced logout).
     await db.update(admin)
-      .set({ password_hash: hash, password_reset_at: now })
+      .set({ password_hash: hash, password_reset_at: Date.now() })
       .where(eq(admin.email, opts.email));
-    await (await import("./core/sec.ts")).waitPastResetSecond(now);
+    // A token signed right after (the admin UI signs in again) must not
+    // share the stamp's millisecond.
+    await Bun.sleep(1);
     // A reset is how an operator gets back in after a lockout: clear it.
     const { clearAttemptFailures } = await import("./core/security.ts");
     await clearAttemptFailures(`email:id:${sameEmail[0]!.id}`);

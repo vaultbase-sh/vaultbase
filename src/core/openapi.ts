@@ -20,7 +20,11 @@ function typeName(collection: string): string {
   return collection.split(/[^A-Za-z0-9]+/).filter(Boolean).map((p) => p[0]!.toUpperCase() + p.slice(1)).join("") || "Collection";
 }
 
-function fieldSchema(f: FieldDef, mode: "read" | "input" = "read"): Schema {
+/**
+ * `shown` names the collections in this document: a relation to any other
+ * (an admin-only one left out of the public spec) doesn't name its target.
+ */
+function fieldSchema(f: FieldDef, mode: "read" | "input" = "read", shown?: ReadonlySet<string>): Schema {
   const many = f.options?.multiple === true;
   const list = (s: Schema): Schema => (many ? { type: "array", items: s } : s);
   switch (f.type) {
@@ -40,7 +44,7 @@ function fieldSchema(f: FieldDef, mode: "read" | "input" = "read"): Schema {
       : { type: "integer", description: "Unix seconds" };
     case "autodate": return { type: "integer", description: "Unix seconds" };
     case "select": return list(f.options?.values?.length ? { type: "string", enum: f.options.values } : { type: "string" });
-    case "relation": return list({ type: "string", description: `Record id in '${f.collection ?? "?"}'` });
+    case "relation": return list({ type: "string", description: f.collection && (!shown || shown.has(f.collection)) ? `Record id in '${f.collection}'` : "Record id" });
     case "file": return list({ type: "string", description: "Stored filename; fetch via /api/v1/files/{filename}" });
     case "json": return {};
     case "geoPoint": return {
@@ -49,7 +53,7 @@ function fieldSchema(f: FieldDef, mode: "read" | "input" = "read"): Schema {
     };
     case "vector": return { type: "array", items: { type: "number" }, ...(f.options?.dimensions ? { minItems: f.options.dimensions, maxItems: f.options.dimensions } : {}) };
     case "password": return { type: "string", writeOnly: true };
-    case "group": return groupSchema(f, mode);
+    case "group": return groupSchema(f, mode, shown);
     default: return customFieldType(f.type)?.openapi?.(f) ?? { type: "string" };
   }
 }
@@ -70,7 +74,7 @@ function orNull(s: Schema): Schema {
  * must be there; on read, an item made before a subfield became required may
  * lack it, so only the item id is promised.
  */
-function groupSchema(f: FieldDef, mode: "read" | "input"): Schema {
+function groupSchema(f: FieldDef, mode: "read" | "input", shown?: ReadonlySet<string>): Schema {
   const list = isGroupList(f);
   const props: Record<string, Schema> = {};
   if (list) {
@@ -80,7 +84,7 @@ function groupSchema(f: FieldDef, mode: "read" | "input"): Schema {
   }
   const required: string[] = mode === "read" && list ? ["id"] : [];
   for (const sub of subfieldsOf(f)) {
-    const s = fieldSchema(sub, mode);
+    const s = fieldSchema(sub, mode, shown);
     if (mode === "read") props[sub.name] = s;
     else if (sub.required) {
       // A required value can't be empty: "" counts as missing.
@@ -105,7 +109,7 @@ function groupSchema(f: FieldDef, mode: "read" | "input"): Schema {
   return { type: "array", items: item, ...(min > 0 ? { minItems: min } : {}), maxItems: max };
 }
 
-function recordSchemas(col: Collection): { record: Schema; input: Schema } {
+function recordSchemas(col: Collection, shown?: ReadonlySet<string>): { record: Schema; input: Schema } {
   const fields = parseFields(col.fields).filter((f) => !f.system);
   const props: Record<string, Schema> = {
     id: { type: "string", readOnly: true },
@@ -117,10 +121,10 @@ function recordSchemas(col: Collection): { record: Schema; input: Schema } {
   const inputProps: Record<string, Schema> = {};
   const required: string[] = [];
   for (const f of fields) {
-    if (f.type !== "password") props[f.name] = fieldSchema(f);
+    if (f.type !== "password") props[f.name] = fieldSchema(f, "read", shown);
     // autodate is set by the server; file fields are written via /files.
     if (f.type !== "autodate" && f.type !== "file" && !(col.type === "auth" && f.implicit)) {
-      inputProps[f.name] = fieldSchema(f, "input");
+      inputProps[f.name] = fieldSchema(f, "input", shown);
       if (f.required) required.push(f.name);
     }
   }
@@ -275,10 +279,11 @@ export function buildOpenApi(cols: Collection[]): Schema {
   };
   const paths: Record<string, Schema> = {};
   const tags: Schema[] = [];
+  const shown = new Set(cols.map((c) => c.name));
   for (const col of [...cols].sort((a, b) => a.name.localeCompare(b.name))) {
     let T = typeName(col.name);
     while (schemas[T]) T = `${T}_`;
-    const { record, input } = recordSchemas(col);
+    const { record, input } = recordSchemas(col, shown);
     schemas[T] = record;
     if (col.type !== "view") schemas[`${T}Input`] = input;
     // In place: spreading the whole object again per collection was quadratic.

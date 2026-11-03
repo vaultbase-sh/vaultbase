@@ -37,6 +37,13 @@ export interface VerifiedAuth extends AuthContext {
   collection?: string;
   /** User tokens: an anonymous (guest) session. */
   anonymous?: boolean;
+  /**
+   * User / admin tokens verified with the principal recheck: the
+   * `password_reset_at` that check read. A caller that mints from this
+   * verification carries it on (`rs`), so a reset landing after the read
+   * still ends what it mints.
+   */
+  resetSeen?: number;
 }
 
 export const ISSUER = "vaultbase";
@@ -89,6 +96,55 @@ async function apiTokenById(jti: string): Promise<ApiTokenRow | null> {
 async function adminResetAt(id: string): Promise<number | null> {
   const row = await db.get<{ password_reset_at: number }>(`SELECT password_reset_at FROM vaultbase_admin WHERE id = ? LIMIT 1`, [id]);
   return row ? row.password_reset_at : null;
+}
+
+/**
+ * `password_reset_at` in unix milliseconds. Stamps written before it moved
+ * to milliseconds are whole seconds; such a stamp ended every token issued
+ * in its second, so it counts as the last millisecond of that second.
+ */
+export function resetStampMs(stamp: number): number {
+  return stamp > 0 && stamp < 100_000_000_000 ? stamp * 1000 + 999 : stamp;
+}
+
+/** When a token was issued, in unix milliseconds: `iat_ms`, or `iat` for tokens minted before that claim. */
+function tokenIssuedMs(payload: Record<string, unknown>): number | null {
+  if (typeof payload["iat_ms"] === "number") return payload["iat_ms"];
+  return typeof payload["iat"] === "number" ? payload["iat"] * 1000 : null;
+}
+
+/** A reset stamped at `stamp` ends tokens issued at or before it, by `iat_ms` / `iat`. */
+function issuedByResetAt(stamp: number, payload: Record<string, unknown>): boolean {
+  const issued = tokenIssuedMs(payload);
+  return issued !== null && stamp > 0 && resetStampMs(stamp) >= issued;
+}
+
+/**
+ * Whether a password reset (or sign-out-all) ended this token. A token that
+ * carries `rs` (the principal's `password_reset_at` read when its credential
+ * was checked) is ended by any change to the stamp since: no clocks are
+ * compared, so a server whose clock runs ahead of the one that stamped the
+ * reset can't mint a session that outlives it, and a sign-in right after a
+ * reset is good at once. Tokens without the claim fall back to `iat_ms`.
+ */
+function endedByReset(stamp: number, payload: Record<string, unknown>): boolean {
+  if (typeof payload["rs"] === "number") return stamp !== payload["rs"];
+  return issuedByResetAt(stamp, payload);
+}
+
+/**
+ * The current `password_reset_at` of the principal behind a verified user /
+ * admin token, or null when the principal is gone.
+ */
+export async function principalResetStamp(ctx: { id: string; type: string; collection?: string | undefined }): Promise<number | null> {
+  if (ctx.type === "admin") return await adminResetAt(ctx.id);
+  if (!ctx.collection) return null;
+  const { getCollection } = await import("./collections.ts");
+  const col = await getCollection(ctx.collection);
+  if (!col) return null;
+  const { findUserById } = await import("./users-table.ts");
+  const u = await findUserById(col, ctx.id);
+  return u ? (typeof u.password_reset_at === "number" ? u.password_reset_at : 0) : null;
 }
 
 interface VerifyOpts {
@@ -151,7 +207,7 @@ export async function verifyAuthToken(
       if (recheck) {
         const resetAt = await adminResetAt(tok.created_by);
         if (resetAt === null) return null;
-        if (typeof ctx.iat === "number" && resetAt >= ctx.iat) return null;
+        if (issuedByResetAt(resetAt, payload)) return null;
       }
       return ctx;
     }
@@ -183,7 +239,8 @@ export async function verifyAuthToken(
       if (aud === "admin") {
         const resetAt = await adminResetAt(id);
         if (resetAt === null) return null;
-        if (typeof ctx.iat === "number" && resetAt >= ctx.iat) return null;
+        if (endedByReset(resetAt, payload)) return null;
+        ctx.resetSeen = resetAt;
       } else {
         // v0.11: user-token recheck routes to `vb_<col>` via the JWT
         // `collection` claim. Tokens minted before v0.11 lack the claim
@@ -199,8 +256,16 @@ export async function verifyAuthToken(
         if (!u) return null;
         // password_reset_at on per-collection table — bumping it (via
         // force-logout-all) invalidates this token.
-        if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at >= ctx.iat) {
+        if (typeof u.password_reset_at === "number" && endedByReset(u.password_reset_at, payload)) {
           return null;
+        }
+        ctx.resetSeen = typeof u.password_reset_at === "number" ? u.password_reset_at : 0;
+        // An impersonation session acts for the admin who minted it: it ends
+        // with that admin (deleted, password reset, force-logout-all), as an
+        // API token does. By `iat_ms`: `rs` is the user's stamp, not theirs.
+        if (typeof payload["impersonated_by"] === "string") {
+          const adminReset = await adminResetAt(payload["impersonated_by"]);
+          if (adminReset === null || issuedByResetAt(adminReset, payload)) return null;
         }
         // Read from the row, not the token, so verifying takes effect at once.
         if (u.email_verified === 1) ctx.verified = true;
@@ -251,20 +316,28 @@ export async function signAuthToken(opts: {
   audience: "user" | "admin" | "file" | "api";
   expiresInSeconds: number;
   jwtSecret: string;
-  /** Re-mint a token that was already issued: same jti and iat give the same bytes. */
-  reissue?: { jti: string; iat: number };
+  /** Re-mint a token that was already issued: same jti and issue time give the same bytes. */
+  reissue?: { jti: string; iat: number; iatMs?: number };
   /**
-   * When the credential behind this token was checked (unix seconds).
+   * When the credential behind this token was checked (unix milliseconds).
    * `password_reset_at` ends tokens issued at or before it, so dating a
    * sign-in by its check, not by when signing finished, ends one whose
    * password was checked before a reset that landed in between.
    */
-  issuedAt?: number;
-}): Promise<{ token: string; jti: string; exp: number; iat: number }> {
-  const iat = opts.reissue?.iat ?? opts.issuedAt ?? Math.floor(Date.now() / 1000);
+  issuedAtMs?: number;
+  /**
+   * The principal's `password_reset_at` read with the credential check,
+   * carried as `rs`: any reset after that read ends the token, whatever the
+   * clocks of the servers involved say (see endedByReset).
+   */
+  resetSeen?: number;
+}): Promise<{ token: string; jti: string; exp: number; iat: number; iatMs: number }> {
+  const iatMs = opts.reissue ? (opts.reissue.iatMs ?? opts.reissue.iat * 1000) : (opts.issuedAtMs ?? Date.now());
+  const iat = opts.reissue?.iat ?? Math.floor(iatMs / 1000);
   const exp = iat + opts.expiresInSeconds;
   const jti = opts.reissue?.jti ?? crypto.randomUUID();
-  const token = await new jose.SignJWT({ ...opts.payload, jti })
+  // `iat_ms` after the caller's claims: a refresh copies the old token's.
+  const token = await new jose.SignJWT({ ...opts.payload, jti, iat_ms: iatMs, ...(opts.resetSeen !== undefined ? { rs: opts.resetSeen } : {}) })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
     .setAudience(opts.audience)
@@ -272,17 +345,17 @@ export async function signAuthToken(opts: {
     .setExpirationTime(exp)
     .setJti(jti)
     .sign(getSecret(opts.jwtSecret));
-  return { token, jti, exp, iat };
+  return { token, jti, exp, iat, iatMs };
 }
 
 /**
- * `password_reset_at` ends every token whose `iat` is at or before it. Both
- * are whole seconds, so a token issued in the same second as a reset (before
- * or after it) is ended too. Callers that stamp a reset wait for the next
- * second before issuing a token or answering, so the next sign-in works.
+ * `password_reset_at` (unix ms) ends every token issued at or before it.
+ * Callers that stamp a reset wait until the clock has passed the stamp
+ * before issuing a token or answering, so the next sign-in isn't ended by
+ * a reset in the same millisecond.
  */
-export async function waitPastResetSecond(stamp: number): Promise<void> {
-  const ms = (stamp + 1) * 1000 - Date.now();
+export async function waitPastReset(stampMs: number): Promise<void> {
+  const ms = stampMs + 1 - Date.now();
   if (ms > 0) await Bun.sleep(ms);
 }
 

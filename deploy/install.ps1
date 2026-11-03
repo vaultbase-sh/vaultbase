@@ -13,6 +13,10 @@
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.37.0
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -InstallDir C:\tools\vaultbase -VerifySig
 #
+#   # A release too old to publish SHA256SUMS: the checksum is otherwise
+#   # required, and a missing one stops the install
+#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.1.0 -SkipChecksum
+#
 # Re-running the script upgrades the binary in place. Stop any running
 # vaultbase.exe first.
 #
@@ -23,11 +27,12 @@ param(
     [string]$Version = "",
     [string]$InstallDir = "",
     [switch]$VerifySig,
-    [switch]$NoPath
+    [switch]$NoPath,
+    [switch]$SkipChecksum
 )
 
 function Install-Vaultbase {
-    param([string]$Version, [string]$InstallDir, [bool]$VerifySig, [bool]$NoPath)
+    param([string]$Version, [string]$InstallDir, [bool]$VerifySig, [bool]$NoPath, [bool]$SkipChecksum)
 
     $ErrorActionPreference = "Stop"
     # Invoke-WebRequest's progress bar makes large downloads very slow on 5.1.
@@ -107,8 +112,11 @@ function Install-Vaultbase {
             $actual = (Get-FileHash -Algorithm SHA256 -Path $Exe).Hash.ToLower()
             if ($expected -ne $actual) { throw "SHA-256 mismatch. expected=$expected actual=$actual" }
             Ok "SHA-256 verified"
+        } elseif ($SkipChecksum) {
+            Warn "No SHA256SUMS for this release - installing without the integrity check (-SkipChecksum)."
         } else {
-            Warn "No SHA256SUMS published for this release - skipping integrity check."
+            # A failed fetch used to install an unchecked binary with only a warning.
+            throw "Couldn't fetch SHA256SUMS, so the download can't be checked. Retry, or pass -SkipChecksum for a release that has none."
         }
 
         if ($VerifySig) {
@@ -176,7 +184,7 @@ function Install-Vaultbase {
 }
 
 try {
-    Install-Vaultbase -Version $Version -InstallDir $InstallDir -VerifySig:$VerifySig.IsPresent -NoPath:$NoPath.IsPresent
+    Install-Vaultbase -Version $Version -InstallDir $InstallDir -VerifySig:$VerifySig.IsPresent -NoPath:$NoPath.IsPresent -SkipChecksum:$SkipChecksum.IsPresent
 } catch {
     # Write the error and stop without `exit`, which would close the shell
     # that ran `irm ... | iex`.

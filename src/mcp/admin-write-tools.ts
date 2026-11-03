@@ -39,7 +39,7 @@ import { applySettingsPatch, getSetting, setSetting, getAllSettingsMasked, shoul
 import { createRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { groupItemBounds, isGroupList, subfieldsOf } from "../core/group-fields.ts";
-import { ToolRegistry, asJsonText } from "./tools.ts";
+import { ToolRegistry, asJsonText, asUntrustedJsonText } from "./tools.ts";
 import { hasScope } from "../core/api-tokens.ts";
 import { recordAuditEvent } from "../core/audit-log.ts";
 import { detectMutation, runSql } from "../core/sql-runner.ts";
@@ -387,7 +387,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       description: "List cron jobs (UTC schedule + admin-authored body).",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
-    handler: async () => asJsonText(await getDb().select().from(jobs)),
+    // A job's last error can carry record content: marked like records.
+    handler: async () => asUntrustedJsonText("vaultbase jobs", await getDb().select().from(jobs)),
   });
 
   reg.register({
@@ -452,7 +453,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
     },
     handler: async (args) => {
       const r = await runJob(String(args.id));
-      return asJsonText(r);
+      return asUntrustedJsonText("vaultbase job run", r);
     },
   });
 
@@ -729,7 +730,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         let all: unknown[];
         try { all = await db.all<unknown>(q, params); } finally { await db.exec("PRAGMA query_only = OFF"); }
         await audit(200, `rows=${all.length}`);
-        return asJsonText({ rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
+        // Rows are whatever users stored: marked like records.
+        return asUntrustedJsonText("vaultbase sql rows", { rowCount: all.length, truncatedTo: Math.min(all.length, 100), rows: all.slice(0, 100) });
       }
       const res = await runSql({ sql: q, params, dbPath: file, mode: "readonly" });
       if (!res.ok) {
@@ -739,7 +741,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       await audit(200, `rows=${res.rowCount}`);
       const rows = res.rows.slice(0, 100).map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
       // rowCountExact: false means "more than rowCount" (Postgres stops reading past the cap).
-      return asJsonText({ rowCount: res.rowCount, ...(res.rowCountExact === false ? { rowCountExact: false } : {}), truncatedTo: rows.length, rows });
+      return asUntrustedJsonText("vaultbase sql rows", { rowCount: res.rowCount, ...(res.rowCountExact === false ? { rowCountExact: false } : {}), truncatedTo: rows.length, rows });
     },
   });
 
@@ -788,7 +790,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
           if (errors.length > 5) break;
         }
       }
-      return asJsonText({ created, requested: count, errors: errors.slice(0, 5) });
+      // Errors can quote hook messages and existing values (a unique clash).
+      return asUntrustedJsonText(`${slug} seed`, { created, requested: count, errors: errors.slice(0, 5) });
     },
   });
 

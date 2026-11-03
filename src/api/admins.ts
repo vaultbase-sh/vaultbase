@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { db as driver } from "../db/index.ts";
 import { admin } from "../db/schema.ts";
-import { HASH_OPTS, waitPastResetSecond } from "../core/sec.ts";
+import { HASH_OPTS, waitPastReset } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
 import { adminGuard } from "./_admin.ts";
 
@@ -87,13 +87,13 @@ export function makeAdminsPlugin(jwtSecret: string) {
           if (pwErr) { set.status = 422; return { error: pwErr, code: 422 }; }
           update.password_hash = await Bun.password.hash(body.password, HASH_OPTS);
           // End that admin's existing sessions (a leaked token stops working).
-          update.password_reset_at = Math.floor(Date.now() / 1000);
+          update.password_reset_at = Date.now();
         }
         if (Object.keys(update).length === 0) {
           return { data: { id: params.id, email: target[0]!.email } };
         }
         await db.update(admin).set(update).where(eq(admin.id, params.id));
-        if (update.password_reset_at !== undefined) await waitPastResetSecond(update.password_reset_at);
+        if (update.password_reset_at !== undefined) await waitPastReset(update.password_reset_at);
         return { data: { id: params.id, email: update.email ?? target[0]!.email } };
       },
       {

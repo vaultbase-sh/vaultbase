@@ -11,6 +11,48 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Security
 
+- **Linking a provider during a password reset could undo the reset.**
+  OAuth merge-confirm (and the MFA step of a sign-in that links a provider)
+  could re-add the link a reset had just removed and hand out a session the
+  reset didn't end. Both now recheck the account after linking and refuse
+  if it was reset in between.
+- **Sessions are now bound to the reset they were issued after, not to the
+  clock.** Tokens carry the account's reset stamp as read at sign-in (`rs`)
+  and end as soon as it changes. A refresh, impersonation or sign-in racing
+  a reset, or minted on a cluster node whose clock runs ahead, no longer
+  outlives it. Refresh rechecks the account after minting. Impersonation
+  tokens end when the impersonating admin is signed out or deleted.
+  Pending provider-merge tokens are voided by a reset.
+- **One request could expand relations without limit.** Expand is capped
+  at 6 levels and 20 paths (400 on list, get and batch).
+- **Write responses returned records the caller can't view.** Create,
+  update and batch writes return `null` (and no ETag) when the view rule
+  denies the written record; a 412 no longer carries the ETag for them.
+- **Admin-only collection names could be confirmed by anyone.** For
+  non-admins, a collection whose list, view and create rules are all
+  admin-only now answers like a missing one on records, batch, history and
+  restore, in `@collection` and `_via_` filters, and is left out of the
+  public OpenAPI document even when its rules are only whitespace. Relation
+  descriptions no longer name hidden collections.
+- **A view could publish password hashes past the private-column check.**
+  View queries may no longer read `vaultbase_*` tables, use `U&` names or
+  run SQL from strings, or (over tables with private columns) serialize
+  whole rows or rename columns with an alias list; on Postgres the created
+  view is also checked for whole-row values.
+- **MCP: stored content could close the `<user-data>` marker, and several
+  outputs carried user data without it.** The marker's JSON escapes `<`,
+  `>` and `&`; record writes, SQL rows, job errors, seed results and the
+  record, log and audit resources are now marked. A stdio session rechecks
+  its token on every request, not only tool calls.
+- **Installers no longer skip the checksum when it can't be fetched.**
+  `install.sh --skip-checksum` / `install.ps1 -SkipChecksum` opt out, for
+  releases that predate checksums.
+- **Docker images are built only from signed releases.** The image workflow
+  accepts only this repository's Release workflow on a tag push, verifies
+  `SHA256SUMS` with cosign against the release identity, and moves `:latest`
+  only for the newest release. The release job runs in a `release`
+  environment, so reviewers can be required in GitHub settings.
+
 - **One request with a long email address stalled the server.** The email
   check backtracked over the whole value: a 64 KB address on sign-up (no
   account needed) or in an `email` field held every other request for about
@@ -23,8 +65,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
   through a reset.
 - **A session issued in the same second as a password reset survived it.**
   A reset (or signing all admins out, an admin password change, an email
-  change, a promoted guest) now also ends tokens from that second. The reset waits for the next second
-  before it answers, so signing in right after works.
+  change, a promoted guest) is now timed to the millisecond, and so are
+  tokens (a new `iat_ms` claim), so it ends every token issued up to it and
+  none after. Stamps already stored in seconds keep ending their whole
+  second.
 - **A copied Google or Apple ID token could sign in again.** A token signs
   in once, but changing a spare bit in its signature (or, for Apple, using
   the signature's second valid form) made it look new. A token is now
@@ -117,6 +161,23 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Upgrade notes
 
+- **Admin-only collections answer 404 to non-admins** (was 403) when their
+  list, view and create rules are all admin-only. Read batches report it as
+  a 404 op. Client filters naming such a collection through `@collection` or
+  `_via_` now get 400 instead of an empty page.
+- **Writes the caller can't view return `{"data": null}`.**
+- **Expand is limited to 6 levels and 20 paths.**
+- **View queries** that read `vaultbase_*` tables, use `U&` names, or
+  serialize whole rows / alias columns of auth or password tables are
+  refused. An existing view like that keeps working, but altering or
+  renaming it needs a compliant query.
+- **MCP clients** that parse write, SQL, job, seed or record/log/audit
+  resource output as raw JSON now get it inside `<user-data>` tags.
+- **Installers** stop when the checksum file is missing; pass
+  `--skip-checksum` (`-SkipChecksum`) for old releases.
+- **GitHub setup for releases:** protect `v*` tags with a ruleset and add
+  required reviewers to the `release` environment; the workflow only marks
+  the job, the settings do the gating.
 - **A user who registered but never verified, then signs in by magic link,
   loses their password, TOTP, provider links and push devices** (the
   account can't tell them from someone who registered their address

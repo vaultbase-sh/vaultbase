@@ -28,6 +28,13 @@ jobs:
     name: Build cross-compile targets
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Signing and publishing run in the `release` environment, so GitHub can
+    # hold them for a reviewer and limit them to v* tags (Settings >
+    # Environments). Until it's configured there GitHub creates it bare and
+    # the job runs as before. The signing identity stays release.yml@<tag>.
+    # This key lives in the tagged commit, so the tag ruleset on v* is what
+    # stops a writer from dropping it.
+    environment: release
     outputs:
       tag: ${{ steps.resolve-tag.outputs.tag }}
 

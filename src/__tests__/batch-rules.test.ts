@@ -88,6 +88,9 @@ describe("batch endpoint enforces collection rules", () => {
       type: "base",
       fields: await makeFields(),
       create_rule: "", // admin only
+      // Readable, so not hidden: a collection with every rule admin-only
+      // answers as missing (audit-2026-11-run3-records.test.ts).
+      list_rule: null,
     });
     const token = await signUser("u1", "user@test.local");
     const app = makeBatchPlugin(SECRET);
@@ -187,6 +190,7 @@ describe("batch endpoint enforces collection rules", () => {
       type: "base",
       fields: await makeFields(),
       list_rule: "", // admin only
+      view_rule: null, // readable by id, so not hidden
     });
     const token = await signUser("u1", "u1@test.local");
     const app = makeBatchPlugin(SECRET);

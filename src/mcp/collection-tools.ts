@@ -200,7 +200,8 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
           const data = args.data as Record<string, unknown> | undefined;
           if (!data || typeof data !== "object") throw new Error("data (object) is required");
           const r = await updateRecord(slug, await ensureSingletonRecord(slug), data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
-          return asJsonText(r);
+          // The stored record comes back whole, other writers' fields included.
+          return asUntrustedJsonText(`${slug} record`, r);
         },
       });
       continue;
@@ -285,7 +286,8 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         const data = args.data as Record<string, unknown> | undefined;
         if (!data || typeof data !== "object") throw new Error("data (object) is required");
         const r = await createRecord(slug, data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
-        return asJsonText(r);
+        // Hooks and defaults may fill fields from other records.
+        return asUntrustedJsonText(`${slug} record`, r);
       },
     });
 
@@ -310,7 +312,8 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         const data = args.data as Record<string, unknown> | undefined;
         if (!data || typeof data !== "object") throw new Error("data (object) is required");
         const r = await updateRecord(slug, args.id, data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
-        return asJsonText(r);
+        // Fields this call didn't touch were written by whoever made the record.
+        return asUntrustedJsonText(`${slug} record`, r);
       },
     });
 

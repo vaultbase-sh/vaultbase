@@ -234,6 +234,12 @@ async function callTool(name: string, args: Record<string, unknown>, scopes = ["
   return r.result as CallToolResult;
 }
 
+/** The JSON inside a <user-data> marked result. */
+function seedText(r: CallToolResult): string {
+  const text = (r.content[0] as { text: string }).text;
+  return text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+}
+
 describe("MCP", () => {
   const toolSchema = async (name: string) => {
     const d = createDispatcher(await buildRegistry(false), ctx(["mcp:write"]));
@@ -288,7 +294,7 @@ describe("MCP", () => {
 
   it("seeds valid group values", async () => {
     const r = await callTool("vaultbase.seed", { collection: "orders", count: 20 });
-    const out = JSON.parse((r.content[0] as { text: string }).text) as { created: number; errors: string[] };
+    const out = JSON.parse(seedText(r)) as { created: number; errors: string[] };
     expect(out.errors).toEqual([]);
     expect(out.created).toBe(20);
     const rows = (await listRecords("orders", { perPage: 50 })).data as unknown as Array<{ items: unknown[]; address: { city: string } }>;
@@ -318,7 +324,7 @@ describe("MCP", () => {
     });
     _resetCollectionCache();
     const r = await callTool("vaultbase.seed", { collection: "tight", count: 30 });
-    expect(JSON.parse((r.content[0] as { text: string }).text)).toMatchObject({ created: 30, errors: [] });
+    expect(JSON.parse(seedText(r))).toMatchObject({ created: 30, errors: [] });
   });
 
   it("says which field a seeded record failed on", async () => {
@@ -328,7 +334,7 @@ describe("MCP", () => {
     });
     _resetCollectionCache();
     const r = await callTool("vaultbase.seed", { collection: "strict", count: 1 });
-    const out = JSON.parse((r.content[0] as { text: string }).text) as { created: number; errors: string[] };
+    const out = JSON.parse(seedText(r)) as { created: number; errors: string[] };
     expect(out.created).toBe(0);
     expect(out.errors[0]).toContain("rows[0].code is required");
   });
@@ -340,7 +346,7 @@ describe("MCP", () => {
     });
     _resetCollectionCache();
     const r = await callTool("vaultbase.seed", { collection: "packs", count: 3 });
-    expect(JSON.parse((r.content[0] as { text: string }).text)).toMatchObject({ created: 3, errors: [] });
+    expect(JSON.parse(seedText(r))).toMatchObject({ created: 3, errors: [] });
     const rows = (await listRecords("packs", {})).data as unknown as Array<{ parts: unknown[] }>;
     expect(rows.map((x) => x.parts.length)).toEqual([4, 4, 4]);
   });

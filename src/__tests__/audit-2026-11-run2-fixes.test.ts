@@ -15,7 +15,9 @@ import { createRecord } from "../core/records.ts";
 import { listRecordHistory } from "../core/record-history.ts";
 import { encryptValue } from "../core/encryption.ts";
 import { evaluateRule } from "../core/rules.ts";
-import { lockoutIp, rememberPeer, signAuthToken } from "../core/sec.ts";
+import { lockoutIp, rememberPeer, resetStampMs, signAuthToken, verifyAuthToken, waitPastReset } from "../core/sec.ts";
+import { getDb } from "../db/client.ts";
+import { admin } from "../db/schema.ts";
 import { maintenanceRefusal } from "../core/maintenance-mode.ts";
 import { createPublicCollection, onSqlite } from "./_helpers.ts";
 
@@ -67,11 +69,43 @@ describe("record history decryption", () => {
   });
 });
 
-describe("password sign-in dated by its credential check", () => {
-  it("ends a token whose check came before a reset in the same second", async () => {
-    const checkedAt = Math.floor(Date.now() / 1000);
-    const { token } = await signAuthToken({ payload: { id: "a1", email: "a@x.io" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET, issuedAt: checkedAt - 1 });
-    expect(JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()).iat).toBe(checkedAt - 1);
+describe("password reset cutoff in milliseconds", () => {
+  const adminAt = async (stamp: number) => {
+    await getDb().insert(admin).values({ id: "a1", email: "a@x.io", password_hash: "x", password_reset_at: stamp, created_at: 1 });
+  };
+  const signAt = async (issuedAtMs: number) => (await signAuthToken({
+    payload: { id: "a1", email: "a@x.io" }, audience: "admin", expiresInSeconds: 600, jwtSecret: SECRET, issuedAtMs,
+  })).token;
+
+  it("ends a token checked before the reset or in its millisecond, and keeps one issued after", async () => {
+    const stamp = Date.now();
+    await adminAt(stamp);
+    expect(await verifyAuthToken(await signAt(stamp - 1), SECRET)).toBeNull();
+    expect(await verifyAuthToken(await signAt(stamp), SECRET)).toBeNull();
+    // The same second, a millisecond later: a sign-in right after a reset works.
+    expect(await verifyAuthToken(await signAt(stamp + 1), SECRET)).not.toBeNull();
+  });
+
+  it("waits only until the clock passes the stamp", async () => {
+    const stamp = Date.now();
+    const t0 = performance.now();
+    await waitPastReset(stamp);
+    expect(Date.now()).toBeGreaterThan(stamp);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it("reads a stamp written in seconds as the end of that second", async () => {
+    const sec = Math.floor(Date.now() / 1000) - 10;
+    await adminAt(sec);
+    expect(resetStampMs(sec)).toBe(sec * 1000 + 999);
+    expect(await verifyAuthToken(await signAt(sec * 1000 + 500), SECRET)).toBeNull();
+    expect(await verifyAuthToken(await signAt((sec + 1) * 1000), SECRET)).not.toBeNull();
+  });
+
+  it("dates a sign-in by its credential check", async () => {
+    const { token, iat, iatMs } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET, issuedAtMs: 1_800_000_000_123 });
+    const claims = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString());
+    expect([claims.iat, claims.iat_ms, iat, iatMs]).toEqual([1_800_000_000, 1_800_000_000_123, 1_800_000_000, 1_800_000_000_123]);
   });
 });
 
@@ -119,7 +153,9 @@ describe("batch", () => {
   }));
 
   it("reads a singleton under its view rule", async () => {
-    await createCollection({ name: "config", type: "singleton", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: null, view_rule: "" } as never);
+    // A public create rule keeps it visible, so the view rule's 403 shows
+    // (with every rule admin-only it answers as missing instead).
+    await createCollection({ name: "config", type: "singleton", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: null, view_rule: "", create_rule: null } as never);
     expect((await batch([{ method: "GET", url: "/api/v1/config" }])).status).toBe(403);
     expect((await get("/config/_aggregate?agg=count()")).status).toBe(403);
   });

@@ -96,19 +96,18 @@ describe("magic-link sign-in on a pre-registered address", () => {
   });
 });
 
-describe("password reset in the same second as a sign-in", () => {
-  it("ends a token issued that second, and the next sign-in works", async () => {
+describe("password reset right after a sign-in", () => {
+  it("ends a token issued before it, and the next sign-in works", async () => {
     const col = await ensureAuthCollection("users");
     const id = await seedAuthUser({ collection: "users", email: "r@test.local", passwordHash: await Bun.password.hash("old-password-123"), emailVerified: true });
-    while (Date.now() % 1000 > 300) await Bun.sleep(5);
     const login = await post("/auth/users/login", { email: "r@test.local", password: "old-password-123" });
     const stolen = ((await login.json()) as { data: { token: string } }).data.token;
     const raw = "d".repeat(64);
     await getDb().insert(authTokens).values({ id: hashedTokenId(raw), user_id: id, collection_id: col.id, purpose: "password_reset", expires_at: Math.floor(Date.now() / 1000) + 3600 });
     expect((await post("/auth/users/confirm-password-reset", { token: raw, password: "new-password-456" })).status).toBe(200);
 
-    const iat = JSON.parse(Buffer.from(stolen.split(".")[1]!, "base64url").toString()).iat as number;
-    expect(iat).toBe((await findUserById(col, id))!.password_reset_at);
+    const iatMs = JSON.parse(Buffer.from(stolen.split(".")[1]!, "base64url").toString()).iat_ms as number;
+    expect(iatMs).toBeLessThanOrEqual((await findUserById(col, id))!.password_reset_at);
     expect(await verifyAuthToken(stolen, SECRET)).toBeNull();
 
     const fresh = await post("/auth/users/login", { email: "r@test.local", password: "new-password-456" });

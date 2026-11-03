@@ -219,7 +219,7 @@ describe("MCP — tools/call", () => {
     const result = r.result as CallToolResult;
     expect(result.isError).toBeFalsy();
     const text = (result.content[0] as { text: string }).text;
-    const rec = JSON.parse(text) as { id: string; title: string; status: string };
+    const rec = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as { id: string; title: string; status: string };
     expect(rec.id).toBeTruthy();
     expect(rec.title).toBe("hello");
     expect(rec.status).toBe("live");
@@ -458,7 +458,7 @@ describe("MCP — Phase 2 admin tools", () => {
     const result = r.result as CallToolResult;
     expect(result.isError).toBeFalsy();
     const text = (result.content[0] as { text: string }).text;
-    const data = JSON.parse(text) as { rowCount: number; rows: Array<{ one: number }> };
+    const data = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as { rowCount: number; rows: Array<{ one: number }> };
     expect(data.rowCount).toBe(1);
     expect(data.rows[0]?.one).toBe(1);
   });
@@ -478,7 +478,7 @@ describe("MCP — Phase 2 admin tools", () => {
     const result = r.result as CallToolResult;
     expect(result.isError).toBeFalsy();
     const text = (result.content[0] as { text: string }).text;
-    const data = JSON.parse(text) as { created: number };
+    const data = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as { created: number };
     expect(data.created).toBe(5);
   });
 
@@ -572,7 +572,7 @@ describe("MCP Phase 3 — Resources", () => {
       mkCtx(["mcp:read"]),
     ) as JsonRpcSuccess;
     const text = (r.result as { contents: Array<{ text: string }> }).contents[0]!.text;
-    const rec = JSON.parse(text) as { title: string };
+    const rec = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as { title: string };
     expect(rec.title).toBe("hello");
   });
 

@@ -58,6 +58,8 @@ export interface CollectionLookup {
      * omit it and only the view rule applies.
      */
     listRule?: string | null;
+    /** The collection's create rule; with list and view, whether it is hidden. */
+    createRule?: string | null;
     hasField: (name: string) => boolean;
     /**
      * Columns that must never be referenced from a filter — password hashes,
@@ -814,6 +816,28 @@ function joinedCollectionGuard(
 }
 
 /**
+ * The collection a caller's own filter reaches with `@collection.*` or
+ * `_via_`. A hidden one (list, view and create rules all admin-only, as the
+ * records API and public OpenAPI document treat it) raises the same error
+ * as one that doesn't exist, before any of its fields is checked: an empty
+ * page for it against a 400 for a made-up name confirmed admin-only
+ * collections and their fields. Admins and rules get the real lookup and
+ * its specific errors.
+ */
+function refTarget(collection: string, ctx: CompileCtx, via: boolean): ReturnType<CollectionLookup> {
+  const meta = ctx.lookup?.(collection) ?? null;
+  if (!ctx.clientFilter || !ctx.lookup) return meta;
+  const adminOnly = (r: string | null | undefined) => typeof r === "string" && r.trim() === "";
+  // A lookup that doesn't report the create rule is judged on the other two.
+  const hidden = meta && adminOnly(meta.viewRule) && adminOnly(meta.listRule)
+    && (meta.createRule === undefined || adminOnly(meta.createRule));
+  if (!meta || hidden) {
+    throw new Error(via ? `unknown collection in _via_: ${collection}` : `unknown collection in @collection.*: ${collection}`);
+  }
+  return meta;
+}
+
+/**
  * `created` / `updated` on another collection (`@collection.x.created`,
  * `x_via_y.created`) as on the host: the columns are `created_at` and
  * `updated_at`, unless that table has a real column by the short name.
@@ -838,7 +862,7 @@ function compileCollectionRef(
     const targetTable = `vb_${op.collection}`;
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
 
-    const head = systemAlias(op.path[0]!, ctx.lookup?.(op.collection) ?? null);
+    const head = systemAlias(op.path[0]!, refTarget(op.collection, ctx, false));
     if (!exists && ctx.hoist) {
       const targetMeta0 = ctx.lookup?.(op.collection);
       if (targetMeta0 && (targetMeta0.isPrivateField(head) || !targetMeta0.isFilterable(head))) {
@@ -997,6 +1021,7 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
     chargeCrossRef(ctx);
     const targetTable = `vb_${op.targetCollection}`;
     if (!IDENT_RE.test(targetTable)) throw new Error(`invalid table: ${targetTable}`);
+    refTarget(op.targetCollection, ctx, true);
 
     // Default selection — id of the matching back-related rows. With a path,
     // pull `<path>` instead.
@@ -1017,10 +1042,14 @@ function viaSource(op: ViaOperand, ctx: CompileCtx): { table: string; sel: strin
       if (!meta) {
         throw new Error(`unknown collection in _via_: ${op.targetCollection}`);
       }
+      // A caller's own filter gets one answer for a missing and a private
+      // ref field, as for any other field.
+      if (meta.isPrivateField(op.refField) || (ctx.clientFilter && !meta.hasField(op.refField))) {
+        throw new PrivateFieldError(op.refField);
+      }
       if (!meta.hasField(op.refField)) {
         throw new Error(`back-relation ref field '${op.refField}' not on '${op.targetCollection}'`);
       }
-      if (meta.isPrivateField(op.refField)) throw new PrivateFieldError(op.refField);
       // `posts_via_author.password_hash` selects the column out of the joined
       // table, so the path head needs the same guard as a direct reference.
       if (op.path.length > 0) {

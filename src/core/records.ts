@@ -220,6 +220,7 @@ function lookupCollection(name: string): ReturnType<CollectionLookup> {
   return {
     viewRule: col.view_rule,
     listRule: col.list_rule,
+    createRule: col.create_rule,
     hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
     isPrivateField: (n) => priv.has(n),
     isFilterable: (n) => cols.has(n),
@@ -877,6 +878,32 @@ export async function listRecords(
   return { data: items, page, perPage, totalItems, totalPages };
 }
 
+/** A blank rule ("" or only whitespace) lets only admins through. */
+export function adminOnlyRule(rule: string | null | undefined): boolean {
+  return typeof rule === "string" && rule.trim() === "";
+}
+
+/**
+ * Whether a non-admin is answered as if `col` didn't exist, for an action
+ * gated by `rule`: that rule is admin-only, and so is everything that would
+ * show them the collection (its list, view and create rules; the public
+ * OpenAPI document leaves it out the same way). A 403 there, or a type or
+ * view-parameter refusal, confirmed the name.
+ */
+export function hiddenFrom(
+  col: Pick<Collection, "list_rule" | "view_rule" | "create_rule">,
+  auth: AuthContext | null,
+  rule: string | null,
+): boolean {
+  return auth?.type !== "admin" && adminOnlyRule(rule)
+    && adminOnlyRule(col.list_rule) && adminOnlyRule(col.view_rule) && adminOnlyRule(col.create_rule);
+}
+
+/** Most levels one expand path may nest (`a.b.c` is 3). */
+export const MAX_EXPAND_DEPTH = 6;
+/** Most comma-separated expand paths in one request. */
+export const MAX_EXPAND_PATHS = 20;
+
 export interface ShapeOptions {
   /** Comma-separated relation paths to expand, nested with `.`. */
   expand?: string | undefined;
@@ -896,6 +923,13 @@ export interface ShapeOptions {
  */
 export async function shapeRecords(col: Collection, items: RecordWithMeta[], opts: ShapeOptions): Promise<RecordWithMeta[]> {
   const expandPaths = (opts.expand ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  // Each level is a query and its records are copied under every item that
+  // points at them, so a deep path over a self-relation grew the response
+  // without bound. Checked before any item is touched.
+  if (expandPaths.length > MAX_EXPAND_PATHS) throw new FilterError(`expand: at most ${MAX_EXPAND_PATHS} paths`);
+  for (const p of expandPaths) {
+    if (p.split(".").length > MAX_EXPAND_DEPTH) throw new FilterError(`expand: at most ${MAX_EXPAND_DEPTH} levels per path`);
+  }
   if (expandPaths.length) {
     await expandRelations(items, expandPaths, cachedFields(col.fields), opts.auth ?? null, opts.request ?? null);
   }

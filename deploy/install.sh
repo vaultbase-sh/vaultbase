@@ -31,6 +31,10 @@
 #   # Actions runner via the Sigstore Fulcio chain.
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --verify-sig
 #
+#   # Install a release too old to publish a .sha256 (the checksum is
+#   # otherwise required, and a missing one stops the install)
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --version v0.1.0 --skip-checksum
+#
 #   # Install the binary somewhere else (no root needed on macOS if you can
 #   # write there)
 #   curl -fsSL https://get.vaultbase.dev | sh -s -- --install-dir ~/.local/bin
@@ -63,6 +67,7 @@ PORT="${DEFAULT_PORT}"
 NO_START=0
 NO_SYSTEMD=0
 VERIFY_SIG=0
+SKIP_CHECKSUM=0
 # PORT is pre-seeded with the default, so it cannot tell us whether --port was
 # actually passed. Track that separately or an upgrade warns about a flag the
 # operator never typed.
@@ -100,6 +105,9 @@ Flags:
   --no-start           Install and enable the unit, but do not start it.
   --no-systemd         Install the binary only; skip the unit entirely.
   --verify-sig         Verify the cosign keyless signature (needs `cosign`).
+  --skip-checksum      Install without the SHA-256 check when the release has
+                       no .sha256 (very old releases). Otherwise a missing
+                       checksum stops the install.
   --install-dir <dir>  Install the binary somewhere other than /usr/local/bin.
   --help, -h           Show this text.
 
@@ -127,6 +135,7 @@ while [ $# -gt 0 ]; do
         --no-start)   NO_START=1; shift ;;
         --no-systemd) NO_SYSTEMD=1; shift ;;
         --verify-sig) VERIFY_SIG=1; shift ;;
+        --skip-checksum) SKIP_CHECKSUM=1; shift ;;
         --install-dir)   [ $# -ge 2 ] || die "--install-dir needs a value"
                       INSTALL_DIR="$2"; shift 2 ;;
         --install-dir=*) INSTALL_DIR="${1#*=}"; shift ;;
@@ -363,9 +372,10 @@ if [ "${FETCHED}" -eq 0 ]; then
         || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
 fi
 
-# Optional sha256 verification — works when the release ships a `.sha256`
-# alongside the binary (recommended, but tolerate absence so installs don't
-# break for older releases).
+# SHA-256 verification against the release's `.sha256`. A missing one stops
+# the install: a failed fetch (a proxy, a truncated release) used to install
+# an unchecked binary with only a warning. --skip-checksum is the way past
+# it for releases that never shipped one.
 if curl -fsSL --retry 2 -o "${TMP}/vaultbase.sha256" "${SHA_URL}" 2>/dev/null; then
     EXPECTED="$(awk '{print $1}' "${TMP}/vaultbase.sha256")"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -376,8 +386,10 @@ if curl -fsSL --retry 2 -o "${TMP}/vaultbase.sha256" "${SHA_URL}" 2>/dev/null; t
     [ "${EXPECTED}" = "${ACTUAL}" ] \
         || { err "SHA-256 mismatch. expected=${EXPECTED} actual=${ACTUAL}"; exit 2; }
     ok "SHA-256 verified"
+elif [ "${SKIP_CHECKSUM}" -eq 1 ]; then
+    warn "No .sha256 for this release — installing without the integrity check (--skip-checksum)."
 else
-    warn "No .sha256 published for this release — skipping integrity check."
+    die "Couldn't fetch ${SHA_URL}, so the download can't be checked. Retry, or pass --skip-checksum for a release that has no .sha256."
 fi
 
 # Optional cosign keyless signature verification (--verify-sig). Confirms the

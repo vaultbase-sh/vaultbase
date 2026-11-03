@@ -89,7 +89,8 @@ describe("records API", () => {
   it("an MCP-only token cannot read admin-only records", async () => {
     await adminOnlyNotes();
     const res = await makeRecordsPlugin(SECRET).handle(req("GET", "/notes", await apiToken(["mcp:read"])));
-    expect(res.status).toBe(403);
+    // Not a data principal: the admin-only collection answers as missing.
+    expect(res.status).toBe(404);
   });
 
   it("a read token reads but cannot write", async () => {
@@ -97,13 +98,13 @@ describe("records API", () => {
     const app = makeRecordsPlugin(SECRET);
     const tok = await apiToken(["read"]);
     expect((await app.handle(req("GET", `/notes/${id}`, tok))).status).toBe(200);
-    expect((await app.handle(req("DELETE", `/notes/${id}`, tok))).status).toBe(403);
+    expect((await app.handle(req("DELETE", `/notes/${id}`, tok))).status).toBe(404);
   });
 
   it("a write token mutates under collection rules, not as admin", async () => {
     const id = await adminOnlyNotes();
     const res = await makeRecordsPlugin(SECRET).handle(req("PATCH", `/notes/${id}`, await apiToken(["write"]), { title: "x" }));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("an admin-scoped token keeps full access", async () => {
@@ -121,7 +122,7 @@ describe("batch API", () => {
     const read = await app.handle(req("POST", "/batch", tok, { requests: [{ method: "GET", url: `/api/v1/notes/${id}` }] }));
     expect(read.status).toBe(200);
     const write = await app.handle(req("POST", "/batch", tok, { requests: [{ method: "DELETE", url: `/api/v1/notes/${id}` }] }));
-    expect(write.status).toBe(403);
+    expect(write.status).toBe(404);
   });
 });
 

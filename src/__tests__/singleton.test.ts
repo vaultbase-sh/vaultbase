@@ -75,8 +75,11 @@ describe("singleton collections", () => {
 
   it("follow their view and update rules", async () => {
     await createCollection({ name: "locked", type: "singleton", fields });
-    expect((await call("GET", "/locked")).status).toBe(403);
-    expect((await call("PATCH", "/locked", { site_name: "x" })).status).toBe(403);
+    // Every rule admin-only: answered as if there were no such collection.
+    expect((await call("GET", "/locked")).status).toBe(404);
+    expect((await call("PATCH", "/locked", { site_name: "x" })).status).toBe(404);
+    await createCollection({ name: "readable", type: "singleton", fields, view_rule: null });
+    expect((await call("PATCH", "/readable", { site_name: "x" })).status).toBe(403);
     const token = await adminToken();
     expect((await call("PATCH", "/locked", { site_name: "by admin" }, { authorization: `Bearer ${token}` })).status).toBe(200);
   });

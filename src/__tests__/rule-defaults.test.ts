@@ -81,28 +81,30 @@ describe("collection rule defaults", () => {
     const api = makeRecordsPlugin(SECRET);
     const base = "http://localhost";
 
+    // With every rule admin-only the collection is hidden: each action
+    // answers as if it didn't exist.
     const list = await api.handle(new Request(`${base}/posts`));
-    expect(list.status).toBe(403);
+    expect(list.status).toBe(404);
 
     const read = await api.handle(new Request(`${base}/posts/${rec["id"]}`));
-    expect(read.status).toBe(403);
+    expect(read.status).toBe(404);
 
     const create = await api.handle(new Request(`${base}/posts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: "mine" }),
     }));
-    expect(create.status).toBe(403);
+    expect(create.status).toBe(404);
 
     const patch = await api.handle(new Request(`${base}/posts/${rec["id"]}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: "theirs" }),
     }));
-    expect(patch.status).toBe(403);
+    expect(patch.status).toBe(404);
 
     const del = await api.handle(new Request(`${base}/posts/${rec["id"]}`, { method: "DELETE" }));
-    expect(del.status).toBe(403);
+    expect(del.status).toBe(404);
   });
 
   it("still lets an admin through", async () => {
@@ -137,6 +139,6 @@ describe("collection rule defaults", () => {
 
     _resetCollectionCache();
     const anon = await makeRecordsPlugin(SECRET).handle(new Request("http://localhost/members"));
-    expect(anon.status).toBe(403);
+    expect(anon.status).toBe(404);
   });
 });

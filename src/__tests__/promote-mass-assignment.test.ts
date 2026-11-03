@@ -65,7 +65,9 @@ describe("promote", () => {
     expect(u.totp_enabled).toBe(0);
     expect(u.totp_secret).toBeNull();
     expect(u.is_anonymous).toBe(0);
-    expect(u.password_reset_at).toBeLessThan(4_000_000_000);
+    // Stamped by promote (unix ms), not the body's value.
+    expect(u.password_reset_at).not.toBe(4_000_000_000);
+    expect(Math.abs(u.password_reset_at - Date.now())).toBeLessThan(60_000);
     expect(u.created_at).toBeGreaterThan(1);
     expect(await Bun.password.verify("a-good-password-1", u.password_hash)).toBe(true);
     expect((u as unknown as Record<string, unknown>)["nickname"]).toBe("neo");

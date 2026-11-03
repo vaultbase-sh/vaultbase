@@ -3,10 +3,11 @@ import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, hiddenFrom, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { bodyForRules, ValidationError } from "../core/validate.ts";
-import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRule, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
+import type { Collection } from "../db/schema.ts";
 import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { MAX_BATCH_OPS } from "./ratelimit.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
@@ -80,6 +81,25 @@ function parseOp(method: string, urlStr: string): ParsedOp | { error: string } {
   return { error: `Unsupported method ${M} for ${urlStr}` };
 }
 
+/** The rule that gates an op (a singleton is listed under its view rule). */
+function ruleFor(col: Collection, kind: ParsedOp["kind"]): string | null {
+  switch (kind) {
+    case "create": return col.create_rule;
+    case "list": return col.type === "singleton" ? col.view_rule : col.list_rule;
+    case "get": return col.view_rule;
+    case "update": return col.update_rule;
+    case "delete": return col.delete_rule;
+  }
+}
+
+/**
+ * A written record goes back only to a caller who may view it: the update
+ * or create rule letting them write it doesn't let them read it.
+ */
+function canView(request: Request, col: Collection, auth: AuthContext | null, rec: unknown): boolean {
+  return auth?.type === "admin" || checkRule(request, "view_rule", col.name, col.view_rule, auth, rec as Record<string, unknown>);
+}
+
 async function dispatchOp(
   request: Request,
   op: ParsedOp,
@@ -89,6 +109,12 @@ async function dispatchOp(
   // Per-op rule enforcement — same checks the records HTTP layer runs.
   const col = await getCollection(op.collection);
   if (!col) return { status: 404, body: { error: `Collection '${op.collection}' not found`, code: 404 } };
+  // As on the REST routes: a hidden collection answers a non-admin as if it
+  // didn't exist, before the singleton and view-parameter refusals below
+  // name its type.
+  if (hiddenFrom(col, auth, ruleFor(col, op.kind))) {
+    return { status: 404, body: { error: `Collection '${op.collection}' not found`, code: 404 } };
+  }
   if (col.type === "singleton" && (op.kind === "create" || op.kind === "delete")) {
     throw new SingletonRecordError(col.name, op.kind);
   }
@@ -107,7 +133,7 @@ async function dispatchOp(
         buildRequestContext(request, ruleBody, null),
       );
       const rec = await createRecord(op.collection, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
-      return { status: 201, body: rec };
+      return { status: 201, body: canView(request, col, auth, rec) ? rec : null };
     }
     case "list": {
       // A singleton's one record is read under its view rule, as on the
@@ -155,7 +181,7 @@ async function dispatchOp(
         throw new RuleDeniedError("update_rule");
       }
       const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
-      return { status: 200, body: rec };
+      return { status: 200, body: canView(request, col, auth, rec) ? rec : null };
     }
     case "delete": {
       const existing = await getRecord(op.collection, op.id!);

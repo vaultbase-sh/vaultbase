@@ -64,7 +64,8 @@ describe("MCP run_sql", () => {
   it("reads work for mcp:sql (legitimate path)", async () => {
     const r = await runSql(["mcp:sql"], { query: "SELECT x FROM t" });
     expect(r.isError).toBeFalsy();
-    expect(JSON.parse((r.content[0] as { text: string }).text).rows).toEqual([{ x: 1 }]);
+    const text = (r.content[0] as { text: string }).text;
+    expect(JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)).rows).toEqual([{ x: 1 }]);
   });
 
   it.skipIf(!onSqlite)("a read-mode PRAGMA can't change the server's own connection", async () => {
