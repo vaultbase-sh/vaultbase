@@ -27,6 +27,7 @@ import { adminGuard } from "./_admin.ts";
 import { Database } from "bun:sqlite";
 import { suspendCheckpointer } from "../db/checkpointer.ts";
 import { suspendReadPool } from "../core/read-pool.ts";
+import { applyCredentials, captureCredentials, noteCarry, takeCarryMessage, type CarryDb } from "../core/restore-credentials.ts";
 import { _reloadSettings } from "./settings.ts";
 import { _resetReadOnlyLogin } from "../core/pg-readonly.ts";
 import {
@@ -143,8 +144,13 @@ async function swapAndCarryOver(dbPath: string, staging: string): Promise<string
     // principal's password_reset_at; the restored rows would lower it again
     // and revive every token those ended (API tokens follow their admin).
     const resets = currentResetStamps();
+    // Passwords, MFA and admin deletions since the backup stay too
+    // (core/restore-credentials.ts).
+    const creds = await captureCredentials(sqliteCarryDb());
     const err = await swapInDb(dbPath, staging);
     if (err) return err;
+    // Before the stamps are raised back: it compares the restored ones.
+    noteCarry(await applyCredentials(sqliteCarryDb(), creds));
     const keep = getRawClient().prepare(
       `INSERT OR IGNORE INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?)`,
     );
@@ -221,7 +227,7 @@ async function postgresRestore(
 ): Promise<unknown> {
   if (!progress) {
     try {
-      return { data: { message: await work(() => {}) } };
+      return { data: { message: (await work(() => {})) + takeCarryMessage() } };
     } catch (e) {
       const f = restoreFailure(e);
       set.status = f.status;
@@ -237,7 +243,7 @@ async function postgresRestore(
       const keepAlive = setInterval(() => send(phase ? { phase } : { waiting: true }), 15_000);
       try {
         const message = await work((p) => { phase = p; send({ phase: p }); });
-        send({ done: true, message });
+        send({ done: true, message: message + takeCarryMessage() });
       } catch (e) {
         send(restoreFailure(e).body);
       } finally {
@@ -247,6 +253,17 @@ async function postgresRestore(
     },
   });
   return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" } });
+}
+
+/** The open SQLite connection, for the credential carry-over. */
+function sqliteCarryDb(): CarryDb {
+  const raw = getRawClient();
+  return {
+    all: async <T,>(sql: string, params: unknown[] = []) => raw.prepare(sql).all(...(params as never[])) as T[],
+    run: async (sql: string, params: unknown[] = []) => { raw.prepare(sql).run(...(params as never[])); },
+    t: (name: string) => `"${name}"`,
+    has: async (name: string) => !!raw.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name),
+  };
 }
 
 type ResetStamps = Array<{ table: string; rows: Array<{ id: string; password_reset_at: number }> }>;
@@ -390,7 +407,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       return { error: `Restore failed: ${err}`, code: 500 };
     }
 
-    return { data: { message: RESTORED_MESSAGE } };
+    return { data: { message: RESTORED_MESSAGE + takeCarryMessage() } };
   }
 
   const uploadsDir = () => join(dirname(dbPath), ".restore-uploads");
@@ -528,7 +545,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return { error: `Restore failed: ${err}`, code: 500 };
       }
       const files = filesRestoreMessage(await restoreBackupFiles(params.name));
-      return { data: { message: `Restore complete. Sessions revoked since the backup stay revoked.${files}` } };
+      return { data: { message: `Restore complete. Sessions revoked since the backup stay revoked.${takeCarryMessage()}${files}` } };
     }, { requireAdmin: true })
 
     // Restore from an uploaded backup: a SQLite file, or on Postgres a pg_dump archive

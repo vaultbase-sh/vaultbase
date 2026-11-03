@@ -143,6 +143,22 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     expect(await notedSchemas()).toEqual([kept[0]!.schema]);
   });
 
+  it("keeps passwords changed and admins deleted since the backup", async () => {
+    await getDb().insert(admin).values({ id: "a2", email: "left@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
+    await db.run(`INSERT INTO vaultbase_install (key, id) VALUES ('install', 'pg-install') ON CONFLICT (key) DO NOTHING`);
+    await db.run(`UPDATE vaultbase_admin SET password_hash = 'leaked' WHERE id = 'a1'`);
+    const { name } = await backUp();
+    await db.run(`UPDATE vaultbase_admin SET password_hash = 'fresh', password_reset_at = ? WHERE id = 'a1'`, [Date.now() - 10]);
+    await db.run(`DELETE FROM vaultbase_admin WHERE id = 'a2'`);
+
+    const res = await call("POST", `/admin/backups/${name}/restore`);
+    expect(res.status).toBe(200);
+    expect(res.json.data.message).toMatch(/1 account kept the password/);
+    expect(res.json.data.message).toMatch(/left@test\.local/);
+    expect((await db.get<{ h: string }>(`SELECT password_hash AS h FROM vaultbase_admin WHERE id = 'a1'`))!.h).toBe("fresh");
+    expect(await db.get(`SELECT 1 FROM vaultbase_admin WHERE id = 'a2'`)).toBeFalsy();
+  });
+
   it("an undo puts the previous data back, and keeps what it replaced", async () => {
     const { name } = await backUp();
     await createRecord("posts", { title: "After" });

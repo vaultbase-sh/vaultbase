@@ -7,6 +7,26 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Security
+
+- **Restoring a backup brought back old credentials.** A password changed
+  after the backup (after a leak, say) went back to the old one, and an
+  admin deleted after it came back with the API tokens they had minted. A
+  restore now brings back data, not credentials: an account whose password
+  or MFA changed since the backup keeps its current password, TOTP,
+  recovery codes and provider links, and an admin deleted since the backup
+  stays deleted with their API tokens revoked. The restore's answer lists
+  both. Restoring another install's backup is unchanged, and a restore
+  never leaves the install without an admin.
+
+### Upgrade notes
+
+- **A restore keeps credentials changed since the backup** (see Security).
+  To undo a password change or an admin deletion, change it back after the
+  restore.
+
 ## [0.38.0] — 2026-11-03
 
 ### Security

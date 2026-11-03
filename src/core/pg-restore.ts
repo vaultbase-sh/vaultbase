@@ -501,8 +501,9 @@ function notOwned(objects: Movable[], schema: string): string | null {
 
 /**
  * Inside the swap: what changed since the backup that a restore must not
- * undo. Revoked tokens stay revoked; a raised password_reset_at ("sign out
- * everywhere", a password reset) isn't lowered again, which would revive
+ * undo. Revoked tokens stay revoked; credentials changed since the backup
+ * and admin deletions are kept (restore-credentials.ts); a raised
+ * password_reset_at ("sign out everywhere", a password reset) isn't lowered again, which would revive
  * every token it ended (API tokens follow their admin). The generation
  * other servers poll never goes back, and grants on the tables carry over.
  */
@@ -521,6 +522,20 @@ async function carryOver(previous: string, live: string): Promise<void> {
        ON CONFLICT (jti) DO NOTHING`,
       [Math.floor(Date.now() / 1000)],
     );
+  }
+
+  // Passwords, MFA and admin deletions since the backup stay
+  // (restore-credentials.ts). Before the stamps are raised below: it
+  // compares the restored ones.
+  {
+    const { applyCredentials, captureCredentials, noteCarry } = await import("./restore-credentials.ts");
+    const side = (schema: string) => ({
+      all: async <T,>(sql: string, params?: unknown[]) => await db.all<T>(sql, params as never),
+      run: async (sql: string, params?: unknown[]) => { await db.run(sql, params as never); },
+      t: (name: string) => rel(schema, name),
+      has: (name: string) => exists(schema, name),
+    });
+    noteCarry(await applyCredentials(side(live), await captureCredentials(side(previous))));
   }
 
   const { userTableName } = await import("./collections.ts");
