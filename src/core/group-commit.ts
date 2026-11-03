@@ -13,7 +13,10 @@
  *     ({@link awaitCommit}). If that COMMIT fails, every write in the group
  *     gets the error — nothing is reported saved that isn't.
  *   - A failing statement only undoes itself (SQLite statement-level
- *     atomicity), so one bad write doesn't spoil the group.
+ *     atomicity), so one bad write doesn't spoil the group. When SQLite
+ *     ends the whole transaction instead (a trigger's `RAISE(ROLLBACK)`),
+ *     every write that joined the group is reported failed and its side
+ *     effects are dropped; the next write opens a new group.
  *   - Side effects queued with `afterCommit` run after the group commits.
  *   - Batches, cascading deletes and schema changes commit the open group
  *     first ({@link flushGroupCommit}) and then run as before.
@@ -33,9 +36,11 @@ import type { SqliteDriver } from "../db/sqlite.ts";
 
 // The group spans event-loop turns, so it opens and commits with plain
 // statements rather than db.transaction(), whose scope is a callback.
-interface Group {
+export interface Group {
   waiters: Array<{ resolve: () => void; reject: (e: unknown) => void }>;
   effects: Array<() => void>;
+  state: "open" | "committed" | "failed";
+  failure?: unknown;
 }
 
 let open: Group | null = null;
@@ -52,16 +57,39 @@ function enabled(): boolean {
   return !process.env["VAULTBASE_WORKER_ID"];
 }
 
+function fail(g: Group, failure: unknown): void {
+  g.state = "failed";
+  g.failure = failure;
+  g.effects = [];
+  discardTableReports();
+  for (const w of g.waiters.splice(0)) w.reject(failure);
+}
+
 /**
- * Make sure a group transaction is open for the write about to run. No-op
- * when group commit is off, or when the connection is already inside some
- * other transaction (a batch's own BEGIN).
+ * The open group's transaction ended without our COMMIT: SQLite rolled the
+ * whole thing back (a trigger's RAISE(ROLLBACK)). Every write that joined
+ * it is lost, and none of them may be reported saved.
  */
-export function joinGroupCommit(): void {
-  if (open || !enabled()) return;
-  if (db.sync.inTransaction) return;
+function noticeRollback(): void {
+  if (!open || db.sync.inTransaction) return;
+  const g = open;
+  open = null;
+  fail(g, new Error("The write was rolled back with others made at the same moment; nothing was saved. Try again."));
+}
+
+/**
+ * Make sure a group transaction is open for the write about to run, and
+ * return it, so the write waits on the commit of the group it actually
+ * wrote in. Null when group commit is off, or when the connection is
+ * already inside some other transaction (a batch's own BEGIN).
+ */
+export function joinGroupCommit(): Group | null {
+  noticeRollback();
+  if (open) return open;
+  if (!enabled()) return null;
+  if (db.sync.inTransaction) return null;
   db.sync.exec("BEGIN IMMEDIATE");
-  open = { waiters: [], effects: [] };
+  open = { waiters: [], effects: [], state: "open" };
   if (!flushScheduled) {
     flushScheduled = true;
     setImmediate(() => {
@@ -69,21 +97,27 @@ export function joinGroupCommit(): void {
       flushGroupCommit();
     });
   }
+  return open;
 }
 
-/** Resolves once everything the caller wrote so far is committed. */
-export function awaitCommit(): Promise<void> {
-  if (!open) return Promise.resolve();
-  return new Promise((resolve, reject) => open!.waiters.push({ resolve, reject }));
+/** Resolves once group `g` is committed; rejects if it failed or was rolled back. */
+export function awaitCommit(g: Group | null): Promise<void> {
+  noticeRollback();
+  if (!g || g.state === "committed") return Promise.resolve();
+  if (g.state === "failed") return Promise.reject(g.failure);
+  return new Promise((resolve, reject) => g.waiters.push({ resolve, reject }));
 }
 
 /**
- * Queue a side effect until the open group commits. Returns false when no
- * group is open, i.e. the caller's writes are already committed.
+ * Queue a side effect until group `g` (by default the open one) commits.
+ * Returns false when there is none, i.e. the caller's writes are already
+ * committed and the effect should run now. An effect of a failed group is
+ * dropped.
  */
-export function deferUntilGroupCommit(effect: () => void): boolean {
-  if (!open) return false;
-  open.effects.push(effect);
+export function deferUntilGroupCommit(effect: () => void, g: Group | null | undefined = open): boolean {
+  noticeRollback();
+  if (!g || g.state === "committed") return false;
+  if (g.state === "open") g.effects.push(effect);
   return true;
 }
 
@@ -104,22 +138,19 @@ export function flushGroupCommit(): void {
     };
     return;
   }
+  if (!db.sync.inTransaction) { noticeRollback(); return; }
   open = null;
-  let failure: unknown = null;
   try {
-    if (db.sync.inTransaction) db.sync.exec("COMMIT");
+    db.sync.exec("COMMIT");
   } catch (e) {
-    failure = e;
     try { if (db.sync.inTransaction) db.sync.exec("ROLLBACK"); } catch { /* closed */ }
-  }
-  if (failure) {
-    discardTableReports();
-    for (const w of g.waiters) w.reject(failure);
+    fail(g, e);
     return;
   }
+  g.state = "committed";
   flushTableReports();
-  for (const w of g.waiters) w.resolve();
-  for (const f of g.effects) {
+  for (const w of g.waiters.splice(0)) w.resolve();
+  for (const f of g.effects.splice(0)) {
     try { f(); } catch { /* side effects never fail committed writes */ }
   }
 }

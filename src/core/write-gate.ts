@@ -22,12 +22,14 @@
  * commits. A batch commits any open group before its own BEGIN.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { awaitCommit, deferUntilGroupCommit, flushGroupCommit, joinGroupCommit } from "./group-commit.ts";
+import { awaitCommit, deferUntilGroupCommit, flushGroupCommit, joinGroupCommit, type Group } from "./group-commit.ts";
 
 interface GateContext {
   exclusive: boolean;
   /** Side effects held until COMMIT (exclusive mode only). */
   deferred: Array<() => void>;
+  /** The write group a shared write joined: its effects and its answer wait on that group's commit. */
+  group?: Group | null;
 }
 
 const als = new AsyncLocalStorage<GateContext>();
@@ -57,18 +59,18 @@ export async function withSharedWrite<T>(fn: () => Promise<T>): Promise<T> {
   while (exclusiveHeld || exclusiveWaiting > 0) await nextWake();
   sharedHolders++;
   try {
-    joinGroupCommit();
+    const group = joinGroupCommit();
     let result: T;
     try {
-      result = await als.run({ exclusive: false, deferred: [] }, fn);
+      result = await als.run({ exclusive: false, deferred: [], group }, fn);
     } catch (e) {
       // A failed write may still have changed rows before throwing (as it
       // would have in autocommit); let those commit before the caller moves on.
-      await awaitCommit().catch(() => { /* the write's own error wins */ });
+      await awaitCommit(group).catch(() => { /* the write's own error wins */ });
       throw e;
     }
     // Don't report the write before the COMMIT that holds it.
-    await awaitCommit();
+    await awaitCommit(group);
     return result;
   } finally {
     sharedHolders--;
@@ -143,5 +145,5 @@ export function gateMode(): "exclusive" | "shared" | null {
 export function afterCommit(effect: () => void): void {
   const ctx = als.getStore();
   if (ctx?.exclusive) ctx.deferred.push(effect);
-  else if (!deferUntilGroupCommit(effect)) effect();
+  else if (!deferUntilGroupCommit(effect, ctx ? ctx.group : undefined)) effect();
 }

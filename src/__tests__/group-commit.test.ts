@@ -54,6 +54,38 @@ describe.skipIf(!onSqlite)("group commit", () => {
       .toEqual(["a", "b", "taken"]);
   });
 
+  test("a trigger that rolls back the whole transaction fails every write in the group", async () => {
+    getRawClient().exec(`CREATE TRIGGER no_boom BEFORE INSERT ON t WHEN NEW.v = 'boom' BEGIN SELECT RAISE(ROLLBACK, 'boom refused'); END`);
+    const effects: string[] = [];
+    const write = (v: string, delayTurns = 0) => withSharedWrite(async () => {
+      for (let i = 0; i < delayTurns; i++) await Promise.resolve();
+      getRawClient().query("INSERT INTO t (v) VALUES (?)").run(v);
+      afterCommit(() => effects.push(v));
+    });
+    // The victim writes first; the trigger then rolls back the shared transaction.
+    const results = await Promise.allSettled([write("victim"), write("boom", 5)]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(String((results[0] as PromiseRejectedResult).reason)).toMatch(/rolled back/);
+    expect(committedCount()).toBe(0);
+    expect(effects).toEqual([]);
+    expect(groupCommitOpen()).toBe(false);
+    // The next write opens a new group and commits.
+    await write("after");
+    expect(committedCount()).toBe(1);
+    expect(effects).toEqual(["after"]);
+  });
+
+  test("a write in the same turn after the rollback starts a new group and is saved", async () => {
+    getRawClient().exec(`CREATE TRIGGER no_boom BEFORE INSERT ON t WHEN NEW.v = 'boom' BEGIN SELECT RAISE(ROLLBACK, 'boom refused'); END`);
+    const first = withSharedWrite(async () => { getRawClient().query("INSERT INTO t (v) VALUES ('victim')").run(); });
+    const boom = withSharedWrite(async () => { getRawClient().query("INSERT INTO t (v) VALUES ('boom')").run(); });
+    await Promise.allSettled([boom]);
+    const later = withSharedWrite(async () => { getRawClient().query("INSERT INTO t (v) VALUES ('later')").run(); });
+    const results = await Promise.allSettled([first, later]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "fulfilled"]);
+    expect(outside((d) => d.query("SELECT v FROM t").all().map((r) => (r as { v: string }).v))).toEqual(["later"]);
+  });
+
   test("if the COMMIT fails, every write in the group fails and nothing is kept", async () => {
     const c = getRawClient();
     // A deferred foreign key is only checked at COMMIT.

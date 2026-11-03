@@ -20,6 +20,11 @@ Binaries, checksums, signatures and SBOMs for every version are on
   stays deleted with their API tokens revoked. The restore's answer lists
   both. Restoring another install's backup is unchanged, and a restore
   never leaves the install without an admin.
+- **A write could be reported saved when SQLite had rolled it back.** On
+  SQLite, writes made at the same moment share one transaction. When a
+  trigger ended that whole transaction (`RAISE(ROLLBACK)`), the other writes
+  in it answered 200 and ran their webhooks and realtime events, though
+  nothing was stored. They now fail, and their side effects don't run.
 
 ### Upgrade notes
 
