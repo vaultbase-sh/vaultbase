@@ -144,19 +144,46 @@ async function swapAndCarryOver(dbPath: string, staging: string): Promise<string
     // principal's password_reset_at; the restored rows would lower it again
     // and revive every token those ended (API tokens follow their admin).
     const resets = currentResetStamps();
-    // Passwords, MFA and admin deletions since the backup stay too
+    // Credentials and admin deletions since the backup stay too
     // (core/restore-credentials.ts).
     const creds = await captureCredentials(sqliteCarryDb());
     const err = await swapInDb(dbPath, staging);
     if (err) return err;
-    // Before the stamps are raised back: it compares the restored ones.
-    noteCarry(await applyCredentials(sqliteCarryDb(), creds));
-    const keep = getRawClient().prepare(
-      `INSERT OR IGNORE INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?)`,
-    );
-    for (const r of revoked) keep.run(r.jti, r.expires_at, r.revoked_at);
-    reapplyResetStamps(resets);
-    resetDatabaseCaches();
+    // The swap is done and can't be taken back: from here each step runs on
+    // its own, the revocations and reset stamps first, so that a failure in
+    // one (a conflict the carry-over didn't foresee) can't skip the others
+    // and bring back sessions that had been ended.
+    const failed: string[] = [];
+    try {
+      try {
+        const keep = getRawClient().prepare(
+          `INSERT OR IGNORE INTO vaultbase_token_revocations (jti, expires_at, revoked_at) VALUES (?, ?, ?)`,
+        );
+        for (const r of revoked) keep.run(r.jti, r.expires_at, r.revoked_at);
+      } catch (e) {
+        failed.push("token revocations");
+        process.stderr.write(`[restore] revocations not carried over: ${e instanceof Error ? e.message : e}\n`);
+      }
+      try {
+        reapplyResetStamps(resets);
+      } catch (e) {
+        failed.push("sign-outs and password resets");
+        process.stderr.write(`[restore] reset stamps not carried over: ${e instanceof Error ? e.message : e}\n`);
+      }
+      // One transaction, each step a savepoint within it.
+      const carry = sqliteCarryDb();
+      try {
+        const summary = await carry.savepoint!(() => applyCredentials(carry, creds));
+        summary.failed.unshift(...failed);
+        noteCarry(summary);
+      } catch (e) {
+        failed.push("credentials changed since the backup");
+        process.stderr.write(`[restore] credentials not carried over: ${e instanceof Error ? e.message : e}\n`);
+        noteCarry({ kept: 0, removedAdmins: [], failed });
+      }
+    } finally {
+      resetDatabaseCaches();
+    }
     return null;
   }
 }
@@ -263,6 +290,11 @@ function sqliteCarryDb(): CarryDb {
     run: async (sql: string, params: unknown[] = []) => { raw.prepare(sql).run(...(params as never[])); },
     t: (name: string) => `"${name}"`,
     has: async (name: string) => !!raw.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name),
+    // Through the driver, not raw SAVEPOINT: its transaction owns the
+    // connection, so a sign-in, sign-out or revocation from another request
+    // waits instead of landing inside a step a rollback would undo. Nested
+    // in the same context it becomes a savepoint.
+    savepoint: <T,>(fn: () => Promise<T>) => db.transaction(fn),
   };
 }
 

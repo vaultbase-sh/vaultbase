@@ -13,6 +13,7 @@
  */
 import { rewriteSqlParams } from "./sql-scan.ts";
 import { db } from "../db/index.ts";
+import type { RequestContextLike } from "./filter.ts";
 
 export type ViewParamType = "text" | "number" | "bool" | "date";
 export const VIEW_PARAM_TYPES: readonly ViewParamType[] = ["text", "number", "bool", "date"];
@@ -160,14 +161,45 @@ export function validateViewParams(query: string, input: unknown): ViewParam[] {
   return out;
 }
 
+/** The value the database view is built with for `p`: its default, or NULL for a `from` or required one. */
+function databaseViewValue(p: ViewParam): string | number | null {
+  return p.from || p.required ? null : p.default ?? null;
+}
+
 /** The query with each parameter's default written in, for the database view and field inference. */
 export function viewQueryWithDefaults(query: string, params: ViewParam[]): string {
   if (params.length === 0) return query;
   const byName = new Map(params.map((p) => [p.name, p]));
   return rewriteSqlParams(query, (name) => {
     const p = byName.get(name);
-    return p ? literal(p.type, p.from || p.required ? null : p.default) : "NULL";
+    return p ? literal(p.type, databaseViewValue(p)) : "NULL";
   }, { pg: db.name === "postgres", bound: false }).sql;
+}
+
+/**
+ * Each parameter's value in the database view (viewQueryWithDefaults): what
+ * `@collection.<view>` joins, relations and expand into the view read. Null
+ * when the view has no parameters.
+ */
+export function databaseViewParamValues(params: ViewParam[]): Map<string, string | number | null> | null {
+  if (params.length === 0) return null;
+  return new Map(params.map((p) => [p.name, databaseViewValue(p)]));
+}
+
+/**
+ * The request as rules see it, with `@request.query.params.<name>` set to
+ * `values` (NULL ones left unset) and every other `params.*` key removed, so
+ * a rule never checks a value other than the one the rows were read with.
+ */
+export function requestWithViewParams(
+  request: RequestContextLike | null | undefined,
+  values: ReadonlyMap<string, string | number | null> | null,
+): RequestContextLike | null | undefined {
+  if (!values) return request;
+  const query: Record<string, string> = {};
+  for (const [k, v] of Object.entries(request?.query ?? {})) if (!k.startsWith("params.")) query[k] = v;
+  for (const [name, v] of values) if (v !== null) query[`params.${name}`] = String(v);
+  return { ...(request ?? {}), query };
 }
 
 /** `params[name]=value` pairs of a URL's query string (the last wins), or null when there are none. */

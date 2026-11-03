@@ -11,7 +11,7 @@ import type { Collection } from "../db/schema.ts";
 import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
 import { MAX_BATCH_OPS } from "./ratelimit.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
-import { parseViewParams } from "../core/view-params.ts";
+import { parseViewParams, viewParamsFromUrl } from "../core/view-params.ts";
 
 interface BatchRequest {
   method: string;
@@ -123,7 +123,6 @@ async function dispatchOp(
   if (col.type === "view" && parseViewParams(col.view_params).length > 0) {
     return { status: 400, body: { error: `'${col.name}' takes parameters: read it with GET /api/v1/${col.name}, not in a batch`, code: 400 } };
   }
-
   switch (op.kind) {
     case "create": {
       const ruleBody = bodyForRules(col, body);
@@ -258,6 +257,12 @@ export function makeBatchPlugin(jwtSecret: string) {
       }
       if (requests.length > MAX_BATCH) {
         set.status = 422; return { error: `Max ${MAX_BATCH} requests per batch`, code: 422 };
+      }
+      // Every op's rules see the batch URL's query, and no op reads a view
+      // with parameters: `params[...]` there would only reach rules (a joined
+      // view's, an expanded one's) as values no row was read with.
+      if (viewParamsFromUrl(new URL(request.url).searchParams)) {
+        set.status = 400; return { error: "A batch request takes no params[...]; read a view with parameters with GET /api/v1/<view>", code: 400 };
       }
 
       // Pre-parse to fail fast on invalid URLs/methods

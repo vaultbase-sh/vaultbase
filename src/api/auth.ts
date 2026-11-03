@@ -13,7 +13,7 @@ import { emit } from "../core/events.ts";
 import "../core/event-listeners.ts";
 import type { Collection } from "../db/schema.ts";
 import { canSeeAs, encodeUserFields, getRecord } from "../core/records.ts";
-import { validateRecord, ValidationError } from "../core/validate.ts";
+import { bodyForRules, validateRecord, ValidationError } from "../core/validate.ts";
 import { sessionMaxSeconds, tokenWindowSeconds } from "../core/auth-tokens.ts";
 import {
   dummyPasswordHash,
@@ -201,6 +201,21 @@ async function voidAccountTokens(collectionId: string, userId: string, now: numb
   ));
 }
 
+/**
+ * Stamp `password_reset_at` again once a reset has voided the account's links
+ * (and, where it does, removed its provider logins). A magic-link or provider
+ * sign-in reads the stamp before it checks that credential, so one that got
+ * in before the credential went read an older stamp than this one and its
+ * session is ended by it, without comparing clocks. The first stamp stays
+ * before the links go: merge-confirm relies on that order. Returns the
+ * stamp to wait past.
+ */
+async function restampAfterReset(col: Collection, userId: string, first: number): Promise<number> {
+  const at = Math.max(Date.now(), first + 1);
+  await updateUserById(col, userId, { password_reset_at: at });
+  return at;
+}
+
 function isRedirectUriAllowed(provider: string, uri: string): boolean {
   let target: URL;
   try { target = new URL(uri); } catch { return false; }
@@ -338,13 +353,16 @@ async function generateRecoveryCodesFor(
 async function signupAllowed(
   request: Request,
   jwtSecret: string,
-  col: { name: string; create_rule: string | null },
+  col: { name: string; fields: string; create_rule: string | null },
   fields: Record<string, unknown>,
 ): Promise<boolean> {
   if (col.create_rule === null) return true;
   const token = (headerBearer(request) ?? undefined);
   const auth = token ? dataPrincipal(await verifyAuthToken(token, jwtSecret), accessFor(request)) : null;
-  const { password: _pw, ...ruleBody } = fields;
+  const { password: _pw, ...raw } = fields;
+  // In stored form, as the records API checks it: an ISO date or `#0F0`
+  // compared as sent got past rules on the stored value.
+  const ruleBody = bodyForRules(col, raw);
   return checkRule(
     request, "create_rule", col.name, col.create_rule, auth,
     ruleBody, buildRequestContext(request, ruleBody, null),
@@ -769,14 +787,26 @@ async function providerSignIn(
   // provider vouches for who the user is at the provider, not for this
   // account's MFA.
   const signedIn = await findUserById(col, userId);
-  if (signedIn?.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId, { checkedAt }) } };
-  const tokenEmail = signedIn?.email ?? accountEmail;
+  if (!signedIn) return { status: 401, body: { error: "Unauthorized", code: 401 } };
+  // The stamp is read before the link is checked again: a reset removes
+  // links and only then stamps a second time (restampAfterReset), so a link
+  // still found here means that stamp comes after this read and ends the
+  // session.
+  const seen = signedIn.password_reset_at ?? 0;
+  if (linked[0]) {
+    const still = await db.select({ id: oauthLinks.id }).from(oauthLinks)
+      .where(and(eq(oauthLinks.id, linked[0].id), eq(oauthLinks.user_id, userId))).limit(1);
+    if (still.length === 0) return { status: 401, body: { error: "Unauthorized", code: 401 } };
+  }
+  if (signedIn.totp_enabled === 1) return { body: { data: await mfaTicketFor(col.id, userId, { checkedAt, resetSeen: seen }) } };
+  const tokenEmail = signedIn.email;
   const { token } = await signAuthToken({
     payload: { id: userId, email: tokenEmail, collection: col.name },
     audience: "user",
     expiresInSeconds: tokenWindowSeconds("user"),
     jwtSecret,
     issuedAtMs: checkedAt,
+    resetSeen: seen,
   });
   return { body: { data: { token, record: { id: userId, email: tokenEmail } } } };
 }
@@ -1445,7 +1475,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // otherwise keep signing them in.
         await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, tok.user_id), eq(oauthLinks.collection_id, col.id)));
         await disableUserDevices(col.name, tok.user_id);
-        await waitPastReset(resetAt);
+        await waitPastReset(await restampAfterReset(col, tok.user_id, resetAt));
         return { data: { reset: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1543,7 +1573,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: resetAt, updated_at: now });
         await voidAccountTokens(col.id, u.id, now);
         await disableUserDevices(col.name, u.id);
-        await waitPastReset(resetAt);
+        await waitPastReset(await restampAfterReset(col, u.id, resetAt));
         return { data: { changed: true, email: tok.payload } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1699,7 +1729,10 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 422; return { error: "Provide token or code", code: 422 };
         }
         const db = getDb();
-        const now = Math.floor(Date.now() / 1000);
+        // Dated before the link is looked up, as /login dates a sign-in by
+        // its password check.
+        const checkedAt = Date.now();
+        const now = Math.floor(checkedAt / 1000);
         let tok;
         if (body.token) {
           const rows = await findOneTimeToken(body.token);
@@ -1748,6 +1781,10 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
+        // The stamp as read before the link is spent. A reset voids links and
+        // then stamps again (restampAfterReset), so if the spend below wins,
+        // that stamp lands after this read and ends the session.
+        let seen = u.password_reset_at ?? 0;
 
         if (!(await consumeToken(tok.id, now))) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
@@ -1769,27 +1806,23 @@ export function makeAuthPlugin(jwtSecret: string) {
           await voidAccountTokens(col.id, u.id, now);
           await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, u.id), eq(oauthLinks.collection_id, col.id)));
           await disableUserDevices(col.name, u.id);
-          await waitPastReset(resetAt);
+          // This session comes from the claim: bound to the stamp it wrote last.
+          seen = await restampAfterReset(col, u.id, resetAt);
+          await waitPastReset(seen);
           claimed = true;
         }
         // OTP MFA gate would defeat the purpose of magic-link sign-in (no password).
         // We still respect TOTP if the user enabled it: issue an mfa ticket instead.
         if (!claimed && u.totp_enabled === 1) {
-          const ticket = newToken();
-          await db.insert(authTokens).values({
-            id: storedTokenId(ticket),
-            user_id: u.id,
-            collection_id: col.id,
-            purpose: "mfa_ticket",
-            expires_at: now + MFA_TICKET_TTL_SECONDS,
-          });
-          return { data: { mfa_required: true, mfa_token: ticket } };
+          return { data: await mfaTicketFor(col.id, u.id, { checkedAt, resetSeen: seen }) };
         }
         const { token: jwt } = await signAuthToken({
           payload: { id: u.id, email: u.email, collection: col.name },
           audience: "user",
           expiresInSeconds: tokenWindowSeconds("user"),
           jwtSecret,
+          issuedAtMs: checkedAt,
+          resetSeen: seen,
         });
         return { data: { token: jwt, record: { id: u.id, email: u.email } } };
       },
@@ -2069,8 +2102,17 @@ export function makeAuthPlugin(jwtSecret: string) {
     // `impersonated_by` so audit logs can attribute actions to the admin.
     // The guard uses the central verifier, so a revoked or force-logged-out
     // admin token can't mint user sessions.
-    .post("/admin/impersonate/:collection/:userId", async ({ params, admin, set }) => {
+    .post("/admin/impersonate/:collection/:userId", async ({ params, admin, request, set }) => {
       const adminId = admin.id;
+      // The admin's stamp as their session's check read it (the guard's
+      // principal doesn't carry it, so the same token is read again; one
+      // with `rs` verifies only while the stamp still equals it). Carried as
+      // `ars`: a reset or sign-out-all of this admin ends the session it mints.
+      const raw = headerBearer(request);
+      const adminSession = raw ? await verifyAuthToken(raw, jwtSecret, { audience: "admin" }) : null;
+      if (!adminSession || adminSession.id !== adminId || adminSession.resetSeen === undefined) {
+        set.status = 401; return { error: "Unauthorized", code: 401 };
+      }
       if (!isAuthFeatureEnabled("impersonation")) { set.status = 422; return { error: "Impersonation is disabled", code: 422 }; }
       const col = await getCollection(params.collection);
       if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
@@ -2078,7 +2120,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       const u = await findUserById(col, params.userId);
       if (!u) { set.status = 404; return { error: "User not found", code: 404 }; }
       const { token: jwt } = await signAuthToken({
-        payload: { id: u.id, email: u.email, collection: col.name, impersonated_by: adminId },
+        payload: { id: u.id, email: u.email, collection: col.name, impersonated_by: adminId, ars: adminSession.resetSeen },
         audience: "user",
         expiresInSeconds: tokenWindowSeconds("impersonate"),
         jwtSecret,

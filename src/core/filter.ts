@@ -11,6 +11,7 @@ function dialect(): Dialect {
 import { macroValue, requestMapHas, requestMapValue, stableEq, viaCompareError } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import { quoteIdent } from "../db/ident.ts";
+import { requestWithViewParams } from "./view-params.ts";
 
 /** Parameterized SQL fragment + bound values. */
 export interface CompiledSql {
@@ -60,6 +61,16 @@ export interface CollectionLookup {
     listRule?: string | null;
     /** The collection's create rule; with list and view, whether it is hidden. */
     createRule?: string | null;
+    /** The collection's update rule: with view, whether a singleton is hidden. */
+    updateRule?: string | null;
+    /** The collection's type, which decides the rules that apply to it (hiddenByApplicableRules). */
+    type?: string;
+    /**
+     * For a view with parameters: the values its database view is built
+     * with (defaults; NULL for `from` and required ones). Joins read those
+     * rows, so its rules must see these values, not the request's.
+     */
+    viewParamValues?: ReadonlyMap<string, string | number | null> | null;
     hasField: (name: string) => boolean;
     /**
      * Columns that must never be referenced from a filter — password hashes,
@@ -129,6 +140,29 @@ export interface ParseFilterOpts {
    * codes, a users list restricted to self) could otherwise be enumerated.
    */
   clientFilter?: boolean;
+}
+
+/**
+ * Whether a collection is hidden from non-admins: every rule that grants
+ * access for its type is admin-only. A singleton is read under view and
+ * written under update; a view is listed and viewed; base and auth also
+ * show themselves through create. Rules that don't apply to the type are
+ * ignored: a stored null list rule on a singleton grants nothing, and
+ * counting it answered 403 instead of 404. An omitted (undefined) create or
+ * update rule is not judged.
+ */
+export function hiddenByApplicableRules(c: {
+  type?: string | null | undefined;
+  listRule?: string | null | undefined;
+  viewRule?: string | null | undefined;
+  createRule?: string | null | undefined;
+  updateRule?: string | null | undefined;
+}): boolean {
+  const blank = (r: string | null | undefined) => typeof r === "string" && r.trim() === "";
+  const judged = (r: string | null | undefined) => r === undefined || blank(r);
+  if (c.type === "singleton") return blank(c.viewRule) && judged(c.updateRule);
+  if (c.type === "view") return blank(c.listRule) && blank(c.viewRule);
+  return blank(c.listRule) && blank(c.viewRule) && judged(c.createRule);
 }
 
 /** Default cap on `@collection.*` joins per expression (see ParseFilterOpts.maxJoins). */
@@ -257,8 +291,30 @@ function compileScoped(ast: Expr, ctx: CompileCtx): string {
   }
   for (const j of scope.joins) ctx.params.push(...j.onParams);
   ctx.params.push(...exprParams);
-  const joins = scope.joins.map((j) => `LEFT JOIN ${quoteIdent(j.table)} AS ${j.alias} ON ${j.on}`).join(" ");
+  const always = dialect().always;
+  // A restricted collection is joined as its visible rows only, behind an
+  // optimization fence. With the guard in ON, SQLite turned the LEFT JOIN
+  // into an inner one (the WHERE rejects its empty row), moved the guard
+  // into the WHERE and tested the caller's comparison first: a JSON path
+  // over a hidden row's plain text failed (400) where a miss answered 200,
+  // confirming hidden values one guess at a time. A CASE gate doesn't hold
+  // either: constant propagation folds the guard inside it.
+  const joins = scope.joins.map((j) => j.on === always
+    ? `LEFT JOIN ${quoteIdent(j.table)} AS ${j.alias} ON ${always}`
+    : `LEFT JOIN ${fencedRows(quoteIdent(j.table), j.alias, j.on)} AS ${j.alias} ON ${always}`).join(" ");
   return `EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one ${joins} WHERE ${sql})`;
+}
+
+/**
+ * `(SELECT * FROM table [AS alias] WHERE where …)` that the planner neither
+ * flattens into the outer query nor pushes outer conditions into, so
+ * `where` is applied before anything else sees a row: a LIMIT on SQLite
+ * (a subquery with one isn't flattened into a join or pushed down into),
+ * OFFSET 0 on Postgres (the same for subquery pull-up and qual push-down).
+ */
+function fencedRows(table: string, alias: string | null, where: string): string {
+  const fence = dialect().name === "sqlite" ? "LIMIT -1" : "OFFSET 0";
+  return `(SELECT * FROM ${table}${alias ? ` AS ${alias}` : ""} WHERE ${where} ${fence})`;
 }
 
 const MAX_JOIN_DEPTH = 4;
@@ -806,6 +862,11 @@ function joinedCollectionGuard(
       hostFilterable: (n) => meta.isFilterable(n),
       clientFilter: false,
       params,
+      // A join reads the database view, built with the parameters'
+      // defaults: its rules see those, not `params[...]` from the outer
+      // request (a batch URL passed its own, and the rule held for rows
+      // read with other values).
+      ...(meta.viewParamValues ? { request: requestWithViewParams(ctx.request, meta.viewParamValues) ?? null } : {}),
     });
     parts.push(compileScoped(innerAst, innerCtx));
     ctx.joinDepth = innerCtx.joinDepth;
@@ -827,10 +888,8 @@ function joinedCollectionGuard(
 function refTarget(collection: string, ctx: CompileCtx, via: boolean): ReturnType<CollectionLookup> {
   const meta = ctx.lookup?.(collection) ?? null;
   if (!ctx.clientFilter || !ctx.lookup) return meta;
-  const adminOnly = (r: string | null | undefined) => typeof r === "string" && r.trim() === "";
-  // A lookup that doesn't report the create rule is judged on the other two.
-  const hidden = meta && adminOnly(meta.viewRule) && adminOnly(meta.listRule)
-    && (meta.createRule === undefined || adminOnly(meta.createRule));
+  // By the rules that apply to its type, as the records API judges it.
+  const hidden = meta && hiddenByApplicableRules(meta);
   if (!meta || hidden) {
     throw new Error(via ? `unknown collection in _via_: ${collection}` : `unknown collection in @collection.*: ${collection}`);
   }
@@ -934,8 +993,15 @@ function compileCollectionRef(
     const where = buildWhere();
 
     if (exists) {
-      const cond = where ? `${where.slice(" WHERE ".length)} AND ` : "";
-      const match = `EXISTS (SELECT 1 FROM ${quoteIdent(targetTable)} WHERE ${cond}${exists(applyModifierToSql(inner, op.modifier))})`;
+      // `guard AND cmp` leaves the order to the database, which may test
+      // the comparison on rows the guard hides: read the visible rows
+      // behind a fence (compileScoped) instead.
+      const guard = where ? where.slice(" WHERE ".length) : "";
+      const t = quoteIdent(targetTable);
+      const cmp = exists(applyModifierToSql(inner, op.modifier));
+      const match = guard
+        ? `EXISTS (SELECT 1 FROM ${fencedRows(t, null, guard)} AS ${t} WHERE ${cmp})`
+        : `EXISTS (SELECT 1 FROM ${t} WHERE ${cmp})`;
       return negate ? `NOT ${match}` : match;
     }
     return applyModifierToSql(
@@ -998,8 +1064,11 @@ function compileViaMatch(via: ViaOperand, other: Operand, op: string, viaOnLeft:
   }
   const { table, where } = source;
   if (any) {
+    // The comparison only sees rows the target's rules admit (fencedRows):
+    // `where AND cmp` let it run on hidden ones, and a value that fails it
+    // answered differently for them.
     outer.push(...whereParams, ...cmpParams);
-    return `EXISTS (SELECT 1 FROM ${table} WHERE ${where} AND ${cmp})`;
+    return `EXISTS (SELECT 1 FROM ${fencedRows(table, null, where)} AS ${table} WHERE ${cmp})`;
   }
   outer.push(...cmpParams, ...whereParams);
   return `(SELECT COUNT(*) > 0 AND COUNT(*) = COUNT(CASE WHEN ${cmp} THEN 1 END) FROM ${table} WHERE ${where})`;
@@ -1103,6 +1172,9 @@ function compileFunc(op: Extract<Operand, { kind: "func" }>, ctx: CompileCtx): s
   throw new Error(`unknown function: ${op.name}`);
 }
 
+/** Words Postgres reads as the clock in a timestamp input, anywhere in it and in any case. */
+const PG_CLOCK_WORD_RE = /now|today|tomorrow|yesterday/i;
+
 /** SQLite strftime codes and their Postgres to_char patterns: the subset filters may use elsewhere. */
 const PG_STRFTIME: Readonly<Record<string, string>> = {
   Y: "YYYY", m: "MM", d: "DD", H: "HH24", M: "MI", S: "SS", j: "DDD", "%": "%",
@@ -1150,7 +1222,14 @@ function compilePgStrftime(args: Operand[], ctx: CompileCtx): string {
     const t = compileOperand(timeArg, ctx);
     time = `to_timestamp(${readsJson(timeArg, ctx) ? jsonNumber(t) : `CAST(${t} AS DOUBLE PRECISION)`})`;
   }
-  else if (timeArg.kind === "literal" && typeof timeArg.value === "string") time = `CAST(${compileOperand(timeArg, ctx)} AS TIMESTAMPTZ)`;
+  else if (timeArg.kind === "literal" && typeof timeArg.value === "string") {
+    time = `CAST(${compileOperand(timeArg, ctx)} AS TIMESTAMPTZ)`;
+    // Postgres also resolves the clock words inside longer inputs ('today
+    // 12:00', 'TODAY+01', 'today UTC'). Any literal naming one reads the
+    // clock: adding a zero interval from now() keeps the value and shows
+    // that in the SQL, so list totals aren't cached (records.ts).
+    if (PG_CLOCK_WORD_RE.test(timeArg.value)) time = `(${time} + (now() - now()))`;
+  }
   else throw new Error("strftime() needs the 'unixepoch' modifier for a stored date on this database");
   ctx.params.push(pattern);
   return `to_char(${time} AT TIME ZONE 'UTC', ?)`;

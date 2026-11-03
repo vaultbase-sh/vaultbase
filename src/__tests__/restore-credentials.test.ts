@@ -5,7 +5,7 @@
  * API tokens they had minted.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { onSqlite, seedAuthUser } from "./_helpers.ts";
+import { onSqlite, seedAuthUser, signUserJwt } from "./_helpers.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -13,7 +13,8 @@ import { initDb, closeDb, getDb, getRawClient } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { admin } from "../db/schema.ts";
-import { signAuthToken, verifyAuthToken } from "../core/sec.ts";
+import { decodeJwt } from "jose";
+import { revokeToken, signAuthToken, verifyAuthToken } from "../core/sec.ts";
 import { makeBackupPlugin } from "../api/backup.ts";
 import { listBackups, runBackup, setBackupsDir } from "../core/backups.ts";
 import { getCollection } from "../core/collections.ts";
@@ -41,8 +42,11 @@ afterEach(async () => {
 });
 
 async function restoreLatest(): Promise<{ status: number; message: string }> {
+  return restoreNamed((await listBackups())[0]!.name);
+}
+
+async function restoreNamed(name: string): Promise<{ status: number; message: string }> {
   const { token } = await signAuthToken({ payload: { id: "a1", email: "ops@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
-  const name = (await listBackups())[0]!.name;
   const res = await makeBackupPlugin(SECRET, dbPath).handle(new Request(`http://localhost/admin/backups/${name}/restore`, {
     method: "POST", headers: { authorization: `Bearer ${token}` },
   }));
@@ -66,7 +70,7 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
 
     const r = await restoreLatest();
     expect(r.status).toBe(200);
-    expect(r.message).toContain("1 account kept the password and MFA set since the backup");
+    expect(r.message).toContain("1 account kept the password, email, MFA and provider links set since the backup");
     const u = (await findUserById((await getCollection("users"))!, uid))!;
     expect(u.password_hash).toBe("fresh");
     expect(u.totp_enabled).toBe(1);
@@ -78,11 +82,13 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
   it("restores an account whose credentials didn't change", async () => {
     const uid = await seedAuthUser({ collection: "users", email: "same@test.local", passwordHash: "kept" });
     await runBackup();
-    raw().prepare(`UPDATE vb_users SET email = 'changed@test.local' WHERE id = ?`).run(uid);
+    const before = (await findUserById((await getCollection("users"))!, uid))!.updated_at;
+    raw().prepare(`UPDATE vb_users SET updated_at = 1 WHERE id = ?`).run(uid);
     const r = await restoreLatest();
     expect(r.status).toBe(200);
     expect(r.message).not.toContain("kept the password");
     const u = (await findUserById((await getCollection("users"))!, uid))!;
+    expect(u.updated_at).toBe(before);
     expect(u.email).toBe("same@test.local");
     expect(u.password_hash).toBe("kept");
   });
@@ -131,5 +137,152 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
     }));
     expect(res.status).toBe(200);
     expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'a1'`).get()).not.toBeNull();
+  });
+
+  it("a provider identity moved between accounts doesn't fail the restore, and revocations and resets stay", async () => {
+    const x = await seedAuthUser({ collection: "users", email: "x@test.local" });
+    const y = await seedAuthUser({ collection: "users", email: "y@test.local" });
+    const z = await seedAuthUser({ collection: "users", email: "z@test.local" });
+    const col = (await getCollection("users"))!;
+    const link = raw().prepare(`INSERT INTO vaultbase_oauth_links (id, user_id, collection_id, provider, provider_user_id, created_at) VALUES (?, ?, ?, ?, ?, 1)`);
+    link.run("l-y", y, col.id, "github", "P1");
+    await runBackup();
+
+    // Tokens ended since the backup: z by a reset, y by a revocation.
+    const zToken = await signUserJwt(z, "z@test.local", "users", SECRET);
+    const yToken = await signUserJwt(y, "y@test.local", "users", SECRET);
+    await Bun.sleep(5);
+    await updateUserById(col, z, { password_reset_at: Date.now() });
+    const yClaims = decodeJwt(yToken);
+    await revokeToken(String(yClaims.jti), Number(yClaims.exp));
+    expect(await verifyAuthToken(zToken, SECRET)).toBeNull();
+    expect(await verifyAuthToken(yToken, SECRET)).toBeNull();
+    // The identity moves from y to x; x resets its password too.
+    raw().prepare(`DELETE FROM vaultbase_oauth_links WHERE id = 'l-y'`).run();
+    link.run("l-x", x, col.id, "github", "P1");
+    await updateUserById(col, x, { password_hash: "x-new", password_reset_at: Date.now() });
+
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).not.toContain("Not carried over");
+    const links = raw().prepare(`SELECT id, user_id FROM vaultbase_oauth_links ORDER BY id`).all();
+    expect(links).toEqual([{ id: "l-x", user_id: x }]);
+    expect(await verifyAuthToken(zToken, SECRET)).toBeNull();
+    expect(await verifyAuthToken(yToken, SECRET)).toBeNull();
+    expect((await findUserById((await getCollection("users"))!, x))!.password_hash).toBe("x-new");
+  });
+
+  it("keeps MFA changes, unlinks and spent recovery codes that didn't raise the reset stamp", async () => {
+    const uid = await seedAuthUser({ collection: "users", email: "m@test.local", passwordHash: "same" });
+    const col = (await getCollection("users"))!;
+    await updateUserById(col, uid, { totp_enabled: 1, totp_secret: "OLDLEAKED" });
+    const link = raw().prepare(`INSERT INTO vaultbase_oauth_links (id, user_id, collection_id, provider, provider_user_id, created_at) VALUES (?, ?, ?, ?, ?, 1)`);
+    link.run("l-gh", uid, col.id, "github", "gh-attacker");
+    link.run("l-go", uid, col.id, "google", "go-own");
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_codes (id, user_id, collection_id, code_hash, created_at) VALUES ('rc1', ?, ?, 'h1', 1)`).run(uid, col.id);
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_lookup (hmac, recovery_id) VALUES ('hm1', 'rc1')`).run();
+    await runBackup();
+
+    await updateUserById(col, uid, { totp_secret: "FRESH" });
+    raw().prepare(`DELETE FROM vaultbase_oauth_links WHERE id = 'l-gh'`).run();
+    raw().prepare(`UPDATE vaultbase_mfa_recovery_codes SET used_at = 9 WHERE id = 'rc1'`).run();
+
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).toContain("1 account kept");
+    const u = (await findUserById((await getCollection("users"))!, uid))!;
+    expect(u.totp_secret).toBe("FRESH");
+    expect(u.password_hash).toBe("same");
+    expect(raw().prepare(`SELECT id FROM vaultbase_oauth_links WHERE user_id = ?`).all(uid)).toEqual([{ id: "l-go" }]);
+    expect(raw().prepare(`SELECT used_at FROM vaultbase_mfa_recovery_codes WHERE id = 'rc1'`).get()).toEqual({ used_at: 9 });
+  });
+
+  it("keeps an email changed since the backup, swapped between accounts too", async () => {
+    const a = await seedAuthUser({ collection: "users", email: "a@test.local", emailVerified: true });
+    const b = await seedAuthUser({ collection: "users", email: "b@test.local" });
+    await runBackup();
+    // a moves to a new mailbox, b takes a's old one and verifies it.
+    raw().prepare(`UPDATE vb_users SET email = 'a-new@test.local', email_verified = 0 WHERE id = ?`).run(a);
+    raw().prepare(`UPDATE vb_users SET email = 'a@test.local', email_verified = 1 WHERE id = ?`).run(b);
+
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).toContain("2 accounts kept");
+    const col = (await getCollection("users"))!;
+    expect((await findUserById(col, a))!).toMatchObject({ email: "a-new@test.local", email_verified: 0 });
+    expect((await findUserById(col, b))!).toMatchObject({ email: "a@test.local", email_verified: 1 });
+  });
+
+  it("an email held by an account the restore brings back stays with it", async () => {
+    const a = await seedAuthUser({ collection: "users", email: "a@test.local" });
+    const gone = await seedAuthUser({ collection: "users", email: "taken@test.local" });
+    await runBackup();
+    raw().prepare(`DELETE FROM vb_users WHERE id = ?`).run(gone);
+    raw().prepare(`UPDATE vb_users SET email = 'taken@test.local' WHERE id = ?`).run(a);
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).toContain("Not carried over");
+    const col = (await getCollection("users"))!;
+    expect((await findUserById(col, a))!.email).toBe("a@test.local");
+    expect((await findUserById(col, gone))!.email).toBe("taken@test.local");
+  });
+
+  it("carried recovery codes keep their lookup rows", async () => {
+    const uid = await seedAuthUser({ collection: "users", email: "rc@test.local" });
+    const col = (await getCollection("users"))!;
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_codes (id, user_id, collection_id, code_hash, created_at) VALUES ('rc-old', ?, ?, 'h-old', 1)`).run(uid, col.id);
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_lookup (hmac, recovery_id) VALUES ('hm-old', 'rc-old')`).run();
+    await runBackup();
+    // Regenerated since the backup.
+    raw().prepare(`DELETE FROM vaultbase_mfa_recovery_lookup`).run();
+    raw().prepare(`DELETE FROM vaultbase_mfa_recovery_codes`).run();
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_codes (id, user_id, collection_id, code_hash, created_at) VALUES ('rc-new', ?, ?, 'h-new', 2)`).run(uid, col.id);
+    raw().prepare(`INSERT INTO vaultbase_mfa_recovery_lookup (hmac, recovery_id) VALUES ('hm-new', 'rc-new')`).run();
+
+    expect((await restoreLatest()).status).toBe(200);
+    expect(raw().prepare(`SELECT id FROM vaultbase_mfa_recovery_codes`).all()).toEqual([{ id: "rc-new" }]);
+    expect(raw().prepare(`SELECT hmac, recovery_id FROM vaultbase_mfa_recovery_lookup`).all()).toEqual([{ hmac: "hm-new", recovery_id: "rc-new" }]);
+  });
+
+  it("restoring a newer backup after an older one keeps the admins created between them", async () => {
+    const older = (await runBackup()).name;
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(admin).values({ id: "c2", email: "second-admin@test.local", password_hash: "x", password_reset_at: 0, created_at: now });
+    const minted = await mintApiToken({ name: "ci", scopes: ["admin"], createdBy: "c2", createdByEmail: "second-admin@test.local" }, SECRET);
+    await Bun.sleep(5); // distinct backup names
+    const newer = (await runBackup()).name;
+
+    expect((await restoreNamed(older)).status).toBe(200);
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'c2'`).get()).toBeNull();
+    const r = await restoreNamed(newer);
+    expect(r.status).toBe(200);
+    expect(r.message).not.toContain("second-admin@test.local");
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'c2'`).get()).not.toBeNull();
+    expect(await verifyAuthToken(minted.token, SECRET)).not.toBeNull();
+  });
+
+  it("an admin created after the others and deleted since the backup stays deleted, by its audit record", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(admin).values({ id: "a2", email: "late@test.local", password_hash: "x", password_reset_at: 0, created_at: now });
+    await runBackup();
+    raw().prepare(`DELETE FROM vaultbase_admin WHERE id = 'a2'`).run();
+    raw().prepare(`INSERT INTO vaultbase_audit_log (id, method, path, action, target, status, at) VALUES ('del', 'DELETE', '/api/admin/admins/a2', 'admins.delete', 'a2', 200, ?)`).run(now);
+    const r = await restoreLatest();
+    expect(r.message).toContain("late@test.local");
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'a2'`).get()).toBeNull();
+    // Its record is in the restored log now: an older backup restored next keeps it deleted too.
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_audit_log WHERE action = 'admins.delete' AND target = 'a2'`).get()).not.toBeNull();
+  });
+
+  it("an admin created before something both databases share and missing live was deleted", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(admin).values({ id: "a2", email: "late@test.local", password_hash: "x", password_reset_at: 0, created_at: now });
+    // An admin action after a2 existed, in the backup and live alike.
+    raw().prepare(`INSERT INTO vaultbase_audit_log (id, method, path, action, status, at) VALUES ('shared', 'PATCH', '/api/admin/settings', 'settings.update', 200, ?)`).run(now + 1);
+    await runBackup();
+    raw().prepare(`DELETE FROM vaultbase_admin WHERE id = 'a2'`).run();
+    const r = await restoreLatest();
+    expect(r.message).toContain("late@test.local");
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'a2'`).get()).toBeNull();
   });
 });

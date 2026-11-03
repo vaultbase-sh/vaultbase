@@ -12,7 +12,18 @@
  * start, which hid every keyword after it on the line while SQLite still ran
  * them. Also counts statements (`;` outside literals and comments).
  */
-export function scanSql(sql: string): { words: string[]; identifiers: string[]; statements: number } {
+/** Postgres dollar-quote opener at the start of `s`: `$$` or `$tag$`. */
+const DOLLAR_TAG_RE = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
+
+/**
+ * With `pg`, Postgres's own lexical forms are read as Postgres reads them,
+ * so a quote inside one can't open a string that hides the words after it:
+ * `E'…'` (backslash escapes), `$tag$…$tag$` dollar quotes, and `[` as an
+ * array subscript rather than a quoted identifier. (`U&'…'` lexes as a plain
+ * string: its escapes are Unicode code points, never a quote.)
+ */
+export function scanSql(sql: string, opts: { pg?: boolean } = {}): { words: string[]; identifiers: string[]; statements: number } {
+  const pg = opts.pg === true;
   const words: string[] = [];
   /** Quoted identifiers ("…", `…`, […]), unquoted and upper-cased. */
   const identifiers: string[] = [];
@@ -34,7 +45,22 @@ export function scanSql(sql: string): { words: string[]; identifiers: string[]; 
     } else if (c === "/" && next === "*") {
       const end = sql.indexOf("*/", i + 2);
       i = end < 0 ? n : end + 2;
-    } else if (c === "'" || c === '"' || c === "`" || c === "[") {
+    } else if (pg && (c === "E" || c === "e") && next === "'" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
+      // E'…': a backslash escapes the next character, `\'` included.
+      let j = i + 2;
+      while (j < n) {
+        if (sql[j] === "\\") { j += 2; continue; }
+        if (sql[j] === "'") { if (sql[j + 1] === "'") { j += 2; continue; } break; }
+        j++;
+      }
+      i = Math.min(n, j + 1);
+      pending = true;
+    } else if (pg && c === "$" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "") && DOLLAR_TAG_RE.test(sql.slice(i, i + 130))) {
+      const tag = DOLLAR_TAG_RE.exec(sql.slice(i, i + 130))![0];
+      const end = sql.indexOf(tag, i + tag.length);
+      i = end < 0 ? n : end + tag.length;
+      pending = true;
+    } else if (c === "'" || c === '"' || c === "`" || (c === "[" && !pg)) {
       const close = c === "[" ? "]" : c;
       let j = i + 1;
       for (;;) {

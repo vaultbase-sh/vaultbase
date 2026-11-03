@@ -14,23 +14,98 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - **Restoring a backup brought back old credentials.** A password changed
   after the backup (after a leak, say) went back to the old one, and an
   admin deleted after it came back with the API tokens they had minted. A
-  restore now brings back data, not credentials: an account whose password
-  or MFA changed since the backup keeps its current password, TOTP,
-  recovery codes and provider links, and an admin deleted since the backup
+  restore now brings back data, not credentials: an account keeps any
+  password, email, TOTP, recovery codes (still usable) and provider links
+  that changed since the backup, and an admin deleted since the backup
   stays deleted with their API tokens revoked. The restore's answer lists
-  both. Restoring another install's backup is unchanged, and a restore
-  never leaves the install without an admin.
+  both, and anything it couldn't carry. Revocations and reset stamps carry
+  over even if another step fails. Admins created after an older snapshot
+  survive an undo or a newer restore. Restoring another install's backup is
+  unchanged, and a restore never leaves the install without an admin.
 - **A write could be reported saved when SQLite had rolled it back.** On
   SQLite, writes made at the same moment share one transaction. When a
   trigger ended that whole transaction (`RAISE(ROLLBACK)`), the other writes
   in it answered 200 and ran their webhooks and realtime events, though
-  nothing was stored. They now fail, and their side effects don't run.
+  nothing was stored. They now fail, and their side effects don't run. A
+  write outside that path (a password reset, a sign-out, an API-token
+  revoke) commits the shared transaction first and runs on its own, so it
+  can't be lost with it.
+- **Every sign-in is now bound to the reset it came after.** Magic-link,
+  OAuth provider and API-token sessions, the admin side of impersonation,
+  and their MFA steps carry the account's reset stamp like password
+  sign-ins do, so a reset that races them ends them on any server. A reset
+  writes its stamp again after voiding links, closing a narrow race with a
+  magic link spent at the same moment. Push devices are disabled for users
+  of every auth collection, not only `users`.
+- **Hidden rows could still be probed through joins.** On SQLite a filter
+  whose `@collection` (or `_via_`) comparison failed on some values
+  answered differently depending on rows the joined collection hides. A
+  join now reads only the rows its rule admits.
+- **Parameterized views:** a batch's own URL parameters could satisfy a
+  view's rule while joins and expand read its default rows. Rules on a view
+  reached through a join, expand or batch use the values the view is built
+  with; a batch op on a view that takes no parameters refuses `params[...]`.
+- **Singletons and views are hidden by the rules that apply to them**
+  (view and update; list and view), on records, batch, filters, files and
+  the public OpenAPI.
+- **File routes told hidden collections and records from missing ones.**
+  Token mint, upload and delete answer a non-admin the same for both, and
+  check the rule before saying whether a field or file exists. File tokens
+  end with the session that minted them.
+- **A view saved before a password field existed kept publishing it.**
+  Adding such a field (or any change) to a table a view reads is refused
+  with 409 naming the view while that view would expose it. Postgres
+  views are also checked against Postgres's own parse of the query, and
+  `E'…'` / dollar-quoted strings no longer hide names from the check.
+- **Thumbnails held whole source files in memory while waiting.** The source
+  is now read once per variant, inside a bounded decode queue (503 when
+  full), and capped at 64 MiB even without a files row.
+- **Creates sent to `/api/<col>/` or as relative batch URLs** were charged to
+  the general rate limit instead of the create rule.
+- **Rules decided differently from the list query** on Postgres for
+  case-insensitive matches (C-locale databases, final sigma, Turkish ICU),
+  nested JSON compared as text, and group-subfield dates, colors and sign-up
+  fields compared before they were stored. Where the in-process engine
+  can't match the database exactly, it denies. Postgres list totals with a
+  clock literal (`'today 12:00'`) are no longer cached.
+- **Installers verify the release signature by default when `cosign` is
+  installed** (`--no-verify-sig` / `-NoVerifySig` to skip), check
+  `--version`, and won't run a truncated download. The Docker image is
+  signed (keyless) and its manual rebuild runs only from the default
+  branch. The log reader no longer loads a whole large log file on first
+  read.
 
 ### Upgrade notes
 
-- **A restore keeps credentials changed since the backup** (see Security).
-  To undo a password change or an admin deletion, change it back after the
-  restore.
+- **A restore keeps credentials changed since the backup** (see Security),
+  including email changes. To undo one, change it back after the restore.
+- **Changing a table that a view reads can be refused (409)** when the view
+  would expose a private column. Change or delete the view first. On
+  Postgres, new views may use a private column only as a plain output
+  column under its own name.
+- **Admin-only singletons and views answer 404 to non-admins** whatever
+  their list or create rules say; file routes answer 404 for hidden
+  collections.
+- **File download tokens stop working when the session that minted them
+  ends** (sign-out, password reset, sign-out-all).
+- **A reset, email change or magic-link claim** disables push devices for
+  every auth collection, and an admin whose session was reset since
+  sign-in can't mint API tokens or impersonate until signing in again.
+- **Rules see group dates as unix seconds and colors in stored form**; a
+  rule written against raw ISO strings or uppercase hex changes meaning.
+- **Thumbnails can answer 503** under heavy load.
+- **Installers with `cosign` on the PATH now verify signatures**; installing
+  an old unsigned release needs `--no-verify-sig` (`-NoVerifySig`).
+
+### Fixed
+
+- **The dashboard could make the admin show "unreachable" for seconds.** The
+  log reader cached four day files; a read spanning more days (the
+  dashboard's, whenever logs held under 50,000 entries over five or more
+  days) left the oldest four cached and re-parsed every file next time, on
+  the main thread. The cache is now bounded by size and drops the oldest
+  days first, a cold read yields to other requests while it parses, and
+  concurrent reads of a file share one parse.
 
 ## [0.38.0] — 2026-11-03
 

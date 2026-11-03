@@ -164,6 +164,49 @@ export const SQLITE_CAPABILITIES: Capabilities = {
 
 type AnyStatement = Statement<unknown, SQLQueryBindings[]>;
 
+/**
+ * Called before every write that reaches the driver (`run`, `exec`,
+ * `transaction`, and their `sync` forms). core/write-gate.ts installs it:
+ * when a group-commit transaction is open and the write is not part of a
+ * gated record write, it commits the group first, so the write never lands
+ * inside a transaction whose rollback would undo it after it was reported
+ * done (auth reset stamps, revocations, admin changes, ...).
+ */
+let ungatedWriteGuard: (() => void) | null = null;
+
+export function setUngatedWriteGuard(fn: (() => void) | null): void {
+  ungatedWriteGuard = fn;
+}
+
+/**
+ * Statements that write (or open a transaction) when they reach the raw
+ * connection without the driver: drizzle, and the few modules holding the
+ * raw handle. Drizzle prepares each statement right before running it.
+ */
+const RAW_WRITE_RE = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|BEGIN|SAVEPOINT|CREATE|DROP|ALTER)\b/i;
+/** A CTE is a write only when its main statement is (`WITH … INSERT/UPDATE/DELETE`). */
+const CTE_WRITE_RE = /^\s*WITH\b[\s\S]*\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/i;
+
+/**
+ * Route the raw connection's own entry points through the guard too, so
+ * writes that bypass the driver (drizzle's `getDb().insert/update/delete`,
+ * which most auth, token and admin writes use) can't join the open group
+ * either. Reads pass untouched.
+ */
+function guardRawConnection(raw: Database): void {
+  const prepare = raw.prepare.bind(raw) as (sql: string, ...rest: unknown[]) => AnyStatement;
+  const query = raw.query.bind(raw) as (sql: string, ...rest: unknown[]) => AnyStatement;
+  const exec = raw.exec.bind(raw) as (sql: string, ...rest: unknown[]) => unknown;
+  const check = (sql: unknown) => {
+    if (ungatedWriteGuard && typeof sql === "string" && (RAW_WRITE_RE.test(sql) || CTE_WRITE_RE.test(sql))) ungatedWriteGuard();
+  };
+  const r = raw as unknown as Record<string, unknown>;
+  r["prepare"] = (sql: string, ...rest: unknown[]) => { check(sql); return prepare(sql, ...rest); };
+  r["query"] = (sql: string, ...rest: unknown[]) => { check(sql); return query(sql, ...rest); };
+  r["exec"] = (sql: string, ...rest: unknown[]) => { check(sql); return exec(sql, ...rest); };
+  r["run"] = r["exec"];
+}
+
 /** Statements that change the schema, after which the token memo must not be reused. */
 const DDL_RE = /^\s*(CREATE|ALTER|DROP)\b/i;
 
@@ -227,14 +270,15 @@ export class SqliteDriver implements DbDriver {
     try { raw.exec("PRAGMA analysis_limit = 400;"); } catch { /* noop */ }
     try { raw.exec("PRAGMA optimize;"); } catch { /* noop */ }
 
+    guardRawConnection(raw);
     this.changesProbe = raw.prepare("SELECT total_changes() AS t");
     this.schemaProbe = raw.prepare("PRAGMA schema_version");
     const self = this;
     this.sync = {
       all: (sql, params) => self.all(sql, params),
       get: (sql, params) => self.get(sql, params),
-      run: (sql, params, opts) => self.runNow(sql, params, opts),
-      exec: (sql) => self.execNow(sql),
+      run: (sql, params, opts) => { ungatedWriteGuard?.(); return self.runNow(sql, params, opts); },
+      exec: (sql) => { ungatedWriteGuard?.(); self.execNow(sql); },
       describe: (sql) => self.describe(sql),
       get inTransaction() { return self.raw.inTransaction; },
       transaction: (fn, opts) => self.transactionSync(fn, opts),
@@ -289,11 +333,15 @@ export class SqliteDriver implements DbDriver {
    * run at once.
    */
   run(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): RunResult | Promise<RunResult> {
-    return this.foreignTx() ? this.afterForeignTx(() => this.runNow(sql, params, opts)) : this.runNow(sql, params, opts);
+    if (this.foreignTx()) return this.afterForeignTx(() => this.runNow(sql, params, opts));
+    ungatedWriteGuard?.();
+    return this.runNow(sql, params, opts);
   }
 
   exec(sql: string): void | Promise<void> {
-    return this.foreignTx() ? this.afterForeignTx(() => this.execNow(sql)) : this.execNow(sql);
+    if (this.foreignTx()) return this.afterForeignTx(() => this.execNow(sql));
+    ungatedWriteGuard?.();
+    return this.execNow(sql);
   }
 
   private runNow(sql: string, params: ReadonlyArray<unknown> = [], opts?: RunOptions): RunResult {
@@ -353,6 +401,7 @@ export class SqliteDriver implements DbDriver {
   async transaction<T>(fn: () => Promise<T>, opts?: TransactionOptions): Promise<T> {
     if (this.owner && this.ownerAls.getStore() === this.owner.id) return this.savepoint(fn);
     while (this.foreignTx()) await this.owner!.done;
+    ungatedWriteGuard?.();
     if (this.raw.inTransaction) return this.own(() => this.savepoint(fn), true);
     return this.own(async () => {
       this.execNow(opts?.immediate === false ? "BEGIN" : "BEGIN IMMEDIATE");
@@ -387,6 +436,8 @@ export class SqliteDriver implements DbDriver {
 
   private async afterForeignTx<T>(fn: () => T): Promise<T> {
     while (this.foreignTx()) await this.owner!.done;
+    // A group may have opened (or stayed open) while this write waited.
+    ungatedWriteGuard?.();
     return fn();
   }
 
@@ -406,6 +457,7 @@ export class SqliteDriver implements DbDriver {
   }
 
   private transactionSync<T>(fn: () => T, opts?: TransactionOptions): T {
+    ungatedWriteGuard?.();
     if (this.raw.inTransaction) {
       const name = `vb_sp_${++this.savepointSeq}`;
       this.execNow(`SAVEPOINT ${name}`);

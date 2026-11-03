@@ -153,9 +153,10 @@ describe("batch", () => {
   }));
 
   it("reads a singleton under its view rule", async () => {
-    // A public create rule keeps it visible, so the view rule's 403 shows
-    // (with every rule admin-only it answers as missing instead).
-    await createCollection({ name: "config", type: "singleton", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: null, view_rule: "", create_rule: null } as never);
+    // A public update rule keeps it visible, so the view rule's 403 shows
+    // (with view and update admin-only it answers as missing instead; list
+    // and create don't apply to a singleton).
+    await createCollection({ name: "config", type: "singleton", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: null, view_rule: "", create_rule: null, update_rule: null } as never);
     expect((await batch([{ method: "GET", url: "/api/v1/config" }])).status).toBe(403);
     expect((await get("/config/_aggregate?agg=count()")).status).toBe(403);
   });

@@ -2,7 +2,7 @@ import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
 import { macroValue, requestMapHas, requestMapValue, stableEq } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import type { RequestContextLike } from "./filter.ts";
-import { db } from "../db/index.ts";
+import { db, getDriver } from "../db/index.ts";
 
 export interface AuthContext {
   id: string;
@@ -86,6 +86,16 @@ export function compileRule(rule: string): (auth: AuthContext | null, record: Re
  */
 const UNAUTH_SENTINEL = Symbol("unauth");
 
+/**
+ * A value this engine can't produce exactly as the SQL would (a case fold
+ * the database might do differently, a JSON text whose form it can't be
+ * sure of). Like UNAUTH_SENTINEL, every comparison with it is false, so the
+ * single-record check can only deny more than the list query.
+ */
+const UNSURE = Symbol("unsure");
+
+const unknownValue = (v: unknown): boolean => v === UNAUTH_SENTINEL || v === UNSURE;
+
 function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   if (ast.kind === "any") return evaluateAny(ast, ctx);
   if (ast.kind === "and") return evaluateExpr(ast.left, ctx) && evaluateExpr(ast.right, ctx);
@@ -107,8 +117,8 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
     return evaluateEach(ast.left, ast.right, op, ctx);
   }
 
-  const l = resolveOperand(ast.left, ctx);
-  const r = resolveOperand(ast.right, ctx);
+  let l = resolveOperand(ast.left, ctx);
+  let r = resolveOperand(ast.right, ctx);
 
   // NULL as SQL has it, so a single-record check agrees with the list query:
   // `= null` / `!= null` written as a literal are IS NULL / IS NOT NULL, and
@@ -120,17 +130,20 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
   const nullLiteral = (o: Operand) => o.kind === "literal" && o.value === null;
   if ((op === "=" || op === "!=") && (nullLiteral(ast.left) || nullLiteral(ast.right))) {
     const v = nullLiteral(ast.left) ? r : l;
+    if (v === UNSURE) return false;
     // No signed-in user: `@request.auth.id = null` holds, as in the SQL.
     const isNull = v === null || v === undefined || v === UNAUTH_SENTINEL;
     return op === "=" ? isNull : !isNull;
   }
-  if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
+  if (readsJsonText(ast.left, ctx)) l = asSqlJsonText(l, op);
+  if (readsJsonText(ast.right, ctx)) r = asSqlJsonText(r, op);
+  if (unknownValue(l) || unknownValue(r)) return false;
   // A pattern written in the rule: `%` and `_` are wildcards, as the SQL
   // (LIKE) has them. Here they were plain text, so a list showed records
   // that the same rule refused by id and over realtime.
   if ((op === "~" || op === "!~") && ast.right.kind === "literal" && typeof r === "string" && /[%_]/.test(r)) {
     const m = likeMatch(l, r);
-    return op === "~" ? m : !m;
+    return m === null ? false : op === "~" ? m : !m;
   }
   return compareScalar(l, op, r, ctx.item === true);
 }
@@ -141,10 +154,19 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
  * don't). Matching case-sensitively here let `title !~ "confidential"` hide
  * "CONFIDENTIAL plan" from lists but serve it by id and over realtime.
  */
-function contains(haystack: unknown, needle: unknown): boolean {
+function contains(haystack: unknown, needle: unknown): boolean | null {
   const n = needle === null || needle === undefined ? "" : String(needle);
-  return n !== "" && sqlFold(String(haystack ?? "")).includes(sqlFold(n));
+  if (n === "") return false;
+  const h = sqlFold(String(haystack ?? ""));
+  const f = sqlFold(n);
+  // A fold this engine can't be sure of decides nothing (see sqlFold).
+  if (h === null || f === null) return null;
+  return h.includes(f);
 }
+
+/** `~` and `!~` from contains(): an unsure fold is false for both. */
+const like = (haystack: unknown, needle: unknown): boolean => contains(haystack, needle) === true;
+const notLike = (haystack: unknown, needle: unknown): boolean => contains(haystack, needle) === false;
 
 /**
  * SQLite's `x LIKE '%pattern%'`: `%` any run, `_` one character, ASCII
@@ -152,11 +174,14 @@ function contains(haystack: unknown, needle: unknown): boolean {
  * last `%`), so it runs in linear time; the regex it replaced backtracked
  * quadratically on a long value, and a create rule ran it on the body.
  */
-function likeMatch(haystack: unknown, pattern: string): boolean {
+function likeMatch(haystack: unknown, pattern: string): boolean | null {
   if (haystack === null || haystack === undefined || pattern === "") return false;
   // The list query binds the pattern as `%pattern%` (filter.ts likeParam).
-  const p = ["%", ...sqlFold(pattern), "%"];
-  const h = [...sqlFold(String(asStoredText(haystack)))];
+  const fp = sqlFold(pattern);
+  const fh = sqlFold(String(asStoredText(haystack)));
+  if (fp === null || fh === null) return null;
+  const p = ["%", ...fp, "%"];
+  const h = [...fh];
   let i = 0, j = 0, star = -1, mark = 0;
   while (i < h.length) {
     if (j < p.length && (p[j] === "_" || (p[j] !== "%" && p[j] === h[i]))) { i++; j++; }
@@ -173,13 +198,197 @@ function asciiLower(s: string): string {
 }
 
 /**
- * Case folding as the list query does it: SQLite's LIKE and lower() fold
- * ASCII letters only, Postgres's ILIKE and lower() fold every letter. With
- * one fixed rule here, a rule on non-ASCII text ("privé") allowed by id or
- * over realtime what the list refused, on one database or the other.
+ * Case folding as the list query does it, or null when this engine can't
+ * be sure of the database's answer (the comparison is then false).
+ *
+ * SQLite's LIKE and lower() fold ASCII letters only. Postgres's ILIKE is
+ * lower(text) LIKE lower(pattern), and lower() follows the database's
+ * locale: ASCII only under a C/POSIX ctype, one code point at a time under
+ * other libc locales (so Σ is σ, never the final ς), and the full Unicode
+ * mapping under ICU. The locale is read once per connection (pgFoldMode).
  */
-function sqlFold(s: string): string {
-  return onPostgres() ? s.toLowerCase() : asciiLower(s);
+function sqlFold(s: string): string | null {
+  if (!onPostgres()) return asciiLower(s);
+  return foldAs(pgFoldMode() ?? "unsure", s);
+}
+
+/**
+ * How the connected Postgres database folds case:
+ * - ascii:  C/POSIX ctype, or the builtin C locale: A-Z only.
+ * - simple: other libc locales, builtin C.UTF-8: each code point by itself.
+ * - full:   ICU, builtin PG_UNICODE_FAST: the full mapping (final sigma).
+ * - turkic: ICU tr/az/lt, whose I/i rules this engine doesn't reproduce.
+ * - unsure: anything else, or not read yet: ASCII letters fold, and any
+ *           other letter that has a lowercase makes the fold unsure.
+ */
+type FoldMode = "ascii" | "simple" | "full" | "turkic" | "unsure";
+
+/** Per driver, so a reopened or switched database (tests) is read again. */
+const foldModes = new WeakMap<object, FoldMode>();
+const foldLoads = new WeakMap<object, Promise<void>>();
+
+const FOLD_MODE_SQL =
+  `SELECT pg_encoding_to_char(d.encoding) AS enc, d.datctype AS ctype,` +
+  ` to_jsonb(d) ->> 'datlocprovider' AS provider,` +
+  ` COALESCE(to_jsonb(d) ->> 'datlocale', to_jsonb(d) ->> 'daticulocale') AS locale` +
+  ` FROM pg_database d WHERE d.datname = current_database()`;
+
+/** The open Postgres database's fold mode; null until it has been read (the read starts here). */
+function pgFoldMode(): FoldMode | null {
+  let driver: object;
+  try { driver = getDriver(); } catch { return null; }
+  const mode = foldModes.get(driver);
+  if (mode) return mode;
+  if (!foldLoads.has(driver)) void loadFoldMode(driver);
+  return null;
+}
+
+function loadFoldMode(driver: object): Promise<void> {
+  const running = foldLoads.get(driver);
+  if (running) return running;
+  const load = (async () => {
+    try {
+      const row = await (driver as typeof db).get<{ enc: string; ctype: string; provider: string | null; locale: string | null }>(FOLD_MODE_SQL);
+      foldModes.set(driver, row ? foldModeOf(row) : "unsure");
+    } catch {
+      // Not read (the connection closing): stay unsure, and read again next time.
+    } finally {
+      foldLoads.delete(driver);
+    }
+  })();
+  foldLoads.set(driver, load);
+  return load;
+}
+
+/**
+ * Read the open database's case-folding locale now, instead of on the first
+ * rule that needs it (until then a non-ASCII fold is unsure and denies).
+ * A no-op on SQLite.
+ */
+export async function primeRuleCaseFolding(): Promise<void> {
+  if (!onPostgres()) return;
+  let driver: object;
+  try { driver = getDriver(); } catch { return; }
+  if (!foldModes.has(driver)) await loadFoldMode(driver);
+}
+
+/** Test hook: forget what was read. */
+export function _resetRuleCaseFolding(): void {
+  try { const d = getDriver(); foldModes.delete(d); foldLoads.delete(d); } catch { /* no database */ }
+}
+
+function foldModeOf(row: { enc: string; ctype: string; provider: string | null; locale: string | null }): FoldMode {
+  const provider = row.provider ?? "c";
+  const isC = (v: string | null) => v === "C" || v === "POSIX";
+  if (provider === "c" && isC(row.ctype)) return "ascii";
+  if (provider === "b" && row.locale === "C") return "ascii";
+  // A single-byte encoding folds by the libc tables byte by byte.
+  if (row.enc !== "UTF8") return "unsure";
+  if (provider === "c") return "simple";
+  if (provider === "b") return row.locale === "C.UTF-8" ? "simple" : row.locale === "PG_UNICODE_FAST" ? "full" : "unsure";
+  if (provider === "i") return /^(tr|az|lt)(?![a-z])/i.test(row.locale ?? "") ? "turkic" : "full";
+  return "unsure";
+}
+
+/**
+ * Letters whose lowercase every supported Postgres build agrees on with
+ * this runtime: Latin, IPA, Greek, Cyrillic, Armenian, Latin Extended
+ * Additional, Greek Extended, fullwidth Latin. A letter outside these
+ * that has a lowercase makes the fold unsure (libc and ICU tables follow
+ * different Unicode versions).
+ */
+const settledCase = (cp: number) =>
+  cp < 0x590 || (cp >= 0x1e00 && cp < 0x2000) || (cp >= 0xff21 && cp <= 0xff3a);
+
+const ASCII_ONLY = /^[\x00-\x7f]*$/;
+
+function foldAs(mode: FoldMode, s: string): string | null {
+  if (mode === "ascii") return asciiLower(s);
+  if (mode === "turkic" && /[IJ]/.test(s)) return null;
+  if (ASCII_ONLY.test(s)) return asciiLower(s);
+  if (mode === "full") {
+    for (const ch of s) {
+      if (ch.toLowerCase() !== ch && !settledCase(ch.codePointAt(0)!)) return null;
+    }
+    return s.toLowerCase();
+  }
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x80) { out += cp >= 65 && cp <= 90 ? String.fromCharCode(cp + 32) : ch; continue; }
+    const lower = ch.toLowerCase();
+    if (lower === ch) { out += ch; continue; }
+    // simple: one code point to one (İ, whose JS lowercase is two, is unsure).
+    if (mode !== "simple" || !settledCase(cp) || lower.length !== ch.length || lower.codePointAt(0)! < 0x80) return null;
+    out += lower;
+  }
+  return out;
+}
+
+/**
+ * Whether SQL reads this operand out of JSON text: a dotted path into a
+ * column (`info.m`), or a key of the item inside `:any(...)`. On Postgres
+ * that is jsonb's `#>>`, whose text is jsonb's, not the stored text.
+ */
+function readsJsonText(op: Operand, ctx: EvalContext): boolean {
+  return op.kind === "field" && !op.modifier && (ctx.item === true || op.path.length > 0);
+}
+
+/**
+ * A value SQL reads out of JSON (readsJsonText, or an element of a list),
+ * as that SQL sees it under `op`. SQLite: the value as it is. Postgres:
+ * - an object or array matches `~`/`!~` as jsonb's text of it (`{"a": 1}`,
+ *   keys shortest first) and nothing else: compared with a value it is
+ *   typed (jsonb_typeof), which an object or array never passes;
+ * - a number matches `~`/`!~` as jsonb's text of the number as it was
+ *   written ("1.50"), which a parsed number has lost: unsure.
+ */
+function asSqlJsonText(v: unknown, op: AnyCmpOp): unknown {
+  if (!onPostgres() || v === null || typeof v !== "object" && typeof v !== "number") return v;
+  if (v instanceof Date) return v;
+  if (op !== "~" && op !== "!~") return typeof v === "number" ? v : UNSURE;
+  return jsonbText(v) ?? UNSURE;
+}
+
+const utf8 = new TextEncoder();
+
+/** jsonb's key order: shorter (in UTF-8 bytes) first, then byte by byte. */
+function jsonbKeyOrder(a: string, b: string): number {
+  const x = utf8.encode(a);
+  const y = utf8.encode(b);
+  if (x.length !== y.length) return x.length - y.length;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return 0;
+}
+
+/**
+ * `v` as Postgres prints jsonb: `", "` and `": "` separators, keys in
+ * jsonb's order, strings escaped as JSON.stringify escapes them. Null when
+ * it holds a number (its written form is lost) or anything not JSON.
+ */
+function jsonbText(v: unknown): string | null {
+  if (v === null) return "null";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "string") return JSON.stringify(v);
+  if (Array.isArray(v)) {
+    const parts: string[] = [];
+    for (const e of v) {
+      const t = jsonbText(e);
+      if (t === null) return null;
+      parts.push(t);
+    }
+    return `[${parts.join(", ")}]`;
+  }
+  if (isItem(v) && !(v instanceof Date)) {
+    const parts: string[] = [];
+    for (const k of Object.keys(v).sort(jsonbKeyOrder)) {
+      const t = jsonbText(v[k]);
+      if (t === null) return null;
+      parts.push(`${JSON.stringify(k)}: ${t}`);
+    }
+    return `{${parts.join(", ")}}`;
+  }
+  return null;
 }
 
 function onPostgres(): boolean {
@@ -205,19 +414,22 @@ function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalCont
   }
 
   const target = resolveOperand(scalarOperand, ctx);
-  if (target === UNAUTH_SENTINEL) return false;
+  if (unknownValue(target)) return false;
   const items = itemPath(stripped);
   if (items) {
     // At least one item, every one an object whose value compares true (filter.ts everyItemCmp).
     const list = resolveOperand(items.list, ctx);
     if (Array.isArray(list) && list.length > 0
-      && list.every((item) => isItem(item) && compareScalar(walkPath(item, items.path), op, target, true))) return true;
+      && list.every((item) => isItem(item) && compareScalar(asSqlJsonText(walkPath(item, items.path), op), op, target, true))) return true;
   }
   const arr = resolveOperand(stripped, ctx);
   if (!Array.isArray(arr) || arr.length === 0) return false;
 
-  if (ctx.item) return arr.every((item) => compareScalar(item, op, target, true));
-  return arr.every((item) => {
+  if (ctx.item) return arr.every((item) => compareScalar(asSqlJsonText(item, op), op, target, true));
+  return arr.every((element) => {
+    // Elements are read out of the JSON text (json_each / jsonb_array_elements).
+    const item = asSqlJsonText(element, op);
+    if (item === UNSURE) return false;
     switch (op) {
       case "=":  return looseEq(item, target);
       case "!=": return !looseEq(item, target);
@@ -225,8 +437,8 @@ function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalCont
       case ">=": return cmp(item, target) >= 0;
       case "<":  return cmp(item, target) < 0;
       case "<=": return cmp(item, target) <= 0;
-      case "~":  return contains(item, target);
-      case "!~": return !contains(item, target);
+      case "~":  return like(item, target);
+      case "!~": return notLike(item, target);
       default:   return false;
     }
   });
@@ -238,18 +450,21 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
   const scalarOperand = arrayOperand === left ? right : left;
 
   const target = resolveOperand(scalarOperand, ctx);
-  if (target === UNAUTH_SENTINEL) return false;
+  if (unknownValue(target)) return false;
   const items = itemPath(arrayOperand);
   if (items) {
     // Some item whose value compares true (filter.ts anyItemCmp).
     const list = resolveOperand(items.list, ctx);
-    if (Array.isArray(list) && list.some((item) => isItem(item) && compareScalar(walkPath(item, items.path), scalarOp, target, true))) return true;
+    if (Array.isArray(list) && list.some((item) => isItem(item) && compareScalar(asSqlJsonText(walkPath(item, items.path), scalarOp), scalarOp, target, true))) return true;
   }
   const arr = resolveOperand(arrayOperand, ctx);
   if (!Array.isArray(arr)) return false;
 
-  if (ctx.item) return arr.some((item) => compareScalar(item, scalarOp, target, true));
-  for (const item of arr) {
+  if (ctx.item) return arr.some((item) => compareScalar(asSqlJsonText(item, scalarOp), scalarOp, target, true));
+  for (const element of arr) {
+    // Elements are read out of the JSON text (json_each / jsonb_array_elements).
+    const item = asSqlJsonText(element, scalarOp);
+    if (item === UNSURE) continue;
     let match: boolean;
     switch (scalarOp) {
       case "=":  match = looseEq(item, target); break;
@@ -258,8 +473,8 @@ function evaluateArrayCmp(left: Operand, right: Operand, scalarOp: AnyCmpOp, ctx
       case ">=": match = cmp(item, target) >= 0; break;
       case "<":  match = cmp(item, target) < 0; break;
       case "<=": match = cmp(item, target) <= 0; break;
-      case "~":  match = contains(item, target); break;
-      case "!~": match = !contains(item, target); break;
+      case "~":  match = like(item, target); break;
+      case "!~": match = notLike(item, target); break;
       default:   match = false;
     }
     if (match) return true;
@@ -293,7 +508,7 @@ function itemPath(op: Operand): { list: Operand; path: string[] } | null {
  * with text); values of different types match nothing.
  */
 function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): boolean {
-  if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
+  if (unknownValue(l) || unknownValue(r)) return false;
   // A whole JSON value (a json or group field, a multi-value list) is
   // compared in SQL as its stored JSON text. As a JS value it became
   // "[object Object]" or "a,b", so a rule decided differently by id, on
@@ -317,8 +532,8 @@ function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): bool
     case ">=": return cmp(l, r) >= 0;
     case "<":  return cmp(l, r) < 0;
     case "<=": return cmp(l, r) <= 0;
-    case "~":  return contains(l, r);
-    case "!~": return !contains(l, r);
+    case "~":  return like(l, r);
+    case "!~": return notLike(l, r);
     default:   return false;
   }
 }
@@ -366,6 +581,8 @@ function resolveOperand(op: Operand, ctx: EvalContext): unknown {
           (body as Record<string, unknown>)[key],
         );
       }
+      // `:lower` here is a value filter.ts binds lowered by JS (applyModifierToValue).
+      if (op.modifier === "lower") return typeof v === "string" ? (onPostgres() ? v.toLowerCase() : asciiLower(v)) : v;
       return applyModifierValue(v, op.modifier);
     }
     case "macro": return macroValue(op.name);
@@ -418,7 +635,10 @@ function fieldValue(record: Record<string, unknown> | null | undefined, name: st
 function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
   if (!m) return v;
   switch (m) {
-    case "lower":  return typeof v === "string" ? sqlFold(v) : v;
+    case "lower":
+      if (typeof v === "string") return sqlFold(v) ?? UNSURE;
+      // Postgres's LOWER() of a JSON path reads its jsonb text (see asSqlJsonText).
+      return onPostgres() && v !== null && v !== undefined ? UNSURE : v;
     case "length":
       if (Array.isArray(v)) return v.length;
       if (typeof v === "string") return v.length;
@@ -436,7 +656,7 @@ function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
  */
 function evalFunc(op: Extract<Operand, { kind: "func" }>, ctx: EvalContext): unknown {
   const args = op.args.map((a) => resolveOperand(a, ctx));
-  if (args.some((a) => a === UNAUTH_SENTINEL)) return UNAUTH_SENTINEL;
+  if (args.some(unknownValue)) return UNAUTH_SENTINEL;
   if (op.name === "geoDistance") {
     if (args.length !== 4 || args.some((a) => a === null || a === undefined || a === "")) return UNAUTH_SENTINEL;
     // An item's value counts only as a JSON number (or boolean), as the SQL reads it.
@@ -518,7 +738,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 function looseEq(a: unknown, b: unknown): boolean {
-  if (a === UNAUTH_SENTINEL || b === UNAUTH_SENTINEL) return false;
+  if (unknownValue(a) || unknownValue(b)) return false;
   if (a === null || a === undefined) return b === null || b === undefined;
   if (b === null || b === undefined) return false;
   if (typeof a === "boolean") a = a ? 1 : 0;

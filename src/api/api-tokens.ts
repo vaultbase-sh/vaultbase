@@ -74,7 +74,14 @@ export function makeApiTokensPlugin(jwtSecret: string) {
     }, { requireAdmin: { cookie: true } })
     .post(
       "/admin/api-tokens",
-      async ({ admin: me, body, set }) => {
+      async ({ admin: me, body, request, set }) => {
+        // The guard's principal doesn't carry the stamp its check read, so
+        // read the same token again. A session token with `rs` verifies only
+        // while the stamp still equals it, so this is the stamp its sign-in
+        // read, and the new token is bound to it.
+        const raw = extractBearer(request);
+        const session = raw ? await verifyAuthToken(raw, jwtSecret, { audience: "admin" }) : null;
+        if (!session || session.id !== me.id) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         try {
           const ttlSeconds = body.ttl_seconds ?? body.ttlSeconds ?? DEFAULT_API_TOKEN_TTL_SEC;
           const result = await mintApiToken({
@@ -83,6 +90,7 @@ export function makeApiTokensPlugin(jwtSecret: string) {
             ttlSeconds,
             createdBy: me.id,
             createdByEmail: me.email,
+            ...(session.resetSeen !== undefined ? { resetSeen: session.resetSeen } : {}),
           }, jwtSecret);
           // Return the token ONCE. Caller MUST persist it.
           set.status = 201;

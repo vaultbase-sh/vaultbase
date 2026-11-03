@@ -67,7 +67,8 @@ Flags:
   --check                Print versions and exit (0 = in sync, 1 = update available)
   --yes, -y              Non-interactive; don't prompt for confirmation
   --version X.Y.Z, -v    Pin to a specific release (default: latest)
-  --no-verify            Skip cosign signature check (SHA-256 still enforced)
+  --no-verify            Skip cosign signature check (SHA-256 still enforced).
+                         Without cosign on PATH the check is skipped with a warning.
   --allow-downgrade      Permit moving to an older version
   --quiet, -q            Suppress progress output
   --help, -h             Show this message
@@ -114,9 +115,12 @@ interface Release {
 }
 
 async function fetchRelease(version: string | null): Promise<Release> {
-  const url = version
-    ? `https://api.github.com/repos/vaultbase-sh/vaultbase/releases/tags/v${version.replace(/^v/, "")}`
-    : `https://api.github.com/repos/vaultbase-sh/vaultbase/releases/latest`;
+  let url = `https://api.github.com/repos/vaultbase-sh/vaultbase/releases/latest`;
+  if (version !== null) {
+    const tag = normalizeReleaseTag(version);
+    if (!tag) throw new Error(`'${version}' is not a release version (expected X.Y.Z or vX.Y.Z)`);
+    url = `https://api.github.com/repos/vaultbase-sh/vaultbase/releases/tags/${tag}`;
+  }
   const res = await fetch(url, { headers: { accept: "application/vnd.github+json", "user-agent": `vaultbase-update/${VAULTBASE_VERSION}` } });
   if (res.status === 404) throw new Error(`no release found at ${url}`);
   if (!res.ok) throw new Error(`github API ${res.status} on ${url}`);
@@ -183,6 +187,19 @@ export function releaseIdentityRegexp(repo: string, version: string): string {
   return `^https://github\\.com/${esc(repo)}/\\.github/workflows/release\\.yml@refs/tags/v${esc(version)}$`;
 }
 
+/**
+ * A release tag as release.yml accepts it: vX.Y.Z with an optional
+ * pre-release suffix. Checked before a pinned version or a release's
+ * tag_name goes into a URL or the certificate identity regexp.
+ */
+const RELEASE_TAG_RE = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+/** Normalises "0.8.0" / "v0.8.0" to "v0.8.0"; null when it isn't a release tag. */
+export function normalizeReleaseTag(input: string): string | null {
+  const tag = input.startsWith("v") ? input : `v${input}`;
+  return RELEASE_TAG_RE.test(tag) ? tag : null;
+}
+
 function runCosignVerify(binPath: string, sigPath: string, certPath: string, repo: string, version: string): boolean {
   const r = spawnSync("cosign", [
     "verify-blob",
@@ -230,7 +247,9 @@ export async function runUpdate(argv: string[]): Promise<void> {
 
   log("checking for updates…");
   const release = await fetchRelease(flags.pinnedVersion);
-  const target = release.tag_name.replace(/^v/, "");
+  const releaseTag = normalizeReleaseTag(String(release.tag_name ?? ""));
+  if (!releaseTag) throw new Error(`release has an unexpected tag name '${String(release.tag_name)}'`);
+  const target = releaseTag.slice(1);
   const cmp = compareVersion(VAULTBASE_VERSION, target);
 
   if (cmp === 0) {
@@ -305,9 +324,12 @@ export async function runUpdate(argv: string[]): Promise<void> {
         throw new Error("cosign signature verification failed — refusing to update");
       }
       log("  ✓ cosign ok");
-    } else if (!hasCosign()) {
-      process.stderr.write("⚠ cosign not in PATH — skipping signature verification (SHA-256 still enforced).\n");
-      process.stderr.write("  Install cosign for cryptographic provenance: https://docs.sigstore.dev/cosign/installation\n");
+    } else if (plan === "no-cosign") {
+      process.stderr.write(
+        `⚠ cosign is not on PATH, so the cosign signature of ${platform.artifact} ${target} was NOT verified.\n` +
+        `  Only the SHA-256 from the same release was checked, which does not detect release assets replaced after publication.\n` +
+        `  Install cosign to verify that release.yml signed this build: https://docs.sigstore.dev/cosign/installation\n`,
+      );
     }
   } else {
     process.stderr.write("⚠ --no-verify: cosign signature NOT checked (SHA-256 still enforced).\n");

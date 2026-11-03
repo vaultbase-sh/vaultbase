@@ -344,11 +344,24 @@ export function gifFrameCount(bytes: Uint8Array): number {
   return gifLayout(bytes).frames;
 }
 
-/** At most `max` calls of the returned runner are in flight; the rest queue. */
-function decodeSlots(max: number): <T>(fn: () => Promise<T>) => Promise<T> {
+/** Too many thumbnails are already waiting; callers answer 503. */
+export class ThumbBusyError extends Error {}
+
+interface Slots {
+  <T>(fn: () => Promise<T>): Promise<T>;
+  stats(): { running: number; waiting: number };
+}
+
+/**
+ * At most `max` calls of the returned runner are in flight; the rest queue,
+ * at most `maxWaiting` of them. Past that a call fails at once with
+ * {@link ThumbBusyError} rather than wait holding whatever it holds.
+ */
+function decodeSlots(max: number, maxWaiting = Infinity): Slots {
   let running = 0;
   const waiters: Array<() => void> = [];
-  return async (fn) => {
+  const run = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (running >= max && waiters.length >= maxWaiting) throw new ThumbBusyError();
     while (running >= max) await new Promise<void>((resolve) => waiters.push(resolve));
     running++;
     try {
@@ -358,10 +371,33 @@ function decodeSlots(max: number): <T>(fn: () => Promise<T>) => Promise<T> {
       waiters.shift()?.();
     }
   };
+  return Object.assign(run, { stats: () => ({ running, waiting: waiters.length }) });
 }
 
 const withAnimatedDecodeSlot = decodeSlots(MAX_ANIMATED_DECODES);
 const withStillDecodeSlot = decodeSlots(MAX_STILL_DECODES);
+
+/**
+ * Thumbnail jobs that may hold a source file in memory at once: a job takes
+ * one of these before it reads the source, and keeps it through the decode
+ * (which then waits for a decode slot above, if any). So the bytes buffered
+ * for thumbnails are bounded by this times MAX_THUMB_SOURCE_BYTES, however
+ * many requests arrive.
+ */
+export const MAX_THUMB_JOBS = MAX_STILL_DECODES + MAX_ANIMATED_DECODES;
+/** Jobs that may wait for one of those; past this a request gets 503. */
+export const MAX_THUMB_JOBS_WAITING = 16;
+const thumbJobSlots = decodeSlots(MAX_THUMB_JOBS, MAX_THUMB_JOBS_WAITING);
+
+/** Run a thumbnail job (source read and decode) in a job slot; throws ThumbBusyError when the queue is full. */
+export function withThumbJobSlot<T>(fn: () => Promise<T>): Promise<T> {
+  return thumbJobSlots(fn);
+}
+
+/** Test hook: thumbnail jobs running and waiting right now. */
+export function _thumbJobStats(): { running: number; waiting: number } {
+  return thumbJobSlots.stats();
+}
 
 export async function generateThumbnail(
   bytes: Uint8Array,

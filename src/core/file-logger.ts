@@ -338,16 +338,35 @@ interface ParsedFile {
 
 const parsedFiles = new Map<string, ParsedFile>();
 /**
- * Files kept parsed, most recently read last. Unbounded, one search over a
- * month kept every day's entries (about 1.5 million objects) for good.
+ * Log text kept parsed across all files. Unbounded, one search over a month
+ * kept every day's entries (about 1.5 million objects) for good. A limit of
+ * four files thrashed instead: a read spanning more days walks them newest
+ * first, so the four left cached were the oldest and the next read (the
+ * dashboard's, every few seconds) re-parsed every file on the main thread.
  */
-const MAX_CACHED_FILES = 4;
+const MAX_CACHED_BYTES_TOTAL = 64 * 1024 * 1024;
 
 function remember(file: string, parsed: ParsedFile): void {
-  parsedFiles.delete(file);
   parsedFiles.set(file, parsed);
-  while (parsedFiles.size > MAX_CACHED_FILES) parsedFiles.delete(parsedFiles.keys().next().value!);
+  let total = 0;
+  for (const p of parsedFiles.values()) total += p.bytes;
+  if (total <= MAX_CACHED_BYTES_TOTAL) return;
+  // Over budget: drop the oldest days first (file names sort by date). The
+  // newest days are what every read starts with; an old day costs a re-parse
+  // only when a read reaches that far back.
+  for (const name of [...parsedFiles.keys()].sort()) {
+    if (total <= MAX_CACHED_BYTES_TOTAL || name === file) break;
+    total -= parsedFiles.get(name)!.bytes;
+    parsedFiles.delete(name);
+  }
 }
+
+/** Lines parsed between yields to the event loop, so a cold read doesn't stall other requests. */
+const PARSE_SLICE = 2_000;
+const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
+
+/** Reads of one file in progress: a second caller shares the first's parse instead of racing it. */
+const parsing = new Map<string, Promise<LogEntry[]>>();
 let parsedLines = 0;
 
 /** Test hook: lines parsed since process start. */
@@ -355,7 +374,15 @@ export function _logReaderStats(): { parsedLines: number } {
   return { parsedLines };
 }
 
-async function fileEntries(file: string): Promise<LogEntry[]> {
+function fileEntries(file: string): Promise<LogEntry[]> {
+  const running = parsing.get(file);
+  if (running) return running;
+  const p = parseFile(file).finally(() => parsing.delete(file));
+  parsing.set(file, p);
+  return p;
+}
+
+async function parseFile(file: string): Promise<LogEntry[]> {
   let size: number;
   try { size = statSync(file).size; } catch { parsedFiles.delete(file); return []; }
 
@@ -365,14 +392,38 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
   if (!cached) cached = { offset: 0, entries: [], sizes: [], bytes: 0 };
   if (size === cached.offset) { remember(file, cached); return cached.entries; }
 
-  const chunk = await Bun.file(file).slice(cached.offset, size).text().catch(() => "");
+  // More new bytes than the cache keeps: everything before the newest
+  // MAX_CACHED_BYTES_PER_FILE would be trimmed after parsing anyway, so read
+  // only that tail. A cold read of a large day file used to load and parse
+  // the whole file (about 2.3x its size in memory) before trimming. The
+  // window starts one byte early so a line starting exactly at the cut is
+  // kept; the fragment before the first newline is dropped.
+  let start = cached.offset;
+  let tail = false;
+  if (size - start > MAX_CACHED_BYTES_PER_FILE) {
+    cached = { offset: 0, entries: [], sizes: [], bytes: 0 };
+    start = size - MAX_CACHED_BYTES_PER_FILE - 1;
+    tail = true;
+  }
+  const buf = new Uint8Array(
+    await Bun.file(file).slice(start, size).arrayBuffer().catch(() => new ArrayBuffer(0)),
+  );
   // Only consume complete lines; a partial trailing line waits for its newline.
-  const end = chunk.lastIndexOf("\n");
-  if (end === -1) { remember(file, cached); return cached.entries; }
-  const complete = chunk.slice(0, end + 1);
+  // Work in bytes so the offset stays exact when the window cuts a UTF-8
+  // sequence in half.
+  const end = buf.lastIndexOf(0x0a);
+  const first = tail ? buf.indexOf(0x0a) + 1 : 0;
+  if (end === -1 || first > end) {
+    if (tail) cached.offset = end === -1 ? start : start + end + 1;
+    remember(file, cached);
+    return cached.entries;
+  }
+  const complete = new TextDecoder().decode(buf.subarray(first, end + 1));
+  let sinceYield = 0;
   for (const raw of complete.split("\n")) {
     const ln = raw.trim();
     if (!ln) continue;
+    if (++sinceYield >= PARSE_SLICE) { sinceYield = 0; await yieldToLoop(); }
     parsedLines++;
     try {
       cached.entries.push(JSON.parse(ln) as LogEntry);
@@ -389,7 +440,7 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
     cached.sizes.splice(0, drop);
     cached.bytes = bytes;
   }
-  cached.offset += Buffer.byteLength(complete, "utf8");
+  cached.offset = start + end + 1;
   remember(file, cached);
   return cached.entries;
 }

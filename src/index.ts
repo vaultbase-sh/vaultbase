@@ -455,6 +455,9 @@ async function main() {
   // which every server of an install shares.
   (await import("./core/pg-readonly.ts")).configureReadOnlyLogin(config.jwtSecret);
   await runMigrations();
+  // Rules fold case as this database does; read its locale before the first
+  // request so no early check has to deny for want of it.
+  await (await import("./core/rules.ts")).primeRuleCaseFolding();
   installMarker.configureInstallRecord(config.dataDir);
   await installMarker.recordInstall();
   // runMigrations filled the settings store on other databases.

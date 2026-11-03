@@ -3,7 +3,8 @@ import Elysia, { t } from "elysia";
 import { existsSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { getDb } from "../db/client.ts";
-import { auditLog, files, fileTokenUses } from "../db/schema.ts";
+import { auditLog, files, fileTokenUses, tokenRevocations } from "../db/schema.ts";
+import { getApiToken } from "../core/api-tokens.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
 import {
   detectFormat,
@@ -21,15 +22,17 @@ import {
   thumbMime,
   thumbSizeKey,
   thumbVariantCount,
+  ThumbBusyError,
+  withThumbJobSlot,
   type ThumbFormat,
   type ThumbSpec,
 } from "../core/image.ts";
-import { getRecord, updateRecord } from "../core/records.ts";
+import { getRecord, hiddenFrom, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { buildRequestContext, checkRule } from "./_rules.ts";
-import { deleteFile, fileExists, fileResponse, readFile, writeFile } from "../core/storage.ts";
+import { deleteFile, fileExists, fileResponse, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import { getSetting, MAX_UPLOAD_BYTES, MIN_UPLOAD_BYTES } from "./settings.ts";
 import {
@@ -39,13 +42,16 @@ import {
   isSafeToRenderInline,
   isValidStorageFilename,
   peerAddress,
+  principalResetStamp,
   signAuthToken,
   trustedClientIp,
   verifyAuthToken,
+  type VerifiedAuth,
 } from "../core/sec.ts";
 
 /** Files at most this size are read whole for a thumbnail without sniffing their format first. */
 const THUMB_SNIFF_ABOVE_BYTES = 1024 * 1024;
+
 
 /** The first `n` bytes of a stored file (fewer if it's shorter), without reading the rest. */
 async function readHead(key: string, n: number): Promise<Uint8Array> {
@@ -74,9 +80,56 @@ async function getAuthContext(
   jwtSecret: string,
   access: "read" | "write"
 ): Promise<AuthContext | null> {
+  return (await getVerifiedAuth(request, jwtSecret, access)).auth;
+}
+
+/** The principal, and the verified session behind it (a file token is bound to that session). */
+async function getVerifiedAuth(
+  request: Request,
+  jwtSecret: string,
+  access: "read" | "write",
+): Promise<{ auth: AuthContext | null; verified: VerifiedAuth | null }> {
   const token = extractBearer(request);
-  if (!token) return null;
-  return dataPrincipal(await verifyAuthToken(token, jwtSecret), access);
+  if (!token) return { auth: null, verified: null };
+  const verified = await verifyAuthToken(token, jwtSecret);
+  return { auth: dataPrincipal(verified, access), verified };
+}
+
+/**
+ * Claims tying a file token to the session that minted it: the principal,
+ * its `password_reset_at` as that session's check read it (carried as `rs`
+ * by signAuthToken), and the session or API token id. A password reset,
+ * sign-out-all, sign-out of that session or revoking that API token ends
+ * the download grant with it ({@link mintingSessionStillValid}).
+ */
+function fileTokenBinding(auth: AuthContext | null, verified: VerifiedAuth | null): { claims: Record<string, unknown>; resetSeen?: number } {
+  if (!auth || !verified || verified.resetSeen === undefined) return { claims: {} };
+  const claims: Record<string, unknown> = { pid: verified.id, ptyp: verified.type };
+  if (verified.collection) claims["pcol"] = verified.collection;
+  if (verified.viaApiToken) { if (verified.jti) claims["atj"] = verified.jti; }
+  else if (verified.jti) claims["sj"] = verified.jti;
+  return { claims, resetSeen: verified.resetSeen };
+}
+
+/** Whether the session a file token was minted by is still good (see fileTokenBinding). Unbound tokens (anonymous mints) are. */
+async function mintingSessionStillValid(payload: Record<string, unknown>): Promise<boolean> {
+  const pid = payload["pid"];
+  if (pid === undefined) return true;
+  const ptyp = payload["ptyp"];
+  if (typeof pid !== "string" || (ptyp !== "user" && ptyp !== "admin")) return false;
+  const pcol = typeof payload["pcol"] === "string" ? payload["pcol"] : undefined;
+  const stamp = await principalResetStamp({ id: pid, type: ptyp, collection: pcol });
+  if (stamp === null || stamp !== payload["rs"]) return false;
+  if (typeof payload["sj"] === "string") {
+    const revoked = await getDb().select({ jti: tokenRevocations.jti }).from(tokenRevocations)
+      .where(eq(tokenRevocations.jti, payload["sj"])).limit(1);
+    if (revoked.length > 0) return false;
+  }
+  if (typeof payload["atj"] === "string") {
+    const tok = await getApiToken(payload["atj"]);
+    if (!tok || tok.revoked_at != null || tok.expires_at <= Math.floor(Date.now() / 1000)) return false;
+  }
+  return true;
 }
 
 async function isFileProtected(filename: string): Promise<boolean> {
@@ -135,7 +188,9 @@ interface FileTokenClaims {
 
 /**
  * Verify a file-audience JWT and return the relevant claims. Returns null on
- * any verify failure (signature / audience / expiry / revocation).
+ * any verify failure (signature / audience / expiry / revocation), or when
+ * the session that minted it has ended (a password reset, sign-out, a
+ * revoked API token).
  */
 async function verifyFileTokenClaims(token: string, jwtSecret: string): Promise<FileTokenClaims | null> {
   const ctx = await verifyAuthToken(token, jwtSecret, {
@@ -153,6 +208,8 @@ async function verifyFileTokenClaims(token: string, jwtSecret: string): Promise<
     )) as Record<string, unknown>;
     const filename = typeof json["filename"] === "string" ? json["filename"] : null;
     if (!filename) return null;
+    // The grant lasts no longer than the session that minted it.
+    if (!(await mintingSessionStillValid(json))) return null;
     const out: FileTokenClaims = { filename };
     if (typeof json["ip"]   === "string") out.ip   = json["ip"];
     if (typeof json["uses"] === "number") out.uses = json["uses"];
@@ -379,6 +436,40 @@ export function maxUploadBytes(): number {
 
 /** This file's thumbnail variants are used up. */
 class ThumbLimitError extends Error {}
+/** The file isn't a resizable image (or is over the source cap): serve it as is. */
+class ThumbOriginalError extends Error {}
+
+/**
+ * A stored file's bytes, read as a stream and given up past `max` bytes
+ * (null then, or when there is no file), so a source is never buffered
+ * beyond the cap, whatever its files row says or when it has none.
+ */
+async function readCapped(key: string, max: number): Promise<Uint8Array | null> {
+  const r = await fileResponse(key);
+  if (!r?.body) return null;
+  const declared = Number(r.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > max) { await r.body.cancel().catch(() => {}); return null; }
+  const reader = r.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.length;
+      if (total > max) return null;
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
 
 /**
  * Takes deleted file names out of the record's field, through the normal
@@ -428,7 +519,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
 
       const col = await getCollection(params.collection);
-      if (!col) {
+      // A collection hidden from this caller answers as a missing one does
+      // (records do the same), before anything about its records or fields.
+      if (!col || hiddenFrom(col, auth, col.update_rule)) {
         set.status = 404;
         return { error: `Collection '${params.collection}' not found`, code: 404 };
       }
@@ -553,18 +646,17 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
           set.status = 400; return { error: "Invalid filename", code: 400 };
         }
         // Minting a download token is a read of the file.
-        const auth = await getAuthContext(request, jwtSecret, "read");
+        const { auth, verified } = await getVerifiedAuth(request, jwtSecret, "read");
 
         const col = await getCollection(params.collection);
-        if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
-        const fields = parseFields(col.fields);
-        const fieldDef = fields.find((f) => f.name === params.field);
-        if (!fieldDef || fieldDef.type !== "file") {
-          set.status = 404; return { error: "File field not found", code: 404 };
-        }
+        if (!col || hiddenFrom(col, auth, col.view_rule)) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const record = await getRecord(params.collection, params.recordId);
         if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
-
+        // Field and file are looked up, but not reported, until the rules
+        // pass: a caller who may not see the record learns nothing about
+        // which fields or files it holds (a record read answers the same).
+        const fields = parseFields(col.fields);
+        const fieldDef = fields.find((f) => f.name === params.field);
         const db = getDb();
         const fileRows = await db.select().from(files).where(
           and(
@@ -575,23 +667,30 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
           )
         ).limit(1);
         const meta = fileRows[0];
-        if (!meta) {
-          set.status = 404; return { error: "File not found", code: 404 };
-        }
 
         const peerIp = peerIpOf(server, request);
         const ip = trustedClientIp(request, peerIp);
-        const reqCtx = buildFileRequestContext(request, ip, meta, col.name);
+        const reqCtx = buildFileRequestContext(request, ip, meta ?? { mime_type: "", size: 0, field_name: params.field }, col.name);
         const decision = await evaluateFileAccess(col.id, params.recordId, params.field, auth, reqCtx);
         if (!decision.allowed) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+
+        if (!fieldDef || fieldDef.type !== "file") {
+          set.status = 404; return { error: "File field not found", code: 404 };
+        }
+        if (!meta) {
+          set.status = 404; return { error: "File not found", code: 404 };
+        }
 
         const opts = fieldDef.options ?? {};
         const payload: Record<string, unknown> = { filename: params.filename };
         if (opts.bindTokenIp)  payload["ip"]   = ip;
         if (opts.oneTimeToken) payload["uses"] = 1;
 
+        const binding = fileTokenBinding(auth, verified);
+        Object.assign(payload, binding.claims);
         const { token, exp } = await signAuthToken({
           payload,
+          ...(binding.resetSeen !== undefined ? { resetSeen: binding.resetSeen } : {}),
           audience: "file",
           expiresInSeconds: tokenWindowSeconds("file"),
           jwtSecret,
@@ -777,37 +876,54 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       // find out it isn't one. The format comes from the stored bytes, not
       // the declared type, which the uploader chose.
       if (meta && meta.size > MAX_THUMB_SOURCE_BYTES) return original();
-      // A small file is cheaper to read once than to sniff first (a second
-      // round trip on S3); the check after the read covers it.
-      if (!meta || meta.size > THUMB_SNIFF_ABOVE_BYTES) {
-        const headFormat = detectFormat(await readHead(params.filename, 16));
-        if (!headFormat || !canThumbnail(headFormat)) return original();
-      }
-      const buf = await readFile(params.filename);
-      if (!buf) { set.status = 404; return { error: "File not found", code: 404 }; }
-      const bytes = new Uint8Array(buf);
-      const format = detectFormat(bytes);
-      // Unknown or not resizable (AVIF): serve the original.
-      if (!format || !canThumbnail(format)) return original();
+      // Declared not to be an image (a PDF, a video): the original at once,
+      // without waiting for (or being refused by) the decode queue. Trusting
+      // the declared type only to skip work is safe: the answer is the file
+      // the caller could download anyway. Anything declared an image is
+      // still sniffed from its bytes inside the job.
+      if (meta && !String(meta.mime_type ?? "").toLowerCase().startsWith("image/")) return original();
 
       try {
-        const thumb = await generateThumbOnce(cachePath, async () => {
+        // Everything that buffers the source runs inside the shared job:
+        // concurrent misses for one variant join it before reading anything,
+        // and the job reads only once it holds a thumbnail job slot (a
+        // bounded queue; past it, 503).
+        const thumb = await generateThumbOnce(cachePath, () => withThumbJobSlot(async () => {
           // Runs once per variant; the slot is taken atomically here.
           if (auth?.type === "admin") noteThumbVariant(params.filename);
           else if (!reserveThumbVariant(uploadDir, params.filename)) throw new ThumbLimitError();
+          // From here the variant is reserved: give it back on any failure.
           try {
+            // A small file is cheaper to read once than to sniff first (a
+            // second round trip on S3); the check after the read covers it.
+            if (!meta || meta.size > THUMB_SNIFF_ABOVE_BYTES) {
+              const headFormat = detectFormat(await readHead(params.filename, 16));
+              if (!headFormat || !canThumbnail(headFormat)) throw new ThumbOriginalError();
+            }
+            // Capped whatever the files row says (or when there is none).
+            const bytes = await readCapped(params.filename, MAX_THUMB_SOURCE_BYTES);
+            if (!bytes) throw new ThumbOriginalError();
+            const format = detectFormat(bytes);
+            // Unknown or not resizable (AVIF): serve the original.
+            if (!format || !canThumbnail(format)) throw new ThumbOriginalError();
             return await generateThumbnail(bytes, spec, format as ThumbFormat);
           } catch (e) {
             releaseThumbVariant(params.filename);
             throw e;
           }
-        });
-        const outFormat = detectFormat(thumb) ?? format;
+        }));
+        const outFormat = detectFormat(thumb);
         return new Response(thumb, {
-          headers: { ...baseHeaders, "Content-Type": thumbMime(outFormat) },
+          headers: { ...baseHeaders, ...(outFormat ? { "Content-Type": thumbMime(outFormat) } : {}) },
         });
       } catch (e) {
         if (e instanceof ThumbLimitError) return original("limit");
+        if (e instanceof ThumbOriginalError) return original();
+        if (e instanceof ThumbBusyError) {
+          set.status = 503;
+          set.headers["Retry-After"] = "1";
+          return { error: "Too many thumbnails are being generated; try again shortly", code: 503 };
+        }
         const r = await fileResponse(params.filename);
         if (!r) return new Response(null, { status: 404 });
         for (const [k, v] of Object.entries(baseHeaders)) r.headers.set(k, v);
@@ -826,7 +942,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const col = await getCollection(params.collection);
-      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (!col || hiddenFrom(col, auth, col.update_rule)) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (auth.type !== "admin") {
         const existing = await getRecord(params.collection, params.recordId);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
@@ -864,7 +980,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         set.status = 400; return { error: "Invalid filename", code: 400 };
       }
       const col = await getCollection(params.collection);
-      if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
+      if (!col || hiddenFrom(col, auth, col.update_rule)) { set.status = 404; return { error: "Collection not found", code: 404 }; }
       if (auth.type !== "admin") {
         const existing = await getRecord(params.collection, params.recordId);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }

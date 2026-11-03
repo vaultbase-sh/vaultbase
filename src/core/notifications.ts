@@ -589,10 +589,11 @@ export async function dispatchNotification(
  * magic-link claim ends the sessions that registered them; a device a
  * session thief or address squatter added kept receiving the owner's
  * notifications. The owner's own apps register again on their next sign-in.
- * Device tokens belong to the `users` collection only.
+ * Any auth collection's session can register a device, and rows hold only
+ * the user id, so this goes by id whatever the collection: ids are random,
+ * and a clash would only make another device register again.
  */
-export async function disableUserDevices(collectionName: string, userId: string): Promise<void> {
-  if (collectionName !== "users") return;
+export async function disableUserDevices(_collectionName: string, userId: string): Promise<void> {
   try {
     // `table` so the change reaches cached lists and the read workers.
     await db.run(`UPDATE vb_device_tokens SET enabled = 0 WHERE "user" = ?`, [userId], { table: "vb_device_tokens" });

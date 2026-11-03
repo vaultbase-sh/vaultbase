@@ -97,8 +97,8 @@ describe("Phase 1.x — @collection.* view_rule inheritance", () => {
       ? { viewRule: 'published = true', hasField: () => true, isPrivateField: () => false, isFilterable: () => true }
       : null;
     const r = parseFilter(`@collection.posts.title = "x"`, "vb_users", { auth: USER, lookup });
-    // The joined row is aliased; its view rule is the join condition.
-    expect(r?.sql).toContain('LEFT JOIN "vb_posts" AS _vbj1 ON "_vbj1"."published" = ?');
+    // The joined row is aliased; only rows passing its view rule are joined.
+    expect(r?.sql).toContain('LEFT JOIN (SELECT * FROM "vb_posts" AS _vbj1 WHERE "_vbj1"."published" = ? LIMIT -1) AS _vbj1');
   });
 
   it("max join depth enforced", () => {

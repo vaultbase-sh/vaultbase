@@ -25,11 +25,15 @@
 #   # you want to configure first)
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --no-start
 #
-#   # Verify cosign keyless signature before installing (requires `cosign`
-#   # on PATH — install from https://docs.sigstore.dev/cosign/installation/).
-#   # Confirms the binary was built and signed by the project's GitHub
-#   # Actions runner via the Sigstore Fulcio chain.
+#   # The cosign keyless signature is verified by default whenever `cosign`
+#   # is on PATH (install from https://docs.sigstore.dev/cosign/installation/).
+#   # It confirms the binary was built and signed by the project's release
+#   # workflow for this tag via the Sigstore Fulcio chain. Without cosign the
+#   # installer says so and relies on the release's .sha256 alone.
+#   # Require it (fail when cosign is missing):
 #   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --verify-sig
+#   # Skip it (e.g. a release too old to be signed):
+#   curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --no-verify-sig
 #
 #   # Install a release too old to publish a .sha256 (the checksum is
 #   # otherwise required, and a missing one stops the install)
@@ -66,7 +70,8 @@ VERSION=""
 PORT="${DEFAULT_PORT}"
 NO_START=0
 NO_SYSTEMD=0
-VERIFY_SIG=0
+# auto: verify when cosign is on PATH; require: --verify-sig; off: --no-verify-sig.
+VERIFY_SIG="auto"
 SKIP_CHECKSUM=0
 # PORT is pre-seeded with the default, so it cannot tell us whether --port was
 # actually passed. Track that separately or an upgrade warns about a flag the
@@ -104,7 +109,11 @@ Flags:
   --port <n>           Listen port (Linux only, fresh installs only).
   --no-start           Install and enable the unit, but do not start it.
   --no-systemd         Install the binary only; skip the unit entirely.
-  --verify-sig         Verify the cosign keyless signature (needs `cosign`).
+  --verify-sig         Require the cosign keyless signature check; fail when
+                       `cosign` is not on PATH. Without this flag the check
+                       still runs whenever cosign is on PATH.
+  --no-verify-sig      Skip the cosign signature check even if cosign is
+                       installed (releases too old to be signed).
   --skip-checksum      Install without the SHA-256 check when the release has
                        no .sha256 (very old releases). Otherwise a missing
                        checksum stops the install.
@@ -118,6 +127,12 @@ Re-running upgrades the binary in place and restarts the service. The data
 dir, config file, JWT secret and admin accounts are preserved.
 USAGE
 }
+
+# Everything below runs inside main(), called on the last line. A download
+# cut short by a dropped connection then ends inside the function body: sh
+# reports a syntax error and runs nothing, instead of running the commands
+# that did arrive. (The body is not re-indented, to keep history readable.)
+main() {
 
 # ── Arg parsing ─────────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -134,7 +149,8 @@ while [ $# -gt 0 ]; do
         --port=*)     PORT="${1#*=}"; PORT_SET=1; shift ;;
         --no-start)   NO_START=1; shift ;;
         --no-systemd) NO_SYSTEMD=1; shift ;;
-        --verify-sig) VERIFY_SIG=1; shift ;;
+        --verify-sig) VERIFY_SIG="require"; shift ;;
+        --no-verify-sig) VERIFY_SIG="off"; shift ;;
         --skip-checksum) SKIP_CHECKSUM=1; shift ;;
         --install-dir)   [ $# -ge 2 ] || die "--install-dir needs a value"
                       INSTALL_DIR="$2"; shift 2 ;;
@@ -301,6 +317,16 @@ else
     ok "Pinned release: ${VERSION}"
 fi
 
+# The tag goes into download URLs and the cosign identity regexp, so accept
+# only what release.yml publishes: vX.Y.Z with an optional pre-release suffix.
+# The character check also rejects newlines, which grep would read as a
+# second line to match.
+case "${VERSION}" in
+    *[!0-9A-Za-z.-]*) die "Not a release version: '${VERSION}' (expected vX.Y.Z)" ;;
+esac
+printf '%s\n' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+    || die "Not a release version: '${VERSION}' (expected vX.Y.Z)"
+
 # Asset name pattern matches package.json's build script outputs.
 ASSET="vaultbase-${ARCH}"
 URL="${RELEASES_URL}/download/${VERSION}/${ASSET}"
@@ -392,16 +418,26 @@ else
     die "Couldn't fetch ${SHA_URL}, so the download can't be checked. Retry, or pass --skip-checksum for a release that has no .sha256."
 fi
 
-# Optional cosign keyless signature verification (--verify-sig). Confirms the
-# binary was built and signed by the project's GitHub Actions runner via the
-# Sigstore Fulcio chain. Requires `cosign` on PATH.
-if [ "${VERIFY_SIG}" -eq 1 ]; then
-    if ! command -v cosign >/dev/null 2>&1; then
+# Cosign keyless signature verification. The .sha256 above comes from the
+# same release as the binary, so whoever can replace one can replace both;
+# the signature ties the binary to this repository's release.yml run for this
+# tag. Runs by default when `cosign` is on PATH, is required with
+# --verify-sig, and is skipped with --no-verify-sig. A missing .sig/.pem
+# fails the install whenever the check runs: dropping them must not be a way
+# around it.
+if [ "${VERIFY_SIG}" != "off" ] && ! command -v cosign >/dev/null 2>&1; then
+    if [ "${VERIFY_SIG}" = "require" ]; then
         die "--verify-sig requested but \`cosign\` is not on PATH. Install: https://docs.sigstore.dev/cosign/installation/"
     fi
+    warn "cosign is not on PATH, so the release signature was NOT verified."
+    warn "Only the .sha256 from the same release was checked; it cannot detect release assets replaced after publication."
+    warn "Install cosign (https://docs.sigstore.dev/cosign/installation/) and re-run to verify, or pass --verify-sig to require it."
+    VERIFY_SIG="off"
+fi
+if [ "${VERIFY_SIG}" != "off" ]; then
     say "Fetching cosign signature + certificate..."
-    curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}"
-    curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}"
+    curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
+    curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
     # The release workflow, started from this very tag: any other ref would
     # let another release's signature pass as this one.
     VERSION_RE="$(printf '%s' "${VERSION}" | sed 's/[.]/\\./g')"
@@ -819,3 +855,7 @@ fi
 if [ "${START_FAILED}" -eq 1 ]; then
     exit 1
 fi
+
+}
+
+main "$@"

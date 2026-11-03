@@ -126,9 +126,10 @@ function issuedByResetAt(stamp: number, payload: Record<string, unknown>): boole
  * compared, so a server whose clock runs ahead of the one that stamped the
  * reset can't mint a session that outlives it, and a sign-in right after a
  * reset is good at once. Tokens without the claim fall back to `iat_ms`.
+ * `ars` is the same for an impersonation session's admin.
  */
-function endedByReset(stamp: number, payload: Record<string, unknown>): boolean {
-  if (typeof payload["rs"] === "number") return stamp !== payload["rs"];
+function endedByReset(stamp: number, payload: Record<string, unknown>, claim: "rs" | "ars" = "rs"): boolean {
+  if (typeof payload[claim] === "number") return stamp !== payload[claim];
   return issuedByResetAt(stamp, payload);
 }
 
@@ -204,10 +205,13 @@ export async function verifyAuthToken(
       // recheckPrincipal still verifies the admin row exists / wasn't force-
       // logged-out before mint — a leaked token still goes invalid when the
       // minting admin's password is reset.
+      // Tokens minted since `rs` carry the admin's stamp as read when the
+      // minting session was checked, so no clocks are compared.
       if (recheck) {
         const resetAt = await adminResetAt(tok.created_by);
         if (resetAt === null) return null;
-        if (issuedByResetAt(resetAt, payload)) return null;
+        if (endedByReset(resetAt, payload)) return null;
+        ctx.resetSeen = resetAt;
       }
       return ctx;
     }
@@ -262,10 +266,11 @@ export async function verifyAuthToken(
         ctx.resetSeen = typeof u.password_reset_at === "number" ? u.password_reset_at : 0;
         // An impersonation session acts for the admin who minted it: it ends
         // with that admin (deleted, password reset, force-logout-all), as an
-        // API token does. By `iat_ms`: `rs` is the user's stamp, not theirs.
+        // API token does. `rs` is the user's stamp; `ars` is the admin's as
+        // read when their session was checked (older tokens: by `iat_ms`).
         if (typeof payload["impersonated_by"] === "string") {
           const adminReset = await adminResetAt(payload["impersonated_by"]);
-          if (adminReset === null || issuedByResetAt(adminReset, payload)) return null;
+          if (adminReset === null || endedByReset(adminReset, payload, "ars")) return null;
         }
         // Read from the row, not the token, so verifying takes effect at once.
         if (u.email_verified === 1) ctx.verified = true;

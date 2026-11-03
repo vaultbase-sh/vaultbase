@@ -12,7 +12,7 @@ import {
   userTableName,
   type CascadeMode,
   type FieldDef, AUTH_PRIVATE_COLUMNS, baseColumnName, privateFieldNames, sensitiveSchema, tableColumns } from "./collections.ts";
-import { parseFilter, type CollectionLookup } from "./filter.ts";
+import { hiddenByApplicableRules, parseFilter, type CollectionLookup } from "./filter.ts";
 import { fieldTypesVersion } from "./field-types.ts";
 import { maybeRecordHistory } from "./record-history.ts";
 import { storedRowCount } from "./row-counts.ts";
@@ -221,6 +221,9 @@ function lookupCollection(name: string): ReturnType<CollectionLookup> {
     viewRule: col.view_rule,
     listRule: col.list_rule,
     createRule: col.create_rule,
+    updateRule: col.update_rule,
+    type: col.type,
+    viewParamValues: databaseViewRuleValues(col),
     hasField: (n) => fieldNames.has(n) || n === "id" || n === "created_at" || n === "updated_at",
     isPrivateField: (n) => priv.has(n),
     isFilterable: (n) => cols.has(n),
@@ -277,13 +280,18 @@ import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedW
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
 import { dateToUnixSeconds, validateRecord, type CanSeeRecord } from "./validate.ts";
-import { ViewParamError, boundViewSource, parseViewParams, resolveViewParams } from "./view-params.ts";
+import { ViewParamError, boundViewSource, databaseViewParamValues, parseViewParams, requestWithViewParams, resolveViewParams } from "./view-params.ts";
 import { getActiveHookRequest, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 import { quoteIdent } from "../db/ident.ts";
 
-/** SQL that reads the clock: its answer changes with no write to the table. */
-const READS_CLOCK_RE = /strftime\(|\bnow\(\)/i;
+/**
+ * SQL that reads the clock: its answer changes with no write to the table.
+ * `timestamptz` too: every Postgres strftime literal is cast to it, and one
+ * that resolves against the clock ('today 12:00') must never be cached even
+ * if the compiler missed it. Over-matching only costs a fresh count.
+ */
+const READS_CLOCK_RE = /strftime\(|\bnow\(\)|timestamptz/i;
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
   // Password: bcrypt-hash via Bun. Empty/null leaves column null.
@@ -584,11 +592,24 @@ export function withViewParamValues(
   request: RequestContextLike | null | undefined,
   values: Map<string, string | number | null> | null,
 ): RequestContextLike | null | undefined {
-  if (!values) return request;
-  const query: Record<string, string> = {};
-  for (const [k, v] of Object.entries(request?.query ?? {})) if (!k.startsWith("params.")) query[k] = v;
-  for (const [name, v] of values) if (v !== null) query[`params.${name}`] = String(v);
-  return { ...(request ?? {}), query };
+  return requestWithViewParams(request, values);
+}
+
+/** A view's parameter values in its database view (defaults), or null when it takes none. */
+function databaseViewRuleValues(col: Pick<Collection, "type" | "view_params">): Map<string, string | number | null> | null {
+  return col.type === "view" ? databaseViewParamValues(parseViewParams(col.view_params)) : null;
+}
+
+/**
+ * The request for `col`'s rules when its rows are read from the database
+ * view (a relation, expand), not a direct read with `?params[...]`: the
+ * parameters as the view was built with them, never the outer request's.
+ */
+function rulesRequestForStoredView(
+  col: Pick<Collection, "type" | "view_params">,
+  request: RequestContextLike | null | undefined,
+): RequestContextLike | null {
+  return requestWithViewParams(request, databaseViewRuleValues(col)) ?? null;
 }
 
 /**
@@ -883,20 +904,40 @@ export function adminOnlyRule(rule: string | null | undefined): boolean {
   return typeof rule === "string" && rule.trim() === "";
 }
 
+type HiddenShape = Pick<Collection, "list_rule" | "view_rule" | "create_rule"> & Partial<Pick<Collection, "type" | "update_rule">>;
+
+/**
+ * Whether `col` is hidden from non-admins: every rule that applies to its
+ * type is admin-only (view and update for a singleton, list and view for a
+ * view, list, view and create otherwise). The public OpenAPI document and
+ * file routes should leave out the same collections.
+ */
+export function collectionHiddenByRules(col: HiddenShape): boolean {
+  return hiddenByApplicableRules({
+    type: col.type,
+    listRule: col.list_rule,
+    viewRule: col.view_rule,
+    createRule: col.create_rule,
+    updateRule: col.update_rule,
+  });
+}
+
 /**
  * Whether a non-admin is answered as if `col` didn't exist, for an action
- * gated by `rule`: that rule is admin-only, and so is everything that would
- * show them the collection (its list, view and create rules; the public
- * OpenAPI document leaves it out the same way). A 403 there, or a type or
- * view-parameter refusal, confirmed the name.
+ * gated by `rule`: the collection is hidden (collectionHiddenByRules) and,
+ * on base and auth collections, so is that action. A 403 there, or a type
+ * or view-parameter refusal, confirmed the name. On a singleton or view
+ * every action that applies is one of the judged rules, and one that
+ * doesn't (create on a view, delete on a singleton) grants nothing, so
+ * `rule` adds nothing there.
  */
 export function hiddenFrom(
-  col: Pick<Collection, "list_rule" | "view_rule" | "create_rule">,
+  col: HiddenShape,
   auth: AuthContext | null,
   rule: string | null,
 ): boolean {
-  return auth?.type !== "admin" && adminOnlyRule(rule)
-    && adminOnlyRule(col.list_rule) && adminOnlyRule(col.view_rule) && adminOnlyRule(col.create_rule);
+  if (auth?.type === "admin" || !collectionHiddenByRules(col)) return false;
+  return col.type === "singleton" || col.type === "view" || adminOnlyRule(rule);
 }
 
 /** Most levels one expand path may nest (`a.b.c` is 3). */
@@ -1223,7 +1264,7 @@ export function canSeeAs(auth: AuthContext | null, request: RequestContextLike |
   return async (target, id) => {
     if (auth?.type === "admin" || target.view_rule === null) return true;
     if (target.view_rule === "") return false;
-    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request });
+    const { whereSql, whereParams } = await compileListWhere(target, { accessRule: target.view_rule, auth, request: rulesRequestForStoredView(target, request) });
     const tableRef = quoteIdent(userTableName(target.name));
     const row = await db.get(
       `SELECT 1 FROM ${tableRef} WHERE ${tableRef}."id" = ?${whereSql ? ` AND (${whereSql.replace(/^\s*WHERE\s+/i, "")})` : ""} LIMIT 1`,
@@ -1603,7 +1644,9 @@ async function expandRelations(
     } else if (view !== null && auth?.type !== "admin") {
       const compiled = parseFilter(view, userTableName(targetCol.name), {
         auth,
-        request,
+        // The rows come from the database view (defaults), so its rule sees
+        // those values, not `params[...]` on the request that asked.
+        request: rulesRequestForStoredView(targetCol, request),
         lookup: makeCollectionLookup(),
         hostPrivateField: (n) => privateFieldNames(targetCol).has(n),
       });

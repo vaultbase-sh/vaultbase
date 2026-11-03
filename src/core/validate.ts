@@ -207,20 +207,48 @@ export function validateGroup(field: FieldDef, value: unknown): { error: string 
 }
 
 /**
- * A write body as rules should see it: date fields in their stored form
- * (unix seconds), as the list query compares them. A rule like
- * `starts_at > @now` compared an ISO string with a number as text and let
- * any date through on create and update. Other values are left as sent;
- * invalid dates stay strings and fail validation after the rule.
+ * A write body as rules should see it: values in their stored form, as the
+ * list query compares them. Dates (top level and in groups) become unix
+ * seconds: `starts_at > @now` compared an ISO string with a number as text
+ * and let any date through on create and update. Colors are lowercased and
+ * expanded (`#0F0` slipped past `color != "#00ff00"`), editor HTML is
+ * sanitised, and custom types apply their own normalize. Values that fail
+ * validation are left as sent and are refused after the rule.
  */
-export function bodyForRules(col: Collection, body: unknown): Record<string, unknown> {
+export function bodyForRules(col: Pick<Collection, "fields">, body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = { ...((body ?? {}) as Record<string, unknown>) };
   for (const f of parseFields(col.fields)) {
-    if ((f.type !== "date" && f.type !== "autodate") || !Object.prototype.hasOwnProperty.call(out, f.name)) continue;
+    if (!Object.prototype.hasOwnProperty.call(out, f.name)) continue;
     const v = out[f.name];
-    if (typeof v !== "string" || v.trim() === "") continue;
-    const stored = dateToUnixSeconds(v);
-    if (stored !== null) out[f.name] = stored;
+    if (v === null || v === undefined || v === "") continue;
+    if (f.type === "date" || f.type === "autodate") {
+      if (typeof v !== "string" || v.trim() === "") continue;
+      const stored = dateToUnixSeconds(v);
+      if (stored !== null) out[f.name] = stored;
+    } else if (f.type === "group") {
+      const r = validateGroup(f, v);
+      if (!("value" in r)) continue;
+      // Ids the caller left out are minted again on write; the rule sees none
+      // rather than one that won't be stored.
+      if (Array.isArray(r.value) && Array.isArray(v)) {
+        out[f.name] = r.value.map((item, i) => {
+          const given = isPlainObject(v[i]) ? v[i]["id"] : undefined;
+          if (given !== undefined && given !== null && given !== "") return item;
+          const { id: _minted, ...rest } = item as Record<string, unknown>;
+          return rest;
+        });
+      } else out[f.name] = r.value;
+    } else if (f.type === "color") {
+      const c = normalizeColor(v, f.options?.alpha === true);
+      if (c !== null) out[f.name] = c;
+    } else if (f.type === "editor") {
+      if (typeof v === "string") out[f.name] = sanitizeHtml(v);
+    } else {
+      const custom = customFieldType(f.type);
+      if (custom?.normalize && !(custom.validate?.(v, f))) {
+        try { out[f.name] = custom.normalize(v, f); } catch { /* refused on validation */ }
+      }
+    }
   }
   return out;
 }

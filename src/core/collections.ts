@@ -751,7 +751,8 @@ export function validateViewQuery(query: string): void {
   // One scanner pass that knows strings, quoted identifiers and comments.
   // Stripping comments with a regex first let a `'--'` inside a string hide
   // the rest of the line from every check below.
-  const { words, identifiers, statements } = scanSql(q);
+  const pg = db.name === "postgres";
+  const { words, identifiers, statements } = scanSql(q, { pg });
   if (statements !== 1) throw new Error("View query must be a single statement");
   if (words[0] !== "SELECT") throw new Error("View query must begin with SELECT");
   if (words.some((w) => VIEW_BANNED_WORDS.has(w))) throw new Error("View query may only SELECT");
@@ -863,6 +864,8 @@ function skipParens(s: string, i: number): number {
 
 /** Replace string literals and comments with spaces; quoted names keep their quotes but lose their content. */
 function blankLiterals(sql: string): string {
+  // Postgres's own literals (E'…', $tag$…$tag$) are blanked as Postgres reads them.
+  const pg = db.name === "postgres";
   let out = "";
   for (let i = 0; i < sql.length;) {
     const c = sql[i]!;
@@ -873,6 +876,20 @@ function blankLiterals(sql: string): string {
     } else if (c === "/" && sql[i + 1] === "*") {
       const end = sql.indexOf("*/", i + 2);
       const j = end < 0 ? sql.length : end + 2;
+      out += " ".repeat(j - i); i = j;
+    } else if (pg && (c === "E" || c === "e") && sql[i + 1] === "'" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "")) {
+      let j = i + 2;
+      while (j < sql.length) {
+        if (sql[j] === "\\") { j += 2; continue; }
+        if (sql[j] === "'") { if (sql[j + 1] === "'") { j += 2; continue; } break; }
+        j++;
+      }
+      j = Math.min(sql.length, j + 1);
+      out += " ".repeat(j - i); i = j;
+    } else if (pg && c === "$" && !/[A-Za-z0-9_$]/.test(sql[i - 1] ?? "") && /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.test(sql.slice(i, i + 130))) {
+      const tag = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 130))![0];
+      const end = sql.indexOf(tag, i + tag.length);
+      const j = end < 0 ? sql.length : end + tag.length;
       out += " ".repeat(j - i); i = j;
     } else if (c === "'" || c === '"') {
       let j = i + 1;
@@ -955,7 +972,7 @@ function rememberSensitive(rows: CollectionShapeRow[]): SensitiveSchema {
     for (const r of rows) {
       const t = userTableName(r.name).toLowerCase();
       if (r.type !== "view" || !r.view_query || tables.has(t)) continue;
-      const { words, identifiers } = scanSql(r.view_query);
+      const { words, identifiers } = scanSql(r.view_query, { pg: driver.name === "postgres" });
       if ([...words, ...identifiers].some((w) => tables.has(w.toLowerCase()))) { tables.add(t); changed = true; }
     }
   }
@@ -1120,6 +1137,11 @@ export async function createUserView(
   const tname = quoteIdent(userTableName(collectionName));
   const body = viewQueryWithDefaults(query, params).trim().replace(/;\s*$/, "");
   await db.exec(db.dialect.createView(tname, body));
+  // Putting back the view a failed alter replaced: it was live a moment ago
+  // and nothing it reads changed (a table change that would make a view
+  // expose a private column is refused, assertDependentViewsStaySafe), so
+  // re-checking it against today's stricter rules could only drop it and
+  // leave the collection with no view behind it.
   if (restoring) return;
   try {
     await checkCreatedView(tname);
@@ -1130,12 +1152,64 @@ export async function createUserView(
 }
 
 /**
+ * Re-check the views that read `tableName` (directly, or through another
+ * view) after a change to its schema, inside that change's transaction and
+ * after its new schema row is saved. A view accepted while the table had no
+ * private columns can expose one it gains later: on Postgres a whole-row
+ * value follows the table's current columns, and on both databases a
+ * `UNION` renames by position. Such a change is refused (and rolled back
+ * with everything else in it), naming the view; nothing is dropped behind
+ * the admin's back.
+ */
+async function assertDependentViewsStaySafe(tableName: string): Promise<void> {
+  const views = (await getDb().select().from(collections)).filter((c) => c.type === "view" && c.view_query);
+  if (views.length === 0) return;
+  const pg = db.name === "postgres";
+  const reads = new Set([tableName.toLowerCase()]);
+  const dependents: Collection[] = [];
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const v of views) {
+      if (dependents.includes(v)) continue;
+      const { words, identifiers } = scanSql(v.view_query!, { pg });
+      if (![...words, ...identifiers].some((w) => reads.has(w.toLowerCase()))) continue;
+      dependents.push(v);
+      reads.add(userTableName(v.name).toLowerCase());
+      changed = true;
+    }
+  }
+  if (dependents.length === 0) return;
+  // The sensitive set as this transaction sees it (the new schema row included).
+  invalidateSensitiveSchema();
+  try {
+    await loadSensitiveSchema();
+    for (const v of dependents) {
+      try {
+        validateViewQuery(v.view_query!);
+        await checkCreatedView(quoteIdent(userTableName(v.name)));
+      } catch (e) {
+        throw new CollectionInUseError(
+          `Can't save this change to ${tableName}: the view '${v.name}' reads it and would then expose private columns ` +
+          `(${e instanceof Error ? e.message : String(e)}). Change or delete that view first.`,
+        );
+      }
+    }
+  } finally {
+    // Don't keep a set read inside a transaction that may yet roll back.
+    invalidateSensitiveSchema();
+  }
+}
+
+/**
  * The text checks can't follow every way Postgres spells a whole row
- * (`u`, `u::text`, `to_jsonb(u)`, `format('%s', u)`), but the view Postgres
- * created has them resolved: its query tree holds a whole-row Var
- * (`:varattno 0`) and its dependencies name the real tables read. A view
- * that reads a table with private columns (or an internal one) and holds a
- * whole row is refused. SQLite has no whole-row values.
+ * (`u`, `u::text`, `to_jsonb(u)`, `format('%s', u)`), or every way Postgres
+ * lexes a literal, but the view Postgres created has them resolved: its
+ * query tree holds every column reference (Var) and its dependencies name
+ * the real tables read. A view that reads an internal table is refused. A
+ * view over a table with private columns is refused when it holds a whole
+ * row of it, or reads a private column anywhere except as a plain output
+ * column that keeps its own name (which row output strips). SQLite has no
+ * whole-row values, and its text checks see the query as SQLite lexes it.
  */
 async function checkCreatedView(quotedName: string): Promise<void> {
   if (db.name !== "postgres") return;
@@ -1144,8 +1218,8 @@ async function checkCreatedView(quotedName: string): Promise<void> {
     [quotedName],
   );
   if (!rule) return;
-  const rels = await db.all<{ name: string }>(
-    `SELECT DISTINCT c.relname AS name FROM pg_depend d JOIN pg_class c ON c.oid = d.refobjid
+  const rels = await db.all<{ oid: string; name: string }>(
+    `SELECT DISTINCT c.oid::text AS oid, c.relname AS name FROM pg_depend d JOIN pg_class c ON c.oid = d.refobjid
      WHERE d.classid = 'pg_rewrite'::regclass AND d.objid = ? AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> to_regclass(?)`,
     [rule.oid, quotedName],
   );
@@ -1153,9 +1227,235 @@ async function checkCreatedView(quotedName: string): Promise<void> {
     throw new Error("View query may not read Vaultbase's internal tables");
   }
   const sensitive = await loadSensitiveSchema();
-  if (rels.some((r) => sensitive.tables.has(r.name.toLowerCase())) && /:varattno 0\b/.test(rule.tree)) {
+  const touched = rels.filter((r) => sensitive.tables.has(r.name.toLowerCase()));
+  if (touched.length === 0) return;
+  if (/:varattno 0\b/.test(rule.tree)) {
     throw new Error("View query may not serialize whole rows of tables with private columns");
   }
+  // The private columns of the sensitive relations read, by relation oid and attnum.
+  const cols = await db.all<{ rel: string; num: unknown; name: string }>(
+    `SELECT a.attrelid::text AS rel, a.attnum AS num, a.attname AS name FROM pg_attribute a
+     WHERE a.attrelid::text IN (${touched.map(() => "?").join(", ")}) AND a.attnum > 0 AND NOT a.attisdropped`,
+    touched.map((r) => r.oid),
+  );
+  const privateCols = new Map<string, Map<number, string>>();
+  for (const c of cols) {
+    const lower = c.name.toLowerCase();
+    if (!AUTH_PRIVATE_COLUMNS.has(lower) && !sensitive.passwordFields.has(lower)) continue;
+    let m = privateCols.get(c.rel);
+    if (!m) privateCols.set(c.rel, (m = new Map()));
+    m.set(Number(c.num), c.name);
+  }
+  if (privateCols.size === 0) return;
+  let problem: string | null;
+  try {
+    problem = viewTreePrivateUse(rule.tree, privateCols);
+  } catch {
+    problem = "its query tree could not be checked";
+  }
+  if (problem) {
+    throw new Error(`View query may not read password hashes, TOTP secrets, password_reset_at or password fields (${problem})`);
+  }
+}
+
+// ── Postgres query-tree reading (pg_rewrite.ev_action) ──────────────────────
+
+type PgNode = { t: string; f: Map<string, PgVal> };
+type PgVal = PgNode | PgVal[] | string | null;
+
+/** Parse Postgres's node-tree text (outfuncs.c format) into nodes, lists and tokens. */
+function parsePgTree(text: string): PgVal {
+  const tokens: Array<{ v: string; raw: boolean }> = [];
+  for (let i = 0; i < text.length;) {
+    const c = text[i]!;
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === "(" || c === ")" || c === "{" || c === "}") { tokens.push({ v: c, raw: true }); i++; continue; }
+    let v = "";
+    let escaped = false;
+    while (i < text.length && !/[\s(){}]/.test(text[i]!)) {
+      if (text[i] === "\\" && i + 1 < text.length) { v += text[i + 1]; escaped = true; i += 2; continue; }
+      v += text[i]; i++;
+    }
+    tokens.push({ v, raw: !escaped });
+  }
+  let p = 0;
+  const value = (): PgVal => {
+    const tok = tokens[p++];
+    if (!tok) throw new Error("truncated tree");
+    if (tok.raw && tok.v === "{") {
+      const name = tokens[p++]?.v ?? "";
+      const node: PgNode = { t: name, f: new Map() };
+      while (p < tokens.length && !(tokens[p]!.raw && tokens[p]!.v === "}")) {
+        const key = tokens[p++]!;
+        if (!(key.raw && key.v.startsWith(":"))) continue; // stray token: skip
+        const vals: PgVal[] = [];
+        while (p < tokens.length) {
+          const nx = tokens[p]!;
+          if (nx.raw && (nx.v === "}" || nx.v.startsWith(":"))) break;
+          vals.push(value());
+        }
+        node.f.set(key.v.slice(1), vals.length === 1 ? vals[0]! : vals.length === 0 ? null : vals);
+      }
+      p++; // }
+      return node;
+    }
+    if (tok.raw && tok.v === "(") {
+      const items: PgVal[] = [];
+      while (p < tokens.length && !(tokens[p]!.raw && tokens[p]!.v === ")")) items.push(value());
+      p++; // )
+      return items;
+    }
+    if (tok.raw && (tok.v === "}" || tok.v === ")")) throw new Error("unbalanced tree");
+    if (tok.raw && tok.v === "<>") return null;
+    if (tok.raw && tok.v === '""') return "";
+    return tok.v;
+  };
+  return value();
+}
+
+const isNode = (v: PgVal | undefined, t?: string): v is PgNode =>
+  !!v && typeof v === "object" && !Array.isArray(v) && (t === undefined || v.t === t);
+const listOf = (v: PgVal | undefined): PgVal[] => (Array.isArray(v) ? v : []);
+const intOf = (v: PgVal | undefined): number => (typeof v === "string" ? Number.parseInt(v, 10) : NaN);
+
+/** What a column reference carries: a private column under its own name, a private value under another shape, or nothing. */
+type PgTaint = { kind: "private"; name: string } | { kind: "tainted" } | null;
+
+interface PgLevel {
+  rtable: PgVal[];
+  /** Per range-table index: the output taint of a subquery in FROM. */
+  outputs: Map<number, PgTaint[]>;
+  ctes: Map<string, PgTaint[]>;
+}
+
+/**
+ * Walk a view's query tree and return why it exposes a private column, or
+ * null. A Var reading a private column is allowed only as a plain,
+ * non-junk output column of the top query (or of a FROM subquery or CTE,
+ * which then carries that column on) whose output name equals the
+ * column's name; anywhere else (an expression, a rename, a filter, a
+ * scalar subquery, a set operation's arm) it is refused.
+ */
+export function viewTreePrivateUse(tree: string, privateCols: Map<string, Map<number, string>>): string | null {
+  const root = parsePgTree(tree);
+  const queries = Array.isArray(root) ? root : [root];
+  let problem: string | null = null;
+  const flag = (why: string) => { problem ??= why; };
+
+  const resolve = (v: PgNode, stack: PgLevel[]): PgTaint => {
+    const up = intOf(v.f.get("varlevelsup")) || 0;
+    const levelIdx = stack.length - 1 - up;
+    const level = stack[levelIdx];
+    if (!level) return { kind: "tainted" };
+    const varno = intOf(v.f.get("varno"));
+    const attno = intOf(v.f.get("varattno"));
+    const rte = level.rtable[varno - 1];
+    if (!isNode(rte)) return { kind: "tainted" };
+    if (attno < 0) return null; // system column
+    const kind = intOf(rte.f.get("rtekind"));
+    const at = stack.slice(0, levelIdx + 1);
+    const colTaint = (n: number): PgTaint => {
+      switch (kind) {
+        case 0: { // relation
+          const name = privateCols.get(String(rte.f.get("relid")))?.get(n);
+          return name ? { kind: "private", name } : null;
+        }
+        case 1: return level.outputs.get(varno - 1)?.[n - 1] ?? null; // subquery
+        case 2: case 9: { // join alias / group expression
+          const alias = listOf(rte.f.get(kind === 2 ? "joinaliasvars" : "groupexprs"))[n - 1];
+          if (isNode(alias, "VAR")) return resolve(alias, at);
+          return exprTainted(alias ?? null, at) ? { kind: "tainted" } : null;
+        }
+        case 6: { // CTE
+          const cteUp = intOf(rte.f.get("ctelevelsup")) || 0;
+          const owner = stack[levelIdx - cteUp];
+          const out = owner?.ctes.get(String(rte.f.get("ctename")));
+          if (!out) return { kind: "tainted" }; // a recursive self-reference: unknown
+          return out[n - 1] ?? null;
+        }
+        default: return null;
+      }
+    };
+    if (attno === 0) {
+      // A whole row: tainted if any column of it is.
+      const width = kind === 0 ? Math.max(0, ...(privateCols.get(String(rte.f.get("relid")))?.keys() ?? [])) :
+        listOf(isNode(rte.f.get("eref")) ? (rte.f.get("eref") as PgNode).f.get("colnames") : null).length;
+      for (let n = 1; n <= width; n++) if (colTaint(n)) return { kind: "tainted" };
+      return null;
+    }
+    return colTaint(attno);
+  };
+
+  /** Whether any Var inside `v` reads a private value. Nested queries are walked as scalar subqueries. */
+  const exprTainted = (v: PgVal, stack: PgLevel[]): boolean => {
+    let hit = false;
+    const visit = (x: PgVal) => {
+      if (hit || x === null || typeof x === "string") return;
+      if (Array.isArray(x)) { for (const y of x) visit(y); return; }
+      if (x.t === "VAR") { if (resolve(x, stack)) hit = true; return; }
+      if (x.t === "QUERY") { walkQuery(x, stack, false); return; }
+      for (const y of x.f.values()) visit(y);
+    };
+    visit(v);
+    return hit;
+  };
+
+  /** Generic expression walk: any private Var met here is a use that isn't allowed. */
+  const visitExpr = (v: PgVal, stack: PgLevel[], where: string) => {
+    if (exprTainted(v, stack)) flag(`a private column is used ${where}`);
+  };
+
+  /** Walk one Query. `exposed`: its output columns keep their names (top query, FROM subquery, CTE). */
+  function walkQuery(q: PgNode, stack: PgLevel[], exposed: boolean): PgTaint[] {
+    const level: PgLevel = { rtable: listOf(q.f.get("rtable")), outputs: new Map(), ctes: new Map() };
+    const here = [...stack, level];
+    if (q.f.get("hasRecursive") === "true") flag("a recursive query reads it");
+    for (const cte of listOf(q.f.get("cteList"))) {
+      if (!isNode(cte)) continue;
+      const cq = cte.f.get("ctequery");
+      if (isNode(cq, "QUERY")) level.ctes.set(String(cte.f.get("ctename")), walkQuery(cq, here, true));
+    }
+    level.rtable.forEach((rte, i) => {
+      if (!isNode(rte)) return;
+      const kind = intOf(rte.f.get("rtekind"));
+      const sub = rte.f.get("subquery");
+      if (kind === 1 && isNode(sub, "QUERY")) { level.outputs.set(i, walkQuery(sub, here, true)); return; }
+      // Function arguments, VALUES lists, table samples, security quals:
+      // values computed here, never passed through by name.
+      for (const [k, v] of rte.f) {
+        if (k === "joinaliasvars" || k === "groupexprs" || k === "eref" || k === "alias") continue;
+        visitExpr(v, here, "in a FROM item");
+      }
+    });
+    const setOps = q.f.get("setOperations");
+    if (setOps !== null && setOps !== undefined && setOps !== "") {
+      for (const out of level.outputs.values()) if (out.some((t) => t)) flag("a set operation (UNION / INTERSECT / EXCEPT) combines it");
+    }
+    const outputs: PgTaint[] = [];
+    for (const te of listOf(q.f.get("targetList"))) {
+      if (!isNode(te, "TARGETENTRY")) continue;
+      const resno = intOf(te.f.get("resno"));
+      const expr = te.f.get("expr");
+      const junk = te.f.get("resjunk") === "true";
+      if (isNode(expr, "VAR")) {
+        const t = resolve(expr, here);
+        if (!t) continue;
+        const resname = te.f.get("resname");
+        if (exposed && !junk && t.kind === "private" && resname === t.name) { outputs[resno - 1] = t; continue; }
+        flag(t.kind === "private" ? `'${t.name}' is output as '${typeof resname === "string" ? resname : "?"}'` : "a private value is output");
+        continue;
+      }
+      visitExpr(expr ?? null, here, "in an output expression");
+    }
+    for (const [k, v] of q.f) {
+      if (k === "rtable" || k === "cteList" || k === "targetList" || k === "rteperminfos") continue;
+      visitExpr(v, here, k === "jointree" ? "in a filter or join condition" : `in ${k}`);
+    }
+    return outputs;
+  }
+
+  for (const q of queries) if (isNode(q, "QUERY")) walkQuery(q, [], true);
+  return problem;
 }
 
 /** Drop the SQLite VIEW backing a view collection. */
@@ -1883,6 +2183,7 @@ export async function updateCollection(
         await db.update(collections).set({ ...saved, updated_at: now }).where(eq(collections.id, id));
         cache.delete(id);
         cache.delete(before.name);
+        await assertDependentViewsStaySafe(userTableName(currentName));
       },
     );
     data = saved;

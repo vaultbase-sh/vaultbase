@@ -62,6 +62,13 @@ export interface MintInput {
   createdBy: string;
   /** Admin email at mint time (for display + audit). */
   createdByEmail: string;
+  /**
+   * The minting admin's `password_reset_at` as read when their session was
+   * checked. Carried as `rs`: any reset or sign-out-all after that read ends
+   * the token, whichever server's clock stamped it. Without it (the CLI) the
+   * token falls back to its issue time.
+   */
+  resetSeen?: number;
 }
 
 export interface MintResult {
@@ -92,6 +99,7 @@ export async function mintApiToken(input: MintInput, jwtSecret: string): Promise
     audience: "api",
     expiresInSeconds: ttlSeconds,
     jwtSecret,
+    ...(input.resetSeen !== undefined ? { resetSeen: input.resetSeen } : {}),
   });
 
   await getDb().insert(apiTokens).values({

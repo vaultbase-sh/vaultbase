@@ -22,7 +22,8 @@
  * commits. A batch commits any open group before its own BEGIN.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { awaitCommit, deferUntilGroupCommit, flushGroupCommit, joinGroupCommit, type Group } from "./group-commit.ts";
+import { awaitCommit, deferUntilGroupCommit, flushGroupCommit, groupCommitOpen, joinGroupCommit, type Group } from "./group-commit.ts";
+import { setUngatedWriteGuard } from "../db/sqlite.ts";
 
 interface GateContext {
   exclusive: boolean;
@@ -30,9 +31,30 @@ interface GateContext {
   deferred: Array<() => void>;
   /** The write group a shared write joined: its effects and its answer wait on that group's commit. */
   group?: Group | null;
+  /**
+   * Set once the gated call has returned. Work it started without awaiting
+   * (a fire-and-forget promise) still sees this context, but no longer
+   * waits on any group commit, so it counts as ungated.
+   */
+  settled?: boolean;
 }
 
 const als = new AsyncLocalStorage<GateContext>();
+
+/**
+ * Writes outside the gate (auth stamps, token revocations, admin changes,
+ * TOTP, device disabling, ...) run on the same SQLite connection as the open
+ * group transaction. Joining it, they would return at once and be undone by
+ * a later rollback of the group while already reported done. So any such
+ * write commits the open group first and then runs in autocommit. The
+ * driver calls this before each write (db/sqlite.ts).
+ */
+setUngatedWriteGuard(() => {
+  if (!groupCommitOpen()) return;
+  const ctx = als.getStore();
+  if (ctx && !ctx.settled) return;
+  flushGroupCommit();
+});
 
 let sharedHolders = 0;
 let exclusiveHeld = false;
@@ -54,21 +76,25 @@ function nextWake(): Promise<void> {
 
 /** Run an ordinary record write. Concurrent with other writes, never inside an open batch. */
 export async function withSharedWrite<T>(fn: () => Promise<T>): Promise<T> {
-  if (als.getStore()) return fn(); // already inside a gated call
+  const current = als.getStore();
+  if (current && !current.settled) return fn(); // already inside a gated call
   // Exclusive waiters get priority so a steady stream of writes can't starve a batch.
   while (exclusiveHeld || exclusiveWaiting > 0) await nextWake();
   sharedHolders++;
   try {
     const group = joinGroupCommit();
+    const ctx: GateContext = { exclusive: false, deferred: [], group };
     let result: T;
     try {
-      result = await als.run({ exclusive: false, deferred: [], group }, fn);
+      result = await als.run(ctx, fn);
     } catch (e) {
+      ctx.settled = true;
       // A failed write may still have changed rows before throwing (as it
       // would have in autocommit); let those commit before the caller moves on.
       await awaitCommit(group).catch(() => { /* the write's own error wins */ });
       throw e;
     }
+    ctx.settled = true;
     // Don't report the write before the COMMIT that holds it.
     await awaitCommit(group);
     return result;
@@ -111,6 +137,7 @@ export async function withExclusiveWrite<T>(
   try {
     return await als.run(ctx, () => fn(tx));
   } finally {
+    ctx.settled = true;
     exclusiveHeld = false;
     wakeAll();
   }
@@ -124,9 +151,16 @@ export async function withExclusiveWrite<T>(
  */
 export async function withHeldEffects<T>(fn: () => Promise<T>): Promise<T> {
   const outer = als.getStore();
-  if (outer?.exclusive) return fn();
-  const ctx: GateContext = { exclusive: true, deferred: [] };
-  const result = await als.run(ctx, fn);
+  if (outer?.exclusive && !outer.settled) return fn();
+  // Called outside any gated call: hold the effects, but its writes are
+  // still ungated (they commit an open group first).
+  const ctx: GateContext = { exclusive: true, deferred: [], settled: !outer || outer.settled === true };
+  let result: T;
+  try {
+    result = await als.run(ctx, fn);
+  } finally {
+    ctx.settled = true;
+  }
   ctx.exclusive = false;
   for (const f of ctx.deferred.splice(0)) {
     if (!deferUntilGroupCommit(f)) { try { f(); } catch { /* side effects never fail the write */ } }
@@ -137,7 +171,7 @@ export async function withHeldEffects<T>(fn: () => Promise<T>): Promise<T> {
 /** Which gate the current async context holds, if any. */
 export function gateMode(): "exclusive" | "shared" | null {
   const ctx = als.getStore();
-  if (!ctx) return null;
+  if (!ctx || ctx.settled) return null;
   return ctx.exclusive ? "exclusive" : "shared";
 }
 

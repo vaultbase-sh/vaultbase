@@ -165,7 +165,9 @@ describe("POST /api/files/:collection/:recordId/:field/:filename/token", () => {
     const userToken = await signUser("u1", "u1@test.local");
     const app = makeFilesPlugin(tmpDir, SECRET);
     const res = await app.handle(tokenReq(userToken, "notes", rec.id, "attachment", filename));
-    expect(res.status).toBe(403);
+    // Every rule that applies is admin-only, so the collection is hidden from
+    // this user and answers as a missing one does (records do the same).
+    expect(res.status).toBe(404);
   });
 
   it("404 when the collection does not exist", async () => {

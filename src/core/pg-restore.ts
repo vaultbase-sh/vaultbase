@@ -524,9 +524,9 @@ async function carryOver(previous: string, live: string): Promise<void> {
     );
   }
 
-  // Passwords, MFA and admin deletions since the backup stay
-  // (restore-credentials.ts). Before the stamps are raised below: it
-  // compares the restored ones.
+  // Credentials and admin deletions since the backup stay
+  // (restore-credentials.ts). Each of its steps in a savepoint: a conflict
+  // it didn't foresee is reported instead of refusing the whole restore.
   {
     const { applyCredentials, captureCredentials, noteCarry } = await import("./restore-credentials.ts");
     const side = (schema: string) => ({
@@ -534,6 +534,7 @@ async function carryOver(previous: string, live: string): Promise<void> {
       run: async (sql: string, params?: unknown[]) => { await db.run(sql, params as never); },
       t: (name: string) => rel(schema, name),
       has: (name: string) => exists(schema, name),
+      savepoint: <T,>(fn: () => Promise<T>) => db.savepoint(fn),
     });
     noteCarry(await applyCredentials(side(live), await captureCredentials(side(previous))));
   }

@@ -409,7 +409,7 @@
   },
   "vb_gold | @collection.gold_people.name = \"bob\"": {
     "public": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"name\" = ?)",
       "params": [
         null,
         "",
@@ -417,7 +417,7 @@
       ]
     },
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"name\" = ?)",
       "params": [
         "u1",
         "",
@@ -425,7 +425,7 @@
       ]
     },
     "admin": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"name\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"name\" = ?)",
       "params": [
         "a1",
         "",
@@ -435,14 +435,14 @@
   },
   "vb_gold | @collection.gold_people.id = author": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
       "params": [
         "u1",
         ""
       ]
     },
     "admin": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"id\" = \"vb_gold\".\"author\")",
       "params": [
         "a1",
         ""
@@ -451,7 +451,7 @@
   },
   "vb_gold | @collection.gold_people.role = \"staff\" && @collection.gold_people.id = author": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? WHERE (_vbj1.\"role\" = ? AND _vbj1.\"id\" = \"vb_gold\".\"author\"))",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 WHERE (_vbj1.\"role\" = ? AND _vbj1.\"id\" = \"vb_gold\".\"author\"))",
       "params": [
         "u1",
         "",
@@ -461,7 +461,7 @@
   },
   "vb_gold | @collection.gold_people:a.id = author && @collection.gold_people:b.name = \"x\"": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON ? != ? LEFT JOIN \"vb_gold_people\" AS _vbj2 ON ? != ? WHERE (_vbj1.\"id\" = \"vb_gold\".\"author\" AND _vbj2.\"name\" = ?))",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE ? != ? LIMIT -1) AS _vbj1 ON 1 LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj2 WHERE ? != ? LIMIT -1) AS _vbj2 ON 1 WHERE (_vbj1.\"id\" = \"vb_gold\".\"author\" AND _vbj2.\"name\" = ?))",
       "params": [
         "u1",
         "",
@@ -481,7 +481,7 @@
       "params": []
     },
     "admin": {
-      "sql": "NOT EXISTS (SELECT 1 FROM \"vb_gold_people\" WHERE ? != ? AND \"vb_gold_people\".\"id\" = \"vb_gold\".\"author\")",
+      "sql": "NOT EXISTS (SELECT 1 FROM (SELECT * FROM \"vb_gold_people\" WHERE ? != ? LIMIT -1) AS \"vb_gold_people\" WHERE \"vb_gold_people\".\"id\" = \"vb_gold\".\"author\")",
       "params": [
         "a1",
         ""
@@ -496,7 +496,7 @@
   },
   "vb_gold | @collection.gold_people.name = \"bob\" | client": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN \"vb_gold_people\" AS _vbj1 ON (? != ?) AND (\"_vbj1\".\"role\" = ?) WHERE _vbj1.\"name\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT 1) AS _vb_one LEFT JOIN (SELECT * FROM \"vb_gold_people\" AS _vbj1 WHERE (? != ?) AND (\"_vbj1\".\"role\" = ?) LIMIT -1) AS _vbj1 ON 1 WHERE _vbj1.\"name\" = ?)",
       "params": [
         "u1",
         "",
@@ -541,13 +541,13 @@
   },
   "vb_gold_people | gold_via_author.status ?= \"published\"": {
     "public": {
-      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND \"vb_gold\".\"status\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT * FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT -1) AS \"vb_gold\" WHERE \"vb_gold\".\"status\" = ?)",
       "params": [
         "published"
       ]
     },
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND \"vb_gold\".\"status\" = ?)",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT * FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT -1) AS \"vb_gold\" WHERE \"vb_gold\".\"status\" = ?)",
       "params": [
         "published"
       ]
@@ -561,7 +561,7 @@
   },
   "vb_gold_people | gold_via_author.title ?~ \"x\" | client": {
     "user": {
-      "sql": "EXISTS (SELECT 1 FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" AND coalesce(\"vb_gold\".\"title\" LIKE ?, 0))",
+      "sql": "EXISTS (SELECT 1 FROM (SELECT * FROM \"vb_gold\" WHERE \"vb_gold\".\"author\" = \"vb_gold_people\".\"id\" LIMIT -1) AS \"vb_gold\" WHERE coalesce(\"vb_gold\".\"title\" LIKE ?, 0))",
       "params": [
         "%x%"
       ]

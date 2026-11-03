@@ -17,14 +17,15 @@ import { db, getDriver } from "../db/index.ts";
 import { runMigrations } from "../db/migrate.ts";
 import type { PostgresDriver } from "../db/postgres.ts";
 import { admin } from "../db/schema.ts";
-import { signAuthToken } from "../core/sec.ts";
+import { signAuthToken, verifyAuthToken } from "../core/sec.ts";
+import { mintApiToken } from "../core/api-tokens.ts";
 import { makeBackupPlugin } from "../api/backup.ts";
 import { backupPath, runBackup, setBackupsDir } from "../core/backups.ts";
 import { createRecord, listRecords } from "../core/records.ts";
 import { getCollection } from "../core/collections.ts";
 import { dropExpiredRestoreSchemas, listPreviousData, restoreArchive, RestoreSwapped, restoreTools, sweepRestoreFiles } from "../core/pg-restore.ts";
 import { _peersIdle, startPeers, stopPeers } from "../core/peers.ts";
-import { createPublicCollection, onSqlite } from "./_helpers.ts";
+import { createPublicCollection, onSqlite, seedAuthUser } from "./_helpers.ts";
 
 const PG = process.env["VAULTBASE_TEST_DB"] ?? "";
 const canRestore = !onSqlite && restoreTools() !== null && !!(process.env["VAULTBASE_PG_DUMP"] || Bun.which("pg_dump"));
@@ -157,6 +158,54 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     expect(res.json.data.message).toMatch(/left@test\.local/);
     expect((await db.get<{ h: string }>(`SELECT password_hash AS h FROM vaultbase_admin WHERE id = 'a1'`))!.h).toBe("fresh");
     expect(await db.get(`SELECT 1 FROM vaultbase_admin WHERE id = 'a2'`)).toBeFalsy();
+  });
+
+  it("keeps MFA, recovery codes with their lookup rows, links and emails changed since the backup", async () => {
+    const x = await seedAuthUser({ collection: "members", email: "x@test.local", passwordHash: "same" });
+    const y = await seedAuthUser({ collection: "members", email: "y@test.local" });
+    const col = (await getCollection("members"))!;
+    await db.run(`UPDATE vb_members SET totp_enabled = 1, totp_secret = 'OLDLEAKED' WHERE id = ?`, [x]);
+    const link = `INSERT INTO vaultbase_oauth_links (id, user_id, collection_id, provider, provider_user_id, created_at) VALUES (?, ?, ?, ?, ?, 1)`;
+    await db.run(link, ["l-y", y, col.id, "github", "P1"]);
+    await db.run(link, ["l-gh", x, col.id, "gitlab", "gl-attacker"]);
+    await db.run(`INSERT INTO vaultbase_mfa_recovery_codes (id, user_id, collection_id, code_hash, created_at) VALUES ('rc-old', ?, ?, 'h', 1)`, [x, col.id]);
+    await db.run(`INSERT INTO vaultbase_mfa_recovery_lookup (hmac, recovery_id) VALUES ('hm-old', 'rc-old')`);
+    const { name } = await backUp();
+
+    // None of these raise the reset stamp.
+    await db.run(`UPDATE vb_members SET totp_secret = 'FRESH', email = 'x-new@test.local' WHERE id = ?`, [x]);
+    await db.run(`DELETE FROM vaultbase_oauth_links`);
+    await db.run(link, ["l-x", x, col.id, "github", "P1"]);
+    await db.run(`DELETE FROM vaultbase_mfa_recovery_lookup`);
+    await db.run(`DELETE FROM vaultbase_mfa_recovery_codes`);
+    await db.run(`INSERT INTO vaultbase_mfa_recovery_codes (id, user_id, collection_id, code_hash, created_at) VALUES ('rc-new', ?, ?, 'h2', 2)`, [x, col.id]);
+    await db.run(`INSERT INTO vaultbase_mfa_recovery_lookup (hmac, recovery_id) VALUES ('hm-new', 'rc-new')`);
+
+    const res = await call("POST", `/admin/backups/${name}/restore`);
+    expect(res.status).toBe(200);
+    expect(res.json.data.message).toMatch(/2 accounts kept the password/);
+    expect(res.json.data.message).not.toMatch(/Not carried over/);
+    expect(await db.get<Record<string, unknown>>(`SELECT totp_secret, email, password_hash FROM vb_members WHERE id = ?`, [x]))
+      .toEqual({ totp_secret: "FRESH", email: "x-new@test.local", password_hash: "same" });
+    expect(await db.all(`SELECT id, user_id FROM vaultbase_oauth_links ORDER BY id`)).toEqual([{ id: "l-x", user_id: x }]);
+    expect(await db.all(`SELECT hmac, recovery_id FROM vaultbase_mfa_recovery_lookup`)).toEqual([{ hmac: "hm-new", recovery_id: "rc-new" }]);
+    expect(await db.all(`SELECT id FROM vaultbase_mfa_recovery_codes`)).toEqual([{ id: "rc-new" }]);
+  });
+
+  it("an undo keeps the admins created after the backup it undoes", async () => {
+    await db.run(`INSERT INTO vaultbase_install (key, id) VALUES ('install', 'pg-install') ON CONFLICT (key) DO NOTHING`);
+    const { name } = await backUp();
+    await getDb().insert(admin).values({ id: "c2", email: "second-admin@test.local", password_hash: "x", password_reset_at: 0, created_at: Math.floor(Date.now() / 1000) });
+    const minted = await mintApiToken({ name: "ci", scopes: ["admin"], createdBy: "c2", createdByEmail: "second-admin@test.local" }, SECRET);
+
+    expect((await call("POST", `/admin/backups/${name}/restore`)).status).toBe(200);
+    expect(await db.get(`SELECT 1 FROM vaultbase_admin WHERE id = 'c2'`)).toBeFalsy();
+    const [kept] = await listPreviousData();
+    const undo = await call("POST", `/admin/restores/${encodeURIComponent(kept!.schema)}/undo`);
+    expect(undo.status).toBe(200);
+    expect(undo.json.data.message).not.toMatch(/second-admin/);
+    expect(await db.get(`SELECT 1 FROM vaultbase_admin WHERE id = 'c2'`)).toBeTruthy();
+    expect(await verifyAuthToken(minted.token, SECRET)).not.toBeNull();
   });
 
   it("an undo puts the previous data back, and keeps what it replaced", async () => {

@@ -365,8 +365,16 @@ describe("review findings", () => {
       body: JSON.stringify({ requests: [{ method: "GET", url: "/api/v1/byowner?params[owner]=u1" }] }),
     }));
     const body = await res.json() as unknown;
-    expect(JSON.stringify(body)).toContain("takes parameters: read it with GET /api/v1/byowner, not in a batch");
+    // Refused for the whole batch: its URL carries params[...].
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(body)).toContain("A batch request takes no params");
     expect(JSON.stringify(body)).not.toContain('"amount"');
+    // Without them on the batch URL, the op is still refused on its own.
+    const op = await makeBatchPlugin(SECRET).handle(new Request("http://localhost/batch", {
+      method: "POST", headers: { authorization: `Bearer ${t1}`, "content-type": "application/json" },
+      body: JSON.stringify({ requests: [{ method: "GET", url: "/api/v1/byowner?params[owner]=u1" }] }),
+    }));
+    expect(JSON.stringify(await op.json())).toContain("takes parameters: read it with GET /api/v1/byowner, not in a batch");
   });
 
   it("nearVector is refused on a view with parameters", async () => {

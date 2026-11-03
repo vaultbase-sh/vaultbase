@@ -293,8 +293,22 @@ async function rateLimitContext(request: Request, peerIp: string | null, jwtSecr
   return { rules: cfg.rules, hasAuth: await hasValidToken(request, jwtSecret), ip: ipFromRequest(request, peerIp) };
 }
 
+/**
+ * The path as the router and the batch parser (api/batch.ts parseOp) see
+ * it: both ignore a trailing slash, so `/api/v1/notes/` is a create, and
+ * must be charged as one rather than fall through to the catch-all rule.
+ */
+function routedPath(rawPath: string): string {
+  // A loop, not /\/+$/: that regex is quadratic on a long run of slashes
+  // not at the end, and this runs on every request before auth.
+  let end = rawPath.length;
+  while (end > 1 && rawPath.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  const trimmed = rawPath.slice(0, end);
+  return normalizeApiPath(trimmed || "/");
+}
+
 function chargeForPath(ctx: RateLimitContext, rawPath: string, method: string): RateLimitCharge | null {
-  const path = normalizeApiPath(rawPath);
+  const path = routedPath(rawPath);
   if (shouldSkip(path)) return null;
   const match = findRule(ctx.rules, path, method, ctx.hasAuth);
   if (!match) return null;
@@ -356,8 +370,11 @@ export async function checkBatchRateLimit(
   if (!ctx) return null;
   const due = new Map<string, { charge: RateLimitCharge; n: number }>();
   for (const op of ops.slice(0, MAX_BATCH_OPS)) {
+    // Resolved exactly as parseOp resolves it (api/batch.ts): a relative
+    // `api/v1/notes` is the create at /api/v1/notes there, not a path under
+    // the batch request's own URL.
     let url: URL;
-    try { url = new URL(op.url, request.url); } catch { continue; }
+    try { url = new URL(op.url, "http://internal/"); } catch { continue; }
     const charge = chargeForPath(ctx, url.pathname, op.method);
     if (!charge) continue;
     const d = due.get(charge.key);
@@ -379,7 +396,7 @@ export function makeRateLimitPlugin(jwtSecret?: string) {
   return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set, body }) => {
     const peer = peerAddress(request, server);
     let limited = await checkRateLimit(request, peer, jwtSecret);
-    if (!limited && request.method === "POST" && normalizeApiPath(new URL(request.url).pathname) === "/api/batch") {
+    if (!limited && request.method === "POST" && routedPath(new URL(request.url).pathname) === "/api/batch") {
       const ops = (body as { requests?: unknown } | undefined)?.requests;
       // Over the batch cap the handler refuses it anyway: charging thousands
       // of ops first was work an anonymous caller could ask for at will.

@@ -8,10 +8,13 @@
 #
 #   irm https://get.vaultbase.dev/install.ps1 | iex
 #
-#   # With options: pin a version, pick a folder, verify the cosign signature
-#   # (needs `cosign` on PATH)
+#   # The cosign keyless signature is verified by default whenever `cosign`
+#   # is on PATH; without it the installer says so and relies on SHA256SUMS
+#   # alone. -VerifySig requires the check (fails without cosign);
+#   # -NoVerifySig skips it (releases too old to be signed).
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.38.0
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -InstallDir C:\tools\vaultbase -VerifySig
+#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.1.0 -NoVerifySig
 #
 #   # A release too old to publish SHA256SUMS: the checksum is otherwise
 #   # required, and a missing one stops the install
@@ -27,12 +30,13 @@ param(
     [string]$Version = "",
     [string]$InstallDir = "",
     [switch]$VerifySig,
+    [switch]$NoVerifySig,
     [switch]$NoPath,
     [switch]$SkipChecksum
 )
 
 function Install-Vaultbase {
-    param([string]$Version, [string]$InstallDir, [bool]$VerifySig, [bool]$NoPath, [bool]$SkipChecksum)
+    param([string]$Version, [string]$InstallDir, [bool]$VerifySig, [bool]$NoVerifySig, [bool]$NoPath, [bool]$SkipChecksum)
 
     $ErrorActionPreference = "Stop"
     # Invoke-WebRequest's progress bar makes large downloads very slow on 5.1.
@@ -65,6 +69,8 @@ function Install-Vaultbase {
         default { throw "Unsupported architecture: $cpu. Vaultbase ships a 64-bit (x64) Windows build only." }
     }
 
+    if ($VerifySig -and $NoVerifySig) { throw "-VerifySig and -NoVerifySig can't be used together." }
+
     if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\Vaultbase" }
 
     # -- Resolve version -----------------------------------------------------
@@ -78,6 +84,12 @@ function Install-Vaultbase {
     } else {
         if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
         Ok "Pinned release: $Version"
+    }
+    # The tag goes into download URLs and the cosign identity regexp, so
+    # accept only what release.yml publishes. -cmatch with \z: `$` would also
+    # match before a trailing newline.
+    if (-not ($Version -cmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?\z')) {
+        throw "Not a release version: '$Version' (expected vX.Y.Z)"
     }
 
     $Url = "$ReleasesUrl/download/$Version/$Asset"
@@ -119,13 +131,28 @@ function Install-Vaultbase {
             throw "Couldn't fetch SHA256SUMS, so the download can't be checked. Retry, or pass -SkipChecksum for a release that has none."
         }
 
-        if ($VerifySig) {
-            if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
+        # SHA256SUMS comes from the same release as the binary, so whoever can
+        # replace one can replace both; the signature ties the binary to this
+        # repository's release.yml run for this tag. Checked by default when
+        # cosign is on PATH; a missing .sig/.pem then fails the install.
+        $checkSig = -not $NoVerifySig
+        if ($checkSig -and -not (Get-Command cosign -ErrorAction SilentlyContinue)) {
+            if ($VerifySig) {
                 throw "-VerifySig needs cosign on PATH. Install: https://docs.sigstore.dev/cosign/installation/"
             }
+            Warn "cosign is not on PATH, so the release signature was NOT verified."
+            Warn "Only SHA256SUMS from the same release was checked; it cannot detect release assets replaced after publication."
+            Warn "Install cosign (https://docs.sigstore.dev/cosign/installation/) and re-run to verify, or pass -VerifySig to require it."
+            $checkSig = $false
+        }
+        if ($checkSig) {
             Write-Host "Fetching cosign signature + certificate..."
-            Invoke-WebRequest -Uri "$Url.sig" -OutFile "$Exe.sig" -UseBasicParsing
-            Invoke-WebRequest -Uri "$Url.pem" -OutFile "$Exe.pem" -UseBasicParsing
+            try {
+                Invoke-WebRequest -Uri "$Url.sig" -OutFile "$Exe.sig" -UseBasicParsing
+                Invoke-WebRequest -Uri "$Url.pem" -OutFile "$Exe.pem" -UseBasicParsing
+            } catch {
+                throw "Could not fetch the signature for $Asset ($($_.Exception.Message)). Releases before signing have none: pass -NoVerifySig to install one without the signature check."
+            }
             & cosign verify-blob `
                 --certificate "$Exe.pem" `
                 --signature "$Exe.sig" `
@@ -184,7 +211,7 @@ function Install-Vaultbase {
 }
 
 try {
-    Install-Vaultbase -Version $Version -InstallDir $InstallDir -VerifySig:$VerifySig.IsPresent -NoPath:$NoPath.IsPresent -SkipChecksum:$SkipChecksum.IsPresent
+    Install-Vaultbase -Version $Version -InstallDir $InstallDir -VerifySig:$VerifySig.IsPresent -NoVerifySig:$NoVerifySig.IsPresent -NoPath:$NoPath.IsPresent -SkipChecksum:$SkipChecksum.IsPresent
 } catch {
     # Write the error and stop without `exit`, which would close the shell
     # that ran `irm ... | iex`.

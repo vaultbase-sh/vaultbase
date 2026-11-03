@@ -11,6 +11,18 @@ name: Docker image
 # go in (the identity install.sh --verify-sig checks), and only the newest
 # release moves :latest and the newest patch of a minor moves :X.Y, so
 # rebuilding an old tag can't roll default deployments back.
+#
+# The pushed image is signed with cosign keyless. Every run that can publish
+# uses this file from the default branch (workflow_run and push always do;
+# a manual run started from any other ref is skipped), so the signature names
+# docker.yml@refs/heads/main. Check an image with:
+#
+#   cosign verify ghcr.io/vaultbase-sh/vaultbase:<tag> \
+#     --certificate-identity https://github.com/vaultbase-sh/vaultbase/.github/workflows/docker.yml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
+# The ref check below is in this file, so a branch copy can drop it; what it
+# can't do is sign as refs/heads/main, which is what the verify above pins.
 
 on:
   workflow_run:
@@ -30,6 +42,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write   # cosign keyless signing of the pushed image
 
 concurrency:
   group: docker-image
@@ -43,15 +56,19 @@ jobs:
     # workflow_run matches workflows by name only: a fork's pull request can
     # add one called "Release" on a branch named like an old tag. Accept only
     # this repository's release.yml, run from this repository by a push.
+    # A manual run must use this file from the default branch: dispatched
+    # from another ref it would sign the image as that ref.
     if: >-
-      github.event_name != 'workflow_run' || (
+      (github.event_name != 'workflow_dispatch' ||
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) &&
+      (github.event_name != 'workflow_run' || (
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.repository.full_name == github.repository &&
         github.event.workflow_run.head_repository.full_name == github.repository &&
         (github.event.workflow_run.path == '.github/workflows/release.yml' ||
          startsWith(github.event.workflow_run.path, '.github/workflows/release.yml@'))
-      )
+      ))
     steps:
       - id: tag
         name: Resolve the release tag
@@ -150,7 +167,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: deploy/docker
           file: deploy/docker/Dockerfile
@@ -163,6 +181,18 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.tag.outputs.version }}
             org.opencontainers.image.licenses=MIT
+
+      # Signs the multi-arch index by digest, which covers every tag pushed
+      # above and both platforms. The signature goes to ghcr.io next to the
+      # image (login above) and into the Rekor transparency log.
+      - name: Sign the image (keyless)
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -eu
+          case "$DIGEST" in sha256:*) ;; *) echo "::error::no image digest from the build"; exit 1 ;; esac
+          cosign sign --yes "$IMAGE@$DIGEST"
 
       - name: Smoke test the amd64 image
         run: |

@@ -1,7 +1,7 @@
 import Elysia from "elysia";
 import { listCollections } from "../core/collections.ts";
 import { buildOpenApi } from "../core/openapi.ts";
-import { adminOnlyRule } from "../core/records.ts";
+import { collectionHiddenByRules } from "../core/records.ts";
 import { adminFromRequest } from "./_admin.ts";
 import { getSetting } from "./settings.ts";
 
@@ -20,10 +20,9 @@ export function makeOpenApiPlugin(jwtSecret: string) {
         return { error: "Unauthorized", code: 401 };
       }
       const all = await listCollections();
-      // A blank rule ("  ", "\t") denies non-admins just as "" does.
-      const visible = isAdmin
-        ? all
-        : all.filter((c) => !(adminOnlyRule(c.list_rule) && adminOnlyRule(c.view_rule) && adminOnlyRule(c.create_rule)));
+      // The same test the records API uses: a collection hidden there (by the
+      // rules that apply to its type; a blank rule counts as "") is left out.
+      const visible = isAdmin ? all : all.filter((c) => !collectionHiddenByRules(c));
       set.headers["Cache-Control"] = "no-store";
       return buildOpenApi(visible);
     });

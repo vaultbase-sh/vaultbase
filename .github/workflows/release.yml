@@ -32,8 +32,21 @@ jobs:
     # hold them for a reviewer and limit them to v* tags (Settings >
     # Environments). Until it's configured there GitHub creates it bare and
     # the job runs as before. The signing identity stays release.yml@<tag>.
-    # This key lives in the tagged commit, so the tag ruleset on v* is what
-    # stops a writer from dropping it.
+    #
+    # What gates a signed release lives in GitHub settings, not here:
+    #   - Settings > Rules > Rulesets: a tag ruleset on refs/tags/v* that
+    #     restricts creation, update and deletion (bypass: repository admins).
+    #     Whoever can push a v* tag gets a release that installers, `vaultbase
+    #     update` and docker.yml accept, and this `environment:` key lives in
+    #     the tagged commit, so the ruleset is what stops a writer dropping it.
+    #   - Settings > Environments > release: optional required reviewers and a
+    #     deployment rule limited to v* tags. With no reviewers the job runs
+    #     unattended once the tag exists.
+    #   - Settings > General > Releases: immutable releases, so assets can't be
+    #     replaced after publication (the .sha256 and SHA256SUMS sit next to
+    #     the binaries they vouch for; only the signature is out of reach).
+    # Signatures can't show which of these ran: the certificate names the
+    # workflow and tag, not the environment.
     environment: release
     outputs:
       tag: ${{ steps.resolve-tag.outputs.tag }}
@@ -232,7 +245,8 @@ jobs:
       # ── Cosign keyless sigs ─────────────────────────────────────────────
       # Uses the GitHub Actions OIDC token via Sigstore Fulcio — no static
       # signing key to manage. Verifiers check the cert chain + transparency
-      # log entry. install.sh's --verify-sig flag consumes these.
+      # log entry. install.sh and install.ps1 check these by default when
+    # cosign is on PATH, as do `vaultbase update` and docker.yml.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
