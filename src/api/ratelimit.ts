@@ -1,10 +1,8 @@
 import Elysia from "elysia";
 import { settingsWithPrefix } from "./settings.ts";
 import { verifyHs256 } from "../core/jwt-hs256.ts";
-import { isIPv6 } from "node:net";
-import { peerAddress, securityHeaders, trustedClientIp } from "../core/sec.ts";
+import { peerAddress, rateLimitKeyForIp, securityHeaders, trustedClientIp } from "../core/sec.ts";
 import { applyCorsHeaders } from "../core/cors.ts";
-import { embeddedIPv4 } from "../core/hook-egress.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 
 /**
@@ -51,9 +49,12 @@ function shouldSkip(path: string): boolean {
   return SKIP_PREFIXES.some((p) => path.startsWith(p));
 }
 
-const RESERVED_TOP = new Set(["admin", "auth", "files", "collections", "health"]);
+// `batch` too: a batch's ops are charged one by one (checkBatchRateLimit), so
+// the batch request itself isn't a create.
+const RESERVED_TOP = new Set(["admin", "auth", "files", "collections", "health", "batch"]);
 
-interface Bucket { tokens: number; lastRefill: number }
+/** `debtUntil`: when a bucket left in debt by a large batch is back to zero tokens. */
+interface Bucket { tokens: number; lastRefill: number; debtUntil?: number }
 const buckets = new Map<string, Bucket>();
 
 interface Config {
@@ -135,34 +136,7 @@ export function invalidateRateLimitCache(): void {
   buckets.clear();
 }
 
-/**
- * The bucket key for a client address. IPv6 is keyed by its /64: one
- * subscriber typically holds a whole /64, so per-address buckets gave a
- * single client 2^64 fresh budgets. IPv4-mapped addresses count as IPv4.
- */
-export function rateLimitKeyForIp(ip: string): string {
-  if (!isIPv6(ip)) return ip;
-  const groups = expandIPv6Groups(ip);
-  if (!groups) return ip;
-  if (groups.slice(0, 5).every((g) => /^0+$/.test(g)) && groups[5] === "ffff") return embeddedIPv4(ip) ?? ip;
-  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
-}
-
-function expandIPv6Groups(ip: string): string[] | null {
-  const bare = ip.split("%")[0]!.toLowerCase();
-  // An embedded dotted IPv4 tail counts as two groups.
-  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
-  const norm = v4 ? bare.slice(0, -v4[1]!.length) + "0:0" : bare;
-  const [head = "", tail = ""] = norm.split("::");
-  const h = head ? head.split(":") : [];
-  const t = tail ? tail.split(":") : [];
-  if (norm.includes("::")) {
-    const fill = 8 - h.length - t.length;
-    if (fill < 0) return null;
-    return [...h, ...Array(fill).fill("0"), ...t];
-  }
-  return h.length === 8 ? h : null;
-}
+export { rateLimitKeyForIp } from "../core/sec.ts";
 
 function ipFromRequest(request: Request, peerIp: string | null): string {
   // Honor x-forwarded-for / x-real-ip ONLY when the immediate peer is a
@@ -244,7 +218,8 @@ function findRule(rules: ParsedRule[], path: string, method: string, hasAuth: bo
   return null;
 }
 
-function consumeToken(key: string, max: number, windowMs: number): boolean {
+/** The bucket for `key`, refilled up to now. */
+function refilledBucket(key: string, max: number, windowMs: number): Bucket {
   const now = Date.now();
   let b = buckets.get(key);
   if (!b) {
@@ -257,6 +232,11 @@ function consumeToken(key: string, max: number, windowMs: number): boolean {
     b.tokens = Math.min(max, b.tokens + (elapsed / windowMs) * max);
     b.lastRefill = now;
   }
+  return b;
+}
+
+function consumeToken(key: string, max: number, windowMs: number): boolean {
+  const b = refilledBucket(key, max, windowMs);
   if (b.tokens < 1) return false;
   b.tokens -= 1;
   return true;
@@ -265,7 +245,8 @@ function consumeToken(key: string, max: number, windowMs: number): boolean {
 setInterval(() => {
   const cutoff = Date.now() - 5 * 60_000;
   for (const [k, b] of buckets) {
-    if (b.lastRefill < cutoff) buckets.delete(k);
+    // A bucket in debt from a large batch is kept until it has paid it off.
+    if (b.lastRefill < cutoff && (b.debtUntil ?? 0) < Date.now()) buckets.delete(k);
   }
 }, 60_000).unref?.();
 
@@ -299,17 +280,25 @@ export interface RateLimitCharge {
  * thread's buckets (core/worker-listeners.ts), so there is one set.
  */
 export async function rateLimitCharge(request: Request, peerIp: string | null, jwtSecret?: string): Promise<RateLimitCharge | null> {
-  const path = normalizeApiPath(new URL(request.url).pathname);
-  if (shouldSkip(path)) return null;
+  const ctx = await rateLimitContext(request, peerIp, jwtSecret);
+  return ctx ? chargeForPath(ctx, new URL(request.url).pathname, request.method) : null;
+}
+
+/** What every charge for one incoming request shares: the rules, whether it carries a valid token, the client address. */
+interface RateLimitContext { rules: ParsedRule[]; hasAuth: boolean; ip: string }
+
+async function rateLimitContext(request: Request, peerIp: string | null, jwtSecret?: string): Promise<RateLimitContext | null> {
   const cfg = loadConfig();
   if (!cfg.enabled || cfg.rules.length === 0) return null;
+  return { rules: cfg.rules, hasAuth: await hasValidToken(request, jwtSecret), ip: ipFromRequest(request, peerIp) };
+}
 
-  const hasAuth = await hasValidToken(request, jwtSecret);
-  const match = findRule(cfg.rules, path, request.method, hasAuth);
+function chargeForPath(ctx: RateLimitContext, rawPath: string, method: string): RateLimitCharge | null {
+  const path = normalizeApiPath(rawPath);
+  if (shouldSkip(path)) return null;
+  const match = findRule(ctx.rules, path, method, ctx.hasAuth);
   if (!match) return null;
-
-  const ip = ipFromRequest(request, peerIp);
-  return { key: `${ip}|${match.index}`, max: match.rule.max, windowMs: match.rule.windowMs, label: match.rule.label };
+  return { key: `${ctx.ip}|${match.index}`, max: match.rule.max, windowMs: match.rule.windowMs, label: match.rule.label };
 }
 
 /** Take one token from the charge's bucket; false when it is empty. */
@@ -346,9 +335,60 @@ export async function checkRateLimit(
   return rateLimitRefusal(charge);
 }
 
+/**
+ * Charge a batch's ops as if each came on its own: the batch request itself
+ * takes one token, and without this 100 creates cost one. Every op takes a
+ * token from the bucket its own request would. A batch larger than a rule's
+ * limit goes through only when that bucket is full, and leaves it in debt,
+ * so the next request on that rule waits as long as the ops sent one by one
+ * would have. Nothing is taken unless every bucket can pay.
+ */
+/** Largest batch the batch route accepts (api/batch.ts MAX_BATCH). */
+export const MAX_BATCH_OPS = 100;
+
+export async function checkBatchRateLimit(
+  request: Request,
+  peerIp: string | null,
+  jwtSecret: string | undefined,
+  ops: ReadonlyArray<{ method: string; url: string }>,
+): Promise<{ retryAfter: number; body: { error: string; code: number } } | null> {
+  const ctx = await rateLimitContext(request, peerIp, jwtSecret);
+  if (!ctx) return null;
+  const due = new Map<string, { charge: RateLimitCharge; n: number }>();
+  for (const op of ops.slice(0, MAX_BATCH_OPS)) {
+    let url: URL;
+    try { url = new URL(op.url, request.url); } catch { continue; }
+    const charge = chargeForPath(ctx, url.pathname, op.method);
+    if (!charge) continue;
+    const d = due.get(charge.key);
+    if (d) d.n++;
+    else due.set(charge.key, { charge, n: 1 });
+  }
+  for (const { charge, n } of due.values()) {
+    if (refilledBucket(charge.key, charge.max, charge.windowMs).tokens < Math.min(n, charge.max)) return rateLimitRefusal(charge);
+  }
+  for (const { charge, n } of due.values()) {
+    const b = buckets.get(charge.key)!;
+    b.tokens -= n;
+    if (b.tokens < 0) b.debtUntil = b.lastRefill + (-b.tokens / charge.max) * charge.windowMs;
+  }
+  return null;
+}
+
 export function makeRateLimitPlugin(jwtSecret?: string) {
-  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
-    const limited = await checkRateLimit(request, peerAddress(request, server), jwtSecret);
+  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set, body }) => {
+    const peer = peerAddress(request, server);
+    let limited = await checkRateLimit(request, peer, jwtSecret);
+    if (!limited && request.method === "POST" && normalizeApiPath(new URL(request.url).pathname) === "/api/batch") {
+      const ops = (body as { requests?: unknown } | undefined)?.requests;
+      // Over the batch cap the handler refuses it anyway: charging thousands
+      // of ops first was work an anonymous caller could ask for at will.
+      if (Array.isArray(ops) && ops.length <= MAX_BATCH_OPS) {
+        limited = await checkBatchRateLimit(request, peer, jwtSecret, ops.filter(
+          (o): o is { method: string; url: string } => !!o && typeof o.method === "string" && typeof o.url === "string",
+        ));
+      }
+    }
     if (limited) {
       set.status = 429;
       set.headers["Retry-After"] = String(limited.retryAfter);

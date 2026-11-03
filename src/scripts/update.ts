@@ -171,18 +171,29 @@ function hasCosign(): boolean {
   } catch { return false; }
 }
 
-function runCosignVerify(binPath: string, sigPath: string, certPath: string, repo: string, ref: string): boolean {
+/**
+ * The signing certificate's identity a release must carry: the release
+ * workflow, started from this version's tag. A prefix of the repository URL
+ * accepted any workflow file at any branch, so anyone able to run a
+ * workflow in the repo could sign a binary; a branch ref (even main) or
+ * another tag would let one version's signature pass for another's.
+ */
+export function releaseIdentityRegexp(repo: string, version: string): string {
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^https://github\\.com/${esc(repo)}/\\.github/workflows/release\\.yml@refs/tags/v${esc(version)}$`;
+}
+
+function runCosignVerify(binPath: string, sigPath: string, certPath: string, repo: string, version: string): boolean {
   const r = spawnSync("cosign", [
     "verify-blob",
     "--certificate", certPath,
     "--signature",   sigPath,
-    "--certificate-identity-regexp", `^https://github\\.com/${repo}/`,
+    "--certificate-identity-regexp", releaseIdentityRegexp(repo, version),
     "--certificate-oidc-issuer",     "https://token.actions.githubusercontent.com",
     binPath,
   ], { encoding: "utf8" });
   if (r.status === 0) return true;
   process.stderr.write(`cosign verify failed:\n${r.stderr || r.stdout}\n`);
-  void ref;
   return false;
 }
 

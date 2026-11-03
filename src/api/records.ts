@@ -24,7 +24,7 @@ import {
   updateRecord,
   positiveIntParam,
 } from "../core/records.ts";
-import { ValidationError } from "../core/validate.ts";
+import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
 import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule, ruleFilter } from "./_rules.ts";
 import {
@@ -230,7 +230,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
     if (!timeFor(request, "rule_compile", () => checkUpdateRule(
       request, col.name, col.update_rule, auth,
       existing as unknown as Record<string, unknown>,
-      (body ?? {}) as Record<string, unknown>,
+      bodyForRules(col, body),
     ))) {
       set.status = 403;
       return { error: "Forbidden", code: 403 };
@@ -427,8 +427,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
         const col = await timeFor(request, "collection_load", () => getCollection(params.collection));
         if (!col) { set.status = 404; return { error: "Collection not found", code: 404 }; }
         const auth = await getAuthContext(request, jwtSecret);
-        recordListRule(request, col.name, col.list_rule, auth);
-        if (col.list_rule === "" && auth?.type !== "admin") {
+        // A singleton's record is read under its view rule (see GET).
+        const listRule = col.type === "singleton" ? col.view_rule : col.list_rule;
+        recordListRule(request, col.name, listRule, auth);
+        if (listRule === "" && auth?.type !== "admin") {
           set.status = 403; return { error: "Forbidden", code: 403 };
         }
         const opts: AggregateOptions = { auth, viewParams: viewParamsFromUrl(new URL(request.url).searchParams) };
@@ -438,8 +440,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.search) opts.search = query.search;
         if (query.sort) opts.sort = query.sort;
         if (query.limit) opts.limit = Number(query.limit);
-        if (col.list_rule && auth?.type !== "admin") {
-          opts.accessRule = col.list_rule;
+        if (listRule && auth?.type !== "admin") {
+          opts.accessRule = listRule;
           opts.request = buildRequestContext(request);
         }
         try {
@@ -472,10 +474,11 @@ export function makeRecordsPlugin(jwtSecret: string) {
         // For create, rule evaluates against the incoming body
         // The body is what the rule is about on a create — without it
         // `@request.body.role:isset = false` passes unconditionally.
+        const ruleBody = bodyForRules(col, body);
         if (!timeFor(request, "rule_compile", () => checkRule(
           request, "create_rule", col.name, col.create_rule, auth,
-          (body ?? {}) as Record<string, unknown>,
-          buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
+          ruleBody,
+          buildRequestContext(request, ruleBody, null),
         ))) {
           set.status = 403;
           return { error: "Forbidden", code: 403 };

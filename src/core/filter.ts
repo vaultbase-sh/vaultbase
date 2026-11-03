@@ -486,7 +486,9 @@ function looseNumberCmp(expr: Compiled, op: string, value: Compiled, t: NonNulla
   if (typeof v !== "number" || Number.isSafeInteger(v) || !Number.isFinite(v)) return null;
   return {
     sql: `(SELECT CASE jsonb_typeof(_vb_j) WHEN 'number' THEN (_vb_j)::numeric ${op} CAST(? AS NUMERIC) WHEN 'string' THEN (_vb_j #>> '{}') ${op} ? END FROM (SELECT to_jsonb(${expr.sql}) AS _vb_j) AS _vb_n)`,
-    params: [...expr.params, String(v), String(v)],
+    // In the order the placeholders appear: both values come before the
+    // expression, which sits in the FROM at the end.
+    params: [String(v), String(v), ...expr.params],
   };
 }
 
@@ -1105,7 +1107,16 @@ function compilePgStrftime(args: Operand[], ctx: CompileCtx): string {
   }
   flush();
   let time: string;
-  if (timeArg.kind === "literal" && timeArg.value === "now" && modValues.length === 0) time = "now()";
+  // Postgres reads 'now', 'NOW', ' today ', 'tomorrow' and 'yesterday' as the
+  // clock, whatever their case or spacing. Bound as a cast they hid that the
+  // query reads the clock, and list totals were cached (records.ts). Emit
+  // them as now() so every clock read is visible in the SQL.
+  const clock = timeArg.kind === "literal" && typeof timeArg.value === "string" && modValues.length === 0
+    ? timeArg.value.trim().toLowerCase() : "";
+  if (clock === "now") time = "now()";
+  else if (clock === "today") time = "date_trunc('day', now(), 'UTC')";
+  else if (clock === "tomorrow") time = "(date_trunc('day', now(), 'UTC') + interval '1 day')";
+  else if (clock === "yesterday") time = "(date_trunc('day', now(), 'UTC') - interval '1 day')";
   else if (modValues.length === 1) {
     const t = compileOperand(timeArg, ctx);
     time = `to_timestamp(${readsJson(timeArg, ctx) ? jsonNumber(t) : `CAST(${t} AS DOUBLE PRECISION)`})`;

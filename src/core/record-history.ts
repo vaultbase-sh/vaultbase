@@ -61,10 +61,16 @@ async function decryptSnapshotFields(
   // Which fields hold JSON: guessing from the text turned an encrypted text
   // value like "[1,2]" into an array, which a restore then refused.
   const col = await getCollection(collectionName).catch(() => null);
-  const jsonFields = new Set(col ? parseFields(col.fields).filter((f) => f.type === "json" || f.type === "group").map((f) => f.name) : []);
+  const fields = col ? parseFields(col.fields) : [];
+  const jsonFields = new Set(fields.filter((f) => f.type === "json" || f.type === "group").map((f) => f.name));
+  // Only fields the schema marks encrypted, as the records read path does.
+  // Decrypting anything that looked like a ciphertext let a caller store
+  // another field's or a setting's `vbenc:` value in a plain text field and
+  // read it back decrypted from history.
+  const encryptedFields = new Set(fields.filter((f) => f.options?.encrypted === true).map((f) => f.name));
   for (const k of Object.keys(out)) {
     const v = out[k];
-    if (typeof v !== "string" || !isEncrypted(v)) continue;
+    if (!encryptedFields.has(k) || typeof v !== "string" || !isEncrypted(v)) continue;
     try {
       const plain = await decryptValue(v);
       if (jsonFields.has(k)) {

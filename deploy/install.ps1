@@ -121,7 +121,7 @@ function Install-Vaultbase {
             & cosign verify-blob `
                 --certificate "$Exe.pem" `
                 --signature "$Exe.sig" `
-                --certificate-identity-regexp "^https://github\.com/$Repo/" `
+                --certificate-identity-regexp "^https://github\.com/$Repo/\.github/workflows/release\.yml@refs/tags/$([regex]::Escape($Version))`$" `
                 --certificate-oidc-issuer "https://token.actions.githubusercontent.com" `
                 $Exe
             if ($LASTEXITCODE -ne 0) { throw "Cosign verification failed." }

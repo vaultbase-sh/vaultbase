@@ -319,12 +319,21 @@ export async function readLogs(opts: ReadOptions = {}): Promise<LogEntry[]> {
 
 /** Newest entries kept per file; matches the Logs API read cap. */
 const MAX_CACHED_ENTRIES_PER_FILE = 50_000;
+/**
+ * Newest log text kept per file, in bytes of JSON lines. A count alone let
+ * long entries (an anonymous request's 2 KB path, refused or not) fill four
+ * cached days to about a gigabyte that stayed in memory.
+ */
+const MAX_CACHED_BYTES_PER_FILE = 16 * 1024 * 1024;
 
 interface ParsedFile {
   /** Bytes consumed so far (up to the last complete line). */
   offset: number;
   /** Parsed entries, oldest → newest, capped to the newest N. */
   entries: LogEntry[];
+  /** Each entry's line length, parallel to `entries`, and their sum. */
+  sizes: number[];
+  bytes: number;
 }
 
 const parsedFiles = new Map<string, ParsedFile>();
@@ -353,7 +362,7 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
   let cached = parsedFiles.get(file);
   // Shrunk: truncated or replaced — start over.
   if (cached && size < cached.offset) cached = undefined;
-  if (!cached) cached = { offset: 0, entries: [] };
+  if (!cached) cached = { offset: 0, entries: [], sizes: [], bytes: 0 };
   if (size === cached.offset) { remember(file, cached); return cached.entries; }
 
   const chunk = await Bun.file(file).slice(cached.offset, size).text().catch(() => "");
@@ -365,10 +374,20 @@ async function fileEntries(file: string): Promise<LogEntry[]> {
     const ln = raw.trim();
     if (!ln) continue;
     parsedLines++;
-    try { cached.entries.push(JSON.parse(ln) as LogEntry); } catch { /* skip malformed line */ }
+    try {
+      cached.entries.push(JSON.parse(ln) as LogEntry);
+      cached.sizes.push(ln.length);
+      cached.bytes += ln.length;
+    } catch { /* skip malformed line */ }
   }
-  if (cached.entries.length > MAX_CACHED_ENTRIES_PER_FILE) {
-    cached.entries.splice(0, cached.entries.length - MAX_CACHED_ENTRIES_PER_FILE);
+  let drop = Math.max(0, cached.entries.length - MAX_CACHED_ENTRIES_PER_FILE);
+  let bytes = cached.bytes;
+  for (let i = 0; i < drop; i++) bytes -= cached.sizes[i]!;
+  while (drop < cached.entries.length && bytes > MAX_CACHED_BYTES_PER_FILE) bytes -= cached.sizes[drop++]!;
+  if (drop > 0) {
+    cached.entries.splice(0, drop);
+    cached.sizes.splice(0, drop);
+    cached.bytes = bytes;
   }
   cached.offset += Buffer.byteLength(complete, "utf8");
   remember(file, cached);

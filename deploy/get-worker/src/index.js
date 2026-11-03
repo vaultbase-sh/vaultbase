@@ -57,7 +57,9 @@ export default {
     const tag = (latest.headers.get("location") || "").split("/tag/")[1];
     if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) return unavailable(script);
 
-    const body = await fetch(`https://raw.githubusercontent.com/${REPO}/${tag}/${script.file}`, {
+    // `refs/tags/`: a bare name resolves to a branch first when one shares
+    // the tag's name, so whoever can push a branch could serve the installer.
+    const body = await fetch(`https://raw.githubusercontent.com/${REPO}/refs/tags/${tag}/${script.file}`, {
       cf: CACHE,
     });
     if (!body.ok) return unavailable(script);

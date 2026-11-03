@@ -561,7 +561,11 @@ export async function dispatchNotification(
       ]);
       const col = await getCollection("notifications");
       const record = col ? await getRecord("notifications", id) : null;
-      if (col && record) emit("record.created", { collection: col, record: record as unknown as Record<string, unknown>, auth: null, source: "api" });
+      // After commit, as record writes do: a notification sent from inside a
+      // write that then rolled back (a before-hook, a failed batch) reached
+      // the recipient's realtime feed although its row never existed.
+      const { afterCommit } = await import("./write-gate.ts");
+      if (col && record) afterCommit(() => emit("record.created", { collection: col, record: record as unknown as Record<string, unknown>, auth: null, source: "api" }));
     } catch (e) {
       // vb_notifications doesn't exist yet — caller hasn't enabled notifications
       // bootstrap. Push still works without the inbox; just skip silently.
@@ -578,6 +582,23 @@ export async function dispatchNotification(
   }
 
   return out;
+}
+
+/**
+ * Stop pushes to every device registered for a user. A password reset or a
+ * magic-link claim ends the sessions that registered them; a device a
+ * session thief or address squatter added kept receiving the owner's
+ * notifications. The owner's own apps register again on their next sign-in.
+ * Device tokens belong to the `users` collection only.
+ */
+export async function disableUserDevices(collectionName: string, userId: string): Promise<void> {
+  if (collectionName !== "users") return;
+  try {
+    // `table` so the change reaches cached lists and the read workers.
+    await db.run(`UPDATE vb_device_tokens SET enabled = 0 WHERE "user" = ?`, [userId], { table: "vb_device_tokens" });
+  } catch (e) {
+    if (!db.dialect.isMissingTable(e)) throw e; // notifications not enabled
+  }
 }
 
 // ── Auto-bootstrap collections ──────────────────────────────────────────────

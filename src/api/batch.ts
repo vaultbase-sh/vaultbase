@@ -4,10 +4,11 @@ import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
 import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
-import { ValidationError } from "../core/validate.ts";
+import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
+import { MAX_BATCH_OPS } from "./ratelimit.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 import { parseViewParams } from "../core/view-params.ts";
 
@@ -22,7 +23,7 @@ interface BatchResult {
   body: unknown;
 }
 
-const MAX_BATCH = 100;
+const MAX_BATCH = MAX_BATCH_OPS;
 
 /** An op of a write batch that answered with an error: the whole batch rolls back. */
 class BatchOpError extends Error {
@@ -99,16 +100,20 @@ async function dispatchOp(
 
   switch (op.kind) {
     case "create": {
+      const ruleBody = bodyForRules(col, body);
       checkRuleOrThrow(
         request, "create_rule", col.name, col.create_rule, auth,
-        (body ?? {}) as Record<string, unknown>,
-        buildRequestContext(request, (body ?? {}) as Record<string, unknown>, null),
+        ruleBody,
+        buildRequestContext(request, ruleBody, null),
       );
       const rec = await createRecord(op.collection, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
       return { status: 201, body: rec };
     }
     case "list": {
-      const allowed = recordListRule(request, col.name, col.list_rule, auth);
+      // A singleton's one record is read under its view rule, as on the
+      // REST path; listing it under the list rule served what view denies.
+      const listRule = col.type === "singleton" ? col.view_rule : col.list_rule;
+      const allowed = recordListRule(request, col.name, listRule, auth);
       if (!allowed) throw new RuleDeniedError("list_rule");
       const q = op.query ?? new URLSearchParams();
       const opts: Parameters<typeof listRecords>[1] = { ...clientPaging(q.get("page"), q.get("perPage")) };
@@ -123,8 +128,8 @@ async function dispatchOp(
       // the related collections' view rules when expanding.
       opts.request = buildRequestContext(request);
       // Apply expression rule as access filter (admins bypass)
-      if (col.list_rule && col.list_rule !== "" && auth?.type !== "admin") {
-        opts.accessRule = col.list_rule;
+      if (listRule && listRule !== "" && auth?.type !== "admin") {
+        opts.accessRule = listRule;
       }
       const result = await listRecords(op.collection, opts);
       return { status: 200, body: result };
@@ -145,7 +150,7 @@ async function dispatchOp(
       if (!checkUpdateRule(
         request, col.name, col.update_rule, auth,
         existing as unknown as Record<string, unknown>,
-        (body ?? {}) as Record<string, unknown>,
+        bodyForRules(col, body),
       )) {
         throw new RuleDeniedError("update_rule");
       }
@@ -254,6 +259,16 @@ export function makeBatchPlugin(jwtSecret: string) {
         } catch (e) {
           return batchError(e, results.length, auth, set);
         }
+      }
+
+      // A write batch holds the exclusive write gate for its whole run, so a
+      // list in it (a filtered scan, up to 99 of them) stalled every record
+      // write in the process. Lists go in a read-only batch; a get by id is
+      // cheap and stays allowed.
+      const listAt = parsed.findIndex((op) => op.kind === "list");
+      if (listAt !== -1) {
+        set.status = 422;
+        return { error: `Request ${listAt}: a batch that writes can't list records; send lists in a separate batch of reads`, code: 422 };
       }
 
       // Atomic: one transaction, committed or rolled back as a whole. It

@@ -13,7 +13,7 @@ import { and, count, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { adminSessions, admin as adminTable, loginFailures, tokenRevocations } from "../db/schema.ts";
 import { getSetting } from "../api/settings.ts";
-import { clientIp } from "./sec.ts";
+import { clientIp, waitPastResetSecond } from "./sec.ts";
 
 // ── Trusted proxies ─────────────────────────────────────────────────────────
 
@@ -106,13 +106,14 @@ export async function revokeAdminSession(jti: string): Promise<void> {
 
 /**
  * Bumps `password_reset_at` to now on every admin row. `verifyAuthToken`
- * already rejects tokens whose `iat` is older than `password_reset_at`, so
+ * already rejects tokens whose `iat` is not newer than `password_reset_at`, so
  * this kills every existing admin JWT in one shot — no per-jti DB write.
  */
 export async function forceLogoutAllAdmins(): Promise<{ count: number }> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const rows = await db.update(adminTable).set({ password_reset_at: now }).returning({ id: adminTable.id });
+  await waitPastResetSecond(now);
   return { count: rows.length };
 }
 

@@ -1,5 +1,6 @@
 import { loadConfig, prepareServiceCommand } from "./config.ts";
 import { requiredSetupKey, setupKeyFromEnv } from "./core/setup-key.ts";
+import { isEmail } from "./core/email-address.ts";
 import { initDb, getDb, closeDb, getRawClient, JOURNAL_SIZE_LIMIT } from "./db/client.ts";
 import { getDriver } from "./db/index.ts";
 import { startCheckpointer, stopCheckpointer } from "./db/checkpointer.ts";
@@ -113,7 +114,7 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     process.stderr.write(`vaultbase: setup-admin requires both --email and --password\n`);
     process.exit(1);
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(opts.email)) {
+  if (!isEmail(opts.email)) {
     process.stderr.write(`vaultbase: --email is not a valid email address\n`);
     process.exit(1);
   }
@@ -147,6 +148,7 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     await db.update(admin)
       .set({ password_hash: hash, password_reset_at: now })
       .where(eq(admin.email, opts.email));
+    await (await import("./core/sec.ts")).waitPastResetSecond(now);
     // A reset is how an operator gets back in after a lockout: clear it.
     const { clearAttemptFailures } = await import("./core/security.ts");
     await clearAttemptFailures(`email:id:${sameEmail[0]!.id}`);

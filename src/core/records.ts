@@ -275,11 +275,14 @@ import "./event-listeners.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
-import { validateRecord, type CanSeeRecord } from "./validate.ts";
+import { dateToUnixSeconds, validateRecord, type CanSeeRecord } from "./validate.ts";
 import { ViewParamError, boundViewSource, parseViewParams, resolveViewParams } from "./view-params.ts";
 import { getActiveHookRequest, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 import { quoteIdent } from "../db/ident.ts";
+
+/** SQL that reads the clock: its answer changes with no write to the table. */
+const READS_CLOCK_RE = /strftime\(|\bnow\(\)/i;
 
 async function encodeForStorage(val: unknown, field: FieldDef): Promise<unknown> {
   // Password: bcrypt-hash via Bun. Empty/null leaves column null.
@@ -501,14 +504,7 @@ export function encodeValue(val: unknown, field: FieldDef): unknown {
     const n = Number(val);
     return isNaN(n) ? null : n;
   }
-  if (field.type === "autodate" || field.type === "date") {
-    if (typeof val === "number") return val;
-    if (typeof val === "string") {
-      const t = Date.parse(val);
-      return isNaN(t) ? null : Math.floor(t / 1000);
-    }
-    return null;
-  }
+  if (field.type === "autodate" || field.type === "date") return dateToUnixSeconds(val);
   if (isJsonField(field)) {
     return typeof val === "string" ? val : JSON.stringify(val);
   }
@@ -641,6 +637,7 @@ async function compileWhereParts(
   // load them first so valid rules don't fail on a cold cache.
   await warmReferencedCollections([opts.filter, opts.accessRule]);
 
+  let filterSql: { sql: string; params: Binding[] } | null = null;
   if (opts.filter) {
     let compiled;
     try {
@@ -655,8 +652,7 @@ async function compileWhereParts(
     if (!compiled) {
       if (opts.filter.trim() !== "") throw new FilterError("could not parse expression");
     } else {
-      whereParts.push(compiled.sql);
-      whereParams.push(...(compiled.params as Binding[]));
+      filterSql = { sql: compiled.sql, params: compiled.params as Binding[] };
     }
   }
   if (opts.accessRule) {
@@ -671,6 +667,22 @@ async function compileWhereParts(
     if (!compiled) throw new AccessRuleError(col.name, "rule compiled to nothing");
     whereParts.push(compiled.sql);
     whereParams.push(...(compiled.params as Binding[]));
+    if (filterSql) {
+      // The caller's filter is evaluated only on rows the rule admits.
+      // `rule AND filter` leaves the order to the database, which ran the
+      // filter first: a filter that fails on some values (a JSON path over
+      // plain text) answered 400 or 200 depending on rows the caller can't
+      // see, and so read them out one guess at a time. CASE evaluates its
+      // branch only when the condition holds. The rule stays on its own as
+      // well: the planner can use an index for it, but not inside the CASE.
+      whereParts.push(`CASE WHEN (${compiled.sql}) THEN (${filterSql.sql}) END`);
+      whereParams.push(...(compiled.params as Binding[]), ...filterSql.params);
+      filterSql = null;
+    }
+  }
+  if (filterSql) {
+    whereParts.push(filterSql.sql);
+    whereParams.push(...filterSql.params);
   }
   if (opts.ids) {
     // Padded to a power of two with the last id, so a few statement shapes
@@ -822,7 +834,8 @@ export async function listRecords(
       const ftsCount = match && rankedWhere && db.capabilities.fts === "fts5";
       const countSql = ftsCount ? searchCountSql(col.name, tableRef, rankedWhere.whereSql) : `SELECT COUNT(*) AS c FROM ${source.from} ${whereSql}`;
       const countParams = ftsCount ? [match.query, ...rankedWhere.whereParams] : [...source.binds, ...whereParams];
-      // A view's SELECT, strftime('now', …) in a filter, or a rule or filter
+      // A view's SELECT, the clock in a filter (strftime on SQLite, now() as
+      // Postgres renders strftime('now')), or a rule or filter
       // that reads another table (@collection, _via_, view-rule guards) can
       // change its answer without a write to this table, which is all the
       // cache watches: those are always counted fresh.
@@ -830,7 +843,7 @@ export async function listRecords(
       // (core/row-counts.ts), when the table keeps one.
       const stored = !ftsCount && whereSql === "" && col.type !== "view" ? await storedRowCount(tname) : null;
       totalItems = stored !== null ? stored
-        : col.type === "view" || /strftime\(/i.test(whereSql) || readsOtherTables(whereSql, tname)
+        : col.type === "view" || READS_CLOCK_RE.test(whereSql) || readsOtherTables(whereSql, tname)
         ? (await db.get<{ c: number }>(countSql, countParams))?.c ?? 0
         : await cachedCount(countSql, countParams, tname);
       totalPages = Math.ceil(totalItems / perPage);

@@ -4,7 +4,8 @@ import { db } from "../db/index.ts";
 import { verifyHs256 } from "./jwt-hs256.ts";
 import { hmacSha256Hex } from "./hmac.ts";
 import type { AuthContext } from "./rules.ts";
-import { parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
+import { embeddedIPv4, parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
+import { isIPv6 } from "node:net";
 import { getTrustedProxiesRaw } from "./security.ts";
 
 /**
@@ -12,7 +13,7 @@ import { getTrustedProxiesRaw } from "./security.ts";
  *
  * Verifies the signature, audience, expiry, issuer, and revocation list, then
  * (optionally) confirms the principal still exists in the database and that
- * `password_reset_at` is not newer than the token's `iat`. Returns null on any
+ * `password_reset_at` is older than the token's `iat`. Returns null on any
  * failure so callers can produce a uniform 401 without leaking the cause.
  */
 export interface VerifiedAuth extends AuthContext {
@@ -150,7 +151,7 @@ export async function verifyAuthToken(
       if (recheck) {
         const resetAt = await adminResetAt(tok.created_by);
         if (resetAt === null) return null;
-        if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
+        if (typeof ctx.iat === "number" && resetAt >= ctx.iat) return null;
       }
       return ctx;
     }
@@ -182,7 +183,7 @@ export async function verifyAuthToken(
       if (aud === "admin") {
         const resetAt = await adminResetAt(id);
         if (resetAt === null) return null;
-        if (typeof ctx.iat === "number" && resetAt > ctx.iat) return null;
+        if (typeof ctx.iat === "number" && resetAt >= ctx.iat) return null;
       } else {
         // v0.11: user-token recheck routes to `vb_<col>` via the JWT
         // `collection` claim. Tokens minted before v0.11 lack the claim
@@ -198,7 +199,7 @@ export async function verifyAuthToken(
         if (!u) return null;
         // password_reset_at on per-collection table — bumping it (via
         // force-logout-all) invalidates this token.
-        if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at > ctx.iat) {
+        if (typeof ctx.iat === "number" && typeof u.password_reset_at === "number" && u.password_reset_at >= ctx.iat) {
           return null;
         }
         // Read from the row, not the token, so verifying takes effect at once.
@@ -252,8 +253,15 @@ export async function signAuthToken(opts: {
   jwtSecret: string;
   /** Re-mint a token that was already issued: same jti and iat give the same bytes. */
   reissue?: { jti: string; iat: number };
+  /**
+   * When the credential behind this token was checked (unix seconds).
+   * `password_reset_at` ends tokens issued at or before it, so dating a
+   * sign-in by its check, not by when signing finished, ends one whose
+   * password was checked before a reset that landed in between.
+   */
+  issuedAt?: number;
 }): Promise<{ token: string; jti: string; exp: number; iat: number }> {
-  const iat = opts.reissue?.iat ?? Math.floor(Date.now() / 1000);
+  const iat = opts.reissue?.iat ?? opts.issuedAt ?? Math.floor(Date.now() / 1000);
   const exp = iat + opts.expiresInSeconds;
   const jti = opts.reissue?.jti ?? crypto.randomUUID();
   const token = await new jose.SignJWT({ ...opts.payload, jti })
@@ -265,6 +273,17 @@ export async function signAuthToken(opts: {
     .setJti(jti)
     .sign(getSecret(opts.jwtSecret));
   return { token, jti, exp, iat };
+}
+
+/**
+ * `password_reset_at` ends every token whose `iat` is at or before it. Both
+ * are whole seconds, so a token issued in the same second as a reset (before
+ * or after it) is ended too. Callers that stamp a reset wait for the next
+ * second before issuing a token or answering, so the next sign-in works.
+ */
+export async function waitPastResetSecond(stamp: number): Promise<void> {
+  const ms = (stamp + 1) * 1000 - Date.now();
+  if (ms > 0) await Bun.sleep(ms);
 }
 
 /** Add `jti` to the revocation list (idempotent). */
@@ -401,10 +420,43 @@ export function perClientLimitIp(request: Request | null, peerIp: string | null)
   peerIp = normalizePeerIp(peerIp);
   if (!getTrustedProxies()) {
     if (LOOPBACK_CIDRS.some((c) => ipInCidr(peerIp!, c))) return null;
-    return peerIp;
+    return rateLimitKeyForIp(peerIp);
   }
-  return request ? trustedClientIp(request, peerIp) : peerIp;
+  // An IPv6 client is capped by its /64, as the rate limiter keys it: one
+  // subscriber holds the whole /64, and per-address caps let it fill the
+  // global connection cap alone.
+  return rateLimitKeyForIp(request ? trustedClientIp(request, peerIp) : peerIp);
 }
+
+/**
+ * The bucket key for a client address. IPv6 is keyed by its /64: one
+ * subscriber typically holds a whole /64, so per-address buckets gave a
+ * single client 2^64 fresh budgets. IPv4-mapped addresses count as IPv4.
+ */
+export function rateLimitKeyForIp(ip: string): string {
+  if (!isIPv6(ip)) return ip;
+  const groups = expandIPv6Groups(ip);
+  if (!groups) return ip;
+  if (groups.slice(0, 5).every((g) => /^0+$/.test(g)) && groups[5] === "ffff") return embeddedIPv4(ip) ?? ip;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
+function expandIPv6Groups(ip: string): string[] | null {
+  const bare = ip.split("%")[0]!.toLowerCase();
+  // An embedded dotted IPv4 tail counts as two groups.
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
+  const norm = v4 ? bare.slice(0, -v4[1]!.length) + "0:0" : bare;
+  const [head = "", tail = ""] = norm.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  if (norm.includes("::")) {
+    const fill = 8 - h.length - t.length;
+    if (fill < 0) return null;
+    return [...h, ...Array(fill).fill("0"), ...t];
+  }
+  return h.length === 8 ? h : null;
+}
+
 
 export function trustedClientIp(request: Request, peerIp: string | null): string {
   if (!peerIp) return "unknown";
@@ -477,6 +529,18 @@ export function clientIp(request: Request): string | null {
   const peer = requestPeers.get(request);
   if (peer === undefined || peer === null) return null;
   return trustedClientIp(request, peer);
+}
+
+/**
+ * The address a sign-in lockout counts failures for, or null to count by
+ * account only. Same rule as the per-client connection caps: behind a
+ * reverse proxy on this host with no trusted proxies configured, every
+ * client is the proxy's loopback address, and one per-IP counter for all
+ * of them let anyone lock every account out by failing sign-ins.
+ */
+export function lockoutIp(request: Request): string | null {
+  const peer = requestPeers.get(request);
+  return peer === undefined || peer === null ? null : perClientLimitIp(request, peer);
 }
 
 /** HMAC-SHA256 for recovery-code O(1) lookup. Returns hex. */

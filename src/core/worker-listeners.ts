@@ -148,8 +148,12 @@ export function listenOnWorker(spec: ListenMessage, deps: WorkerListenerDeps): S
     // "too many connections" below; answer with the maintenance 503 here.
     const closed = await maintenanceRefusal(request, deps.jwtSecret);
     if (closed) return closed;
-    const headers: Record<string, string> = { [INTERNAL_HEADER]: spec.secret, [PEER_HEADER]: peer ?? "" };
+    // Client headers first, then ours: a client sending its own peer or
+    // internal header must not override the address the cap counts.
+    const headers: Record<string, string> = {};
     request.headers.forEach((v, k) => { if (!HANDSHAKE_HEADERS.has(k)) headers[k] = v; });
+    headers[INTERNAL_HEADER] = spec.secret;
+    headers[PEER_HEADER] = peer ?? "";
     const upstream = new WebSocket(`ws://${internal}${url.pathname}${url.search}`, { headers } as unknown as string[]);
     upstream.binaryType = "arraybuffer";
     const data: BridgeData = { upstream, early: [] };

@@ -5,7 +5,7 @@ import { getDb, onCloseDb } from "../db/client.ts";
 import { db, getDriver, type DbDriver } from "../db/index.ts";
 import type { ColumnSpec } from "../db/ddl.ts";
 import { rewriteSqlParams, scanSql } from "./sql-scan.ts";
-import { collections, type Collection, type NewCollection } from "../db/schema.ts";
+import { collections, recordHistory, type Collection, type NewCollection } from "../db/schema.ts";
 import { dropFts, ftsColumns, searchableErrors, syncFts, SEARCH_COLUMN } from "./fts.ts";
 import { ensureRowCount, forgetRowCount } from "./row-counts.ts";
 import { parseThumbSpec } from "./image.ts";
@@ -15,6 +15,7 @@ import { groupNeedsRewrite, groupSchemaError, rewriteGroupValue, subfieldRenames
 import { decryptValue, encryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
 import { boundViewSource, coerceViewParam, parseViewParams, validateViewParams, viewQueryWithDefaults, type ViewParam } from "./view-params.ts";
 import { quoteIdent } from "../db/ident.ts";
+import { isEmail } from "./email-address.ts";
 
 export type BuiltinFieldType =
   | "text" | "number" | "bool" | "file" | "relation"
@@ -909,7 +910,6 @@ export function fieldsFromViewColumns(columns: string[]): FieldDef[] {
 
 const VIEW_META_COLUMNS = new Set(["id", "created", "created_at", "updated", "updated_at"]);
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const URL_RE = /^https?:\/\//;
 const BOOL_NAME_RE = /^(is_|has_)|(_enabled)$/;
 
@@ -949,7 +949,7 @@ function classifyValue(value: unknown, columnName: string): FieldType {
     if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
       return "json";
     }
-    if (EMAIL_RE.test(s)) return "email";
+    if (isEmail(s)) return "email";
     if (URL_RE.test(s)) return "url";
     return "text";
   }
@@ -1370,8 +1370,19 @@ function ensureImplicitFields(type: string, fields: FieldDef[]): FieldDef[] {
  * the second collection share the first one's. Existing collections keep
  * their names.
  */
+/**
+ * Names that are the API's own top-level paths: `/api/<name>` already means
+ * something else. An `admin` collection's records sat under `/api/admin/`,
+ * which maintenance mode leaves open for admins, so anyone could still
+ * write them during maintenance.
+ */
+const RESERVED_COLLECTION_NAMES = new Set(["admin", "auth", "files", "collections", "health", "batch", "custom", "realtime", "mcp"]);
+
 function assertNewCollectionName(name: string): void {
   assertSqlIdent(name, "collection");
+  if (RESERVED_COLLECTION_NAMES.has(name.toLowerCase())) {
+    throw new CollectionValidationError({ name: `'${name}' is reserved: /api/${name} is one of the API's own paths` });
+  }
   if (db.name === "postgres" && Buffer.byteLength(userTableName(name)) > 63) {
     throw new CollectionValidationError({ name: `On Postgres a collection name is at most ${63 - userTableName("").length} characters` });
   }
@@ -1514,7 +1525,10 @@ async function renameCollectionStorage(
   /** Undoing a rename: the collection's own row still holds `newName`. */
   revert = false,
 ): Promise<void> {
-  assertNewCollectionName(newName);
+  // A revert goes back to the name the collection had, which may predate
+  // the reserved-name rule.
+  if (!revert) assertNewCollectionName(newName);
+  else assertSqlIdent(newName, "collection");
   const orm = getDb();
   const clash = revert ? [] : await orm.select({ id: collections.id }).from(collections)
     .where(eq(collections.name, newName)).limit(1);
@@ -1761,6 +1775,9 @@ export async function deleteCollection(idOrName: string): Promise<void> {
   cache.delete(col.name);
   broadcast({ type: "bus", kind: "collections" });
   await db.delete(collections).where(eq(collections.id, col.id));
+  // History is keyed by collection name: left behind, a later collection of
+  // the same name served the deleted one's snapshots as its own.
+  await db.delete(recordHistory).where(eq(recordHistory.collection, col.name));
   // Again once the row is gone: something built from the collection list
   // between the first bump and the delete still had it.
   schemaVersion++;

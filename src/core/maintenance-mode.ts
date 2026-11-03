@@ -27,7 +27,7 @@
 import { getSetting as readSetting } from "../api/settings.ts";
 import { applyCorsHeaders } from "./cors.ts";
 import { isAdminApiPath, normalizeApiPath } from "./api-paths.ts";
-import { extractBearer, securityHeaders, verifyAuthToken } from "./sec.ts";
+import { dataPrincipal, extractBearer, securityHeaders, verifyAuthToken } from "./sec.ts";
 import { findRoute } from "./routes.ts";
 
 /**
@@ -136,12 +136,24 @@ export function maintenanceResponse(request: Request, s: MaintenanceState, nowSe
   return new Response(JSON.stringify(body), { status: 503, headers: set.headers as Record<string, string> });
 }
 
-/** Whether the request carries an admin session or an admin API token. */
+/**
+ * Whether the request carries an admin session, or an API token that acts
+ * as admin for this request (dataPrincipal: `admin` scope always, `read`
+ * for reads). Every API token verifies as type "admin" (its minting admin),
+ * so a write-only or MCP-only token used to get through maintenance too.
+ */
 async function fromAdmin(request: Request, jwtSecret: string): Promise<boolean> {
   const token = extractBearer(request);
   if (!token) return false;
   try {
-    return (await verifyAuthToken(token, jwtSecret))?.type === "admin";
+    const ctx = await verifyAuthToken(token, jwtSecret);
+    if (!ctx || ctx.type !== "admin") return false;
+    if (!ctx.viaApiToken) return true;
+    // MCP tools act as the minting admin by design: an mcp:* token keeps
+    // working on the MCP endpoint, as an admin's own agent should.
+    const path = normalizeApiPath(new URL(request.url).pathname);
+    if ((path === "/api/mcp" || path.startsWith("/api/mcp/")) && (ctx.scopes ?? []).some((sc) => sc.startsWith("mcp:"))) return true;
+    return dataPrincipal(ctx, SAFE_METHODS.has(request.method) ? "read" : "write")?.type === "admin";
   } catch {
     return false;
   }

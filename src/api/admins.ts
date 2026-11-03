@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { getDb } from "../db/client.ts";
 import { db as driver } from "../db/index.ts";
 import { admin } from "../db/schema.ts";
-import { HASH_OPTS } from "../core/sec.ts";
+import { HASH_OPTS, waitPastResetSecond } from "../core/sec.ts";
 import { validatePassword } from "../core/password-policy.ts";
 import { adminGuard } from "./_admin.ts";
 
@@ -93,6 +93,7 @@ export function makeAdminsPlugin(jwtSecret: string) {
           return { data: { id: params.id, email: target[0]!.email } };
         }
         await db.update(admin).set(update).where(eq(admin.id, params.id));
+        if (update.password_reset_at !== undefined) await waitPastResetSecond(update.password_reset_at);
         return { data: { id: params.id, email: update.email ?? target[0]!.email } };
       },
       {

@@ -9,6 +9,134 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Security
+
+- **One request with a long email address stalled the server.** The email
+  check backtracked over the whole value: a 64 KB address on sign-up (no
+  account needed) or in an `email` field held every other request for about
+  a second, longer ones for more. Addresses over 254 characters are refused
+  first, and the check runs in linear time.
+- **Someone who registered your address before you kept their way in.** A
+  magic-link (OTP) sign-in verifies an unverified account, but the password,
+  sessions, MFA and provider links set by whoever registered it stayed. The
+  first such sign-in now ends all of them; the owner can set a password
+  through a reset.
+- **A session issued in the same second as a password reset survived it.**
+  A reset (or signing all admins out, an admin password change, an email
+  change, a promoted guest) now also ends tokens from that second. The reset waits for the next second
+  before it answers, so signing in right after works.
+- **A copied Google or Apple ID token could sign in again.** A token signs
+  in once, but changing a spare bit in its signature (or, for Apple, using
+  the signature's second valid form) made it look new. A token is now
+  recognised by the part its signature covers.
+- **A client of the read-worker listener could choose its own address for
+  the realtime cap** by sending the internal peer header, and get past the
+  100-connections-per-address limit. The listener's own header now wins.
+  The cap also counts an IPv6 client by its /64, as the rate limiter does.
+- **A batch that wrote held up every write while it ran up to 99 lists**
+  (on Postgres, about half a second per batch). A batch that writes can no
+  longer list records; see Upgrade notes. A batch is also charged one
+  rate-limit token per op instead of one in all. A batch larger than a
+  rule's limit (100 creates against the default 60) goes through when that
+  bucket is full and leaves it in debt, so batching never beats the limit.
+- **`?thumb=` on a file that isn't an image read the whole file into
+  memory on every request.** The format is checked from its first bytes, and
+  files over 64 MB are served as they are. Still-image thumbnails are made
+  two at a time, as animated ones already were.
+- **A collection named `admin` stayed writable in maintenance mode** (its
+  records are under `/api/admin/`, which maintenance leaves open). New
+  collections can't take the API's own path names: `admin`, `auth`, `files`,
+  `collections`, `health`, `batch`, `custom`, `realtime`, `mcp`.
+- **On Postgres:**
+  - A list whose rule reads the clock (`strftime('now')`) could report a
+    total that still counted records the rule had since hidden.
+  - A filter comparing a value to a fraction (`n > 1.5`) bound its values in
+    the wrong order, which could count rows a view rule hides.
+- **Record history outlived its collection:** a new collection with a
+  deleted one's name served the old records' history. Deleting a collection
+  deletes its history.
+- **`vaultbase update` and the installers' `--verify-sig` accepted a
+  signature from any workflow in the repository**, at any branch; the
+  installers also took an older release's signature for a newer one. They
+  now require the release workflow, run for that version's tag (or a
+  rebuild from `main`).
+
+- **A list filter could read rows its rule hides.** The caller's `?filter=`
+  ran before the list rule, so a filter that fails on some values (a JSON
+  path over plain text) answered 400 or 200 depending on hidden rows, which
+  let anyone read them out one guess at a time. The filter now runs only on
+  rows the rule admits.
+- **Record history decrypted any `vbenc:` value**, so a value copied from
+  an encrypted field or a secret setting into a plain field read back
+  decrypted. History decrypts only fields marked encrypted, as record reads
+  do.
+- **A password sign-in that was checking the old password when a reset
+  landed got a session that outlived the reset.** User and admin sign-ins
+  are dated by when the password was checked.
+- **Behind a reverse proxy on the same host, with no trusted proxies set,
+  every client shared one sign-in lockout counter**, so anyone could lock
+  everyone out. Failures from a loopback peer are counted by account only,
+  as the realtime caps already did.
+- **Rules decided differently by id, on update and over realtime than in
+  the list query:**
+  - a whole `json` or `group` field (or a multi-value list) compared as
+    `[object Object]` or `a,b` instead of its JSON text;
+  - non-ASCII letters were folded differently from the database's `LIKE`
+    and `lower()`;
+  - a date sent as an ISO string was compared as text in create and update
+    rules (`starts_at > @now` let any date through). Rules now see dates as
+    stored.
+- **A singleton's record could be read through a batch list or
+  `_aggregate` under its list rule**; it is read under its view rule
+  everywhere.
+- **A `%` pattern in a rule was matched with a regex that slowed to a crawl
+  on long values**, which a create rule ran on the request body. It's
+  matched in linear time.
+- **An animated GIF thumbnail upscaled every frame**: a 10 KB file at
+  `?thumb=4096x4096` held the server for about 30 seconds. Animated
+  thumbnails count the output size too and fall back to the first frame.
+- **A batch with thousands of ops was charged op by op before being
+  refused** for being over 100.
+- **A password reset, magic-link claim or email change now stops push to
+  the user's registered devices**, which kept getting notifications after
+  the sessions that registered them ended. Apps register again at sign-in.
+- **A notification sent from inside a write that rolled back** reached the
+  recipient's realtime feed. It is announced after the write commits.
+- **Any API token got past maintenance mode.** Only tokens that act as admin
+  for the request do (`admin`, or `read` for reads), plus `mcp:*` tokens on
+  the MCP endpoint.
+- **On Postgres, a list rule reading the clock as `'NOW'`, `'today'` and
+  the like** still had its total cached.
+- **The release signature named the ref a run started from**, so a manual
+  rebuild started from another ref could sign one version as another.
+  Release runs must start from their own tag, and `vaultbase update` and the
+  installers accept only that tag's signature (no longer `main`). The
+  installer service fetches scripts by `refs/tags/`, so a branch named like a
+  tag can't stand in.
+- The admin log reader's cache is bounded by size as well as entry count.
+
+### Upgrade notes
+
+- **A user who registered but never verified, then signs in by magic link,
+  loses their password, TOTP, provider links and push devices** (the
+  account can't tell them from someone who registered their address
+  first). They set a new password through a reset. Collections that
+  require verification before password sign-in are not affected in practice.
+- **Manual re-releases** (`workflow_dispatch` on the Release workflow) must
+  be started from the release tag, not a branch.
+- **Rules using `~` or `:lower` on non-ASCII text** decide by id and over
+  realtime as the list query does on your database: ASCII-only folding on
+  SQLite, full folding on Postgres.
+- **A batch that writes can't list records.** It answers 422 naming the
+  list; send lists in their own batch of reads. A get by id still works in
+  a write batch.
+- **A batch costs a rate-limit token per op**, not one for the whole batch.
+  A batch over a rule's limit is accepted only with a full bucket and
+  leaves the client waiting as long as the ops sent one by one would.
+- **New collections can't be named** `admin`, `auth`, `files`,
+  `collections`, `health`, `batch`, `custom`, `realtime` or `mcp`. Existing
+  ones keep their names.
+
 ### Fixed
 
 - **A PATCH that lost a race with a DELETE of the same record answered 500

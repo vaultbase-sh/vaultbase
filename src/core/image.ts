@@ -270,6 +270,14 @@ export const MAX_SOURCE_PIXELS = 50_000_000;
 export const MAX_ANIMATION_PIXELS = 25_000_000;
 /** Animated decodes running at once; the rest wait their turn. */
 const MAX_ANIMATED_DECODES = 2;
+/**
+ * Still-image decodes running at once. A 50-megapixel source decodes to about
+ * 200 MB of RGBA, so unbounded parallel requests for distinct variants could
+ * hold several of those at once. Thumbnails are cached, so waiting is cheap.
+ */
+const MAX_STILL_DECODES = 2;
+/** Largest stored file a thumbnail is read from; bigger ones are served as is. */
+export const MAX_THUMB_SOURCE_BYTES = 64 * 1024 * 1024;
 
 /** The source is over the decode budget; callers serve the original instead. */
 export class ImageTooLargeError extends Error {}
@@ -336,21 +344,24 @@ export function gifFrameCount(bytes: Uint8Array): number {
   return gifLayout(bytes).frames;
 }
 
-let animatedDecodes = 0;
-const animatedWaiters: Array<() => void> = [];
-
-async function withAnimatedDecodeSlot<T>(fn: () => Promise<T>): Promise<T> {
-  while (animatedDecodes >= MAX_ANIMATED_DECODES) {
-    await new Promise<void>((resolve) => animatedWaiters.push(resolve));
-  }
-  animatedDecodes++;
-  try {
-    return await fn();
-  } finally {
-    animatedDecodes--;
-    animatedWaiters.shift()?.();
-  }
+/** At most `max` calls of the returned runner are in flight; the rest queue. */
+function decodeSlots(max: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiters: Array<() => void> = [];
+  return async (fn) => {
+    while (running >= max) await new Promise<void>((resolve) => waiters.push(resolve));
+    running++;
+    try {
+      return await fn();
+    } finally {
+      running--;
+      waiters.shift()?.();
+    }
+  };
 }
+
+const withAnimatedDecodeSlot = decodeSlots(MAX_ANIMATED_DECODES);
+const withStillDecodeSlot = decodeSlots(MAX_STILL_DECODES);
 
 export async function generateThumbnail(
   bytes: Uint8Array,
@@ -370,13 +381,19 @@ export async function generateThumbnail(
   // The output too: a sliver (50000×1) scaled to one side's 4096 asks for a
   // 204-million-pixel resize.
   if (resizePixels(width, height, spec) > MAX_SOURCE_PIXELS) throw new ImageTooLargeError();
-  if (gif && !spec.format && gif.frames * width * height > MAX_ANIMATION_PIXELS) {
+  // Every frame is decoded at source size and resized to the output size,
+  // so both count: a tiny 8x8 GIF with 256 frames asked for 4096x4096 cost
+  // 256 full-size resizes on the request path.
+  if (gif && !spec.format && gif.frames * Math.max(width * height, resizePixels(width, height, spec)) > MAX_ANIMATION_PIXELS) {
     // Too much to decode every frame: render the first one.
-    return await thumbnailStill(bytes, spec, "png");
+    return await withStillDecodeSlot(() => thumbnailStill(bytes, spec, "png"));
   }
-  if (spec.format) return await thumbnailStill(bytes, spec, spec.format);
+  if (spec.format) {
+    const out = spec.format;
+    return await withStillDecodeSlot(() => thumbnailStill(bytes, spec, out));
+  }
   if (format === "gif") return await withAnimatedDecodeSlot(() => thumbnailGif(bytes, spec));
-  return await thumbnailStill(bytes, spec, format);
+  return await withStillDecodeSlot(() => thumbnailStill(bytes, spec, format));
 }
 
 /** The largest bitmap a resize to `spec` allocates (cover scales before it crops). */

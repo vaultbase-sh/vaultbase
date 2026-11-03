@@ -20,12 +20,13 @@ import {
   HASH_OPTS,
   hmacRecoveryCode,
   ISSUER,
-  clientIp,
   redactEmail,
   requestIsHttps,
   revokeToken,
   signAuthToken,
   verifyAuthToken,
+  waitPastResetSecond,
+  lockoutIp,
   accessFor,
   dataPrincipal,
   headerBearer,
@@ -71,6 +72,8 @@ import {
 } from "../core/security.ts";
 import { adminGuard } from "./_admin.ts";
 import { adminByEmail } from "./admins.ts";
+import { isEmail } from "../core/email-address.ts";
+import { disableUserDevices } from "../core/notifications.ts";
 
 /**
  * Whether auth cookies get `Secure`: the request came over HTTPS (directly
@@ -96,7 +99,6 @@ async function userSession(request: Request, jwtSecret: string, collection: stri
 
 const TOKEN_TTL_SECONDS = 60 * 60; // 1 hour
 const INVITE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OTP_TTL_SECONDS = 10 * 60;   // 10 minutes
 const MFA_TICKET_TTL_SECONDS = 5 * 60; // 5 minutes — enough to type a code
 const PKCE_TTL_SECONDS = 10 * 60; // 10 minutes — enough to complete the IdP redirect
@@ -727,7 +729,7 @@ async function providerSignIn(
     }
     const email = hookData["email"] as string;
     if (email !== accountEmail) {
-      if (!EMAIL_RE.test(email)) return { status: 422, body: { error: "Validation failed", code: 422, details: { email: "Invalid email" } } };
+      if (!isEmail(email)) return { status: 422, body: { error: "Validation failed", code: 422, details: { email: "Invalid email" } } };
       if (email.toLowerCase() !== accountEmail.toLowerCase() && await findUserByEmailAnyCase(col, email)) {
         return { status: 409, body: { error: "Email already in use", code: 409 } };
       }
@@ -862,7 +864,9 @@ export function makeAuthPlugin(jwtSecret: string) {
             id,
             email: body.email,
             password_hash: hash,
-            password_reset_at: now,
+            // A new id has no earlier tokens to end; `now` would also end the
+            // token issued just below (a token at or before the stamp is dead).
+            password_reset_at: 0,
             created_at: now,
           });
         } catch {
@@ -890,10 +894,11 @@ export function makeAuthPlugin(jwtSecret: string) {
     .post(
       "/admin/auth/login",
       async ({ body, request }) => {
-        const ip = clientIp(request);
+        const ip = lockoutIp(request);
         // Lockout gate runs *before* password verify so a successful attempt
         // by a different account from the same IP doesn't leak signal.
         const db = getDb();
+        const checkedAt = Math.floor(Date.now() / 1000);
         const rows = await adminByEmail(body.email);
         const a = rows[0];
         const attempt = await reserveLoginAttempt({ email: body.email, subject: a?.id, ip });
@@ -918,6 +923,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           audience: "admin",
           expiresInSeconds: ttl,
           jwtSecret,
+          issuedAt: checkedAt,
         });
         await recordAdminSession({
           jti, admin_id: a.id, admin_email: a.email,
@@ -1017,7 +1023,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         // email field made optional, or a hook that removed the address, left
         // it empty, and sign-up made accounts without one.
         const email = hookData.email;
-        if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+        if (!isEmail(email)) {
           set.status = 422;
           return { error: "Validation failed", code: 422, details: { email: "email is required" } };
         }
@@ -1086,8 +1092,9 @@ export function makeAuthPlugin(jwtSecret: string) {
         // Per-account lockout, charged before the password is checked. The
         // per-IP rate limit alone doesn't stop a guesser with many addresses.
         // Per-collection email lookup (vb_<col> first, legacy fallback).
+        const checkedAt = Math.floor(Date.now() / 1000);
         const u = await findUserByEmail(col, body.email);
-        const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: clientIp(request) };
+        const lockout = { scope: `user:${col.id}`, email: body.email, subject: u?.id, ip: lockoutIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
@@ -1119,6 +1126,9 @@ export function makeAuthPlugin(jwtSecret: string) {
           audience: "user",
           expiresInSeconds: tokenWindowSeconds("user"),
           jwtSecret,
+          // A reset that lands while this sign-in is verifying the old
+          // password ends the session it is about to get.
+          issuedAt: checkedAt,
         });
         return { data: { token, record: { id: u.id, email: u.email } } };
       },
@@ -1390,6 +1400,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         // by whoever had it (merge-confirm with a leaked password) would
         // otherwise keep signing them in.
         await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, tok.user_id), eq(oauthLinks.collection_id, col.id)));
+        await disableUserDevices(col.name, tok.user_id);
+        await waitPastResetSecond(now);
         return { data: { reset: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1409,7 +1421,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (session.anonymous) { set.status = 422; return { error: "Anonymous accounts can't change email; promote the account instead", code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const newEmail = body.newEmail.trim();
-        if (!EMAIL_RE.test(newEmail)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        if (!isEmail(newEmail)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
         const u = await findUserById(col, session.id);
         if (!u) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
         if (newEmail.toLowerCase() === u.email.toLowerCase()) { set.status = 422; return { error: "That is already your email", code: 422 }; }
@@ -1470,7 +1482,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!u) { set.status = 401; return { error: "Invalid password", code: 401 }; }
         // The password is the only thing a stolen session lacks here, so it
         // gets the same lockout as sign-in.
-        const lockout = { scope: `user:${col.id}`, email: u.email, subject: u.id, ip: clientIp(request) };
+        const lockout = { scope: `user:${col.id}`, email: u.email, subject: u.id, ip: lockoutIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };
@@ -1485,6 +1497,8 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired token", code: 400 }; }
         await updateUserById(col, u.id, { email: tok.payload, email_verified: 1, password_reset_at: now, updated_at: now });
         await voidAccountTokens(col.id, u.id, now);
+        await disableUserDevices(col.name, u.id);
+        await waitPastResetSecond(now);
         return { data: { changed: true, email: tok.payload } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1500,7 +1514,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         if (col.type !== "auth") { set.status = 422; return { error: `'${col.name}' is not an auth collection`, code: 422 }; }
         if (!isSmtpConfigured()) { set.status = 422; return { error: "SMTP not configured", code: 422 }; }
         const given = body.email.trim();
-        if (!EMAIL_RE.test(given)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        if (!isEmail(given)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
         if (await findUserByEmailAnyCase(col, given)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
 
         const data: Record<string, unknown> = { ...(body.data ?? {}) };
@@ -1521,7 +1535,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
         // The address the account gets: the hook's, when it set another one.
         const email = typeof hookData["email"] === "string" ? hookData["email"].trim() : "";
-        if (!EMAIL_RE.test(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
+        if (!isEmail(email)) { set.status = 422; return { error: "Invalid email", code: 422 }; }
         if (email.toLowerCase() !== given.toLowerCase()) {
           if (await findUserByEmailAnyCase(col, email)) { set.status = 409; return { error: "A user with this email already exists", code: 409 }; }
         }
@@ -1573,6 +1587,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         const hash = await hashPassword(body.password);
         if (!(await consumeToken(tok.id, now))) { set.status = 400; return { error: "Invalid or expired invitation", code: 400 }; }
         await updateUserById(col, tok.user_id, { password_hash: hash, email_verified: 1, password_reset_at: now, updated_at: now });
+        await waitPastResetSecond(now);
         return { data: { accepted: true } };
       },
       { body: t.Object({ token: t.String(), password: t.String() }) }
@@ -1692,12 +1707,27 @@ export function makeAuthPlugin(jwtSecret: string) {
           set.status = 400; return { error: "Invalid or expired code", code: 400 };
         }
         // OTP-issued sessions imply the email is verified (the IdP — us — confirmed it).
+        // Whoever set the password, sessions and provider links on a still-
+        // unverified account never proved they own this mailbox: someone could
+        // have registered the address first. The mailbox owner takes the
+        // account over clean; they can set a password through a reset.
+        let claimed = false;
         if (!u.email_verified) {
-          await updateUserById(col, u.id, { email_verified: 1, updated_at: now });
+          const unusable = await hashPassword(crypto.randomUUID() + crypto.randomUUID());
+          await updateUserById(col, u.id, {
+            email_verified: 1, password_hash: unusable, totp_enabled: 0, totp_secret: null,
+            password_reset_at: now, updated_at: now,
+          });
+          await deleteRecoveryCodes(u.id, col.id);
+          await voidAccountTokens(col.id, u.id, now);
+          await db.delete(oauthLinks).where(and(eq(oauthLinks.user_id, u.id), eq(oauthLinks.collection_id, col.id)));
+          await disableUserDevices(col.name, u.id);
+          await waitPastResetSecond(now);
+          claimed = true;
         }
         // OTP MFA gate would defeat the purpose of magic-link sign-in (no password).
         // We still respect TOTP if the user enabled it: issue an mfa ticket instead.
-        if (u.totp_enabled === 1) {
+        if (!claimed && u.totp_enabled === 1) {
           const ticket = newToken();
           await db.insert(authTokens).values({
             id: storedTokenId(ticket),
@@ -1934,7 +1964,7 @@ export function makeAuthPlugin(jwtSecret: string) {
           throw e;
         }
         const email = hookData["email"];
-        if (typeof email !== "string" || !EMAIL_RE.test(email)) {
+        if (!isEmail(email)) {
           set.status = 422; return { error: "Validation failed", code: 422, details: { email: "email is required" } };
         }
         // Email uniqueness within the collection (excluding self).
@@ -1970,6 +2000,7 @@ export function makeAuthPlugin(jwtSecret: string) {
         update["password_reset_at"] = now;
         await updateUserById(col, u.id, update);
         if (session.jti && session.exp) await revokeToken(session.jti, session.exp);
+        await waitPastResetSecond(now);
         const { token: jwt } = await signAuthToken({
           payload: { id: u.id, email: email as string, collection: col.name },
           audience: "user",
@@ -2263,10 +2294,15 @@ export function makeAuthPlugin(jwtSecret: string) {
         }
       }
       // Each token signs in once: recorded until it expires, so a copied
-      // token can't be replayed.
+      // token can't be replayed. Keyed on the signed part (header.payload),
+      // which can't change without failing verification. The signature can:
+      // base64url leaves spare bits in its last character, and an ECDSA
+      // signature (Apple's ES256) has a second valid form anyone can compute,
+      // so the whole string made a new key for the same token.
+      const signedPart = body.id_token.slice(0, body.id_token.lastIndexOf("."));
       try {
         await getDb().insert(authTokens).values({
-          id: storedTokenId(`id_token:${body.id_token}`),
+          id: storedTokenId(`id_token:${signedPart}`),
           user_id: "",
           collection_id: col.id,
           purpose: "oauth2_id_token_used",
@@ -2336,7 +2372,7 @@ export function makeAuthPlugin(jwtSecret: string) {
       let viaSession = false;
       if (typeof body.password === "string" && body.password !== "") {
         // A password guess here is a sign-in attempt: same lockout.
-        const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: clientIp(request) };
+        const lockout = { scope: `user:${col.id}`, email: user.email, subject: user.id, ip: lockoutIp(request) };
         const attempt = await reserveLoginAttempt(lockout);
         if (!attempt) {
           set.status = 429; return { error: "Too many failed attempts. Try again later.", code: 429 };

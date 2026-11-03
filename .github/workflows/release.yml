@@ -7,6 +7,8 @@ name: Release
 #
 # Manual trigger via `workflow_dispatch` is also wired so you can rebuild
 # release assets without re-tagging (useful when binaries get clobbered).
+# Start it from the tag itself ("Use workflow from" → the tag): the run
+# refuses any other ref, since the signature names the ref it started from.
 
 on:
   push:
@@ -46,6 +48,14 @@ jobs:
           TAG="$INPUT_TAG"
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "::error::'$TAG' is not a release tag (vX.Y.Z)"; exit 1
+          fi
+          # The signing certificate names the ref the run started from, and
+          # installs accept a release only when that ref is its own tag. A
+          # manual run must be started from the tag it rebuilds (pick the tag,
+          # not a branch, in "Run workflow"); from another ref its signature
+          # would vouch for this build under the wrong name.
+          if [ "${GITHUB_REF}" != "refs/tags/${TAG}" ]; then
+            echo "::error::run this workflow from refs/tags/${TAG} (started from ${GITHUB_REF})"; exit 1
           fi
           git fetch --force --tags origin
           want="$(git rev-parse "refs/tags/${TAG}^{commit}")" || { echo "::error::tag $TAG does not exist"; exit 1; }

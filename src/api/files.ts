@@ -16,6 +16,7 @@ import {
   reserveThumbVariant,
   parseOutputOptions,
   parseThumbSpec,
+  MAX_THUMB_SOURCE_BYTES,
   thumbCachePath,
   thumbMime,
   thumbSizeKey,
@@ -42,6 +43,30 @@ import {
   trustedClientIp,
   verifyAuthToken,
 } from "../core/sec.ts";
+
+/** Files at most this size are read whole for a thumbnail without sniffing their format first. */
+const THUMB_SNIFF_ABOVE_BYTES = 1024 * 1024;
+
+/** The first `n` bytes of a stored file (fewer if it's shorter), without reading the rest. */
+async function readHead(key: string, n: number): Promise<Uint8Array> {
+  const r = await fileResponse(key);
+  const reader = r?.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const out = new Uint8Array(n);
+  let got = 0;
+  try {
+    while (got < n) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const take = Math.min(value.length, n - got);
+      out.set(value.subarray(0, take), got);
+      got += take;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return out.subarray(0, got);
+}
 
 /** API tokens act within their scopes (see `dataPrincipal`). */
 async function getAuthContext(
@@ -747,6 +772,17 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         return original("limit");
       }
 
+      // Only something that can be a resizable image is read into memory: a
+      // video or archive was loaded whole on every `?thumb=` request just to
+      // find out it isn't one. The format comes from the stored bytes, not
+      // the declared type, which the uploader chose.
+      if (meta && meta.size > MAX_THUMB_SOURCE_BYTES) return original();
+      // A small file is cheaper to read once than to sniff first (a second
+      // round trip on S3); the check after the read covers it.
+      if (!meta || meta.size > THUMB_SNIFF_ABOVE_BYTES) {
+        const headFormat = detectFormat(await readHead(params.filename, 16));
+        if (!headFormat || !canThumbnail(headFormat)) return original();
+      }
       const buf = await readFile(params.filename);
       if (!buf) { set.status = 404; return { error: "File not found", code: 404 }; }
       const bytes = new Uint8Array(buf);

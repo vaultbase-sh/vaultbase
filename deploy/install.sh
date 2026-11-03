@@ -390,10 +390,13 @@ if [ "${VERIFY_SIG}" -eq 1 ]; then
     say "Fetching cosign signature + certificate..."
     curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}"
     curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}"
+    # The release workflow, started from this very tag: any other ref would
+    # let another release's signature pass as this one.
+    VERSION_RE="$(printf '%s' "${VERSION}" | sed 's/[.]/\\./g')"
     cosign verify-blob \
         --certificate "${TMP}/vaultbase.pem" \
         --signature "${TMP}/vaultbase.sig" \
-        --certificate-identity-regexp "^https://github\\.com/${REPO}/" \
+        --certificate-identity-regexp "^https://github\\.com/${REPO}/\\.github/workflows/release\\.yml@refs/tags/${VERSION_RE}\$" \
         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
         "${TMP}/vaultbase" \
         || { err "Cosign verification failed."; exit 2; }

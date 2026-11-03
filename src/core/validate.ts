@@ -6,6 +6,7 @@ import { files, type Collection } from "../db/schema.ts";
 import type { FieldDef } from "./collections.ts";
 import { getCollection, parseFields, userTableName } from "./collections.ts";
 import { sanitizeHtml } from "./html-sanitize.ts";
+import { isEmail } from "./email-address.ts";
 import { isValidStorageFilename } from "./sec.ts";
 import { groupItemBounds, isGroupList, ITEM_ID_RE, newItemId, subfieldsOf } from "./group-fields.ts";
 
@@ -17,7 +18,6 @@ export class ValidationError extends Error {
   }
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_RE = /^https?:\/\/[^\s/$.?#].[^\s]*$/i;
 const HEX_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
@@ -206,6 +206,35 @@ export function validateGroup(field: FieldDef, value: unknown): { error: string 
   return { value: items };
 }
 
+/**
+ * A write body as rules should see it: date fields in their stored form
+ * (unix seconds), as the list query compares them. A rule like
+ * `starts_at > @now` compared an ISO string with a number as text and let
+ * any date through on create and update. Other values are left as sent;
+ * invalid dates stay strings and fail validation after the rule.
+ */
+export function bodyForRules(col: Collection, body: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...((body ?? {}) as Record<string, unknown>) };
+  for (const f of parseFields(col.fields)) {
+    if ((f.type !== "date" && f.type !== "autodate") || !Object.prototype.hasOwnProperty.call(out, f.name)) continue;
+    const v = out[f.name];
+    if (typeof v !== "string" || v.trim() === "") continue;
+    const stored = dateToUnixSeconds(v);
+    if (stored !== null) out[f.name] = stored;
+  }
+  return out;
+}
+
+/** A date value as stored: unix seconds, or null when it isn't a date. Storage and rules both use this. */
+export function dateToUnixSeconds(val: unknown): number | null {
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const t = Date.parse(val);
+    return isNaN(t) ? null : Math.floor(t / 1000);
+  }
+  return null;
+}
+
 /** A valid subfield value in its stored form, as the top-level field would store it. */
 function normalizeSubfield(sub: FieldDef, v: unknown): unknown {
   switch (sub.type) {
@@ -293,7 +322,7 @@ function validateValue(field: FieldDef, value: unknown): string | null {
       return null;
 
     case "email":
-      if (typeof value !== "string" || !EMAIL_RE.test(value)) return `${field.name} must be a valid email`;
+      if (!isEmail(value)) return `${field.name} must be a valid email`;
       return null;
 
     case "url":

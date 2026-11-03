@@ -2,6 +2,7 @@ import type { Expr, Operand, AnyCmpOp, FieldModifier } from "./expression.ts";
 import { macroValue, requestMapHas, requestMapValue, stableEq } from "./expression.ts";
 import { cachedParseExpression as parseExpression } from "./filter-cache.ts";
 import type { RequestContextLike } from "./filter.ts";
+import { db } from "../db/index.ts";
 
 export interface AuthContext {
   id: string;
@@ -142,18 +143,47 @@ function evaluateExpr(ast: Expr, ctx: EvalContext): boolean {
  */
 function contains(haystack: unknown, needle: unknown): boolean {
   const n = needle === null || needle === undefined ? "" : String(needle);
-  return n !== "" && asciiLower(String(haystack ?? "")).includes(asciiLower(n));
+  return n !== "" && sqlFold(String(haystack ?? "")).includes(sqlFold(n));
 }
 
-/** SQLite's `x LIKE '%pattern%'`: `%` any run, `_` one character, ASCII letters in either case. */
+/**
+ * SQLite's `x LIKE '%pattern%'`: `%` any run, `_` one character, ASCII
+ * letters in either case. A wildcard match with one backtrack point (the
+ * last `%`), so it runs in linear time; the regex it replaced backtracked
+ * quadratically on a long value, and a create rule ran it on the body.
+ */
 function likeMatch(haystack: unknown, pattern: string): boolean {
   if (haystack === null || haystack === undefined || pattern === "") return false;
-  const re = asciiLower(pattern).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, "[\\s\\S]*").replace(/_/g, "[\\s\\S]");
-  return new RegExp(re, "u").test(asciiLower(String(haystack)));
+  // The list query binds the pattern as `%pattern%` (filter.ts likeParam).
+  const p = ["%", ...sqlFold(pattern), "%"];
+  const h = [...sqlFold(String(asStoredText(haystack)))];
+  let i = 0, j = 0, star = -1, mark = 0;
+  while (i < h.length) {
+    if (j < p.length && (p[j] === "_" || (p[j] !== "%" && p[j] === h[i]))) { i++; j++; }
+    else if (j < p.length && p[j] === "%") { star = j++; mark = i; }
+    else if (star !== -1) { j = star + 1; i = ++mark; }
+    else return false;
+  }
+  while (j < p.length && p[j] === "%") j++;
+  return j === p.length;
 }
 
 function asciiLower(s: string): string {
   return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+/**
+ * Case folding as the list query does it: SQLite's LIKE and lower() fold
+ * ASCII letters only, Postgres's ILIKE and lower() fold every letter. With
+ * one fixed rule here, a rule on non-ASCII text ("privé") allowed by id or
+ * over realtime what the list refused, on one database or the other.
+ */
+function sqlFold(s: string): string {
+  return onPostgres() ? s.toLowerCase() : asciiLower(s);
+}
+
+function onPostgres(): boolean {
+  try { return db.name === "postgres"; } catch { return false; } // no database opened yet
 }
 
 function evaluateEach(left: Operand, right: Operand, op: AnyCmpOp, ctx: EvalContext): boolean {
@@ -264,6 +294,12 @@ function itemPath(op: Operand): { list: Operand; path: string[] } | null {
  */
 function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): boolean {
   if (l === UNAUTH_SENTINEL || r === UNAUTH_SENTINEL) return false;
+  // A whole JSON value (a json or group field, a multi-value list) is
+  // compared in SQL as its stored JSON text. As a JS value it became
+  // "[object Object]" or "a,b", so a rule decided differently by id, on
+  // update and over realtime than in the list query.
+  l = asStoredText(l);
+  r = asStoredText(r);
   if (op !== "~" && op !== "!~" && (l === null || l === undefined || r === null || r === undefined)) return false;
   if (json && op !== "~" && op !== "!~") {
     const num = (v: unknown) => typeof v === "number" || typeof v === "boolean";
@@ -285,6 +321,11 @@ function compareScalar(l: unknown, op: AnyCmpOp, r: unknown, json = false): bool
     case "!~": return !contains(l, r);
     default:   return false;
   }
+}
+
+/** An object or array as the JSON text the column stores; anything else as is. */
+function asStoredText(v: unknown): unknown {
+  return v !== null && typeof v === "object" && !(v instanceof Date) ? JSON.stringify(v) : v;
 }
 
 /** `a` against `b` by Unicode code point, as SQLite and Postgres (C collation) order UTF-8 text. */
@@ -377,7 +418,7 @@ function fieldValue(record: Record<string, unknown> | null | undefined, name: st
 function applyModifierValue(v: unknown, m?: FieldModifier): unknown {
   if (!m) return v;
   switch (m) {
-    case "lower":  return typeof v === "string" ? v.toLowerCase() : v;
+    case "lower":  return typeof v === "string" ? sqlFold(v) : v;
     case "length":
       if (Array.isArray(v)) return v.length;
       if (typeof v === "string") return v.length;
