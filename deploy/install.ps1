@@ -12,7 +12,7 @@
 #   # is on PATH; without it the installer says so and relies on SHA256SUMS
 #   # alone. -VerifySig requires the check (fails without cosign);
 #   # -NoVerifySig skips it (releases too old to be signed).
-#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.39.0
+#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.39.1
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -InstallDir C:\tools\vaultbase -VerifySig
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.1.0 -NoVerifySig
 #
