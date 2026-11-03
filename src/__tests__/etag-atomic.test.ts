@@ -65,6 +65,29 @@ describe("If-Match is atomic with the write", () => {
     }
   });
 
+  it("a PATCH losing to a DELETE answers 412 or 404, never 500", async () => {
+    // On Postgres the PATCH found the record, then found it gone under the
+    // record lock and threw a plain error: 500 "Record not found" in about a
+    // third of runs (and CI failed whenever the DELETE won).
+    for (let i = 0; i < 40; i++) {
+      for (const withEtag of [true, false]) {
+        const r = await createRecord("posts", { title: "v0" }, null);
+        const etag = await etagOf(r.id);
+        const ifMatch: Record<string, string> = withEtag ? { "if-match": etag } : {};
+        const [patch, del] = await Promise.all([
+          app().handle(new Request(`http://localhost/posts/${r.id}`, {
+            method: "PATCH", headers: { "content-type": "application/json", ...ifMatch }, body: JSON.stringify({ title: "edited" }),
+          })),
+          app().handle(new Request(`http://localhost/posts/${r.id}`, { method: "DELETE", headers: ifMatch })),
+        ]);
+        expect(patch.status).not.toBe(500);
+        if (del.status === 204 || del.status === 200) {
+          expect(patch.status === 200 || patch.status === (withEtag ? 412 : 404)).toBe(true);
+        }
+      }
+    }
+  });
+
   it("a single conditional PATCH still works (legitimate path)", async () => {
     const r = await createRecord("posts", { title: "v0" }, null);
     const res = await app().handle(new Request(`http://localhost/posts/${r.id}`, {

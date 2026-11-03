@@ -145,17 +145,19 @@ describe("history and saved requests", () => {
     const r = newRequest({
       method: "POST",
       headers: [
-        { key: "authorization", value: "Bearer abc", on: true },
-        { key: "Cookie", value: "vb=xyz", on: true },
+        { key: "authorization", value: "Bearer TOKEN-ABC", on: true },
+        { key: "Cookie", value: "vb=COOKIE-XYZ", on: true },
         { key: "X-Trace", value: "keep", on: true },
       ],
       bodyMode: "json",
-      body: JSON.stringify({ email: "a@b.c", password: "hunter2", nested: { newPassword: "p2", passwordConfirm: "p3" } }),
-      form: [{ key: "Password", value: "p4", on: true }, { key: "name", value: "n", on: true }],
+      body: JSON.stringify({ email: "a@b.c", password: "HUNTER-2", nested: { newPassword: "PW-TWO", passwordConfirm: "PW-THREE" } }),
+      form: [{ key: "Password", value: "PW-FOUR", on: true }, { key: "name", value: "n", on: true }],
     });
     const h = historyRequest(r);
     const text = JSON.stringify(h);
-    for (const secret of ["abc", "xyz", "hunter2", "p2", "p3", "p4"]) expect(text).not.toContain(secret);
+    // Upper case with a hyphen, so the request's random id (lower case
+    // letters and digits) can't contain one by chance.
+    for (const secret of ["TOKEN-ABC", "COOKIE-XYZ", "HUNTER-2", "PW-TWO", "PW-THREE", "PW-FOUR"]) expect(text).not.toContain(secret);
     expect(h.headers.map((x) => x.key)).toEqual(["authorization", "Cookie", "X-Trace"]);
     expect(h.headers[2]!.value).toBe("keep");
     expect(JSON.parse(h.body)).toEqual({ email: "a@b.c", password: "", nested: { newPassword: "", passwordConfirm: "" } });

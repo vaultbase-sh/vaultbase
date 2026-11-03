@@ -18,6 +18,7 @@ import {
   clientPaging,
   CascadeForbiddenError,
   PreconditionFailedError,
+  RecordNotFoundError,
   RecordBusyError,
   RestrictError,
   updateRecord,
@@ -258,6 +259,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
       if (e instanceof PreconditionFailedError) return await preconditionResponse(set, collection, id);
       if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
+      if (e instanceof RecordNotFoundError) { set.status = 404; return { error: e.message, code: 404 }; }
       throw e;
     }
   }

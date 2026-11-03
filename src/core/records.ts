@@ -1041,7 +1041,9 @@ async function updateRecordImpl(
   const unlock = await lockRecord(writeKey);
   try {
   const existing = await getRecord(collectionName, id);
-  if (!existing) throw new Error("Record not found");
+  // Deleted since the caller looked (a PATCH racing a DELETE): with
+  // If-Match the record changed, without it there's nothing to update.
+  if (!existing) throw guard.ifUnchanged ? new PreconditionFailedError() : new RecordNotFoundError();
   if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
     throw new PreconditionFailedError();
   }
@@ -1306,6 +1308,13 @@ export class FilterError extends Error {
  * A collection access rule that cannot be compiled. Fails closed (HTTP 403):
  * dropping the rule would hand non-admins every row.
  */
+/** The record to update isn't there (any more): answered 404. */
+export class RecordNotFoundError extends Error {
+  constructor() {
+    super("Record not found");
+  }
+}
+
 export class AccessRuleError extends Error {
   constructor(collectionName: string, reason: string) {
     super(`Access rule for '${collectionName}' could not be evaluated: ${reason}`);

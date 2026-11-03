@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **A PATCH that lost a race with a DELETE of the same record answered 500
+  on Postgres** ("Record not found"). It answers 404, or 412 when it carried
+  `If-Match`, as a DELETE that loses already did. Batch requests too.
+- A test of the admin's request history could fail by chance when a
+  request's random id contained one of its sample passwords.
+
 ## [0.37.0] — 2026-11-03
 
 ### Fixed

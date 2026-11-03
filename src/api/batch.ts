@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -197,6 +197,10 @@ function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { st
   if (e instanceof ReadOnlyCollectionError || e instanceof SingletonRecordError) {
     set.status = 405;
     return { error: `Batch failed at request ${at}: ${e.message}`, code: 405 };
+  }
+  if (e instanceof RecordNotFoundError) {
+    set.status = 404;
+    return { error: `Batch failed at request ${at}: ${e.message}`, code: 404 };
   }
   if (e instanceof FilterError) {
     set.status = 400;
