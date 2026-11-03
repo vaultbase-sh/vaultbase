@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readLogs, setLogsDir, _logReaderStats } from "../core/file-logger.ts";
-import { normalizeReleaseTag, releaseIdentityRegexp } from "../scripts/update.ts";
+import { cosignVerifyArgs, normalizeReleaseTag, releaseIdentityRegexp, signaturePlan } from "../scripts/update.ts";
 
 // Run-4 audit: the log reader's cold read of a large day file loaded and
 // parsed the whole file before trimming to the cache cap, and `vaultbase
@@ -156,5 +156,30 @@ describe("vaultbase update version validation", () => {
     const re = new RegExp(releaseIdentityRegexp("vaultbase-sh/vaultbase", tag.slice(1)));
     expect(re.test("https://github.com/vaultbase-sh/vaultbase/.github/workflows/release.yml@refs/tags/v1.2.3-rc.1")).toBe(true);
     expect(re.test("https://github.com/vaultbase-sh/vaultbase/.github/workflows/release.yml@refs/tags/v1.2.3-rcX1")).toBe(false);
+  });
+});
+
+describe("vaultbase update signature check", () => {
+  // cosign 3 deprecates --certificate/--signature; releases carry a Sigstore
+  // bundle from v0.39.1 on, and older ones keep the pair.
+  it("verifies a bundle with --bundle and the tag-pinned identity", () => {
+    const args = cosignVerifyArgs("/tmp/bin", { bundle: "/tmp/bin.sigstore.json" }, "vaultbase-sh/vaultbase", "v0.39.1");
+    expect(args.slice(0, 3)).toEqual(["verify-blob", "--bundle", "/tmp/bin.sigstore.json"]);
+    expect(args).not.toContain("--certificate");
+    expect(args).not.toContain("--signature");
+    expect(args[args.indexOf("--certificate-identity-regexp") + 1]).toBe(releaseIdentityRegexp("vaultbase-sh/vaultbase", "v0.39.1"));
+    expect(args.at(-1)).toBe("/tmp/bin");
+  });
+
+  it("falls back to the .sig/.pem pair for releases without a bundle", () => {
+    const args = cosignVerifyArgs("/tmp/bin", { sig: "/tmp/bin.sig", cert: "/tmp/bin.pem" }, "vaultbase-sh/vaultbase", "v0.39.0");
+    expect(args).toContain("--certificate");
+    expect(args).toContain("--signature");
+    expect(args).not.toContain("--bundle");
+  });
+
+  it("counts a bundle alone as a signature", () => {
+    expect(signaturePlan({ skipVerify: false, hasSignature: true, hasCosign: true })).toBe("verify");
+    expect(signaturePlan({ skipVerify: false, hasSignature: false, hasCosign: true })).toBe("refuse");
   });
 });

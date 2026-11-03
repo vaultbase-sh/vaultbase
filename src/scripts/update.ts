@@ -200,17 +200,30 @@ export function normalizeReleaseTag(input: string): string | null {
   return RELEASE_TAG_RE.test(tag) ? tag : null;
 }
 
-function runCosignVerify(binPath: string, sigPath: string, certPath: string, repo: string, version: string): boolean {
-  const r = spawnSync("cosign", [
+/**
+ * `cosign verify-blob` arguments. A Sigstore bundle (releases from v0.39.1
+ * on) is what current cosign expects; `--certificate`/`--signature` are
+ * deprecated there and kept for releases without a bundle.
+ */
+export function cosignVerifyArgs(
+  binPath: string,
+  sig: { bundle: string } | { sig: string; cert: string },
+  repo: string,
+  version: string,
+): string[] {
+  return [
     "verify-blob",
-    "--certificate", certPath,
-    "--signature",   sigPath,
+    ...("bundle" in sig ? ["--bundle", sig.bundle] : ["--certificate", sig.cert, "--signature", sig.sig]),
     "--certificate-identity-regexp", releaseIdentityRegexp(repo, version),
     "--certificate-oidc-issuer",     "https://token.actions.githubusercontent.com",
     binPath,
-  ], { encoding: "utf8" });
+  ];
+}
+
+function runCosignVerify(binPath: string, sig: { bundle: string } | { sig: string; cert: string }, repo: string, version: string, quiet = false): boolean {
+  const r = spawnSync("cosign", cosignVerifyArgs(binPath, sig, repo, version), { encoding: "utf8" });
   if (r.status === 0) return true;
-  process.stderr.write(`cosign verify failed:\n${r.stderr || r.stdout}\n`);
+  if (!quiet) process.stderr.write(`cosign verify failed:\n${r.stderr || r.stdout}\n`);
   return false;
 }
 
@@ -228,7 +241,7 @@ async function promptYesNo(question: string): Promise<boolean> {
 /**
  * How to treat the release signature. With cosign installed, a release
  * missing its signature is refused: it used to be installed silently, so
- * stripping the .sig/.pem assets (or a compromised release with a matching
+ * stripping the signature assets (or a compromised release with a matching
  * .sha256) skipped verification without a word. Without cosign we can't
  * verify anything and say so.
  */
@@ -268,6 +281,7 @@ export async function runUpdate(argv: string[]): Promise<void> {
   const binAsset = release.assets.find((a) => a.name === platform.artifact);
   const sigAsset = release.assets.find((a) => a.name === `${platform.artifact}.sig`);
   const certAsset = release.assets.find((a) => a.name === `${platform.artifact}.pem`);
+  const bundleAsset = release.assets.find((a) => a.name === `${platform.artifact}.sigstore.json`);
   const sumsAsset = release.assets.find((a) => a.name === `${platform.artifact}.sha256`);
   if (!binAsset) throw new Error(`release ${target} has no asset '${platform.artifact}'`);
   if (!sumsAsset) throw new Error(`release ${target} has no '${platform.artifact}.sha256'`);
@@ -306,7 +320,7 @@ export async function runUpdate(argv: string[]): Promise<void> {
   log("  ✓ SHA-256 ok");
 
   // Cosign verify (when cosign present and not skipped)
-  const plan = signaturePlan({ skipVerify: flags.skipVerify, hasSignature: !!(sigAsset && certAsset), hasCosign: hasCosign() });
+  const plan = signaturePlan({ skipVerify: flags.skipVerify, hasSignature: !!bundleAsset || !!(sigAsset && certAsset), hasCosign: hasCosign() });
   if (plan === "refuse") {
     throw new Error(
       `release ${target} has no cosign signature for '${platform.artifact}' — refusing to update. ` +
@@ -314,15 +328,23 @@ export async function runUpdate(argv: string[]): Promise<void> {
     );
   }
   if (!flags.skipVerify) {
-    if (sigAsset && certAsset && plan === "verify") {
-      const sigPath = join(tmp, `${platform.artifact}.sig`);
-      const certPath = join(tmp, `${platform.artifact}.pem`);
-      await downloadTo(sigAsset.browser_download_url, sigPath, log);
-      await downloadTo(certAsset.browser_download_url, certPath, log);
+    if (plan === "verify") {
       log("verifying cosign signature…");
-      if (!runCosignVerify(binPath, sigPath, certPath, "vaultbase-sh/vaultbase", target)) {
-        throw new Error("cosign signature verification failed — refusing to update");
+      let ok = false;
+      if (bundleAsset) {
+        const bundlePath = join(tmp, `${platform.artifact}.sigstore.json`);
+        await downloadTo(bundleAsset.browser_download_url, bundlePath, log);
+        // Quiet: a cosign too old to read the bundle falls back to the pair.
+        ok = runCosignVerify(binPath, { bundle: bundlePath }, "vaultbase-sh/vaultbase", target, !!(sigAsset && certAsset));
       }
+      if (!ok && sigAsset && certAsset) {
+        const sigPath = join(tmp, `${platform.artifact}.sig`);
+        const certPath = join(tmp, `${platform.artifact}.pem`);
+        await downloadTo(sigAsset.browser_download_url, sigPath, log);
+        await downloadTo(certAsset.browser_download_url, certPath, log);
+        ok = runCosignVerify(binPath, { sig: sigPath, cert: certPath }, "vaultbase-sh/vaultbase", target);
+      }
+      if (!ok) throw new Error("cosign signature verification failed — refusing to update");
       log("  ✓ cosign ok");
     } else if (plan === "no-cosign") {
       process.stderr.write(

@@ -134,7 +134,7 @@ function Install-Vaultbase {
         # SHA256SUMS comes from the same release as the binary, so whoever can
         # replace one can replace both; the signature ties the binary to this
         # repository's release.yml run for this tag. Checked by default when
-        # cosign is on PATH; a missing .sig/.pem then fails the install.
+        # cosign is on PATH; a release with no signature then fails the install.
         $checkSig = -not $NoVerifySig
         if ($checkSig -and -not (Get-Command cosign -ErrorAction SilentlyContinue)) {
             if ($VerifySig) {
@@ -146,20 +146,40 @@ function Install-Vaultbase {
             $checkSig = $false
         }
         if ($checkSig) {
-            Write-Host "Fetching cosign signature + certificate..."
-            try {
-                Invoke-WebRequest -Uri "$Url.sig" -OutFile "$Exe.sig" -UseBasicParsing
-                Invoke-WebRequest -Uri "$Url.pem" -OutFile "$Exe.pem" -UseBasicParsing
-            } catch {
-                throw "Could not fetch the signature for $Asset ($($_.Exception.Message)). Releases before signing have none: pass -NoVerifySig to install one without the signature check."
+            # The release workflow, started from this very tag.
+            $identity = "^https://github\.com/$Repo/\.github/workflows/release\.yml@refs/tags/$([regex]::Escape($Version))`$"
+            $issuer = "https://token.actions.githubusercontent.com"
+            $verified = $false
+            # A Sigstore bundle (releases from v0.39.1 on) is what current
+            # cosign expects; --certificate/--signature are deprecated there.
+            # Releases without one, or a cosign too old to read it, use the
+            # .sig/.pem pair.
+            Write-Host "Fetching cosign signature..."
+            $haveBundle = $true
+            try { Invoke-WebRequest -Uri "$Url.sigstore.json" -OutFile "$Exe.sigstore.json" -UseBasicParsing } catch { $haveBundle = $false }
+            if ($haveBundle) {
+                & cosign verify-blob --bundle "$Exe.sigstore.json" `
+                    --certificate-identity-regexp $identity `
+                    --certificate-oidc-issuer $issuer `
+                    $Exe
+                if ($LASTEXITCODE -eq 0) { $verified = $true }
+                else { Warn "The Sigstore bundle didn't verify with this cosign; trying the .sig/.pem pair." }
             }
-            & cosign verify-blob `
-                --certificate "$Exe.pem" `
-                --signature "$Exe.sig" `
-                --certificate-identity-regexp "^https://github\.com/$Repo/\.github/workflows/release\.yml@refs/tags/$([regex]::Escape($Version))`$" `
-                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" `
-                $Exe
-            if ($LASTEXITCODE -ne 0) { throw "Cosign verification failed." }
+            if (-not $verified) {
+                try {
+                    Invoke-WebRequest -Uri "$Url.sig" -OutFile "$Exe.sig" -UseBasicParsing
+                    Invoke-WebRequest -Uri "$Url.pem" -OutFile "$Exe.pem" -UseBasicParsing
+                } catch {
+                    throw "Could not fetch the signature for $Asset ($($_.Exception.Message)). Releases before signing have none: pass -NoVerifySig to install one without the signature check."
+                }
+                & cosign verify-blob `
+                    --certificate "$Exe.pem" `
+                    --signature "$Exe.sig" `
+                    --certificate-identity-regexp $identity `
+                    --certificate-oidc-issuer $issuer `
+                    $Exe
+                if ($LASTEXITCODE -ne 0) { throw "Cosign verification failed." }
+            }
             Ok "Cosign signature verified - binary built by $Repo GitHub Actions"
         }
 

@@ -138,18 +138,26 @@ jobs:
           base="https://github.com/${{ github.repository }}/releases/download/$TAG"
           mkdir -p deploy/docker/bin
           curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"
-          curl -fsSL -o SHA256SUMS.sig "$base/SHA256SUMS.sig"
-          curl -fsSL -o SHA256SUMS.pem "$base/SHA256SUMS.pem"
           # A SHA256SUMS from the same release proves nothing on its own: who
           # can replace the binaries can replace it too. Its signature must
           # come from this repository's release.yml run for this tag, the
           # same identity install.sh --verify-sig and vaultbase update check.
-          cosign verify-blob \
-            --certificate SHA256SUMS.pem \
-            --signature SHA256SUMS.sig \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/$TAG" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            SHA256SUMS
+          # The Sigstore bundle when the release has one (v0.39.1 on); the
+          # .sig/.pem pair (deprecated flags in cosign 3) for older tags.
+          identity="https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/$TAG"
+          issuer="https://token.actions.githubusercontent.com"
+          if curl -fsSL -o SHA256SUMS.sigstore.json "$base/SHA256SUMS.sigstore.json"; then
+            # cosign 2 reads the standard bundle format only when asked.
+            NEWFMT=""
+            if cosign version 2>/dev/null | grep -Eq 'GitVersion:[[:space:]]+v2\.'; then NEWFMT="--new-bundle-format"; fi
+            cosign verify-blob $NEWFMT --bundle SHA256SUMS.sigstore.json \
+              --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" SHA256SUMS
+          else
+            curl -fsSL -o SHA256SUMS.sig "$base/SHA256SUMS.sig"
+            curl -fsSL -o SHA256SUMS.pem "$base/SHA256SUMS.pem"
+            cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+              --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" SHA256SUMS
+          fi
           for arch in x64:amd64 arm64:arm64; do
             src="vaultbase-linux-${arch%%:*}"; dst="deploy/docker/bin/vaultbase-linux-${arch##*:}"
             curl -fsSL -o "$dst" "$base/$src"

@@ -333,6 +333,7 @@ URL="${RELEASES_URL}/download/${VERSION}/${ASSET}"
 SHA_URL="${URL}.sha256"
 SIG_URL="${URL}.sig"
 CERT_URL="${URL}.pem"
+BUNDLE_URL="${URL}.sigstore.json"
 
 # ── Download + verify ───────────────────────────────────────────────────────
 header "Download"
@@ -422,9 +423,9 @@ fi
 # same release as the binary, so whoever can replace one can replace both;
 # the signature ties the binary to this repository's release.yml run for this
 # tag. Runs by default when `cosign` is on PATH, is required with
-# --verify-sig, and is skipped with --no-verify-sig. A missing .sig/.pem
-# fails the install whenever the check runs: dropping them must not be a way
-# around it.
+# --verify-sig, and is skipped with --no-verify-sig. A release with no
+# signature (no bundle and no .sig/.pem) fails the install whenever the check
+# runs: dropping them must not be a way around it.
 if [ "${VERIFY_SIG}" != "off" ] && ! command -v cosign >/dev/null 2>&1; then
     if [ "${VERIFY_SIG}" = "require" ]; then
         die "--verify-sig requested but \`cosign\` is not on PATH. Install: https://docs.sigstore.dev/cosign/installation/"
@@ -435,19 +436,36 @@ if [ "${VERIFY_SIG}" != "off" ] && ! command -v cosign >/dev/null 2>&1; then
     VERIFY_SIG="off"
 fi
 if [ "${VERIFY_SIG}" != "off" ]; then
-    say "Fetching cosign signature + certificate..."
-    curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
-    curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
     # The release workflow, started from this very tag: any other ref would
     # let another release's signature pass as this one.
     VERSION_RE="$(printf '%s' "${VERSION}" | sed 's/[.]/\\./g')"
-    cosign verify-blob \
-        --certificate "${TMP}/vaultbase.pem" \
-        --signature "${TMP}/vaultbase.sig" \
-        --certificate-identity-regexp "^https://github\\.com/${REPO}/\\.github/workflows/release\\.yml@refs/tags/${VERSION_RE}\$" \
-        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-        "${TMP}/vaultbase" \
-        || { err "Cosign verification failed."; exit 2; }
+    IDENTITY="^https://github\\.com/${REPO}/\\.github/workflows/release\\.yml@refs/tags/${VERSION_RE}\$"
+    ISSUER="https://token.actions.githubusercontent.com"
+    VERIFIED=""
+    # A Sigstore bundle (releases from v0.39.1 on) is what current cosign
+    # expects; --certificate/--signature are deprecated there. Releases
+    # without one, or a cosign too old to read it, use the .sig/.pem pair.
+    say "Fetching cosign signature..."
+    if curl -fsSL --retry 3 -o "${TMP}/vaultbase.sigstore.json" "${BUNDLE_URL}" 2>/dev/null; then
+        if cosign verify-blob --bundle "${TMP}/vaultbase.sigstore.json" \
+            --certificate-identity-regexp "${IDENTITY}" --certificate-oidc-issuer "${ISSUER}" \
+            "${TMP}/vaultbase"; then
+            VERIFIED="bundle"
+        else
+            warn "The Sigstore bundle didn't verify with this cosign; trying the .sig/.pem pair."
+        fi
+    fi
+    if [ -z "${VERIFIED}" ]; then
+        curl -fsSL --retry 3 -o "${TMP}/vaultbase.sig"  "${SIG_URL}"  || die "Could not fetch ${SIG_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
+        curl -fsSL --retry 3 -o "${TMP}/vaultbase.pem"  "${CERT_URL}" || die "Could not fetch ${CERT_URL}. Releases before signing have none: pass --no-verify-sig to install one without the signature check."
+        cosign verify-blob \
+            --certificate "${TMP}/vaultbase.pem" \
+            --signature "${TMP}/vaultbase.sig" \
+            --certificate-identity-regexp "${IDENTITY}" \
+            --certificate-oidc-issuer "${ISSUER}" \
+            "${TMP}/vaultbase" \
+            || { err "Cosign verification failed."; exit 2; }
+    fi
     ok "Cosign signature verified — binary built by ${REPO} GitHub Actions"
 fi
 

@@ -261,8 +261,20 @@ jobs:
               --output-signature="${f}.sig" \
               --output-certificate="${f}.pem" \
               "$f"
+            # A Sigstore bundle too: what current cosign verifies with
+            # (--certificate/--signature are deprecated in cosign 3). cosign 2
+            # writes the standard format only when asked; 3 does by default.
+            NEWFMT=""
+            if cosign version 2>/dev/null | grep -Eq 'GitVersion:[[:space:]]+v2\.'; then NEWFMT="--new-bundle-format"; fi
+            cosign sign-blob --yes $NEWFMT --bundle "${f}.sigstore.json" "$f"
+            # Verified here, with the identity installers pin, before anything
+            # is published: a bundle no verifier accepts must fail the release.
+            cosign verify-blob $NEWFMT --bundle "${f}.sigstore.json" \
+              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@${GITHUB_REF}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$f"
           done
-          ls -la *.sig *.pem
+          ls -la *.sig *.pem *.sigstore.json
 
       - name: Prepare release notes
         # release-notes/<tag>.md (upgrade notes, highlights) goes above the
@@ -284,6 +296,7 @@ jobs:
             releases/vaultbase-linux-x64.sha256
             releases/vaultbase-linux-x64.sig
             releases/vaultbase-linux-x64.pem
+            releases/vaultbase-linux-x64.sigstore.json
             releases/vaultbase-linux-x64.cdx.json
             releases/vaultbase-linux-x64.xz
             releases/vaultbase-linux-x64.xz.sha256
@@ -291,6 +304,7 @@ jobs:
             releases/vaultbase-linux-arm64.sha256
             releases/vaultbase-linux-arm64.sig
             releases/vaultbase-linux-arm64.pem
+            releases/vaultbase-linux-arm64.sigstore.json
             releases/vaultbase-linux-arm64.cdx.json
             releases/vaultbase-linux-arm64.xz
             releases/vaultbase-linux-arm64.xz.sha256
@@ -298,6 +312,7 @@ jobs:
             releases/vaultbase-linux-x64-musl.sha256
             releases/vaultbase-linux-x64-musl.sig
             releases/vaultbase-linux-x64-musl.pem
+            releases/vaultbase-linux-x64-musl.sigstore.json
             releases/vaultbase-linux-x64-musl.cdx.json
             releases/vaultbase-linux-x64-musl.xz
             releases/vaultbase-linux-x64-musl.xz.sha256
@@ -305,17 +320,21 @@ jobs:
             releases/vaultbase-macos-x64.sha256
             releases/vaultbase-macos-x64.sig
             releases/vaultbase-macos-x64.pem
+            releases/vaultbase-macos-x64.sigstore.json
             releases/vaultbase-macos-x64.cdx.json
             releases/vaultbase-macos-arm64
             releases/vaultbase-macos-arm64.sha256
             releases/vaultbase-macos-arm64.sig
             releases/vaultbase-macos-arm64.pem
+            releases/vaultbase-macos-arm64.sigstore.json
             releases/vaultbase-macos-arm64.cdx.json
             releases/vaultbase-windows-x64.exe
             releases/vaultbase-windows-x64.exe.sig
             releases/vaultbase-windows-x64.exe.pem
+            releases/vaultbase-windows-x64.exe.sigstore.json
             releases/vaultbase-windows-x64.exe.cdx.json
             releases/SHA256SUMS
             releases/SHA256SUMS.sig
             releases/SHA256SUMS.pem
+            releases/SHA256SUMS.sigstore.json
             releases/vaultbase-source.cdx.json

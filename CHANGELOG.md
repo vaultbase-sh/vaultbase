@@ -17,6 +17,15 @@ Binaries, checksums, signatures and SBOMs for every version are on
   and the maintenance sweep closed realtime connections in between. A save
   now writes every `*.enabled` switch after the values it acts on.
 
+### Changed
+
+- **Releases carry a Sigstore bundle** (`<asset>.sigstore.json`) next to
+  each `.sig` / `.pem`. cosign 3 deprecates `--certificate` / `--signature`;
+  the installers, `vaultbase update` and the Docker build verify with the
+  bundle when a release has one and fall back to the pair for older
+  releases (or a cosign too old to read the bundle). The release workflow
+  verifies every bundle before publishing.
+
 ## [0.39.0] — 2026-11-03
 
 ### Security
