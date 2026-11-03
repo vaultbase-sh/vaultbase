@@ -10,7 +10,7 @@
 #
 #   # With options: pin a version, pick a folder, verify the cosign signature
 #   # (needs `cosign` on PATH)
-#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.37.0
+#   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.38.0
 #   & ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -InstallDir C:\tools\vaultbase -VerifySig
 #
 #   # A release too old to publish SHA256SUMS: the checksum is otherwise
