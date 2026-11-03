@@ -414,7 +414,11 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
 
 /** Write a validated settings change and refresh what depends on settings. */
 export async function applySettingsPatch(body: Record<string, unknown>): Promise<void> {
-  for (const [k, v] of Object.entries(body)) {
+  // Switches last: each write is visible on its own (on Postgres a round
+  // trip apart), and turning maintenance mode on before its message was
+  // saved closed clients' connections with the default message.
+  const entries = Object.entries(body).sort(([a], [b]) => Number(a.endsWith(".enabled")) - Number(b.endsWith(".enabled")));
+  for (const [k, v] of entries) {
     // The masked value the UI read and sent back: keep what's stored.
     if (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK) continue;
     await setSetting(k, String(v));

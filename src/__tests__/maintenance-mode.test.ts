@@ -34,7 +34,10 @@ let userToken: string;
 const now = () => Math.floor(Date.now() / 1000);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const KEYS = ["enabled", "level", "message", "until", "background", "routes"].map((k) => `maintenance_mode.${k}`);
+// `enabled` last, as the settings API writes it: the server's maintenance
+// sweep runs on a timer, and on Postgres each write is a round trip, so
+// enabling first let a sweep close sockets before the message was saved.
+const KEYS = ["level", "message", "until", "background", "routes", "enabled"].map((k) => `maintenance_mode.${k}`);
 /** Set the maintenance settings (the rest cleared). Awaited: on Postgres a write is async. */
 async function maintenance(values: Record<string, string>): Promise<void> {
   for (const k of KEYS) await setSetting(k, values[k.slice("maintenance_mode.".length)] ?? "");

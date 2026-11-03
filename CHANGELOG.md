@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **Turning maintenance mode on with a message could show clients the
+  default message.** A settings save wrote its keys in the order sent, so
+  `maintenance_mode.enabled` could land before `maintenance_mode.message`,
+  and the maintenance sweep closed realtime connections in between. A save
+  now writes every `*.enabled` switch after the values it acts on.
+
 ## [0.39.0] — 2026-11-03
 
 ### Security
