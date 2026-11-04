@@ -7,6 +7,8 @@ import { VbBtn, VbPageHeader } from "../components/Vb.tsx";
 import { Drawer } from "../components/UI.tsx";
 import Icon from "../components/Icon.tsx";
 import { toast } from "../stores/toast.ts";
+import { useNavigate } from "react-router-dom";
+import { auditRecordRef, recordHistoryHref } from "../lib/audit.ts";
 
 interface AuditEntry {
   id: string;
@@ -20,6 +22,15 @@ interface AuditEntry {
   ip: string | null;
   summary: string | null;
   at: number;
+  token_id: string | null;
+  token_name: string | null;
+}
+
+interface AuditToken {
+  token_id: string;
+  token_name: string | null;
+  last_at: number;
+  calls: number;
 }
 
 function relativeTime(ts: number): string {
@@ -39,6 +50,8 @@ export default function AuditLog() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [actorId, setActorId] = useState("");
+  const [tokenId, setTokenId] = useState("");
+  const [tokens, setTokens] = useState<AuditToken[]>([]);
   const [appliedActor, setAppliedActor] = useState("");
   const [actionPrefix, setActionPrefix] = useState("");
   const [appliedAction, setAppliedAction] = useState("");
@@ -46,11 +59,13 @@ export default function AuditLog() {
   const [to, setTo] = useState("");
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<AuditEntry | null>(null);
+  const navigate = useNavigate();
 
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), perPage: "50" });
     if (appliedActor) params.set("actorId", appliedActor);
+    if (tokenId) params.set("tokenId", tokenId);
     if (appliedAction) params.set("actionPrefix", appliedAction);
     if (from) {
       const t = Math.floor(new Date(from + "T00:00:00Z").getTime() / 1000);
@@ -67,9 +82,14 @@ export default function AuditLog() {
       setTotal(res.data.totalItems ?? 0);
     }
     setLoading(false);
-  }, [page, appliedActor, appliedAction, from, to]);
+  }, [page, appliedActor, tokenId, appliedAction, from, to]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.get<{ data: AuditToken[] }>("/api/v1/admin/audit-log/tokens").then((res) => {
+      if (res.data) setTokens(res.data);
+    });
+  }, []);
 
   function applyFilters() {
     setAppliedActor(actorId.trim());
@@ -78,6 +98,7 @@ export default function AuditLog() {
   }
   function resetFilters() {
     setActorId(""); setAppliedActor("");
+    setTokenId("");
     setActionPrefix(""); setAppliedAction("");
     setFrom(""); setTo("");
     setPage(1);
@@ -88,7 +109,7 @@ export default function AuditLog() {
       <VbPageHeader
         breadcrumb={["Audit log"]}
         title="Audit log"
-        sub="Append-only trail of admin API state changes — who did what, when, from where."
+        sub="Append-only trail of admin changes and MCP tool calls: who did what, when, from where."
         right={
           <VbBtn kind="ghost" size="sm" icon="refresh" onClick={() => load()} title="Refresh">
             Refresh
@@ -109,6 +130,19 @@ export default function AuditLog() {
               placeholder="actor id (Enter)"
             />
           </div>
+          <select
+            className="input mono"
+            value={tokenId}
+            onChange={(e) => { setTokenId(e.target.value); setPage(1); }}
+            style={{ height: 30, fontSize: 12, padding: "0 8px", width: 200, flex: "0 0 auto" }}
+            title="Only calls made with this API token (MCP)"
+            aria-label="API token"
+          >
+            <option value="">Any token</option>
+            {tokens.map((t) => (
+              <option key={t.token_id} value={t.token_id}>{t.token_name || t.token_id.slice(0, 12)} · {t.calls}</option>
+            ))}
+          </select>
           <div
             className="input-group"
             style={{ minWidth: 220 }}
@@ -138,7 +172,7 @@ export default function AuditLog() {
             title="To (UTC)"
           />
           <VbBtn kind="primary" size="sm" onClick={applyFilters}>Apply</VbBtn>
-          {(appliedActor || appliedAction || from || to) && (
+          {(appliedActor || tokenId || appliedAction || from || to) && (
             <VbBtn kind="ghost" size="sm" icon="x" onClick={resetFilters}>Clear</VbBtn>
           )}
           <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>
@@ -158,7 +192,7 @@ export default function AuditLog() {
           onRowClick={(e) => setOpen(e.data as AuditEntry)}
           selection={open}
           dataKey="id"
-          emptyMessage="No audit entries yet. State-changing /api/v1/admin/* requests show up here."
+          emptyMessage="No audit entries match. Admin changes, record restores and MCP tool calls show up here."
           style={{ fontSize: 13 }}
         >
           <Column
@@ -170,17 +204,30 @@ export default function AuditLog() {
             header="Actor"
             style={{ width: 220 }}
             body={(e: AuditEntry) => (
-              e.actor_email
-                ? <span className="mono-cell">{e.actor_email}</span>
-                : e.actor_id
-                  ? <span className="mono-cell muted">{e.actor_id.slice(0, 12)}…</span>
-                  : <span className="muted" style={{ fontSize: 12 }}>anonymous</span>
+              <>
+                {e.actor_email
+                  ? <span className="mono-cell">{e.actor_email}</span>
+                  : e.actor_id
+                    ? <span className="mono-cell muted">{e.actor_id.slice(0, 12)}…</span>
+                    : <span className="muted" style={{ fontSize: 12 }}>anonymous</span>}
+                {e.token_id && (
+                  <div className="muted" style={{ fontSize: 11 }} title="Made with this API token">
+                    via token {e.token_name || e.token_id.slice(0, 12)}
+                  </div>
+                )}
+              </>
             )}
           />
           <Column
             header="Action"
             body={(e: AuditEntry) => (
-              <span className="mono-cell" style={{ color: "var(--accent-light)" }}>{e.action}</span>
+              e.method === "MCP"
+                // Every MCP call is `mcp.tool`; the tool it ran says what happened.
+                ? <>
+                    <span className="mono-cell" style={{ color: "var(--accent-light)" }}>{e.path.replace(/^vaultbase\./, "")}</span>
+                    <div className="muted" style={{ fontSize: 11 }}>{e.action}</div>
+                  </>
+                : <span className="mono-cell" style={{ color: "var(--accent-light)" }}>{e.action}</span>
             )}
           />
           <Column
@@ -213,7 +260,25 @@ export default function AuditLog() {
         onClose={() => setOpen(null)}
         title={open ? `${open.method} ${open.path}` : ""}
         idLabel={open ? `${open.action} · ${open.status}` : undefined}
-        footer={<VbBtn kind="ghost" onClick={() => setOpen(null)}>Close</VbBtn>}
+        footer={
+          <>
+            {open && open.token_id && open.token_id !== tokenId && (
+              <VbBtn kind="ghost" icon="filter" onClick={() => { setTokenId(open.token_id ?? ""); setPage(1); setOpen(null); }}>
+                Only this token
+              </VbBtn>
+            )}
+            {(() => {
+              const ref = open ? auditRecordRef(open.target) : null;
+              return ref ? (
+                <VbBtn kind="ghost" icon="clock" onClick={() => { setOpen(null); navigate(recordHistoryHref(ref.collection, ref.id)); }}>
+                  Record history
+                </VbBtn>
+              ) : null;
+            })()}
+            <span style={{ flex: 1 }} />
+            <VbBtn kind="ghost" onClick={() => setOpen(null)}>Close</VbBtn>
+          </>
+        }
       >
         {open && (
           <div className="col" style={{ gap: 16 }}>
@@ -249,6 +314,18 @@ export default function AuditLog() {
                 <div className="mono muted" style={{ fontSize: 12 }}>{open.actor_id ?? "—"}</div>
               </div>
             </div>
+            {open.token_id && (
+              <div className="row" style={{ gap: 16 }}>
+                <div style={{ flex: 1 }}>
+                  <label className="label">API token</label>
+                  <div className="mono" style={{ fontSize: 12 }}>{open.token_name ?? "—"}</div>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label className="label">Token id</label>
+                  <div className="mono muted" style={{ fontSize: 12 }}>{open.token_id}</div>
+                </div>
+              </div>
+            )}
             <div className="row" style={{ gap: 16 }}>
               <div style={{ flex: 1 }}>
                 <label className="label">IP</label>

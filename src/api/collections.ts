@@ -62,7 +62,10 @@ export function makeCollectionsPlugin(jwtSecret: string) {
           if (body.view_rule !== undefined) init.view_rule = body.view_rule;
           if (body.view_query !== undefined) init.view_query = body.view_query;
           if (body.view_params !== undefined) init.view_params = body.view_params === null ? null : JSON.stringify(body.view_params);
+          // Record history is on unless the caller turns it off: a write by
+          // a person or an agent can then be undone. Views have no writes.
           if (body.history_enabled !== undefined) init.history_enabled = body.history_enabled ? 1 : 0;
+          else if (type !== "view") init.history_enabled = 1;
           const col = await createCollection(init);
           return { data: col };
         } catch (e) {

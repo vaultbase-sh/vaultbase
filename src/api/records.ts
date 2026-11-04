@@ -27,9 +27,12 @@ import {
 } from "../core/records.ts";
 import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
+import { recordAuditEvent } from "../core/audit-log.ts";
 import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule, ruleFilter } from "./_rules.ts";
 import {
   getHistoryAt,
+  getHistoryEntry,
+  latestHistoryEntry,
   listRecordHistory,
   type HistoryListResponse,
 } from "../core/record-history.ts";
@@ -670,20 +673,31 @@ export function makeRecordsPlugin(jwtSecret: string) {
         set.status = 403;
         return { error: "restore is admin-only", code: 403 };
       }
-      const atRaw = query.at;
-      if (!atRaw) {
-        set.status = 422;
-        return { error: "?at=<unix-seconds> is required", code: 422 };
-      }
-      const at = parseInt(String(atRaw), 10);
-      if (!Number.isFinite(at) || at <= 0) {
-        set.status = 422;
-        return { error: "?at must be a positive unix-seconds integer", code: 422 };
-      }
-      const entry = await getHistoryAt(params.collection, params.id, at);
-      if (!entry) {
-        set.status = 404;
-        return { error: "no history entry at-or-before that timestamp", code: 404 };
+      // Which version: `?entry=<history id>` names exactly the one shown;
+      // `?at=<unix seconds>` takes the newest at or before that second.
+      let entry: Awaited<ReturnType<typeof getHistoryAt>>;
+      if (query.entry) {
+        entry = await getHistoryEntry(params.collection, params.id, String(query.entry));
+        if (!entry) {
+          set.status = 404;
+          return { error: "no such history entry for this record", code: 404 };
+        }
+      } else {
+        const atRaw = query.at;
+        if (!atRaw) {
+          set.status = 422;
+          return { error: "?entry=<history id> or ?at=<unix-seconds> is required", code: 422 };
+        }
+        const at = parseInt(String(atRaw), 10);
+        if (!Number.isFinite(at) || at <= 0) {
+          set.status = 422;
+          return { error: "?at must be a positive unix-seconds integer", code: 422 };
+        }
+        entry = await getHistoryAt(params.collection, params.id, at);
+        if (!entry) {
+          set.status = 404;
+          return { error: "no history entry at-or-before that timestamp", code: 404 };
+        }
       }
 
       // Filter out fields managed by records-core (id / created_at / updated_at /
@@ -700,22 +714,59 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (f.type === "group" && snap[f.name] != null) snap[f.name] = shapeGroupValue(snap[f.name], f);
       }
 
+      // Restores are audited like admin API writes: the record API isn't
+      // under /admin, so the request hook doesn't see them.
+      const audit = (status: number, summary: string) => recordAuditEvent({
+        actor: { id: auth.id, ...(auth.email ? { email: auth.email } : {}) },
+        method: "POST",
+        path: new URL(request.url).pathname,
+        action: "record.restore",
+        target: `collection=${col.name} id=${params.id}`,
+        status,
+        summary: `${summary} | version ${entry.id} (${entry.op} at ${entry.at})`,
+      });
+
       const live = await getRecord(params.collection, params.id);
       if (!live) {
-        // V1: restoring a deleted record is not supported because `createRecord`
-        // mints its own id. Callers can `POST /api/:collection` with the
-        // snapshot body to recreate, accepting that they'll get a new id.
-        set.status = 409;
-        return { error: "record was deleted; restore-from-deleted is not supported in v1", code: 409 };
+        // A deleted record comes back under its old id from the version
+        // before the delete (the delete entry holds it). Only once it is the
+        // latest change: an older version of a since-recreated id would
+        // silently undo whatever happened after.
+        const latest = await latestHistoryEntry(params.collection, params.id);
+        if (latest?.op !== "delete") {
+          set.status = 409;
+          return { error: "the record doesn't exist and wasn't deleted last; nothing to restore", code: 409 };
+        }
+        if (col.type !== "base") {
+          set.status = 409;
+          return { error: `a deleted ${col.type} record can't be restored; recreate it instead`, code: 409 };
+        }
+        const created = Number(entry.snapshot["created"] ?? entry.snapshot["created_at"]);
+        delete snap["created"];
+        delete snap["updated"];
+        delete snap["collectionId"];
+        delete snap["collectionName"];
+        try {
+          const result = await runWithHookRequest(request, () =>
+            createRecord(params.collection, snap, auth, { restore: { id: params.id, ...(Number.isFinite(created) ? { created } : {}) } }),
+          );
+          await audit(200, "undeleted");
+          return { data: result };
+        } catch (e) {
+          if (e instanceof ValidationError) { await audit(422, "refused: validation"); return validationResponse(set, e); }
+          if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
+          throw e;
+        }
       }
 
       try {
         const result = await runWithHookRequest(request, () =>
           updateRecord(params.collection, params.id, snap, auth),
         );
+        await audit(200, "restored");
         return { data: result };
       } catch (e) {
-        if (e instanceof ValidationError) return validationResponse(set, e);
+        if (e instanceof ValidationError) { await audit(422, "refused: validation"); return validationResponse(set, e); }
         if (e instanceof ReadOnlyCollectionError) return readOnlyResponse(set, e);
         if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         throw e;

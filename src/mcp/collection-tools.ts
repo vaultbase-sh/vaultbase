@@ -176,6 +176,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
     // create or delete.
     if (col.type === "singleton") {
       reg.register({
+        auditCollection: col.name,
         requiredScope: "mcp:read",
         definition: {
           name: reg.freeName(`vaultbase.get_${slug}`),
@@ -185,6 +186,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         handler: async () => asUntrustedJsonText(`${slug} record`, await getRecord(slug, await ensureSingletonRecord(slug))),
       });
       reg.register({
+        auditCollection: col.name,
         requiredScope: "mcp:write",
         definition: {
           name: reg.freeName(`vaultbase.update_${slug}`),
@@ -209,6 +211,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
 
     // ── list ──────────────────────────────────────────────────────────
     reg.register({
+      auditCollection: col.name,
       requiredScope: "mcp:read",
       definition: {
         name: reg.freeName(`vaultbase.list_${slug}`),
@@ -246,6 +249,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
 
     // ── get ───────────────────────────────────────────────────────────
     reg.register({
+      auditCollection: col.name,
       requiredScope: "mcp:read",
       definition: {
         name: reg.freeName(`vaultbase.get_${slug}`),
@@ -269,6 +273,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
 
     // ── create ────────────────────────────────────────────────────────
     reg.register({
+      auditCollection: col.name,
       requiredScope: "mcp:write",
       definition: {
         name: reg.freeName(`vaultbase.create_${slug}`),
@@ -286,6 +291,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
         const data = args.data as Record<string, unknown> | undefined;
         if (!data || typeof data !== "object") throw new Error("data (object) is required");
         const r = await createRecord(slug, data, { id: ctx.adminId, type: "admin", email: ctx.adminEmail });
+        ctx.auditRecordId = r.id;
         // Hooks and defaults may fill fields from other records.
         return asUntrustedJsonText(`${slug} record`, r);
       },
@@ -293,6 +299,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
 
     // ── update ────────────────────────────────────────────────────────
     reg.register({
+      auditCollection: col.name,
       requiredScope: "mcp:write",
       definition: {
         name: reg.freeName(`vaultbase.update_${slug}`),
@@ -319,6 +326,7 @@ export async function registerCollectionTools(reg: ToolRegistry): Promise<void> 
 
     // ── delete ────────────────────────────────────────────────────────
     reg.register({
+      auditCollection: col.name,
       requiredScope: "mcp:write",
       definition: {
         name: reg.freeName(`vaultbase.delete_${slug}`),

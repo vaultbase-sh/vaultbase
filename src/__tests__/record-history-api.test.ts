@@ -132,10 +132,10 @@ describe("POST /:collection/:id/restore", () => {
     expect(res.status).toBe(422);
   });
 
-  it("returns 409 when the record was deleted (v1 limitation)", async () => {
+  it("brings a deleted record back under its old id", async () => {
     await withHistory();
     const r = await createRecord("posts", { title: "v1" }, null);
-    const { deleteRecord } = await import("../core/records.ts");
+    const { deleteRecord, getRecord } = await import("../core/records.ts");
     await deleteRecord("posts", r.id, null);
     const app = makeRecordsPlugin(SECRET);
     const adminTok = await signAdmin();
@@ -143,6 +143,9 @@ describe("POST /:collection/:id/restore", () => {
       method: "POST",
       headers: { Authorization: `Bearer ${adminTok}` },
     }));
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(200);
+    const back = await getRecord("posts", r.id);
+    expect(back?.["title"]).toBe("v1");
+    expect(back?.created).toBe(r.created);
   });
 });

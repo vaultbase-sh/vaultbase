@@ -1,5 +1,5 @@
 import Elysia, { t } from "elysia";
-import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
+import { listAuditEntries, listAuditTokens, recordAuditEntry } from "../core/audit-log.ts";
 import { isAdminApiPath, normalizeApiPath } from "../core/api-paths.ts";
 import { adminFromRequest, adminGuard } from "./_admin.ts";
 import { positiveIntParam } from "../core/records.ts";
@@ -56,6 +56,10 @@ export function makeAuditLogPlugin(jwtSecret: string) {
     })
 
     // ── Read API ────────────────────────────────────────────────────────
+    // The tokens seen in the log, for the token filter.
+    .get("/admin/audit-log/tokens", async () => ({ data: await listAuditTokens() }), {
+      requireAdmin: { cookie: true },
+    })
     .get(
       "/admin/audit-log",
       async ({ query }) => {
@@ -63,6 +67,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
         if (query.page) opts.page = positiveIntParam(query.page, 1);
         if (query.perPage) opts.perPage = positiveIntParam(query.perPage, 50);
         if (query.actorId) opts.actorId = query.actorId;
+        if (query.tokenId) opts.tokenId = query.tokenId;
         if (query.actionPrefix) opts.actionPrefix = query.actionPrefix;
         if (query.from && Number.isFinite(parseInt(query.from, 10))) opts.from = parseInt(query.from, 10);
         if (query.to && Number.isFinite(parseInt(query.to, 10))) opts.to = parseInt(query.to, 10);
@@ -75,6 +80,7 @@ export function makeAuditLogPlugin(jwtSecret: string) {
           page: t.Optional(t.String()),
           perPage: t.Optional(t.String()),
           actorId: t.Optional(t.String()),
+          tokenId: t.Optional(t.String()),
           actionPrefix: t.Optional(t.String()),
           from: t.Optional(t.String()),
           to: t.Optional(t.String()),

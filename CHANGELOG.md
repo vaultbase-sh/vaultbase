@@ -7,6 +7,37 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Undo a delete.** A record deleted from a collection with history comes
+  back from its history under the same id, with its values and creation
+  time: **Undo delete** in the record's history, or
+  `POST /api/v1/<collection>/<id>/restore` as before. Base collections only;
+  records a cascade deleted with it stay deleted.
+- **Find an agent's calls in the audit log.** MCP calls now store the API
+  token they were made with. The audit log filters by token
+  (`GET /api/v1/admin/audit-log?tokenId=…`; the tokens seen are at
+  `/admin/audit-log/tokens`), shows the token beside the admin and the tool
+  an MCP call ran, and an entry that names a record opens that record's
+  history, deleted or not. Calls of a collection's own tools
+  (`create_posts`, `update_posts`, …) now name the collection in their
+  target, and a create names the record it made.
+- **Restore names the exact version.** `restore?entry=<history id>` restores
+  the version picked; `?at=` took the newest of the versions written in the
+  same second. The admin uses `entry`. `?at=` still works.
+- **Restores are in the audit log** (`record.restore`), with the version
+  restored.
+
+### Changed
+
+- **New collections keep record history** unless it is turned off
+  (`history_enabled: false`), over the API, MCP and the admin. Views don't
+  keep history. Existing collections are unchanged. History keeps a copy of
+  the record on every write, so turn it off for a collection that changes
+  constantly (counters, presence) if its history grows too large.
+
 ## [0.39.1] — 2026-11-04
 
 ### Fixed

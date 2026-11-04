@@ -409,6 +409,10 @@ export const auditLog = sqliteTable("vaultbase_audit_log", {
   /** Optional human-readable summary or short JSON of changed fields. */
   summary: text("summary"),
   at: integer("at").notNull().default(EPOCH_NOW),
+  /** The API token an MCP call was made with (its id); null for admin sessions. */
+  token_id: text("token_id"),
+  /** That token's name when the call was made — survives the token's deletion. */
+  token_name: text("token_name"),
 });
 
 /**

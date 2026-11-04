@@ -1059,7 +1059,7 @@ async function createRecordImpl(
   }
 
   type Binding = string | number | bigint | boolean | null | Uint8Array;
-  const id = crypto.randomUUID();
+  const id = guard.restore?.id ?? crypto.randomUUID();
   const insertCols: string[] = ["id"];
   const insertVals: Binding[] = [id];
 
@@ -1071,7 +1071,8 @@ async function createRecordImpl(
   }
 
   insertCols.push("created_at", "updated_at");
-  insertVals.push(now, now);
+  const created = guard.restore?.created;
+  insertVals.push(typeof created === "number" && Number.isInteger(created) && created > 0 && created <= now ? created : now, now);
 
   const tableRef = quoteIdent(userTableName(col.name));
   const colsSql = insertCols.map(quoteIdent).join(", ");
@@ -1257,6 +1258,11 @@ export interface WriteGuard {
    * Unset for admins and internal callers.
    */
   cascadeAllowed?: (col: Collection, record: Record<string, unknown>, change: Record<string, unknown> | null) => boolean;
+  /**
+   * Create only: bring a deleted record back under its old id (and creation
+   * time) from its history. Set by the admin restore route alone.
+   */
+  restore?: { id: string; created?: number };
 }
 
 /** Relation check for `auth`: the target record must pass its collection's view rule. */

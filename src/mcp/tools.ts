@@ -29,6 +29,12 @@ export interface ToolContext {
   /** Minting admin id — the principal that mutating tools act as. */
   adminId: string;
   adminEmail: string;
+  /**
+   * Set by a handler that created a record: its id, for the audit target.
+   * Each call runs on its own copy of the context, so this never leaks
+   * between calls.
+   */
+  auditRecordId?: string;
 }
 
 export type ToolHandler = (
@@ -41,6 +47,8 @@ export interface RegisteredTool {
   /** Required scope to invoke this tool. */
   requiredScope: string;
   handler: ToolHandler;
+  /** The collection a per-collection tool works on, named in its audit target. */
+  auditCollection?: string;
 }
 
 export class ToolRegistry {
@@ -93,7 +101,9 @@ export class ToolRegistry {
    * outcome with the error. `run_sql` writes its own, with the query.
    */
   async call(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
-    const { result, status } = await this.dispatch(name, args, ctx);
+    const callCtx: ToolContext = { ...ctx };
+    delete callCtx.auditRecordId;
+    const { result, status } = await this.dispatch(name, args, callCtx);
     // run_sql audits its own calls, with the query, but only once its handler
     // runs: one refused before that (scope, unknown) is recorded here.
     if (name !== "vaultbase.run_sql" || status === 403 || status === 404) {
@@ -103,9 +113,10 @@ export class ToolRegistry {
         method: "MCP",
         path: name,
         action: "mcp.tool",
-        target: auditTarget(args),
+        target: auditTarget(args, this.tools.get(name)?.auditCollection, callCtx.auditRecordId),
         status,
         summary: `token=${ctx.tokenName}${failure ? ` | ${failure}` : ""}`,
+        token: { id: ctx.tokenId, name: ctx.tokenName },
       });
     }
     return result;
@@ -142,12 +153,16 @@ export class ToolRegistry {
 }
 
 /** What a call acts on, for the audit entry: the collection, record, or named object, never the payload. */
-function auditTarget(args: Record<string, unknown>): string | null {
+function auditTarget(args: Record<string, unknown>, collection?: string, createdId?: string): string | null {
   const parts: string[] = [];
+  // A per-collection tool (create_posts) has no `collection` argument: name
+  // it, and the record a create made, so the entry leads to that record.
+  if (collection && args["collection"] === undefined) parts.push(`collection=${collection}`);
   for (const k of ["collection", "name", "id", "key", "queue"]) {
     const v = args[k];
     if (typeof v === "string" || typeof v === "number") parts.push(`${k}=${String(v).slice(0, 200)}`);
   }
+  if (createdId && args["id"] === undefined) parts.push(`id=${createdId}`);
   return parts.length ? parts.join(" ") : null;
 }
 

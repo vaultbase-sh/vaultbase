@@ -7,7 +7,7 @@ import {
   api, getMemoryToken, type ApiResponse, type Collection, type FieldDef, type ListResponse,
   type RecordRow, collColor, parseFields,
 } from "../api.ts";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Drawer, FieldTypeChip, Modal, Toggle } from "../components/UI.tsx";
 import { confirm } from "../components/Confirm.tsx";
 import { toast } from "../stores/toast.ts";
@@ -1111,7 +1111,11 @@ export default function Records() {
   const [showNew, setShowNew] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [showCreateUser, setShowCreateUser] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+  // The record whose history is open; it may no longer exist (deleted).
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  // `?record=<id>&history=1` (from the audit log) opens that record, and its
+  // history when asked, once the collection has loaded.
+  const [searchParams, setSearchParams] = useSearchParams();
   // The edit form as it was opened, to tell whether closing loses changes.
   const editStart = useRef("");
   const [importErrors, setImportErrors] = useState<{ created: number; failed: number; errors: ImportRowError[] } | null>(null);
@@ -1174,7 +1178,20 @@ export default function Records() {
     toast(msg, "info");
   }
 
-  useEffect(() => { setOpenRec(null); loadCollection(); }, [collId]);
+  useEffect(() => { setOpenRec(null); setHistoryFor(null); loadCollection(); }, [collId]);
+  useEffect(() => {
+    const rid = searchParams.get("record");
+    if (!collection || !rid) return;
+    const wantHistory = searchParams.get("history") === "1";
+    setSearchParams({}, { replace: true });
+    if (collection.type === "view") return;
+    void (async () => {
+      const res = await api.get<ApiResponse<RecordRow>>(`/api/v1/${encodeURIComponent(collection.name)}/${encodeURIComponent(rid)}`);
+      if (res.data && collection.type !== "singleton") openRecord(res.data);
+      if (wantHistory && collection.history_enabled === 1) setHistoryFor(rid);
+      else if (!res.data) toast(collection.history_enabled === 1 ? "That record no longer exists." : "That record no longer exists, and this collection keeps no history to restore it from.", "info");
+    })();
+  }, [collection, searchParams]);
   useEffect(() => { if (collection) loadRecords(page, appliedFilter); }, [collection, page, appliedFilter, sort, appliedParams]);
   useEffect(() => { setParamValues({}); setAppliedParams({}); }, [collId]);
   // Clear selection on navigation events; row references would otherwise be stale.
@@ -1898,7 +1915,7 @@ export default function Records() {
                 </>
               )}
               {collection?.history_enabled === 1 && openRec && (
-                <VbBtn kind="ghost" size="sm" icon="clock" onClick={() => setShowHistory(true)} title="Earlier versions of this record">
+                <VbBtn kind="ghost" size="sm" icon="clock" onClick={() => setHistoryFor(String(openRec.id))} title="Earlier versions of this record">
                   History
                 </VbBtn>
               )}
@@ -1946,12 +1963,12 @@ export default function Records() {
         </div>
       </Modal>
 
-      {collection && openRec && showHistory && (
+      {collection && historyFor && (
         <HistoryModal
           collectionName={collection.name}
-          recordId={String(openRec.id)}
-          onClose={() => setShowHistory(false)}
-          onRestored={(rec) => { setShowHistory(false); toast("Record restored"); if (rec) openRecord(rec); loadRecords(page); }}
+          recordId={historyFor}
+          onClose={() => setHistoryFor(null)}
+          onRestored={(rec) => { setHistoryFor(null); toast("Record restored"); if (rec) openRecord(rec); loadRecords(page); }}
         />
       )}
 
@@ -2111,18 +2128,29 @@ function HistoryModal({ collectionName, recordId, onClose, onRestored }: {
     });
   }, [base]);
 
+  // The latest change was a delete: the record is gone, and any version
+  // (the delete entry holds the one just before it) brings it back.
+  const deleted = entries?.[0]?.op === "delete";
+
   async function restore(e: HistoryEntry) {
-    const ok = await confirm({ title: "Restore this version?", message: `The record goes back to how it was on ${new Date(e.at * 1000).toLocaleString()}. The current version stays in the history.`, confirmLabel: "Restore" });
+    const when = new Date(e.at * 1000).toLocaleString();
+    const ok = await confirm(deleted
+      ? {
+          title: e === entries?.[0] ? "Undo this delete?" : "Bring the record back at this version?",
+          message: `The record comes back under the same id with the values it had ${e.op === "delete" ? "just before it was deleted" : `on ${when}`}. Records deleted along with it by a cascade aren't brought back.`,
+          confirmLabel: "Restore record",
+        }
+      : { title: "Restore this version?", message: `The record goes back to how it was on ${when}. The current version stays in the history.`, confirmLabel: "Restore" });
     if (!ok) return;
     setRestoring(true);
-    const res = await api.post<ApiResponse<RecordRow>>(`${base}/restore?at=${e.at}`, {});
+    const res = await api.post<ApiResponse<RecordRow>>(`${base}/restore?entry=${encodeURIComponent(e.id)}`, {});
     setRestoring(false);
     if (res.error) { toast(`Couldn't restore: ${res.error}`, "x"); return; }
     onRestored(res.data ?? null);
   }
 
   return (
-    <Modal open onClose={onClose} title="History" idLabel={recordId.slice(0, 16)} width={640}
+    <Modal open onClose={onClose} title={deleted ? "History · deleted record" : "History"} idLabel={recordId.slice(0, 16)} width={640}
       footer={<VbBtn kind="ghost" onClick={onClose}>Close</VbBtn>}>
       {error && <div style={{ color: "var(--vb-status-danger)", fontSize: 12 }}>{error}</div>}
       {!error && entries === null && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
@@ -2136,8 +2164,11 @@ function HistoryModal({ collectionName, recordId, onClose, onRestored }: {
               <span style={{ color: "var(--vb-fg-3)", fontSize: 11.5 }}>{e.actor_type ? `${e.actor_type}${e.actor_id ? ` ${e.actor_id.slice(0, 8)}` : ""}` : "system"}</span>
               <span style={{ flex: 1 }} />
               <VbBtn kind="ghost" size="sm" onClick={() => setOpen(open === e.id ? null : e.id)}>{open === e.id ? "Hide" : "Show"}</VbBtn>
-              {i > 0 && e.op !== "delete" && (
-                <VbBtn kind="ghost" size="sm" icon="refresh" disabled={restoring} onClick={() => void restore(e)}>Restore</VbBtn>
+              {(deleted || i > 0) && (
+                <VbBtn kind="ghost" size="sm" icon="refresh" disabled={restoring} onClick={() => void restore(e)}
+                  title={deleted && i === 0 ? "Bring the record back as it was just before the delete" : "Put the record back to this version"}>
+                  {deleted && i === 0 ? "Undo delete" : "Restore"}
+                </VbBtn>
               )}
             </div>
             {open === e.id && (

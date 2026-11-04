@@ -67,7 +67,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
           create_rule: { type: ["string", "null"] },
           update_rule: { type: ["string", "null"] },
           delete_rule: { type: ["string", "null"] },
-          history_enabled: { type: "boolean" },
+          history_enabled: { type: "boolean", description: "Keep every version of each record so an admin can restore it. Default true; false turns it off." },
         },
         required: ["name", "type", "fields"],
         additionalProperties: false,
@@ -87,7 +87,8 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       if ("create_rule" in args) input.create_rule = args.create_rule as string | null;
       if ("update_rule" in args) input.update_rule = args.update_rule as string | null;
       if ("delete_rule" in args) input.delete_rule = args.delete_rule as string | null;
-      if (args.history_enabled === true) input.history_enabled = 1;
+      // On unless turned off, as over the REST API.
+      if (args.history_enabled !== false && input.type !== "view") input.history_enabled = 1;
       const col = await createCollection(input);
       return asJsonText(col);
     },
@@ -690,6 +691,7 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
         target: ctx.tokenName,
         status,
         summary: `${summary} | ${q}`,
+        token: { id: ctx.tokenId, name: ctx.tokenName },
       });
       if (write) {
         // `allow_write` is the caller's own flag, so on its own it was no

@@ -244,6 +244,41 @@ export async function getHistoryAt(
   return r ? decodeHistoryRow(r) : null;
 }
 
+/**
+ * One history entry by its id, only when it belongs to that record. Restoring
+ * by id picks exactly the version shown: several writes in one second share
+ * an `at`, and an `at` restore takes the newest of them.
+ */
+export async function getHistoryEntry(
+  collectionName: string,
+  recordId: string,
+  entryId: string,
+): Promise<HistoryEntry | null> {
+  const rows = await getDb()
+    .select()
+    .from(recordHistory)
+    .where(and(
+      eq(recordHistory.id, entryId),
+      eq(recordHistory.collection, collectionName),
+      eq(recordHistory.record_id, recordId),
+    ))
+    .limit(1);
+  const r = rows[0];
+  return r ? decodeHistoryRow(r) : null;
+}
+
+/** The newest history entry of a record, or null. */
+export async function latestHistoryEntry(collectionName: string, recordId: string): Promise<HistoryEntry | null> {
+  const rows = await getDb()
+    .select()
+    .from(recordHistory)
+    .where(and(eq(recordHistory.collection, collectionName), eq(recordHistory.record_id, recordId)))
+    .orderBy(...newestFirst)
+    .limit(1);
+  const r = rows[0];
+  return r ? decodeHistoryRow(r) : null;
+}
+
 /** A stored history row as returned: its snapshot parsed and its encrypted fields decrypted. */
 async function decodeHistoryRow(r: typeof recordHistory.$inferSelect): Promise<HistoryEntry> {
   return {

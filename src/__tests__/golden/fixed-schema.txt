@@ -41,6 +41,8 @@
   ip TEXT
   summary TEXT
   at INTEGER NOT NULL DEFAULT unixepoch()
+  token_id TEXT
+  token_name TEXT
 
 -- table vaultbase_auth_tokens
   id TEXT PK
@@ -307,6 +309,9 @@ CREATE INDEX idx_vaultbase_audit_log_actor ON vaultbase_audit_log(actor_id, at);
 
 -- index idx_vaultbase_audit_log_at
 CREATE INDEX idx_vaultbase_audit_log_at ON vaultbase_audit_log(at);
+
+-- index idx_vaultbase_audit_log_token
+CREATE INDEX idx_vaultbase_audit_log_token ON vaultbase_audit_log(token_id, at);
 
 -- index idx_vaultbase_auth_tokens_code
 CREATE INDEX idx_vaultbase_auth_tokens_code ON vaultbase_auth_tokens(code, purpose);

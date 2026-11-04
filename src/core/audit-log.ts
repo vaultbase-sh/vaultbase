@@ -8,7 +8,7 @@
  * Append-only: no UPDATE / DELETE paths through application code, except
  * the opt-in `audit.retention_days` prune in maintenance.ts.
  */
-import { eq, desc, and, gte, lte, like, sql } from "drizzle-orm";
+import { eq, desc, and, gte, lte, like, sql, isNotNull } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { auditLog } from "../db/schema.ts";
 import { clientIp } from "./sec.ts";
@@ -141,6 +141,8 @@ export async function recordAuditEvent(opts: {
   target?: string | null;
   status: number;
   summary?: string | null;
+  /** The API token the call was made with (MCP). */
+  token?: { id: string; name: string } | null;
 }): Promise<void> {
   try {
     await getDb().insert(auditLog).values({
@@ -155,6 +157,8 @@ export async function recordAuditEvent(opts: {
       ip: null,
       summary: opts.summary ? trim(opts.summary, 1024) : null,
       at: Math.floor(Date.now() / 1000),
+      token_id: opts.token?.id || null,
+      token_name: opts.token ? trim(opts.token.name, 200) : null,
     });
   } catch {
     // Audit must never break the action it records.
@@ -168,6 +172,8 @@ export interface ListAuditOpts {
   perPage?: number;
   /** Filter to a single actor id. */
   actorId?: string;
+  /** Filter to calls made with one API token (MCP). */
+  tokenId?: string;
   /** Filter on action prefix, e.g. `"collection."`. */
   actionPrefix?: string;
   /** Unix-seconds inclusive lower / upper bounds. */
@@ -188,6 +194,8 @@ export async function listAuditEntries(opts: ListAuditOpts = {}): Promise<{
     ip: string | null;
     summary: string | null;
     at: number;
+    token_id: string | null;
+    token_name: string | null;
   }>;
   page: number;
   perPage: number;
@@ -201,6 +209,7 @@ export async function listAuditEntries(opts: ListAuditOpts = {}): Promise<{
 
   const filters = [];
   if (opts.actorId) filters.push(eq(auditLog.actor_id, opts.actorId));
+  if (opts.tokenId) filters.push(eq(auditLog.token_id, opts.tokenId));
   if (opts.actionPrefix) filters.push(like(auditLog.action, `${opts.actionPrefix}%`));
   if (opts.from !== undefined) filters.push(gte(auditLog.at, opts.from));
   if (opts.to !== undefined) filters.push(lte(auditLog.at, opts.to));
@@ -222,4 +231,24 @@ export async function listAuditEntries(opts: ListAuditOpts = {}): Promise<{
     totalItems,
     totalPages: Math.max(1, Math.ceil(totalItems / perPage)),
   };
+}
+
+/**
+ * The API tokens that appear in the audit log, newest use first: the token
+ * filter's choices. Read from the log itself, so a deleted token still shows.
+ */
+export async function listAuditTokens(): Promise<Array<{ token_id: string; token_name: string | null; last_at: number; calls: number }>> {
+  const rows = await getDb()
+    .select({
+      token_id: auditLog.token_id,
+      token_name: sql<string | null>`MAX(${auditLog.token_name})`,
+      last_at: sql<number>`CAST(MAX(${auditLog.at}) AS INTEGER)`,
+      calls: sql<number>`CAST(COUNT(*) AS INTEGER)`,
+    })
+    .from(auditLog)
+    .where(isNotNull(auditLog.token_id))
+    .groupBy(auditLog.token_id)
+    .orderBy(desc(sql`MAX(${auditLog.at})`))
+    .limit(200);
+  return rows.map((r) => ({ token_id: r.token_id as string, token_name: r.token_name, last_at: Number(r.last_at), calls: Number(r.calls) }));
 }

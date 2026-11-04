@@ -68,6 +68,7 @@ export const FIXED_INDEXES: IndexSpec[] = [
   ix("idx_vaultbase_audit_log_actor", "vaultbase_audit_log", ["actor_id", "at"]),
   ix("idx_vaultbase_audit_log_at", "vaultbase_audit_log", ["at"]),
   ix("idx_vaultbase_audit_log_action", "vaultbase_audit_log", ["action", "at"]),
+  ix("idx_vaultbase_audit_log_token", "vaultbase_audit_log", ["token_id", "at"]),
   ix("idx_vaultbase_admin_sessions_admin", "vaultbase_admin_sessions", ["admin_id"]),
   ix("idx_vaultbase_admin_sessions_exp", "vaultbase_admin_sessions", ["expires_at"]),
   ix("idx_vaultbase_login_failures_key", "vaultbase_login_failures", ["key", "at"]),
