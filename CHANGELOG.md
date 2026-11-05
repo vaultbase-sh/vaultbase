@@ -29,6 +29,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
   same second. The admin uses `entry`. `?at=` still works.
 - **Restores are in the audit log** (`record.restore`), with the version
   restored.
+- **Bring back users deleted since the backup**, a choice made per restore:
+  a toggle on the backups page, or `?bring_back_deleted_users=1` on the
+  restore routes. They come back signed out of every session.
+- **The backups page shows what the last restore did** after its reload:
+  the accounts it kept, the users it left deleted or brought back, and the
+  work it didn't run again. A SQLite restore used to show only "Restored".
 
 ### Changed
 
@@ -37,6 +43,25 @@ Binaries, checksums, signatures and SBOMs for every version are on
   keep history. Existing collections are unchanged. History keeps a copy of
   the record on every write, so turn it off for a collection that changes
   constantly (counters, presence) if its history grows too large.
+
+### Fixed
+
+- **A restore no longer brings back access removed since the backup.** A
+  user deleted after the backup was taken came back with the restore, and
+  their old sessions worked again until they expired. They now stay deleted,
+  with their provider links and recovery codes, as deleted admins already
+  did; the restore's answer names them. To bring them back instead, see
+  above.
+- **A restore no longer runs background work a second time.** A job queued,
+  or a webhook delivery pending, when the backup was taken came back queued
+  and ran again, even if it had run since (an email sent twice, a charge
+  made twice). One that has run, or been removed, since is now marked dead,
+  so it can be retried from the admin if it should run. One still waiting
+  keeps its place.
+- **A restore no longer turns maintenance mode off.** Maintenance mode is
+  kept as it was before the restore, so you can turn it on, restore, check
+  the result and reopen. It used to follow the backup, which turned it off
+  and let background work start again at once.
 
 ## [0.39.1] — 2026-11-04
 

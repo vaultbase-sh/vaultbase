@@ -2065,8 +2065,32 @@ async function downloadAuthed(url: string, fallbackName: string): Promise<void> 
   }
 }
 
+/** A restore's answer, kept across the reload that follows it. */
+const RESTORE_RESULT_KEY = "vaultbase.restoreResult";
+
+function keepRestoreResult(message: string | undefined): void {
+  if (!message) return;
+  try { sessionStorage.setItem(RESTORE_RESULT_KEY, message); } catch { /* storage off: the toast still shows it */ }
+}
+
+function takeRestoreResult(): string {
+  try {
+    const m = sessionStorage.getItem(RESTORE_RESULT_KEY) ?? "";
+    sessionStorage.removeItem(RESTORE_RESULT_KEY);
+    return m;
+  } catch { return ""; }
+}
+
 function BackupSection() {
   const [loadError, setLoadError] = useState("");
+  /** What the last restore reported (maintenance mode, held jobs, users), shown after its reload. */
+  const [lastRestore, setLastRestore] = useState(takeRestoreResult);
+  /** Bring back users deleted since the backup, for this restore; off by default. */
+  const [bringBack, setBringBack] = useState(false);
+  const restoreQuery = (sep: "?" | "&") => (bringBack ? `${sep}bring_back_deleted_users=1` : "");
+  const usersLine = bringBack
+    ? "\n\nUsers deleted since the backup come back, signed out of every session."
+    : "\n\nUsers deleted since the backup stay deleted.";
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [restoring, setRestoring] = useState(false);
   /** Percent of a backup upload sent, while it is being sent. */
@@ -2118,6 +2142,7 @@ function BackupSection() {
         return false;
       }
       toast(r.message ?? "Restored", "check");
+      keepRestoreResult(r.message);
       setTimeout(() => window.location.reload(), 1200);
       return true;
     } catch (err) {
@@ -2232,17 +2257,19 @@ function BackupSection() {
     const ok = await confirm({
       title: "Restore from backup",
       message: pg
-        ? `Restore from "${name}"?\n\nThis will REPLACE all current data with this backup. The current data is kept for 7 days and can be put back from this page.`
-        : `Restore from "${name}"?\n\nThis will REPLACE all current data with this snapshot. The current database is kept next to it as a .bak file.`,
+        ? `Restore from "${name}"?\n\nThis will REPLACE all current data with this backup. The current data is kept for 7 days and can be put back from this page.${usersLine}`
+        : `Restore from "${name}"?\n\nThis will REPLACE all current data with this snapshot. The current database is kept next to it as a .bak file.${usersLine}`,
       danger: true,
       confirmLabel: "Restore",
     });
     if (!ok) return;
-    if (pg) { await runPostgres(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`); return; }
+    const url = `/api/v1/admin/backups/${encodeURIComponent(name)}/restore${restoreQuery("?")}`;
+    if (pg) { await runPostgres(url); return; }
     setRestoring(true);
-    const res = await api.post<ApiResponse<unknown>>(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`, {});
+    const res = await api.post<ApiResponse<{ message?: string }>>(url, {});
     setRestoring(false);
     if (res.error) { toast(`Restore failed: ${res.error}`, "info"); return; }
+    keepRestoreResult(res.data?.message);
     toast("Restored. Reloading…", "check");
     setTimeout(() => window.location.reload(), 800);
   }
@@ -2253,8 +2280,8 @@ function BackupSection() {
     const ok = await confirm({
       title: "Restore from backup",
       message: pg
-        ? `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the uploaded backup. The current data is kept for 7 days and can be put back from this page.`
-        : `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the contents of the uploaded SQLite file. This cannot be undone.`,
+        ? `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the uploaded backup. The current data is kept for 7 days and can be put back from this page.${usersLine}`
+        : `Restore from "${file.name}"?\n\nThis will REPLACE all current data with the contents of the uploaded SQLite file. This cannot be undone.${usersLine}`,
       danger: true,
       confirmLabel: "Restore",
     });
@@ -2276,7 +2303,7 @@ function BackupSection() {
       return;
     }
     setUploaded(null);
-    const finish = `/api/v1/admin/restore/uploads/${encodeURIComponent(id)}/finish?name=${encodeURIComponent(file.name)}`;
+    const finish = `/api/v1/admin/restore/uploads/${encodeURIComponent(id)}/finish?name=${encodeURIComponent(file.name)}${restoreQuery("&")}`;
     if (pg) {
       setRestoring(false);
       await runPostgres(finish);
@@ -2293,6 +2320,7 @@ function BackupSection() {
       if (!res.ok || json.error) {
         toast(`Restore failed: ${json.error ?? res.statusText}`, "info");
       } else {
+        keepRestoreResult(json.data?.message);
         toast("Restored. Reloading…", "check");
         setTimeout(() => window.location.reload(), 800);
       }
@@ -2384,6 +2412,25 @@ function BackupSection() {
           {saving ? "Saving…" : "Save changes"}
         </VbBtn>
       </div>
+
+      {lastRestore && (
+        <div role="status" style={{
+          display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px",
+          border: "1px solid var(--vb-border)", borderRadius: 6, fontSize: 12, lineHeight: 1.5,
+          background: "var(--vb-bg-2)",
+        }}>
+          <span style={{ flex: 1 }}><strong>Last restore:</strong> {lastRestore}</span>
+          <VbBtn kind="ghost" size="sm" onClick={() => setLastRestore("")}>Dismiss</VbBtn>
+        </div>
+      )}
+
+      <VbField
+        label="Bring back users deleted since the backup"
+        hint="Off: a restore leaves them deleted, so access you removed stays removed. On, for users deleted by mistake: they come back, signed out of every session. Applies to the next restore from this page."
+        right={<Toggle on={bringBack} onChange={setBringBack} />}
+      >
+        <></>
+      </VbField>
 
       <VbField
         label="Stored backups"
@@ -2486,8 +2533,8 @@ function BackupSection() {
         hint={pg && !canRestorePg
           ? <>Restore on Postgres needs <VbCode>pg_restore</VbCode> and <VbCode>psql</VbCode> on the server, next to <VbCode>pg_dump</VbCode>, or named by <VbCode>VAULTBASE_PG_RESTORE</VbCode> and <VbCode>VAULTBASE_PSQL</VbCode>.</>
           : pg
-          ? "Replaces all current data with an uploaded .dump from this page. The current data is kept for 7 days. Existing JWTs remain valid (signing key unchanged)."
-          : "Replaces all current data with the uploaded SQLite file. Existing JWTs remain valid (signing key unchanged)."}
+          ? "Replaces all current data with an uploaded .dump from this page. The current data is kept for 7 days. Sessions ended since the backup stay ended, and the signing key, which no backup holds, doesn't change."
+          : "Replaces all current data with the uploaded SQLite file. Sessions ended since the backup stay ended, and the signing key, which no backup holds, doesn't change."}
         right={<VbPill tone="warning" dot>destructive</VbPill>}
       >
         <input

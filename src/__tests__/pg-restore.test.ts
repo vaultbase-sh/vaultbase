@@ -144,6 +144,46 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
     expect(await notedSchemas()).toEqual([kept[0]!.schema]);
   });
 
+  it("keeps maintenance mode on and doesn't run again work done since the backup", async () => {
+    await db.run(`INSERT INTO vaultbase_jobs_log (id, queue, payload, status, scheduled_at, enqueued_at) VALUES ('ran-since', 'q', '{}', 'queued', 0, 0), ('waiting', 'q', '{}', 'queued', 0, 0)`);
+    await db.run(`INSERT INTO vaultbase_webhook_deliveries (id, webhook_id, event, payload, status, scheduled_at) VALUES ('sent-since', 'w1', 'create', '{}', 'pending', 0)`);
+    const { name } = await backUp();
+    await db.run(`UPDATE vaultbase_jobs_log SET status = 'succeeded' WHERE id = 'ran-since'`);
+    await db.run(`UPDATE vaultbase_webhook_deliveries SET status = 'succeeded' WHERE id = 'sent-since'`);
+    await db.run(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES ('maintenance_mode.enabled', '1', 0) ON CONFLICT (key) DO UPDATE SET value = '1'`);
+
+    const res = await call("POST", `/admin/backups/${name}/restore`);
+    expect(res.status).toBe(200);
+    expect(res.json.data.message).toContain("Maintenance mode is still on");
+    expect(res.json.data.message).toContain("1 queued job and 1 webhook delivery");
+    const status = async (table: string, id: string) => (await db.get<{ status: string }>(`SELECT status FROM ${table} WHERE id = ?`, [id]))?.status;
+    expect(await status("vaultbase_jobs_log", "ran-since")).toBe("dead");
+    expect(await status("vaultbase_jobs_log", "waiting")).toBe("queued");
+    expect(await status("vaultbase_webhook_deliveries", "sent-since")).toBe("dead");
+    const { backgroundPaused } = await import("../core/maintenance-mode.ts");
+    expect(backgroundPaused()).toBe(true);
+  });
+
+  it("leaves users deleted since the backup deleted, or brings them back signed out when asked", async () => {
+    const { seedAuthUser } = await import("./_helpers.ts");
+    await db.run(`INSERT INTO vaultbase_install (key, id) VALUES ('install', 'pg-install') ON CONFLICT (key) DO NOTHING`);
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    const { name } = await backUp();
+    await db.run(`DELETE FROM vb_members WHERE id = 'gone'`);
+
+    const first = await call("POST", `/admin/backups/${name}/restore`);
+    expect(first.status).toBe(200);
+    expect(first.json.data.message).toContain("Users deleted since the backup stay deleted: gone@test.local (members)");
+    expect(await db.get(`SELECT 1 FROM vb_members WHERE id = 'gone'`)).toBeFalsy();
+
+    const second = await call("POST", `/admin/backups/${name}/restore?bring_back_deleted_users=1`);
+    expect(second.status).toBe(200);
+    expect(second.json.data.message).toContain("are back, signed out of every session: gone@test.local (members)");
+    const back = await db.get<{ p: number }>(`SELECT password_reset_at AS p FROM vb_members WHERE id = 'gone'`);
+    expect(Number(back!.p)).toBeGreaterThan(0);
+  });
+
   it("keeps passwords changed and admins deleted since the backup", async () => {
     await getDb().insert(admin).values({ id: "a2", email: "left@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 });
     await db.run(`INSERT INTO vaultbase_install (key, id) VALUES ('install', 'pg-install') ON CONFLICT (key) DO NOTHING`);

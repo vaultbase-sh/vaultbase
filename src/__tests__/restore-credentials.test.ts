@@ -45,9 +45,9 @@ async function restoreLatest(): Promise<{ status: number; message: string }> {
   return restoreNamed((await listBackups())[0]!.name);
 }
 
-async function restoreNamed(name: string): Promise<{ status: number; message: string }> {
+async function restoreNamed(name: string, qs = ""): Promise<{ status: number; message: string }> {
   const { token } = await signAuthToken({ payload: { id: "a1", email: "ops@test.local" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
-  const res = await makeBackupPlugin(SECRET, dbPath).handle(new Request(`http://localhost/admin/backups/${name}/restore`, {
+  const res = await makeBackupPlugin(SECRET, dbPath).handle(new Request(`http://localhost/admin/backups/${name}/restore${qs}`, {
     method: "POST", headers: { authorization: `Bearer ${token}` },
   }));
   const body = await res.json() as { data?: { message: string }; error?: string };
@@ -213,13 +213,27 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
     expect((await findUserById(col, b))!).toMatchObject({ email: "a@test.local", email_verified: 1 });
   });
 
-  it("an email held by an account the restore brings back stays with it", async () => {
+  it("an email taken over from an account deleted since the backup moves, the deleted account staying deleted", async () => {
     const a = await seedAuthUser({ collection: "users", email: "a@test.local" });
     const gone = await seedAuthUser({ collection: "users", email: "taken@test.local" });
     await runBackup();
     raw().prepare(`DELETE FROM vb_users WHERE id = ?`).run(gone);
     raw().prepare(`UPDATE vb_users SET email = 'taken@test.local' WHERE id = ?`).run(a);
     const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).not.toContain("Not carried over");
+    const col = (await getCollection("users"))!;
+    expect((await findUserById(col, a))!.email).toBe("taken@test.local");
+    expect(await findUserById(col, gone)).toBeNull();
+  });
+
+  it("an email held by an account the restore brings back stays with it", async () => {
+    const a = await seedAuthUser({ collection: "users", email: "a@test.local" });
+    const gone = await seedAuthUser({ collection: "users", email: "taken@test.local" });
+    await runBackup();
+    raw().prepare(`DELETE FROM vb_users WHERE id = ?`).run(gone);
+    raw().prepare(`UPDATE vb_users SET email = 'taken@test.local' WHERE id = ?`).run(a);
+    const r = await restoreNamed((await listBackups())[0]!.name, "?bring_back_deleted_users=1");
     expect(r.status).toBe(200);
     expect(r.message).toContain("Not carried over");
     const col = (await getCollection("users"))!;
@@ -284,5 +298,139 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
     const r = await restoreLatest();
     expect(r.message).toContain("late@test.local");
     expect(raw().prepare(`SELECT 1 FROM vaultbase_admin WHERE id = 'a2'`).get()).toBeNull();
+  });
+});
+
+describe.skipIf(!onSqlite)("restore leaves maintenance mode and finished background work as they are", () => {
+  const setting = (key: string, value: string) =>
+    raw().prepare(`INSERT INTO vaultbase_settings (key, value, updated_at) VALUES (?, ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
+  const job = (id: string, status: string) =>
+    raw().prepare(`INSERT INTO vaultbase_jobs_log (id, queue, payload, status, scheduled_at, enqueued_at) VALUES (?, 'emails', '{}', ?, 0, 0)`).run(id, status);
+  const delivery = (id: string, status: string) =>
+    raw().prepare(`INSERT INTO vaultbase_webhook_deliveries (id, webhook_id, event, payload, status, scheduled_at) VALUES (?, 'w1', 'create', '{}', ?, 0)`).run(id, status);
+  const statusOf = (table: string, id: string) =>
+    (raw().prepare(`SELECT status, error FROM ${table} WHERE id = ?`).get(id) as { status: string; error: string | null } | null);
+
+  it("maintenance mode turned on before the restore stays on", async () => {
+    const { backgroundPaused } = await import("../core/maintenance-mode.ts");
+    const { _reloadSettings } = await import("../api/settings.ts");
+    await runBackup();
+    setting("maintenance_mode.enabled", "1");
+    await _reloadSettings();
+    expect(backgroundPaused()).toBe(true);
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(backgroundPaused()).toBe(true);
+    expect(r.message).toContain("Maintenance mode is still on");
+  });
+
+  it("maintenance mode on in the backup but off now stays off", async () => {
+    const { backgroundPaused } = await import("../core/maintenance-mode.ts");
+    const { _reloadSettings } = await import("../api/settings.ts");
+    setting("maintenance_mode.enabled", "1");
+    await runBackup();
+    raw().prepare(`DELETE FROM vaultbase_settings WHERE key LIKE 'maintenance_mode.%'`).run();
+    await _reloadSettings();
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(backgroundPaused()).toBe(false);
+    expect(r.message).not.toContain("Maintenance mode");
+  });
+
+  it("a job queued at backup time that has run since is marked dead, one still waiting stays queued", async () => {
+    job("ran-since", "queued");
+    job("still-waiting", "queued");
+    job("pruned-since", "queued");
+    await runBackup();
+    raw().prepare(`UPDATE vaultbase_jobs_log SET status = 'succeeded', finished_at = 5 WHERE id = 'ran-since'`).run();
+    raw().prepare(`DELETE FROM vaultbase_jobs_log WHERE id = 'pruned-since'`).run();
+    job("enqueued-after", "queued");
+
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(statusOf("vaultbase_jobs_log", "ran-since")!.status).toBe("dead");
+    expect(statusOf("vaultbase_jobs_log", "ran-since")!.error).toContain("Not run again after a restore");
+    expect(statusOf("vaultbase_jobs_log", "pruned-since")!.status).toBe("dead");
+    expect(statusOf("vaultbase_jobs_log", "still-waiting")!.status).toBe("queued");
+    // Work queued after the backup belongs to data the restore rolled back.
+    expect(statusOf("vaultbase_jobs_log", "enqueued-after")).toBeNull();
+    expect(r.message).toContain("2 queued jobs");
+  });
+
+  it("a job running now keeps its live state and lease", async () => {
+    job("running-now", "queued");
+    await runBackup();
+    raw().prepare(`UPDATE vaultbase_jobs_log SET status = 'running', lease_owner = 'p1', lease_until = 99, attempt = 2 WHERE id = 'running-now'`).run();
+    expect((await restoreLatest()).status).toBe(200);
+    expect(raw().prepare(`SELECT status, lease_owner, attempt FROM vaultbase_jobs_log WHERE id = 'running-now'`).get())
+      .toEqual({ status: "running", lease_owner: "p1", attempt: 2 });
+  });
+
+  it("a webhook delivery pending at backup time and sent since isn't sent again", async () => {
+    delivery("sent-since", "pending");
+    delivery("still-pending", "pending");
+    await runBackup();
+    raw().prepare(`UPDATE vaultbase_webhook_deliveries SET status = 'succeeded' WHERE id = 'sent-since'`).run();
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(statusOf("vaultbase_webhook_deliveries", "sent-since")!.status).toBe("dead");
+    expect(statusOf("vaultbase_webhook_deliveries", "still-pending")!.status).toBe("pending");
+    expect(r.message).toContain("1 webhook delivery");
+  });
+});
+
+describe.skipIf(!onSqlite)("restore and users deleted since the backup", () => {
+  const verifies = async (token: string) => !!(await verifyAuthToken(token, SECRET));
+
+  it("a member deleted since the backup stays deleted, and their old session doesn't work", async () => {
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    const gone = await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    const col = (await getCollection("members"))!;
+    raw().prepare(`INSERT INTO vaultbase_oauth_links (id, user_id, collection_id, provider, provider_user_id, created_at) VALUES ('l1', ?, ?, 'github', 'gh-gone', 1)`).run(gone, col.id);
+    const token = await signUserJwt(gone, "gone@test.local", "members", SECRET);
+    await runBackup();
+    raw().prepare(`DELETE FROM vb_members WHERE id = ?`).run(gone);
+    raw().prepare(`DELETE FROM vaultbase_oauth_links WHERE user_id = ?`).run(gone);
+
+    const r = await restoreLatest();
+    expect(r.status).toBe(200);
+    expect(r.message).toContain("Users deleted since the backup stay deleted: gone@test.local (members)");
+    expect(raw().prepare(`SELECT 1 FROM vb_members WHERE id = 'gone'`).get()).toBeNull();
+    expect(raw().prepare(`SELECT 1 FROM vb_members WHERE id = 'keep'`).get()).not.toBeNull();
+    expect(raw().prepare(`SELECT 1 FROM vaultbase_oauth_links WHERE id = 'l1'`).get()).toBeNull();
+    expect(await verifies(token)).toBe(false);
+  });
+
+  it("bring_back_deleted_users=1 brings them back, signed out of every session", async () => {
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    const gone = await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    const token = await signUserJwt(gone, "gone@test.local", "members", SECRET);
+    await runBackup();
+    raw().prepare(`DELETE FROM vb_members WHERE id = ?`).run(gone);
+    await Bun.sleep(1100); // the session predates the restore's sign-out stamp by a whole second
+
+    const r = await restoreNamed((await listBackups())[0]!.name, "?bring_back_deleted_users=1");
+    expect(r.status).toBe(200);
+    expect(r.message).toContain("Users deleted since the backup are back, signed out of every session: gone@test.local (members)");
+    expect(raw().prepare(`SELECT 1 FROM vb_members WHERE id = 'gone'`).get()).not.toBeNull();
+    expect(await verifies(token)).toBe(false);
+  });
+
+  it("restoring a newer backup after an older one keeps the users created between them", async () => {
+    await seedAuthUser({ collection: "members", id: "first", email: "first@test.local" });
+    raw().prepare(`UPDATE vb_members SET created_at = 1000 WHERE id = 'first'`).run();
+    await runBackup();
+    const older = (await listBackups())[0]!.name;
+    await Bun.sleep(1100); // backup names are per second
+    await seedAuthUser({ collection: "members", id: "second", email: "second@test.local" });
+    raw().prepare(`UPDATE vb_members SET created_at = 2000 WHERE id = 'second'`).run();
+    await runBackup();
+    const newer = (await listBackups()).find((b) => b.name !== older)!.name;
+
+    expect((await restoreNamed(older)).status).toBe(200);
+    const r = await restoreNamed(newer);
+    expect(r.status).toBe(200);
+    expect(r.message).not.toContain("stay deleted");
+    expect(raw().prepare(`SELECT 1 FROM vb_members WHERE id = 'second'`).get()).not.toBeNull();
   });
 });

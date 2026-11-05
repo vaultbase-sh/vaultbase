@@ -22,6 +22,26 @@
  * (same `vaultbase_install` id): restoring another install's backup brings
  * its admins, as it should. A restore never leaves no admin.
  *
+ * A user deleted since the backup stays deleted too, by the same evidence
+ * as an admin (see `deletedSince`), with their provider links and recovery
+ * codes: otherwise a member removed to end their access was back, with
+ * every session they had. A restore can instead bring them back
+ * (`bringBackDeletedUsers`, for users deleted by mistake): they return
+ * signed out, every session they had ended. Either way the answer names
+ * them.
+ *
+ * Two things that aren't credentials stay as they are too, because the
+ * restore is an operator's action, not a step back in time for them:
+ * - Maintenance mode (its `maintenance_mode.*` settings). Turning it on
+ *   before a restore, to check the result before reopening, used to be
+ *   undone by the restore itself, and background work resumed at once.
+ * - Background work already done. A job queued, or a webhook delivery
+ *   pending, when the backup was taken came back queued and ran a second
+ *   time (an email sent twice, a charge made twice). One still waiting live
+ *   keeps its live state; one that isn't (it ran, or was removed, since the
+ *   backup) is marked dead instead, so an admin can retry it from the admin
+ *   if it should run.
+ *
  * Each step runs in a savepoint of its own: one that fails (a conflict
  * nothing here foresaw) is reported, and leaves the others to run.
  *
@@ -73,6 +93,12 @@ export interface LiveCredentials {
   auditIds: Set<string>;
   /** Admins the audit log records as deleted. */
   deletedAdminIds: Set<string>;
+  /** The `maintenance_mode.*` settings rows. */
+  maintenance: Row[];
+  /** Jobs still queued or running. */
+  activeJobs: Row[];
+  /** Webhook deliveries still pending. */
+  activeDeliveries: Row[];
 }
 
 export interface CarrySummary {
@@ -82,6 +108,34 @@ export interface CarrySummary {
   removedAdmins: string[];
   /** Steps that failed, each named for the account or part it concerned. */
   failed: string[];
+  /** Jobs the backup had queued that had run (or gone) since: marked dead, not run again. */
+  heldJobs?: number;
+  /** Webhook deliveries the backup had pending that were done (or gone) since: marked dead. */
+  heldDeliveries?: number;
+  /** Maintenance mode was on before the restore and still is. */
+  maintenanceOn?: boolean;
+  /** Users deleted since the backup, left deleted ("email (collection)"). */
+  removedUsers?: string[];
+  /** Users deleted since the backup, brought back signed out. */
+  returnedUsers?: string[];
+}
+
+/** How a restore treats what changed since the backup. */
+export interface CarryOptions {
+  /** Bring back users deleted since the backup (signed out) instead of leaving them deleted. */
+  bringBackDeletedUsers?: boolean;
+}
+
+let carryOptions: CarryOptions = {};
+
+/**
+ * Run one restore with these options. Restores run one at a time (the
+ * exclusive write gate, the restore lock), so the next carry-over is
+ * this one's.
+ */
+export async function withCarryOptions<T>(opts: CarryOptions, fn: () => Promise<T>): Promise<T> {
+  carryOptions = opts;
+  try { return await fn(); } finally { carryOptions = {}; }
 }
 
 const SAFE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -91,6 +145,11 @@ const MAX_SHARED_AUDIT_IDS = 200_000;
 const CODES = "vaultbase_mfa_recovery_codes";
 const LOOKUP = "vaultbase_mfa_recovery_lookup";
 const LINKS = "vaultbase_oauth_links";
+const SETTINGS = "vaultbase_settings";
+const JOBS = "vaultbase_jobs_log";
+const DELIVERIES = "vaultbase_webhook_deliveries";
+/** Settings a restore leaves as they are (core/maintenance-mode.ts MAINTENANCE_KEYS). */
+const MAINTENANCE_PREFIX = "maintenance_mode.";
 
 async function allIf<T>(d: CarryDb, table: string, sql: string, params?: unknown[]): Promise<T[]> {
   return (await d.has(table)) ? await d.all<T>(sql, params) : [];
@@ -145,6 +204,9 @@ export async function captureCredentials(d: CarryDb): Promise<LiveCredentials> {
     links: await allIf<Row>(d, LINKS, `SELECT * FROM ${d.t(LINKS)}`),
     auditIds: new Set(audit.map((r) => String(r.id))),
     deletedAdminIds: new Set(deleted.map((r) => String(r.target))),
+    maintenance: await allIf<Row>(d, SETTINGS, `SELECT * FROM ${d.t(SETTINGS)} WHERE key LIKE '${MAINTENANCE_PREFIX}%'`),
+    activeJobs: await allIf<Row>(d, JOBS, `SELECT * FROM ${d.t(JOBS)} WHERE status IN ('queued', 'running')`),
+    activeDeliveries: await allIf<Row>(d, DELIVERIES, `SELECT * FROM ${d.t(DELIVERIES)} WHERE status = 'pending'`),
   };
 }
 
@@ -217,31 +279,33 @@ async function carryEmails(d: CarryDb, table: string, moves: Map<string, string>
 }
 
 /**
- * Admins in the restored database but not the replaced one that were
+ * Accounts in the restored database but not the replaced one that were
  * deleted, as opposed to created after the replaced database's data.
  *
  * Absent means deleted when:
- * - the replaced database's audit log records the deletion; or
- * - the admin was created no later than something both databases share
- *   (an admin still in both, an audit-log entry in both). Both histories
- *   run together up to the point they part; whatever was created before
- *   that point is in both, so an admin created before it and missing from
- *   one was deleted there. An admin created after that point exists only
- *   on the restored side's branch: the replaced data is an older snapshot
- *   (an undo, a newer backup restored after an older one).
+ * - the replaced database's audit log records the deletion (admins); or
+ * - the account was created no later than something both databases share
+ *   (an account of the same table still in both, an audit-log entry in
+ *   both). Both histories run together up to the point they part; whatever
+ *   was created before that point is in both, so an account created before
+ *   it and missing from one was deleted there. An account created after
+ *   that point exists only on the restored side's branch: the replaced data
+ *   is an older snapshot (an undo, a newer backup restored after an older one).
  */
-async function deletedAdmins(d: CarryDb, live: LiveCredentials): Promise<Array<{ id: string; email: string }>> {
-  const restored = await allIf<{ id: string; email: string; created_at: number | null }>(
-    d, "vaultbase_admin", `SELECT id, email, created_at FROM ${d.t("vaultbase_admin")}`,
+async function deletedSince(
+  d: CarryDb, live: LiveCredentials, table: string, liveIds: Set<string>, recorded: Set<string> = new Set(),
+): Promise<Array<{ id: string; email: string | null }>> {
+  const restored = await allIf<{ id: string; email: string | null; created_at: number | null }>(
+    d, table, `SELECT id, email, created_at FROM ${d.t(table)}`,
   );
-  const absent = restored.filter((a) => !live.adminIds.has(String(a.id)));
+  const absent = restored.filter((a) => !liveIds.has(String(a.id)));
   if (absent.length === 0) return [];
   let shared = Number.NEGATIVE_INFINITY;
   for (const a of restored) {
-    if (live.adminIds.has(String(a.id))) shared = Math.max(shared, Number(a.created_at ?? 0));
+    if (liveIds.has(String(a.id))) shared = Math.max(shared, Number(a.created_at ?? 0));
   }
   const created = (a: { created_at: number | null }) => Number(a.created_at ?? 0);
-  const unsure = absent.filter((a) => !live.deletedAdminIds.has(String(a.id)) && created(a) > shared);
+  const unsure = absent.filter((a) => !recorded.has(String(a.id)) && created(a) > shared);
   if (unsure.length > 0 && live.auditIds.size > 0 && await d.has(AUDIT)) {
     // The newest audit entry both share, looking no further back than needed.
     const floor = Math.min(...unsure.map(created));
@@ -252,12 +316,13 @@ async function deletedAdmins(d: CarryDb, live: LiveCredentials): Promise<Array<{
     if (common) shared = Math.max(shared, Number(common.at));
   }
   return absent
-    .filter((a) => live.deletedAdminIds.has(String(a.id)) || created(a) <= shared)
-    .map((a) => ({ id: String(a.id), email: String(a.email) }));
+    .filter((a) => recorded.has(String(a.id)) || created(a) <= shared)
+    .map((a) => ({ id: String(a.id), email: a.email == null ? null : String(a.email) }));
 }
 
 /** Apply to the restored database. */
 export async function applyCredentials(d: CarryDb, live: LiveCredentials): Promise<CarrySummary> {
+  const opts = carryOptions;
   const failed: string[] = [];
   const kept = new Set<string>();
   const step = async (label: string, fn: () => Promise<void>): Promise<void> => {
@@ -277,7 +342,7 @@ export async function applyCredentials(d: CarryDb, live: LiveCredentials): Promi
   if (sameInstall) {
     await step("admins deleted since the backup", async () => {
       const total = (await allIf<{ id: string }>(d, "vaultbase_admin", `SELECT id FROM ${d.t("vaultbase_admin")}`)).length;
-      const gone = await deletedAdmins(d, live);
+      const gone = await deletedSince(d, live, "vaultbase_admin", live.adminIds, live.deletedAdminIds);
       // Never lock everyone out: with no admin left, keep them all.
       if (gone.length === 0 || gone.length >= total) return;
       const now = Math.floor(Date.now() / 1000);
@@ -297,7 +362,7 @@ export async function applyCredentials(d: CarryDb, live: LiveCredentials): Promi
             summary: "Kept deleted by a restore: deleted after the backup was taken", at: now,
           });
         }
-        removedAdmins.push(a.email);
+        removedAdmins.push(String(a.email));
       }
     });
   }
@@ -336,6 +401,38 @@ export async function applyCredentials(d: CarryDb, live: LiveCredentials): Promi
   const lookupsOf = (codes: Row[], by: Map<string, Row[]>) => codes.flatMap((c) => by.get(String(c["id"])) ?? []);
 
   const restoredCols = new Map((await authCollections(d)).map((c) => [c.name, c.id]));
+  const removedUsers: string[] = [];
+  const returnedUsers: string[] = [];
+  if (sameInstall) {
+    for (const [name, { accounts: liveAccounts }] of live.users) {
+      const colId = restoredCols.get(name);
+      if (!colId) continue;
+      const table = `vb_${name}`;
+      await step(`${name} users deleted since the backup`, async () => {
+        const gone = await deletedSince(d, live, table, new Set(liveAccounts.keys()));
+        if (gone.length === 0) return;
+        const label = (u: { id: string; email: string | null }) => `${u.email || u.id} (${name})`;
+        if (opts.bringBackDeletedUsers) {
+          // Back, but no session they had before works.
+          const now = Math.floor(Date.now() / 1000);
+          for (const u of gone) {
+            await d.run(`UPDATE ${d.t(table)} SET password_reset_at = ? WHERE id = ? AND COALESCE(password_reset_at, 0) < ?`, [now, u.id, now]);
+            returnedUsers.push(label(u));
+          }
+          return;
+        }
+        for (const u of gone) {
+          if (hasLookup && hasCodes) {
+            await d.run(`DELETE FROM ${d.t(LOOKUP)} WHERE recovery_id IN (SELECT id FROM ${d.t(CODES)} WHERE user_id = ? AND collection_id = ?)`, [u.id, colId]);
+          }
+          if (hasCodes) await d.run(`DELETE FROM ${d.t(CODES)} WHERE user_id = ? AND collection_id = ?`, [u.id, colId]);
+          if (hasLinks) await d.run(`DELETE FROM ${d.t(LINKS)} WHERE user_id = ? AND collection_id = ?`, [u.id, colId]);
+          await d.run(`DELETE FROM ${d.t(table)} WHERE id = ?`, [u.id]);
+          removedUsers.push(label(u));
+        }
+      });
+    }
+  }
   for (const [name, { collectionId: liveColId, accounts: liveAccounts }] of live.users) {
     const restoredColId = restoredCols.get(name);
     if (!restoredColId) continue;
@@ -423,7 +520,65 @@ export async function applyCredentials(d: CarryDb, live: LiveCredentials): Promi
     }
   }
 
-  return { kept: kept.size, removedAdmins, failed };
+  let maintenanceOn = false;
+  if (await d.has(SETTINGS)) {
+    await step("maintenance mode", async () => {
+      await d.run(`DELETE FROM ${d.t(SETTINGS)} WHERE key LIKE '${MAINTENANCE_PREFIX}%'`);
+      for (const r of live.maintenance) await insertRow(d, SETTINGS, r);
+      maintenanceOn = live.maintenance.some((r) => r["key"] === `${MAINTENANCE_PREFIX}enabled` && String(r["value"]) === "1");
+    });
+  }
+
+  let heldJobs = 0;
+  let heldDeliveries = 0;
+  const now = Math.floor(Date.now() / 1000);
+  await step("queued jobs", async () => {
+    heldJobs = await holdDone(d, JOBS, `status IN ('queued', 'running')`, live.activeJobs, {
+      status: "dead", finished_at: now, lease_owner: null, lease_until: null,
+      error: "Not run again after a restore: it was queued when the backup was taken and has run, or been removed, since. Retry it if it should run.",
+    });
+  });
+  await step("pending webhook deliveries", async () => {
+    heldDeliveries = await holdDone(d, DELIVERIES, `status = 'pending'`, live.activeDeliveries, {
+      status: "dead",
+      error: "Not sent again after a restore: it was pending when the backup was taken and has been sent, or removed, since. Redeliver it if it should go out.",
+    });
+  });
+
+  return { kept: kept.size, removedAdmins, failed, heldJobs, heldDeliveries, maintenanceOn, removedUsers, returnedUsers };
+}
+
+/**
+ * Background work the restored database still has waiting: each row that is
+ * still waiting live takes its live state (a job running right now keeps
+ * its lease); every other row is set to `done`, so it isn't run a second
+ * time. Returns how many were set so.
+ */
+async function holdDone(d: CarryDb, table: string, waiting: string, live: Row[], done: Row): Promise<number> {
+  if (!(await d.has(table))) return 0;
+  const restored = await d.all<Row>(`SELECT * FROM ${d.t(table)} WHERE ${waiting}`);
+  if (restored.length === 0) return 0;
+  const liveById = new Map(live.map((r) => [String(r["id"]), r]));
+  const cols = Object.keys(restored[0]!);
+  let held = 0;
+  for (const r of restored) {
+    const id = String(r["id"]);
+    const cur = liveById.get(id);
+    if (cur) {
+      await d.run(`DELETE FROM ${d.t(table)} WHERE id = ?`, [id]);
+      await insertRow(d, table, Object.fromEntries(cols.filter((c) => c in cur).map((c) => [c, cur[c]])));
+    } else {
+      const keys = Object.keys(done).filter((c) => cols.includes(c));
+      await d.run(`UPDATE ${d.t(table)} SET ${keys.map((k) => `"${k}" = ?`).join(", ")} WHERE id = ?`, [...keys.map((k) => done[k]), id]);
+      held++;
+    }
+  }
+  return held;
+}
+
+/** At most 20 names, then a count. */
+function listed(names: string[]): string {
+  return names.length <= 20 ? names.join(", ") : `${names.slice(0, 20).join(", ")} and ${names.length - 20} more`;
 }
 
 /** The sentence a restore's answer adds, or "". */
@@ -433,6 +588,22 @@ export function describeCarry(s: CarrySummary): string {
   if (s.removedAdmins.length > 0) {
     parts.push(`Admins deleted since the backup stay deleted and their API tokens are revoked: ${s.removedAdmins.join(", ")}.`);
   }
+  if (s.removedUsers?.length) {
+    parts.push(`Users deleted since the backup stay deleted: ${listed(s.removedUsers)}. To bring them back, restore again with "Bring back users deleted since the backup".`);
+  }
+  if (s.returnedUsers?.length) {
+    parts.push(`Users deleted since the backup are back, signed out of every session: ${listed(s.returnedUsers)}.`);
+  }
+  const jobs = s.heldJobs ?? 0;
+  const deliveries = s.heldDeliveries ?? 0;
+  if (jobs > 0 || deliveries > 0) {
+    const what = [
+      jobs > 0 ? `${jobs} queued job${jobs === 1 ? "" : "s"}` : "",
+      deliveries > 0 ? `${deliveries} webhook deliver${deliveries === 1 ? "y" : "ies"}` : "",
+    ].filter(Boolean).join(" and ");
+    parts.push(`${what} from the backup had already run since and won't run again; they're marked dead, retry any that should.`);
+  }
+  if (s.maintenanceOn) parts.push("Maintenance mode is still on: turn it off when you're ready to reopen.");
   if (s.failed.length > 0) {
     parts.push(`Not carried over, the backup's are in place, check them: ${s.failed.join("; ")}.`);
   }

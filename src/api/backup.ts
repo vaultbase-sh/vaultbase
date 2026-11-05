@@ -27,7 +27,7 @@ import { adminGuard } from "./_admin.ts";
 import { Database } from "bun:sqlite";
 import { suspendCheckpointer } from "../db/checkpointer.ts";
 import { suspendReadPool } from "../core/read-pool.ts";
-import { applyCredentials, captureCredentials, noteCarry, takeCarryMessage, type CarryDb } from "../core/restore-credentials.ts";
+import { applyCredentials, captureCredentials, noteCarry, takeCarryMessage, withCarryOptions, type CarryDb, type CarryOptions } from "../core/restore-credentials.ts";
 import { _reloadSettings } from "./settings.ts";
 import { _resetReadOnlyLogin } from "../core/pg-readonly.ts";
 import {
@@ -183,6 +183,8 @@ async function swapAndCarryOver(dbPath: string, staging: string): Promise<string
       }
     } finally {
       resetDatabaseCaches();
+      // Settings the carry-over wrote (maintenance mode) after the swap read them.
+      try { await _reloadSettings(); } catch (e) { process.stderr.write(`[restore] settings not reloaded: ${e instanceof Error ? e.message : e}\n`); }
     }
     return null;
   }
@@ -229,6 +231,11 @@ async function followRestoredDatabase(): Promise<void> {
 }
 
 const RESTORED_MESSAGE = "Restore complete. Sessions revoked since the backup stay revoked.";
+
+/** A restore's options from its query string (core/restore-credentials.ts). */
+function carryOptionsOf(query: Record<string, string | undefined>): CarryOptions {
+  return { bringBackDeletedUsers: query["bring_back_deleted_users"] === "1" };
+}
 
 /** A Postgres restore's outcome as a status and body. */
 function restoreFailure(e: unknown): { status: number; body: { error: string; code: number; swapped?: true } } {
@@ -382,6 +389,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
     src: { blob: File | Bun.BunFile; name: string; path?: string },
     progress: boolean,
     set: { status?: number | string },
+    opts: CarryOptions = {},
   ): Promise<unknown> {
     // Magic header check
     const sliced = (src.blob as unknown as { slice(start: number, end: number): unknown }).slice(0, SQLITE_MAGIC.length);
@@ -406,7 +414,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       }
       return postgresRestore(set, progress, async (onPhase) => {
         try {
-          await restoreArchive(upload, `upload: ${src.name || "backup.dump"}`.slice(0, 200), dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
+          await withCarryOptions(opts, () => restoreArchive(upload, `upload: ${src.name || "backup.dump"}`.slice(0, 200), dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap }));
         } finally {
           rmSync(upload, { force: true });
         }
@@ -433,7 +441,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       set.status = 422;
       return { error: `Can't restore this file: ${bad}`, code: 422 };
     }
-    const err = await restoreDatabase(dbPath, staging);
+    const err = await withCarryOptions(opts, () => restoreDatabase(dbPath, staging));
     if (err) {
       set.status = 500;
       return { error: `Restore failed: ${err}`, code: 500 };
@@ -557,7 +565,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
           return { error: "Can't restore this file: it is a SQLite backup, and this server runs on Postgres", code: 422 };
         }
         return postgresRestore(set, query["progress"] === "1", async (onPhase) => {
-          await restoreArchive(p, params.name, dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap });
+          await withCarryOptions(carryOptionsOf(query), () => restoreArchive(p, params.name, dirname(dbPath), { onPhase, afterSwap: afterPostgresSwap }));
           await followRestoredDatabase();
           const files = filesRestoreMessage(await restoreBackupFiles(params.name));
           return `${RESTORED_MESSAGE} The data it replaced is kept for 7 days.${files}`;
@@ -571,7 +579,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         set.status = 422;
         return { error: `Can't restore this file: ${bad}`, code: 422 };
       }
-      const err = await restoreDatabase(dbPath, staging);
+      const err = await withCarryOptions(carryOptionsOf(query), () => restoreDatabase(dbPath, staging));
       if (err) {
         set.status = 500;
         return { error: `Restore failed: ${err}`, code: 500 };
@@ -598,7 +606,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
         return { error: "No file uploaded (expected multipart 'file' field)", code: 400 };
       }
 
-      return await restoreUpload({ blob: file, name: file.name || "backup" }, query["progress"] === "1", set);
+      return await restoreUpload({ blob: file, name: file.name || "backup" }, query["progress"] === "1", set, carryOptionsOf(query));
     }, { requireAdmin: true })
 
     // Restore from an upload sent in pieces. A request body is capped at
@@ -644,7 +652,7 @@ export function makeBackupPlugin(jwtSecret: string, dbPath: string) {
       if (appending.has(params.id)) { set.status = 409; return { error: "A piece of this upload is still being written", code: 409 }; }
       try {
         const name = typeof query["name"] === "string" && query["name"] ? query["name"] : "backup";
-        return await restoreUpload({ blob: Bun.file(path), name, path }, query["progress"] === "1", set);
+        return await restoreUpload({ blob: Bun.file(path), name, path }, query["progress"] === "1", set, carryOptionsOf(query));
       } finally {
         // Moved into place by the restore, or refused: either way it's done.
         rmSync(path, { force: true });
