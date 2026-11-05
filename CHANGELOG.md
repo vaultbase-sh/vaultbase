@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.40.0] — 2026-11-05
 
 ### Added
 
@@ -43,6 +43,27 @@ Binaries, checksums, signatures and SBOMs for every version are on
   keep history. Existing collections are unchanged. History keeps a copy of
   the record on every write, so turn it off for a collection that changes
   constantly (counters, presence) if its history grows too large.
+
+### Upgrade notes
+
+- **New collections keep record history by default.** A collection created
+  without `history_enabled` now keeps it (views excepted). Pass
+  `history_enabled: false` to create one without, for example from a script
+  that creates busy collections. Existing collections don't change.
+- **A restore leaves users deleted since the backup deleted.** To bring them
+  back, turn on **Bring back users deleted since the backup** or add
+  `?bring_back_deleted_users=1`; they return signed out.
+- **A restore marks dead the jobs and webhook deliveries that have run
+  since the backup**, instead of running them again. Retry any that should
+  still run.
+- **A restore leaves maintenance mode as it was** before the restore,
+  instead of taking the backup's.
+- **Restoring a deleted record now brings it back** (`200`) where it used to
+  answer `409`.
+- **MCP audit entries name the collection** in their target
+  (`collection=posts id=…`), and creates name the record they made.
+  Something that parses audit targets of per-collection tools should expect
+  the extra part.
 
 ### Fixed
 

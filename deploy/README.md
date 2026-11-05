@@ -47,7 +47,7 @@ Options (`-Version`, `-InstallDir`, `-VerifySig`, `-NoPath`) need the
 script-block form:
 
 ```powershell
-& ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.39.1
+& ([scriptblock]::Create((irm https://get.vaultbase.dev/install.ps1))) -Version v0.40.0
 ```
 
 ## get.vaultbase.dev
