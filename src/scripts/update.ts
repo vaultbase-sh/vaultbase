@@ -111,7 +111,7 @@ interface Release {
   tag_name: string;
   body: string;
   published_at: string;
-  assets: Array<{ name: string; browser_download_url: string; size: number }>;
+  assets: Asset[];
 }
 
 async function fetchRelease(version: string | null): Promise<Release> {
@@ -166,6 +166,49 @@ async function sha256OfFile(path: string): Promise<string> {
   const buf = await Bun.file(path).arrayBuffer();
   const digest = await crypto.subtle.digest("SHA-256", buf);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function hasXz(): boolean {
+  try {
+    return spawnSync("xz", ["--version"], { encoding: "utf8" }).status === 0;
+  } catch { return false; }
+}
+
+type Asset = { name: string; browser_download_url: string; size: number };
+
+/**
+ * Put the release binary at `<dir>/<artifact>`, from its `.xz` when the
+ * release has one and `xz` is installed (about 50 MB instead of ~125 MB on
+ * Linux), else the raw asset. A failed `.xz` download or decompression
+ * falls back to the raw asset. The checksum and signature are checked on the
+ * result either way. Returns which one it used.
+ */
+export async function fetchReleaseBinary(
+  assets: Asset[],
+  artifact: string,
+  dir: string,
+  log: (s: string) => void,
+  opts: { download?: (url: string, dest: string, log: (s: string) => void) => Promise<void>; xz?: boolean } = {},
+): Promise<"xz" | "raw"> {
+  const download = opts.download ?? downloadTo;
+  const binPath = join(dir, artifact);
+  const raw = assets.find((a) => a.name === artifact);
+  const packed = assets.find((a) => a.name === `${artifact}.xz`);
+  if (packed && (opts.xz ?? hasXz())) {
+    const packedPath = `${binPath}.xz`;
+    try {
+      await download(packed.browser_download_url, packedPath, log);
+      const r = spawnSync("xz", ["-d", "-f", packedPath], { encoding: "utf8" });
+      if (r.status !== 0 || !existsSync(binPath)) throw new Error((r.stderr || "xz failed").trim());
+      return "xz";
+    } catch (e) {
+      log(`  couldn't use ${packed.name} (${e instanceof Error ? e.message : String(e)}); downloading the raw binary`);
+      for (const f of [packedPath, binPath]) { try { unlinkSync(f); } catch { /* not there */ } }
+    }
+  }
+  if (!raw) throw new Error(`release has no asset '${artifact}'`);
+  await download(raw.browser_download_url, binPath, log);
+  return "raw";
 }
 
 function hasCosign(): boolean {
@@ -307,7 +350,7 @@ export async function runUpdate(argv: string[]): Promise<void> {
 
   const binPath = join(tmp, platform.artifact);
   const sumsPath = join(tmp, `${platform.artifact}.sha256`);
-  await downloadTo(binAsset.browser_download_url, binPath, log);
+  await fetchReleaseBinary(release.assets, platform.artifact, tmp, log);
   await downloadTo(sumsAsset.browser_download_url, sumsPath, log);
 
   // SHA-256 verify (always)
