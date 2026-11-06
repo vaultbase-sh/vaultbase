@@ -256,7 +256,7 @@ if [ "${OS}" = "linux" ]; then
         fi
     fi
     # Alpine's base image ships no `xz`, so without this every musl install
-    # downloads the ~100 MB raw binary instead of the ~30 MB compressed one.
+    # downloads the ~125 MB raw binary instead of the ~50 MB compressed one.
     # Non-fatal: the download path falls back to the raw asset.
     if ! command -v xz >/dev/null 2>&1 && command -v apk >/dev/null 2>&1; then
         apk add --no-cache -q xz >/dev/null 2>&1 && ok "Installed xz (smaller download)" || true
@@ -364,34 +364,33 @@ download() {
 
 # Human-readable size of a remote file (follows redirects), or empty.
 remote_size() {
+    # Nothing when the probe fails (-f): a 404 page's own length isn't the file's.
     _rs_len="$(curl -fsSLI --max-time 10 "$1" 2>/dev/null \
-        | awk 'tolower($1) == "content-length:" { n = $2 } END { gsub(/\r/, "", n); print n }')"
+        | awk 'tolower($1) == "content-length:" { n = $2 } END { gsub(/\r/, "", n); print n }')" || _rs_len=""
     case "${_rs_len}" in
         ''|*[!0-9]*|0) printf '' ;;
-        *) awk -v n="${_rs_len}" 'BEGIN { printf " (%.0f MB)", n / 1048576 }' ;;
+        *) awk -v n="${_rs_len}" 'BEGIN { if (n >= 1048576) printf " (%.0f MB)", n / 1048576 }' ;;
     esac
 }
 
-# Prefer the xz-compressed asset (~30 MB instead of ~100 MB). Releases before
+# Prefer the xz-compressed asset (~50 MB instead of ~125 MB). Releases before
 # compressed assets existed, or hosts without `xz`, fall back to the raw
 # binary. Checksum + signature checks below run on the decompressed binary,
 # so they are identical on both paths.
 # Only the Linux binaries are published as .xz.
+# The .xz download itself decides, not a HEAD probe first: a probe that timed
+# out or was refused on a slow link sent hosts that have xz to the raw binary.
 FETCHED=0
 if [ "${OS}" = "linux" ] && command -v xz >/dev/null 2>&1; then
-    # Probe first, so a release without .xz assets falls back quietly.
-    XZ_SIZE="$(remote_size "${URL}.xz")"
-    if [ -n "${XZ_SIZE}" ]; then
-        say "Fetching ${URL}.xz${XZ_SIZE}..."
-        download "${URL}.xz" "${TMP}/vaultbase.xz" \
-            || die "Download failed. Check ${RELEASES_URL} for available assets and the network from this host."
+    say "Fetching ${URL}.xz$(remote_size "${URL}.xz")..."
+    if download "${URL}.xz" "${TMP}/vaultbase.xz"; then
         xz -dc "${TMP}/vaultbase.xz" > "${TMP}/vaultbase" \
             || { err "Could not decompress ${URL}.xz"; exit 2; }
-        rm -f "${TMP}/vaultbase.xz"
         FETCHED=1
     else
-        warn "No compressed asset for ${VERSION} — downloading the raw binary."
+        warn "Couldn't fetch ${URL}.xz (a release without compressed assets, or the network) — downloading the raw binary."
     fi
+    rm -f "${TMP}/vaultbase.xz"
 fi
 if [ "${FETCHED}" -eq 0 ]; then
     say "Fetching ${URL}$(remote_size "${URL}")..."

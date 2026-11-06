@@ -7,6 +7,17 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.40.1] — 2026-11-06
+
+### Fixed
+
+- **The Linux installer downloads the compressed binary whenever `xz` is
+  installed.** It checked for the `.xz` file with a separate request first,
+  and when that request timed out or was refused (a slow link, a proxy) it
+  fell back to the raw binary, about 125 MB instead of 50. The download of
+  the `.xz` file now decides; the raw binary is the fallback only when that
+  download fails.
+
 ## [0.40.0] — 2026-11-05
 
 ### Added
