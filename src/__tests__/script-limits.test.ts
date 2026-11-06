@@ -13,6 +13,7 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { setLogsDir } from "../core/file-logger.ts";
 import { setSetting } from "../api/settings.ts";
+import { invalidateEgressCache } from "../core/hook-egress.ts";
 import { createCollection, _resetCollectionCache } from "../core/collections.ts";
 import { createRecord, listRecords } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
@@ -119,6 +120,9 @@ describe("hooks", () => {
   it("aborts the outgoing request of a hook past its limit", async () => {
     setSetting("hooks.timeout_ms", "150");
     setSetting("hooks.http.deny", "off");
+    // The egress list is cached for a few seconds: an earlier test's read of
+    // it would otherwise still block 127.0.0.1 here.
+    invalidateEgressCache();
     let aborted = false;
     const server = Bun.serve({
       port: 0,
