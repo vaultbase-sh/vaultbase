@@ -252,15 +252,22 @@ describe("thumbnail source reads", () => {
     gate = new Promise<void>((r) => { open = r; });
     const total = MAX_THUMB_JOBS + MAX_THUMB_JOBS_WAITING + 4;
     // Distinct variants: each is its own job.
+    let refused = 0;
     const pending = Array.from({ length: total }, (_, i) =>
-      app.handle(new Request(`http://localhost/files/${filename}?thumb=${10 + (i % 30)}x${10 + Math.floor(i / 30) + (i % 30)}`)));
-    for (let i = 0; i < 50 && _thumbJobStats().waiting < MAX_THUMB_JOBS_WAITING; i++) await Bun.sleep(5);
+      app.handle(new Request(`http://localhost/files/${filename}?thumb=${10 + (i % 30)}x${10 + Math.floor(i / 30) + (i % 30)}`))
+        .then((r) => { if (r.status === 503) refused++; return r; }));
+    const overflow = total - MAX_THUMB_JOBS - MAX_THUMB_JOBS_WAITING;
+    // Every request must reach the queue before the gate opens: one still in
+    // its auth and file lookups (slow on a busy Postgres) would otherwise find
+    // a slot freed by the opened gate, and be served instead of refused.
+    for (let i = 0; i < 400 && (_thumbJobStats().waiting < MAX_THUMB_JOBS_WAITING || refused < overflow); i++) await Bun.sleep(5);
     expect(_thumbJobStats()).toEqual({ running: MAX_THUMB_JOBS, waiting: MAX_THUMB_JOBS_WAITING });
+    expect(refused).toBe(overflow);
     // Only the jobs holding a slot have started reading.
     expect(reads).toBe(MAX_THUMB_JOBS);
     open();
     const statuses = (await Promise.all(pending)).map((r) => r.status);
-    expect(statuses.filter((s) => s === 503).length).toBe(total - MAX_THUMB_JOBS - MAX_THUMB_JOBS_WAITING);
+    expect(statuses.filter((s) => s === 503).length).toBe(overflow);
     expect(statuses.filter((s) => s === 200).length).toBe(MAX_THUMB_JOBS + MAX_THUMB_JOBS_WAITING);
   });
 
