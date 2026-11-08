@@ -11,7 +11,33 @@
 // picked up automatically once the edge cache (5 min) expires.
 
 const REPO = "vaultbase-sh/vaultbase";
-const CACHE = { cacheTtl: 300, cacheEverything: true };
+// Cache good answers for 5 minutes and never cache errors: a single GitHub
+// 5xx used to keep the installer down until the cache expired.
+const CACHE = { cacheEverything: true, cacheTtlByStatus: { "200-399": 300, "400-599": 0 } };
+const TAG = /^v\d+\.\d+\.\d+$/;
+
+// The latest release tag. The web page (/releases/latest 302s to
+// /releases/tag/<vX.Y.Z>) has no rate limit, so it goes first; the REST API
+// is the fallback when the page answers 5xx, which it sometimes does while
+// the API is fine.
+async function latestTag() {
+  try {
+    const page = await fetch(`https://github.com/${REPO}/releases/latest`, { redirect: "manual", cf: CACHE });
+    const tag = (page.headers.get("location") || "").split("/tag/")[1];
+    if (tag && TAG.test(tag)) return tag;
+  } catch { /* fall through to the API */ }
+  try {
+    const api = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { "user-agent": "get.vaultbase.dev", accept: "application/vnd.github+json" },
+      cf: CACHE,
+    });
+    if (api.ok) {
+      const tag = (await api.json()).tag_name;
+      if (typeof tag === "string" && TAG.test(tag)) return tag;
+    }
+  } catch { /* unavailable */ }
+  return null;
+}
 
 const SCRIPTS = {
   sh: {
@@ -49,13 +75,8 @@ export default {
     else if (pathname === "/") script = isPowerShell(request) ? SCRIPTS.ps1 : SCRIPTS.sh;
     else return new Response("Not found\n", { status: 404 });
 
-    // /releases/latest 302s to /releases/tag/<vX.Y.Z>; read the tag without following.
-    const latest = await fetch(`https://github.com/${REPO}/releases/latest`, {
-      redirect: "manual",
-      cf: CACHE,
-    });
-    const tag = (latest.headers.get("location") || "").split("/tag/")[1];
-    if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) return unavailable(script);
+    const tag = await latestTag();
+    if (!tag) return unavailable(script);
 
     // `refs/tags/`: a bare name resolves to a branch first when one shares
     // the tag's name, so whoever can push a branch could serve the installer.

@@ -305,8 +305,13 @@ if [ -z "${VERSION}" ]; then
     # Capture the redirect target without following — `/releases/latest` 302s
     # to `/releases/tag/<vX.Y.Z>`. We must NOT pass `-L` here or curl follows
     # the redirect and `%{redirect_url}` ends up empty.
-    VERSION="$(curl -fsS -o /dev/null -w '%{redirect_url}' "${RELEASES_URL}/latest" \
-        | sed 's|.*/tag/||')"
+    VERSION="$(curl -fsS -o /dev/null -w '%{redirect_url}' "${RELEASES_URL}/latest" 2>/dev/null \
+        | sed 's|.*/tag/||')" || VERSION=""
+    # The page sometimes answers 5xx while the REST API is fine: ask the API.
+    if [ -z "${VERSION}" ]; then
+        VERSION="$(curl -fsS -H 'User-Agent: vaultbase-installer' "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)" || VERSION=""
+    fi
     [ -n "${VERSION}" ] || die "Could not resolve latest release tag from GitHub. Check ${RELEASES_URL} — does this repo have any published releases yet?"
     ok "Latest release: ${VERSION}"
 else

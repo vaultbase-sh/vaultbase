@@ -7,6 +7,12 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- The installer (`get.vaultbase.dev` and `install.sh`) no longer fails when GitHub's "latest release" page answers with a server error; it asks GitHub's API for the latest tag instead. The installer service also stopped caching GitHub errors, which had kept it unavailable for up to five minutes after a single failed request.
+
 ## [0.41.1] — 2026-11-08
 
 ### Fixed
