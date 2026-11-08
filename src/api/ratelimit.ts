@@ -393,25 +393,36 @@ export async function checkBatchRateLimit(
 }
 
 export function makeRateLimitPlugin(jwtSecret?: string) {
-  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set, body }) => {
-    const peer = peerAddress(request, server);
-    let limited = await checkRateLimit(request, peer, jwtSecret);
-    if (!limited && request.method === "POST" && routedPath(new URL(request.url).pathname) === "/api/batch") {
-      const ops = (body as { requests?: unknown } | undefined)?.requests;
-      // Over the batch cap the handler refuses it anyway: charging thousands
-      // of ops first was work an anonymous caller could ask for at will.
-      if (Array.isArray(ops) && ops.length <= MAX_BATCH_OPS) {
-        limited = await checkBatchRateLimit(request, peer, jwtSecret, ops.filter(
-          (o): o is { method: string; url: string } => !!o && typeof o.method === "string" && typeof o.url === "string",
-        ));
-      }
-    }
+  // The hook must not take `body`: a global hook that reads it makes Elysia
+  // parse every request's body first, and routes that read the raw request
+  // (file uploads, CSV import, restore) then find it spent. The batch route
+  // charges its ops itself (batchOpsRateLimit).
+  return new Elysia({ name: "rate-limit" }).onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
+    const limited = await checkRateLimit(request, peerAddress(request, server), jwtSecret);
     if (limited) {
       set.status = 429;
       set.headers["Retry-After"] = String(limited.retryAfter);
       return limited.body;
     }
   });
+}
+
+/**
+ * The batch route's share of rate limiting: after the request itself was
+ * charged, charge its ops (checkBatchRateLimit). Over the batch cap the
+ * handler refuses it anyway: charging thousands of ops first was work an
+ * anonymous caller could ask for at will.
+ */
+export async function batchOpsRateLimit(
+  request: Request,
+  peerIp: string | null,
+  jwtSecret: string | undefined,
+  ops: unknown,
+): Promise<{ retryAfter: number; body: { error: string; code: number } } | null> {
+  if (!Array.isArray(ops) || ops.length > MAX_BATCH_OPS) return null;
+  return checkBatchRateLimit(request, peerIp, jwtSecret, ops.filter(
+    (o): o is { method: string; url: string } => !!o && typeof o.method === "string" && typeof o.url === "string",
+  ));
 }
 
 // Exposed for admin UI / tests

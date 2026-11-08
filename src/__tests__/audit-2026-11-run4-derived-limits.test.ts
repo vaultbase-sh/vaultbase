@@ -38,7 +38,7 @@ import {
 import { createRecord } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { setSetting } from "../api/settings.ts";
-import { invalidateRateLimitCache, makeRateLimitPlugin } from "../api/ratelimit.ts";
+import { batchOpsRateLimit, invalidateRateLimitCache, makeRateLimitPlugin } from "../api/ratelimit.ts";
 import { makeFilesPlugin } from "../api/files.ts";
 import { _thumbJobStats, MAX_THUMB_JOBS, MAX_THUMB_JOBS_WAITING, MAX_THUMB_SOURCE_BYTES } from "../core/image.ts";
 import { clearThumbCache, invalidateStorageCache, registerStorageDriver, setUploadDir } from "../core/storage.ts";
@@ -119,11 +119,18 @@ describe("rate limiter charges a create however its URL is spelled", () => {
   });
   afterEach(async () => { invalidateRateLimitCache(); await closeDb(); });
 
+  // The batch stand-ins charge their ops the way the batch route does.
+  const chargeOps = {
+    beforeHandle: async ({ request, set, body }: { request: Request; set: { status?: number | string }; body: unknown }) => {
+      const limited = await batchOpsRateLimit(request, null, SECRET, (body as { requests?: unknown } | undefined)?.requests);
+      if (limited) { set.status = 429; return limited.body; }
+    },
+  };
   const app = () => new Elysia().use(makeRateLimitPlugin(SECRET))
     .post("/api/v1/notes", () => "ok")
     .post("/api/v1/notes/", () => "ok")
-    .post("/api/v1/batch", () => "ok")
-    .post("/api/v1/batch/", () => "ok");
+    .post("/api/v1/batch", () => "ok", chargeOps)
+    .post("/api/v1/batch/", () => "ok", chargeOps);
   const post = (a: ReturnType<typeof app>, path: string, body?: unknown) => a.handle(new Request(`http://localhost${path}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}),
   }));

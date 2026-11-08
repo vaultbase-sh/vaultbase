@@ -609,7 +609,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       .use(makeRoutesPlugin(config.jwtSecret))
       .use(makeJobsPlugin(config.jwtSecret))
       .use(makeQueuesPlugin(config.jwtSecret))
-      .use(makeBatchPlugin(config.jwtSecret))
+      .use(makeBatchPlugin(config.jwtSecret, { rateLimit: !reader }))
       .use(makeCsvPlugin(config.jwtSecret))
       .use(makeMigrationsPlugin(config.jwtSecret))
       .use(makeMetricsPlugin(config.jwtSecret))

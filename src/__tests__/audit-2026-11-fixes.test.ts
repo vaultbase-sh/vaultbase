@@ -180,7 +180,7 @@ describe("batch", () => {
   it("is charged per op by the server's rate limiter", async () => {
     invalidateRateLimitCache();
     try {
-      const app = new Elysia({ prefix: "/api/v1" }).use(makeRateLimitPlugin(SECRET)).use(makeBatchPlugin(SECRET));
+      const app = new Elysia({ prefix: "/api/v1" }).use(makeRateLimitPlugin(SECRET)).use(makeBatchPlugin(SECRET, { rateLimit: true }));
       const send = () => app.handle(new Request("http://localhost/api/v1/batch", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ requests: Array.from({ length: 100 }, (_, i) => ({ method: "POST", url: "/api/v1/posts", body: { title: `t${i}` } })) }),

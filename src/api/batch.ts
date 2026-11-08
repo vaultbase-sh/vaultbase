@@ -8,8 +8,8 @@ import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRule, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import type { Collection } from "../db/schema.ts";
-import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
-import { MAX_BATCH_OPS } from "./ratelimit.ts";
+import { dataPrincipal, headerBearer, peerAddress, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
+import { batchOpsRateLimit, MAX_BATCH_OPS } from "./ratelimit.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 import { parseViewParams, viewParamsFromUrl } from "../core/view-params.ts";
 
@@ -246,7 +246,9 @@ function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { st
   return { error: `Batch failed at request ${at}: ${msg}`, code: 500 };
 }
 
-export function makeBatchPlugin(jwtSecret: string) {
+/** `rateLimit: true` charges each op (the server, where the rate-limit plugin runs too). */
+export function makeBatchPlugin(jwtSecret: string, opts: { rateLimit?: boolean } = {}) {
+  const rateLimit = opts.rateLimit ?? false;
   return new Elysia({ name: "batch" }).post(
     "/batch",
     async ({ request, body, set }) => {
@@ -333,6 +335,17 @@ export function makeBatchPlugin(jwtSecret: string) {
       });
     },
     {
+      // Each op is charged as if sent on its own. This hook is on this route
+      // only, so other routes' bodies stay unread (see makeRateLimitPlugin).
+      beforeHandle: async ({ request, server, set, body }) => {
+        if (!rateLimit) return;
+        const limited = await batchOpsRateLimit(request, peerAddress(request, server), jwtSecret, body.requests);
+        if (limited) {
+          set.status = 429;
+          set.headers["Retry-After"] = String(limited.retryAfter);
+          return limited.body;
+        }
+      },
       body: t.Object({
         requests: t.Array(
           t.Object({
