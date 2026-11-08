@@ -1,14 +1,14 @@
 /**
  * URL-path helpers for the version-prefixed API.
  *
- * The HTTP API is mounted at `/api/v1/...`. A legacy alias keeps
- * `/api/...` (no version) working for back-compat: it serves the same
- * routes.
+ * The HTTP API is mounted at `/api/v1/...` only: `/api/collections` without
+ * the version is a 404. Custom routes are the exception: the dispatcher
+ * matches them from `onRequest` through {@link customInnerPath}, so
+ * `/api/custom/...` and `/api/v<n>/custom/...` both reach them.
  *
- * Path-introspection sites (audit log, rate-limit detector, custom-route
- * mount) need to match BOTH forms. These helpers normalise the path by
- * folding `/api/v\d+/...` down to `/api/...` so each matcher only has to
- * care about the canonical shape.
+ * These helpers normalise a path by folding `/api/v\d+/...` down to
+ * `/api/...`, so path-introspection sites (audit log, rate-limit detector,
+ * maintenance mode, custom-route dispatch) only match one shape.
  */
 
 /** Strip a `/v\d+` segment between `/api/` and the rest of the path. */

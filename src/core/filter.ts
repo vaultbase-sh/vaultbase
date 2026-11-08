@@ -23,7 +23,7 @@ export interface CompiledSql {
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 export interface RequestContextLike {
-  /** "default" / "oauth2" / "otp" / "password" / "realtime" / "protectedFile" */
+  /** "default" / "oauth2" / "otp" / "password" / "protectedFile"; unset (null) for realtime delivery */
   context?: string;
   /** Uppercase HTTP method. */
   method?: string;

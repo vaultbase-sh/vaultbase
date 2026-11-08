@@ -1,0 +1,1570 @@
+{
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "name": "collection",
+          "required": true
+        }
+      ],
+      "name": "audit-rules"
+    },
+    {
+      "arguments": [
+        {
+          "name": "needle",
+          "required": true
+        },
+        {
+          "name": "date",
+          "required": false
+        }
+      ],
+      "name": "debug-request"
+    },
+    {
+      "arguments": [
+        {
+          "name": "topic",
+          "required": true
+        }
+      ],
+      "name": "design-collection"
+    },
+    {
+      "arguments": [
+        {
+          "name": "pbDataPath",
+          "required": false
+        }
+      ],
+      "name": "import-from-pocketbase"
+    },
+    {
+      "arguments": [],
+      "name": "optimize-schema"
+    }
+  ],
+  "protocolVersion": "2025-06-18",
+  "resourceTemplates": [
+    "vaultbase://collection/{name}",
+    "vaultbase://logs/{date}",
+    "vaultbase://record/{collection}/{id}"
+  ],
+  "resources": [
+    "vaultbase://audit/recent",
+    "vaultbase://collections",
+    "vaultbase://server/info",
+    "vaultbase://settings"
+  ],
+  "tools": [
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "create_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delete_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "description": "Replacement FieldDef[]",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "history_enabled": {
+            "type": "boolean"
+          },
+          "id_or_name": {
+            "description": "Collection id or name",
+            "type": "string"
+          },
+          "list_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "New name (SQL-safe)",
+            "type": "string"
+          },
+          "update_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id_or_name"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.alter_collection",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "create_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delete_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "description": "FieldDef[]; see /reference/field-types",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "history_enabled": {
+            "description": "Keep every version of each record so an admin can restore it. Default true; false turns it off.",
+            "type": "boolean"
+          },
+          "list_rule": {
+            "description": "null = public; \"\" = admin only; expression otherwise",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "SQL-safe identifier; will form `vb_<name>` table. At most 60 characters on Postgres.",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "base",
+              "auth",
+              "view",
+              "singleton"
+            ],
+            "type": "string"
+          },
+          "update_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view_query": {
+            "description": "Required + only allowed for type='view' — SELECT statement",
+            "type": "string"
+          },
+          "view_rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_collection",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Hook body — receives a single `ctx` object",
+            "type": "string"
+          },
+          "collection_name": {
+            "description": "Collection this hook fires for; '' for global",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "event": {
+            "enum": [
+              "beforeCreate",
+              "afterCreate",
+              "beforeUpdate",
+              "afterUpdate",
+              "beforeDelete",
+              "afterDelete"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "event",
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_hook",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Body — receives `ctx`",
+            "type": "string"
+          },
+          "cron": {
+            "description": "5-field UTC cron expression",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "inline",
+            "enum": [
+              "inline",
+              "worker"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "cron",
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_job",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_members",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "description": "text",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_people",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "description": "text",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_post_counts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "description": "bool",
+                "type": "boolean"
+              },
+              "address": {
+                "additionalProperties": false,
+                "description": "group (one object)",
+                "properties": {
+                  "city": {
+                    "description": "text",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "author": {
+                "description": "relation (id of a record in the 'people' collection)",
+                "type": "string"
+              },
+              "body": {
+                "description": "editor",
+                "type": "string"
+              },
+              "contact": {
+                "description": "email",
+                "format": "email",
+                "type": "string"
+              },
+              "cover": {
+                "description": "file (filename — files must be uploaded via the file upload endpoint, not this tool)",
+                "type": "string"
+              },
+              "docs": {
+                "description": "file (filename — files must be uploaded via the file upload endpoint, not this tool)",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "emb": {
+                "description": "vector (3-dim vector)",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "hue": {
+                "description": "color (hex color, e.g. #e85a4f)",
+                "type": "string"
+              },
+              "items": {
+                "description": "group (min 1, max 5) (list of items; send the whole list, it replaces the stored one)",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "keep an item's id when updating; omit it for a new item",
+                      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                      "type": "string"
+                    },
+                    "qty": {
+                      "description": "number",
+                      "type": "number"
+                    },
+                    "sku": {
+                      "description": "text (required)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sku"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              },
+              "labels": {
+                "description": "select",
+                "items": {
+                  "description": "select",
+                  "enum": [
+                    "a",
+                    "b"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "meta": {
+                "description": "json"
+              },
+              "price": {
+                "description": "number",
+                "type": "number"
+              },
+              "pt": {
+                "description": "geoPoint",
+                "properties": {
+                  "lat": {
+                    "maximum": 90,
+                    "minimum": -90,
+                    "type": "number"
+                  },
+                  "lng": {
+                    "maximum": 180,
+                    "minimum": -180,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "lat",
+                  "lng"
+                ],
+                "type": "object"
+              },
+              "secret": {
+                "description": "password",
+                "type": "string"
+              },
+              "site": {
+                "description": "url",
+                "format": "uri",
+                "type": "string"
+              },
+              "status": {
+                "description": "select",
+                "enum": [
+                  "draft",
+                  "published"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "description": "text (required)",
+                "type": "string"
+              },
+              "when": {
+                "description": "date (unix-seconds)",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_posts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Body — receives `ctx`",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "method": {
+            "enum": [
+              "GET",
+              "POST",
+              "PATCH",
+              "PUT",
+              "DELETE"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "description": "Inner path, e.g. /hello or /users/:id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "path",
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.create_route",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id_or_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id_or_name"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_collection",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_flag",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_hook",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_job",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_members",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_people",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_post_counts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_posts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.delete_route",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Collection name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.describe_collection",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "description": "Event label, e.g. 'billing.invoice_paid'",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.dispatch_webhook_event",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "description": "Targeting context, e.g. { userId, email, plan, country }",
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.evaluate_flag",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.get_members",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.get_people",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": false,
+            "description": "The view's parameters: min (number)",
+            "properties": {
+              "min": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.get_post_counts",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.get_posts",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.get_setting",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.get_site_config",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_collections",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_hooks",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_jobs",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "description": "Comma-separated fields to leave out, applied after fields; id is always returned",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Comma-separated projection, e.g. 'id,title,created'",
+            "type": "string"
+          },
+          "filter": {
+            "description": "vaultbase rule-expression filter, e.g. \"status = 'live' && created > 1700000000\"",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "perPage": {
+            "description": "Default 30, max 100",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "skipTotal": {
+            "description": "Skip COUNT(*) for huge tables. Default false.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Comma-separated. Prefix '-' for desc. Example: '-created,title'",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.list_members",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "description": "Comma-separated fields to leave out, applied after fields; id is always returned",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Comma-separated projection, e.g. 'id,title,created'",
+            "type": "string"
+          },
+          "filter": {
+            "description": "vaultbase rule-expression filter, e.g. \"status = 'live' && created > 1700000000\"",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "perPage": {
+            "description": "Default 30, max 100",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "skipTotal": {
+            "description": "Skip COUNT(*) for huge tables. Default false.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Comma-separated. Prefix '-' for desc. Example: '-created,title'",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.list_people",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "description": "Comma-separated fields to leave out, applied after fields; id is always returned",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Comma-separated projection, e.g. 'id,title,created'",
+            "type": "string"
+          },
+          "filter": {
+            "description": "vaultbase rule-expression filter, e.g. \"status = 'live' && created > 1700000000\"",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "params": {
+            "additionalProperties": false,
+            "description": "The view's parameters: min (number)",
+            "properties": {
+              "min": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "perPage": {
+            "description": "Default 30, max 100",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "skipTotal": {
+            "description": "Skip COUNT(*) for huge tables. Default false.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Comma-separated. Prefix '-' for desc. Example: '-created,title'",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.list_post_counts",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "exclude": {
+            "description": "Comma-separated fields to leave out, applied after fields; id is always returned",
+            "type": "string"
+          },
+          "fields": {
+            "description": "Comma-separated projection, e.g. 'id,title,created'",
+            "type": "string"
+          },
+          "filter": {
+            "description": "vaultbase rule-expression filter, e.g. \"status = 'live' && created > 1700000000\"",
+            "type": "string"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "perPage": {
+            "description": "Default 30, max 100",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "skipTotal": {
+            "description": "Skip COUNT(*) for huge tables. Default false.",
+            "type": "boolean"
+          },
+          "sort": {
+            "description": "Comma-separated. Prefix '-' for desc. Example: '-created,title'",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.list_posts",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_routes",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_settings",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "vaultbase.list_webhooks",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "actionPrefix": {
+            "description": "Filter on action prefix, e.g. 'collection.' or 'flag.update'",
+            "type": "string"
+          },
+          "actorId": {
+            "description": "Filter to one admin id",
+            "type": "string"
+          },
+          "from": {
+            "description": "Unix-seconds lower bound (inclusive)",
+            "type": "integer"
+          },
+          "page": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "perPage": {
+            "description": "Default 50, max 500",
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "to": {
+            "description": "Unix-seconds upper bound (inclusive)",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.read_audit_log",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "ISO date YYYY-MM-DD lower bound (inclusive)",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Max entries (default 200, hard cap 1000)",
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "to": {
+            "description": "ISO date YYYY-MM-DD upper bound (inclusive)",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "vaultbase.read_logs",
+      "scope": "mcp:read"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.run_job_now",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_write": {
+            "description": "Permit non-SELECT statements. Default false.",
+            "type": "boolean"
+          },
+          "params": {
+            "description": "Bound parameters (positional)",
+            "type": "array"
+          },
+          "query": {
+            "description": "SQL — typically a SELECT",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.run_sql",
+      "scope": "mcp:sql"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "count": {
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "overrides": {
+            "additionalProperties": true,
+            "description": "Per-field literal values applied to every seeded record",
+            "type": "object"
+          }
+        },
+        "required": [
+          "collection",
+          "count"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.seed",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "default_value": {
+            "description": "JSON-encoded scalar matching `type`"
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Master kill-switch",
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "rules": {
+            "description": "Ordered evaluation rules",
+            "type": "array"
+          },
+          "type": {
+            "enum": [
+              "bool",
+              "string",
+              "number",
+              "json"
+            ],
+            "type": "string"
+          },
+          "variations": {
+            "description": "Multivariate variation list",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_flag",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "collection_name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "event": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_hook",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {},
+            "type": "object"
+          },
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_members",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "description": "text",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_people",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "description": "text",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_post_counts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "description": "bool",
+                "type": "boolean"
+              },
+              "address": {
+                "additionalProperties": false,
+                "description": "group (one object)",
+                "properties": {
+                  "city": {
+                    "description": "text",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "author": {
+                "description": "relation (id of a record in the 'people' collection)",
+                "type": "string"
+              },
+              "body": {
+                "description": "editor",
+                "type": "string"
+              },
+              "contact": {
+                "description": "email",
+                "format": "email",
+                "type": "string"
+              },
+              "cover": {
+                "description": "file (filename — files must be uploaded via the file upload endpoint, not this tool)",
+                "type": "string"
+              },
+              "docs": {
+                "description": "file (filename — files must be uploaded via the file upload endpoint, not this tool)",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "emb": {
+                "description": "vector (3-dim vector)",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "hue": {
+                "description": "color (hex color, e.g. #e85a4f)",
+                "type": "string"
+              },
+              "items": {
+                "description": "group (min 1, max 5) (list of items; send the whole list, it replaces the stored one)",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "description": "keep an item's id when updating; omit it for a new item",
+                      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                      "type": "string"
+                    },
+                    "qty": {
+                      "description": "number",
+                      "type": "number"
+                    },
+                    "sku": {
+                      "description": "text (required)",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sku"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              },
+              "labels": {
+                "description": "select",
+                "items": {
+                  "description": "select",
+                  "enum": [
+                    "a",
+                    "b"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "meta": {
+                "description": "json"
+              },
+              "price": {
+                "description": "number",
+                "type": "number"
+              },
+              "pt": {
+                "description": "geoPoint",
+                "properties": {
+                  "lat": {
+                    "maximum": 90,
+                    "minimum": -90,
+                    "type": "number"
+                  },
+                  "lng": {
+                    "maximum": 180,
+                    "minimum": -180,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "lat",
+                  "lng"
+                ],
+                "type": "object"
+              },
+              "secret": {
+                "description": "password",
+                "type": "string"
+              },
+              "site": {
+                "description": "url",
+                "format": "uri",
+                "type": "string"
+              },
+              "status": {
+                "description": "select",
+                "enum": [
+                  "draft",
+                  "published"
+                ],
+                "type": "string"
+              },
+              "title": {
+                "description": "text (required)",
+                "type": "string"
+              },
+              "when": {
+                "description": "date (unix-seconds)",
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "id": {
+            "description": "Record id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_posts",
+      "scope": "mcp:write"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_setting",
+      "scope": "mcp:admin"
+    },
+    {
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "properties": {
+              "motd": {
+                "description": "text",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "name": "vaultbase.update_site_config",
+      "scope": "mcp:write"
+    }
+  ]
+}

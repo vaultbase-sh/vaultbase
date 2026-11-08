@@ -7,6 +7,24 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- **The MCP `run_sql` tool says which database it runs on.** Its description
+  said "the live SQLite DB" on Postgres servers too.
+
+### Tests
+
+- **The public surface is pinned.** A new golden test fails the build when
+  the HTTP route table, the OpenAPI document or the MCP tool list (names,
+  scopes, input schemas, resources, prompts, protocol version) changes. It
+  runs on SQLite and Postgres against the same golden files, so the surface
+  can't differ by database. A change that's meant goes in with
+  `UPDATE_GOLDEN=1 bun test golden-surface` and a changelog entry. Settings
+  keys, CLI flags and error codes follow once each has a registry in the
+  code.
+
 ## [0.40.2] — 2026-11-06
 
 ### Fixed
