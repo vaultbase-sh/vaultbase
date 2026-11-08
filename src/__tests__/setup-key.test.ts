@@ -132,6 +132,26 @@ describe("other commands run by hand read it too", () => {
     expect(err).toContain(`using settings from ${file}`);
     expect(err).toContain(join(dataDir, "data.db"));
   });
+
+  it("mcp opens the data directory the env file names, not one in the client's directory", async () => {
+    const { writeFileSync, mkdirSync } = await import("fs");
+    const dataDir = join(dir, "service-data-mcp");
+    const clientCwd = join(dir, "mcp-client");
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(clientCwd, { recursive: true });
+    const file = join(dir, "service-mcp.env");
+    writeFileSync(file, `VAULTBASE_DATA_DIR=${dataDir}\n`);
+    const env: Record<string, string> = { ...process.env as Record<string, string>, VAULTBASE_ENV_FILE: file };
+    delete env["VAULTBASE_DATA_DIR"];
+    delete env["VAULTBASE_TEST_DB"];
+    delete env["VAULTBASE_DATABASE_URL"];
+    const entry = fileURLToPath(new URL("../index.ts", import.meta.url));
+    // A token that doesn't verify: the command opens the database first, then refuses it.
+    const r = Bun.spawnSync(["bun", entry, "mcp", "--token", "vbat_not-a-token"], { cwd: clientCwd, env });
+    expect(r.stderr.toString()).toContain(`using settings from ${file}`);
+    expect(existsSync(join(dataDir, "data.db"))).toBe(true);
+    expect(existsSync(join(clientCwd, "vaultbase_data"))).toBe(false);
+  });
 });
 
 describe("commands run by hand as root on the service's data", () => {

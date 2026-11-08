@@ -253,7 +253,7 @@ Environment:
   VAULTBASE_PORT                  HTTP port (default: 8091)
   VAULTBASE_HOST                  Bind host (default: all interfaces, IPv4 and IPv6)
   VAULTBASE_SETUP_KEY             Key for first-admin setup (default: generated, printed at boot)
-  VAULTBASE_ENV_FILE              Env file setup-admin reads (default: /etc/vaultbase/vaultbase.env)
+  VAULTBASE_ENV_FILE              Env file setup-admin, mcp, token, doctor, backup and wipe read (default: /etc/vaultbase/vaultbase.env)
   VAULTBASE_JWT_SECRET            JWT signing secret (default: read from <dataDir>/.secret)
   VAULTBASE_ENCRYPTION_KEY        At-rest key for secrets and encrypted fields (default: <dataDir>/.encryption-key, generated)
   VAULTBASE_WORKERS               Worker count for \`vaultbase cluster\`
@@ -318,6 +318,11 @@ async function main() {
   // and serves JSON-RPC 2.0 to AI agents (Claude Desktop, Cursor, etc.)
   // until stdin closes.
   if (process.argv[2] === "mcp") {
+    // Read the installed service's env file, as `token` does below: an MCP
+    // client starts this from its own directory, where ./vaultbase_data is
+    // an empty install the token doesn't verify against.
+    const refused = prepareServiceCommand("mcp", process.argv.slice(2));
+    if (refused) { process.stderr.write(refused); process.exit(1); }
     const config = await loadConfig();
     const { runMcpCli } = await import("./scripts/mcp.ts");
     try {

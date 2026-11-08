@@ -13,6 +13,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - **The MCP `run_sql` tool says which database it runs on.** Its description
   said "the live SQLite DB" on Postgres servers too.
+- **`vaultbase mcp` reads the service's env file, as `token` does.** Run as
+  the service's user on a Linux install, it opened `./vaultbase_data` in the
+  directory it was started from instead of the service's data, and refused
+  the token with "token verification failed". It now reads
+  `/etc/vaultbase/vaultbase.env` (or `VAULTBASE_ENV_FILE`) for variables not
+  already set. The MCP docs and the admin's local-binary snippet now set
+  `VAULTBASE_DATA_DIR`, which an MCP client needs because it starts the
+  command from its own directory.
 
 ### Tests
 

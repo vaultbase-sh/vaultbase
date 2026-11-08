@@ -294,14 +294,14 @@ function buildSnippet(
             vaultbase: {
               command: "vaultbase",
               args: ["mcp"],
-              env: { VAULTBASE_MCP_TOKEN: token },
+              env: { VAULTBASE_MCP_TOKEN: token, VAULTBASE_DATA_DIR: "/path/to/vaultbase_data" },
             },
           },
         },
         null,
         2,
       ),
-      footer: "Use this when the vaultbase binary is on the same machine as the LLM client. No npm bridge needed.",
+      footer: "Use this when the vaultbase binary is on the same machine as the LLM client. No npm bridge needed. Set VAULTBASE_DATA_DIR to this server's data folder: the client starts the command from its own folder. For a server installed as a service, use the npm bridge instead.",
     };
   }
   return {
