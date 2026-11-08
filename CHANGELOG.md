@@ -7,6 +7,16 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [0.41.1] — 2026-11-08
+
+### Fixed
+
+- **File uploads, CSV import and the one-request restore work again.** Since 0.38.0, every `POST /api/v1/files/...` upload answered 400 "Send the file as multipart/form-data", CSV import answered 500, and a restore uploaded in one request answered "No file uploaded". The rate limiter's batch check made the server read every request's body before the route did, so routes that read the upload themselves found it already read. The batch route now charges its ops itself and other routes' bodies are left alone. Batches are still charged per op. Chunked restore uploads were not affected.
+
+### Tests
+
+- Uploads, CSV import, restore and batch rate limiting are tested through the whole server, not one route on its own.
+
 ## [0.41.0] — 2026-11-08
 
 ### Fixed
