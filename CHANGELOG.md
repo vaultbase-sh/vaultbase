@@ -7,7 +7,7 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.42.0] — 2026-11-10
 
 ### Breaking
 
@@ -39,6 +39,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - Admin → MCP → local binary config fills in this server's binary path and data folder (`GET /api/v1/admin/runtime` returns `binaryPath`, and `dataDir` as an absolute path).
 - Admin: the records page's "API rules" and "Indexes" tabs open those tabs in the collection editor instead of Fields.
 - The installer (`get.vaultbase.dev` and `install.sh`) no longer fails when GitHub's "latest release" page answers with a server error; it asks GitHub's API for the latest tag instead. The installer service also stopped caching GitHub errors, which had kept it unavailable for up to five minutes after a single failed request.
+
+### Tests
+
+- About 30 test files that waited a fixed time (10–100 ms) for background work now wait for the condition, and race tests use explicit gates instead of "sleep so the other request is inside its hook". Caches built from settings and the timers a server starts are reset when the test database closes. A CI step fails on a new fixed sleep before an assert, and a nightly "flake hunt" workflow repeats the race and timing tests and runs the suite under CPU load.
+
+### Release process
+
+- A release now waits for CI to pass on the tagged commit, needs the maintainer's approval, and installs the published Linux binary afterwards (checksum, Sigstore signature, version, start-up, health check).
 
 ## [0.41.1] — 2026-11-08
 
