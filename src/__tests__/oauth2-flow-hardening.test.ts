@@ -249,7 +249,7 @@ describe("review 14 follow-ups", () => {
 
   it("register treats a different-case address as taken", async () => {
     const res = await json("/auth/users/register", { email: "SEED@test.local", password: "another-password-1" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
     const { db } = await import("../db/index.ts");
     const n = (await db.get<{ n: number }>(`SELECT count(*) AS n FROM vb_users WHERE LOWER(email) = LOWER('SEED@test.local')`))!.n;
     expect(Number(n)).toBe(1);

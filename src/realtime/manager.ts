@@ -200,6 +200,12 @@ export function isConnectionLive(ws: WSLike): boolean {
   return id !== undefined && liveConns.has(id);
 }
 
+/** Whether this connection is signed in as an admin right now. */
+export function isAdminConnection(ws: WSLike): boolean {
+  const id = connIdOf(ws);
+  return id !== undefined && currentAuth(id)?.type === "admin";
+}
+
 export function setWSAuth(ws: WSLike, auth: WSAuth | null): void {
   const id = connId(ws);
   if (auth) wsAuth.set(id, auth);

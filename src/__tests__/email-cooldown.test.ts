@@ -108,10 +108,13 @@ for (const f of flows) {
 }
 
 describe("register with a taken address", () => {
-  it("doesn't let repeated registrations flood the owner with reset emails", async () => {
-    for (let i = 0; i < 3; i++) await post("/auth/users/register", { email: EMAIL, password: "another-password-1" });
-    await settle(1, () => smtp.messages.filter((m) => m.includes("reset")).length);
-    expect(smtp.messages.filter((m) => m.includes("reset"))).toHaveLength(1);
+  it("a taken address answers 409 and mails nothing (0.42; it used to mail a reset link)", async () => {
+    for (let i = 0; i < 3; i++) {
+      expect((await post("/auth/users/register", { email: EMAIL, password: "another-password-1" })).status).toBe(409);
+    }
+    // settle: nothing should arrive
+    await settle(0);
+    expect(smtp.messages.filter((m) => m.includes("reset"))).toHaveLength(0);
   });
 });
 

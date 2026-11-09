@@ -1,5 +1,7 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
+import { forbidden } from "./forbidden.ts";
+import { bodyWarnings, queryWarnings, warn } from "./warnings.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal, headerBearer, verifyAuthToken } from "../core/sec.ts";
 import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
@@ -235,8 +237,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
     }
     if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
     if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>, ruleRequest)) {
-      set.status = 403;
-      return { error: "Forbidden", code: 403 };
+      return forbidden(set, request, "view", auth, col.view_rule);
     }
     // The ETag is of the full record, whatever expand / fields return, so
     // it matches what PATCH and DELETE compare against.
@@ -279,9 +280,10 @@ export function makeRecordsPlugin(jwtSecret: string) {
       existing as unknown as Record<string, unknown>,
       bodyForRules(col, body),
     ))) {
-      set.status = 403;
-      return { error: "Forbidden", code: 403 };
+      return forbidden(set, request, "update", auth, col.update_rule);
     }
+    // Only once the write is allowed: field names are no secret to a writer.
+    warn(set, col, bodyWarnings(col, body));
     const ifMatch = ifMatchFails(request, existing as unknown as Record<string, unknown>);
     if (ifMatch) return ifMatchResponse(set, request, col, auth, existing, ifMatch.currentEtag);
     try {
@@ -323,7 +325,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         // hidden); expression rule → applied as filter
         recordListRule(request, col.name, col.list_rule, auth);
         if (hiddenFrom(col, auth, col.list_rule)) return collectionNotFound(set);
-        if (col.list_rule === "" && auth?.type !== "admin") { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (col.list_rule === "" && auth?.type !== "admin") return forbidden(set, request, "list", auth, col.list_rule);
 
         const opts: import("../core/records.ts").ListOptions = {
           ...clientPaging(query.page, query.perPage),
@@ -333,6 +335,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.sort) opts.sort = query.sort;
         if (query.expand) opts.expand = query.expand;
         if (query.fields) opts.fields = query.fields;
+        warn(set, col, queryWarnings(col, query));
         if (query.exclude) opts.exclude = query.exclude;
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
@@ -476,7 +479,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         const listRule = col.type === "singleton" ? col.view_rule : col.list_rule;
         recordListRule(request, col.name, listRule, auth);
         if (hiddenFrom(col, auth, listRule)) return collectionNotFound(set);
-        if (listRule === "" && auth?.type !== "admin") { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (listRule === "" && auth?.type !== "admin") return forbidden(set, request, "list", auth, listRule);
         const opts: AggregateOptions = { auth, viewParams: viewParamsFromUrl(new URL(request.url).searchParams) };
         if (query.agg) opts.agg = query.agg;
         if (query.groupBy) opts.groupBy = query.groupBy;
@@ -525,9 +528,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
           ruleBody,
           buildRequestContext(request, ruleBody, null),
         ))) {
-          set.status = 403;
-          return { error: "Forbidden", code: 403 };
+          return forbidden(set, request, "create", auth, col.create_rule);
         }
+        warn(set, col, bodyWarnings(col, body));
         try {
           const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
             createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))
@@ -573,8 +576,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       if (!timeFor(request, "rule_compile", () =>
         checkRule(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>),
       )) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
+        return forbidden(set, request, "delete", auth, col.delete_rule);
       }
       const ifMatch = ifMatchFails(request, existing as unknown as Record<string, unknown>);
       if (ifMatch) return ifMatchResponse(set, request, col, auth, existing, ifMatch.currentEtag);
@@ -594,7 +596,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (e instanceof RecordBusyError) { set.status = 409; return { error: e.message, code: 409 }; }
         // Generic on purpose: naming the child collection would tell the
         // caller that related records they can't see exist.
-        if (e instanceof CascadeForbiddenError) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (e instanceof CascadeForbiddenError) return forbidden(set, request, "delete", auth, undefined);
         if (e instanceof RestrictError) {
           set.status = 409;
           // Admins get the referencing collections; anyone else a generic
@@ -634,8 +636,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
         return { error: "Record not found", code: 404 };
       }
       if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, recordForRule)) {
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
+        return forbidden(set, request, "view", auth, col.view_rule);
       }
       const perPage = positiveIntParam(query.perPage, 50);
       const page = positiveIntParam(query.page, 1);

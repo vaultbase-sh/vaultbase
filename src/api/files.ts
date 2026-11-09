@@ -48,6 +48,7 @@ import {
   verifyAuthToken,
   type VerifiedAuth,
 } from "../core/sec.ts";
+import { forbidden } from "./forbidden.ts";
 
 /** Files at most this size are read whole for a thumbnail without sniffing their format first. */
 const THUMB_SNIFF_ABOVE_BYTES = 1024 * 1024;
@@ -536,7 +537,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       // With the request's context and logged, as a PATCH is.
       const record = existing as unknown as Record<string, unknown>;
       if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
-        set.status = 403; return { error: "Forbidden", code: 403 };
+        return forbidden(set, request, "update", auth, col.update_rule);
       }
 
       // The multipart body is buffered in memory while parsing, so refuse
@@ -672,7 +673,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         const ip = trustedClientIp(request, peerIp);
         const reqCtx = buildFileRequestContext(request, ip, meta ?? { mime_type: "", size: 0, field_name: params.field }, col.name);
         const decision = await evaluateFileAccess(col.id, params.recordId, params.field, auth, reqCtx);
-        if (!decision.allowed) { set.status = 403; return { error: "Forbidden", code: 403 }; }
+        if (!decision.allowed) return forbidden(set, request, "view", auth, undefined);
 
         if (!fieldDef || fieldDef.type !== "file") {
           set.status = 404; return { error: "File field not found", code: 404 };
@@ -781,8 +782,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
           set.status = 401;
           return { error: "Token required", code: 401 };
         }
-        set.status = 403;
-        return { error: "Forbidden", code: 403 };
+        return forbidden(set, request, "view", auth, undefined);
       }
 
       if (meta && fieldDefForAudit?.options?.auditDownloads) {
@@ -948,7 +948,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
         const record = existing as unknown as Record<string, unknown>;
         if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
-          set.status = 403; return { error: "Forbidden", code: 403 };
+          return forbidden(set, request, "update", auth, col.update_rule);
         }
       }
       const db = getDb();
@@ -986,7 +986,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
         const record = existing as unknown as Record<string, unknown>;
         if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
-          set.status = 403; return { error: "Forbidden", code: 403 };
+          return forbidden(set, request, "update", auth, col.update_rule);
         }
       }
       const db = getDb();

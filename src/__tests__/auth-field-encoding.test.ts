@@ -163,7 +163,7 @@ describe("sign-up stores field values as a record write does", () => {
     expect(await findUserByEmail(users, "moved@raw.local")).toBeNull();
     // The new address is looked up: a second sign-up landing on it makes no account.
     const again = await post("/auth/users/register", { email: "moved@raw.local", password: "a-good-password-1" });
-    expect(again.status).toBe(200);
+    expect(again.status).toBe(409);
     await installHook("beforeCreate", "ctx.record.email = 'not an address';");
     expect((await post("/auth/users/register", { email: "x@test.local", password: "a-good-password-1" })).status).toBe(422);
   });

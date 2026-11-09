@@ -95,6 +95,9 @@ export function applyCorsHeaders(
   if (cfg.credentials) {
     set.headers["Access-Control-Allow-Credentials"] = "true";
   }
+  // Readable from browser code on another origin: the SDK reports the
+  // warnings and sends the ETag back as If-Match.
+  set.headers["Access-Control-Expose-Headers"] = "ETag, Vaultbase-Warning";
 }
 
 /**

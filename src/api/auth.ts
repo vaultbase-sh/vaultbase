@@ -1110,19 +1110,14 @@ export function makeAuthPlugin(jwtSecret: string) {
         // helper's fallback to vaultbase_users.
         // Any case: `ALICE@x` must not become a second account beside `alice@x`.
         const existing = await findUserByEmailAnyCase(col, email);
-        // No-enumeration: always return a generic success. If the email is
-        // taken, queue a "complete account / reset password" email instead so
-        // the legitimate owner can recover, and refuse silently.
+        // Taken: say so (409). Until 0.42 this answered 200 with the existing
+        // user's id and mailed a reset link, to hide which emails have an
+        // account, but the repeated id gave it away anyway and developers
+        // read it as a sign-up that couldn't sign in. Login and password reset
+        // still answer the same for known and unknown emails.
         if (existing) {
-          if (isSmtpConfigured()) {
-            issueAndSend("reset", { id: existing.id, email: existing.email }, col.id, col.name).catch((e) => {
-              console.error("[auth] reset email failed for", redactEmail(existing.email), "—", e instanceof Error ? e.message : e);
-            });
-          }
-          // Return the same shape as a fresh-success path so a network observer
-          // can't tell the two cases apart. `id` is the existing user's id —
-          // not a leak: knowing the id alone gives no access without auth.
-          return { data: { id: existing.id, email } };
+          set.status = 409;
+          return { error: "Email already registered", code: 409 };
         }
         const id = crypto.randomUUID();
         const now = Math.floor(Date.now() / 1000);

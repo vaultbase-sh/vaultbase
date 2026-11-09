@@ -64,6 +64,7 @@ import {
   reverifyRealtimeAuth,
   setSSEOwner,
   setWSAuth,
+  isAdminConnection,
   isConnectionLive,
   sseOwnerOf,
   subscribe,
@@ -76,6 +77,8 @@ import {
   MAX_WS_QUEUED_BYTES,
   type WSAuth,
 } from "./realtime/manager.ts";
+import { hiddenFrom } from "./core/records.ts";
+import { getCollection } from "./core/collections.ts";
 import { openSSEStream } from "./realtime/sse.ts";
 import { maintenanceRefusal, maintenanceState, realtimeClosed } from "./core/maintenance-mode.ts";
 import { answeredStatus, thrownStatus } from "./core/http-status.ts";
@@ -310,6 +313,22 @@ function realtimeSocket(jwtSecret: string) {
       if (msg.type === "subscribe") {
         const accepted = subscribe(ws, topics);
         ws.send(JSON.stringify({ type: "subscribed", topics: accepted }));
+        // A misspelled collection was acknowledged and then never delivered
+        // anything. Say so (a hidden collection reads as unknown to a
+        // non-admin, as over HTTP). 0.44 may refuse it instead.
+        const admin = isAdminConnection(ws);
+        for (const topic of accepted) {
+          if (topic === "*") continue;
+          const name = topic.split(/[/.]/)[0]!;
+          const col = await getCollection(name).catch(() => null);
+          if (col && (admin || !hiddenFrom(col, null, col.list_rule))) continue;
+          ws.send(JSON.stringify({
+            type: "warning",
+            reason: "unknown_collection",
+            topic,
+            message: `No collection named '${name}': this subscription will never receive events.`,
+          }));
+        }
       } else if (msg.type === "unsubscribe") {
         const removed = unsubscribe(ws, topics);
         ws.send(JSON.stringify({ type: "unsubscribed", topics: removed }));

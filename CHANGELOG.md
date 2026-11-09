@@ -9,6 +9,17 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Breaking
+
+- `POST /api/v1/auth/<collection>/register` with an email that already has an account answers `409 {"error":"Email already registered"}`. It used to answer 200 with the existing user's id and email the owner a reset link, to hide which emails have accounts; the repeated id gave that away anyway, and in development it looked like a sign-up that couldn't sign in. Login and password reset still answer the same for known and unknown emails. **Upgrade:** treat 409 from register as "this email has an account; sign in or reset the password".
+
+### Added
+
+- A 403 from the records and file APIs says what was refused and why: `{"error":"Forbidden","code":403,"operation":"create","reason":"not_signed_in"}`. `operation` is `list`, `view`, `create`, `update` or `delete`; `reason` is `not_signed_in`, `rule_denied`, `admin_only` or `token_invalid`. The rule itself is never included.
+- `reason: "token_invalid"`: the request carried a Bearer token the server didn't accept (expired, revoked, malformed, or an API token without the scope) and ran as anonymous. **Deprecation:** from 0.44 such a request answers 401 instead.
+- `Vaultbase-Warning` response header for keys that do nothing: an unknown `sort`, `expand` or `fields` name on a list, or a body key that isn't a field on create and update. They are still ignored, and each is logged once. **Deprecation:** from 0.44 they answer 400. The header is exposed to browsers on allowed CORS origins, along with `ETag`.
+- Realtime: subscribing to a collection that doesn't exist (or is hidden from the caller) is still acknowledged, and is followed by `{"type":"warning","reason":"unknown_collection","topic":"…"}`.
+
 ### Changed
 
 - `vaultbase setup-admin` and the password reset and set-password pages use the password policy (`password.min_length`, 12 by default) instead of a fixed 8 characters, so they match the setup wizard and sign-up.
