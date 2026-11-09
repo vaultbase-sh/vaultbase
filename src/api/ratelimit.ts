@@ -4,6 +4,7 @@ import { verifyHs256 } from "../core/jwt-hs256.ts";
 import { peerAddress, rateLimitKeyForIp, securityHeaders, trustedClientIp } from "../core/sec.ts";
 import { applyCorsHeaders } from "../core/cors.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
+import { onCloseDb } from "../db/client.ts";
 
 /**
  * Per-IP, per-rule token-bucket rate limiter.
@@ -135,6 +136,9 @@ export function invalidateRateLimitCache(): void {
   cachedConfig = null;
   buckets.clear();
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(invalidateRateLimitCache);
 
 export { rateLimitKeyForIp } from "../core/sec.ts";
 

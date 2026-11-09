@@ -1,0 +1,139 @@
+name: Flake hunt
+
+# Nightly hunt for timing and race flakes. ci.yml's weekly schedule only
+# re-runs the normal suite once; this repeats the race/timing files many
+# times and runs the whole suite with every core busy, on SQLite and on
+# Postgres 18. It doesn't gate anything: a red run is a flake to fix (or
+# quarantine) before it reaches the gating CI.
+#
+# No random-order pass yet: several files still depend on test order inside
+# the file (flaky-test audit 2026-11-09, item 19). Add
+# `bun test --randomize --seed=${{ github.run_number }}` once that's fixed.
+
+on:
+  schedule:
+    - cron: "40 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flake-hunt-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Files with races, fixed sleeps, timers or wall-clock bounds.
+  RACE_FILES: >-
+    src/__tests__/etag-atomic.test.ts
+    src/__tests__/etag-cross-server.test.ts
+    src/__tests__/batch-readonly.test.ts
+    src/__tests__/batch-isolation.test.ts
+    src/__tests__/audit-coverage.test.ts
+    src/__tests__/audit-log.test.ts
+    src/__tests__/auth-hooks.test.ts
+    src/__tests__/register-enumeration.test.ts
+    src/__tests__/email-cooldown.test.ts
+    src/__tests__/audit-actor-retention.test.ts
+    src/__tests__/queue-leases.test.ts
+    src/__tests__/queues.test.ts
+    src/__tests__/script-limits.test.ts
+    src/__tests__/read-pool.test.ts
+    src/__tests__/audit-2026-11-run4-derived-limits.test.ts
+    src/__tests__/maintenance-mode.test.ts
+    src/__tests__/singleton.test.ts
+    src/__tests__/checkpointer.test.ts
+    src/__tests__/golden-sql.test.ts
+    src/__tests__/cron-claim.test.ts
+    src/__tests__/webhook-claim.test.ts
+    src/__tests__/shutdown.test.ts
+    src/__tests__/mfa-attempts.test.ts
+    src/__tests__/sql-readonly-postgres.test.ts
+
+jobs:
+  sqlite:
+    name: Flake hunt (SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Race/timing files, repeated
+        run: bun test $RACE_FILES --rerun-each 25 --timeout 20000 --reporter=junit --reporter-outfile=rerun.xml
+
+      - name: Whole suite under CPU pressure, 3 passes
+        if: always()
+        run: |
+          for i in $(seq $(nproc)); do (yes > /dev/null &) ; done
+          for i in 1 2 3; do bun test --timeout 20000 || echo "pass $i failed" >> failures.txt; done
+          pkill yes || true
+          test ! -s failures.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flake-hunt-sqlite
+          path: "*.xml"
+          if-no-files-found: ignore
+
+  postgres:
+    name: Flake hunt (Postgres 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: vaultbase
+          POSTGRES_PASSWORD: vaultbase
+          POSTGRES_DB: vaultbase
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vaultbase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VAULTBASE_TEST_DB: postgres://vaultbase:vaultbase@127.0.0.1:5432/vaultbase
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install pg_dump
+        # Same as ci.yml: the client must match the server's major.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-18
+
+      - name: Race/timing files, repeated
+        run: bun test $RACE_FILES --rerun-each 25 --timeout 20000 --reporter=junit --reporter-outfile=rerun.xml
+
+      - name: Whole suite under CPU pressure, 3 passes
+        if: always()
+        run: |
+          for i in $(seq $(nproc)); do (yes > /dev/null &) ; done
+          for i in 1 2 3; do bun test --timeout 20000 || echo "pass $i failed" >> failures.txt; done
+          pkill yes || true
+          test ! -s failures.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flake-hunt-pg18
+          path: "*.xml"
+          if-no-files-found: ignore

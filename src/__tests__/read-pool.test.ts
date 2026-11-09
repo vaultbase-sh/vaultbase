@@ -326,16 +326,18 @@ describe("failures", () => {
   });
 
   it("a worker that is behind but still answering is not dropped", async () => {
-    _setReadPoolTimings({ forwardTimeoutMs: 500 });
-    await startReadPool(1, { STUB_MODE: "slow", STUB_DELAY_MS: "200" }, config, STUB_URL);
+    _setReadPoolTimings({ forwardTimeoutMs: 1000 });
+    await startReadPool(1, { STUB_MODE: "slow", STUB_DELAY_MS: "300" }, config, STUB_URL);
     const before = readPoolStats().dropped;
-    // Answered at ~200, 400, 600, 800 ms: the last two outlive the timeout.
+    // Answered one at a time at ~300, 600, 900, 1200 ms against a 1 s
+    // timeout. The exact split depends on how busy the machine is, so assert
+    // the invariant: some answered in time, some didn't, nothing was dropped.
     const results = await Promise.allSettled([read(), read(), read(), read()]);
-    expect(results.filter((r) => r.status === "fulfilled").length).toBe(2);
-    expect(results.filter((r) => r.status === "rejected").length).toBe(2);
+    expect(results.filter((r) => r.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+    expect(results.filter((r) => r.status === "rejected").length).toBeGreaterThanOrEqual(1);
     expect(readPoolStats()).toMatchObject({ workers: 1, dropped: before });
-    // Its late replies (~600, ~800 ms) count as progress; once caught up it answers again.
-    await Bun.sleep(400);
+    // Its late reply counts as progress; the next read queues behind it and
+    // is answered well inside the timeout.
     expect((await read()).status).toBe(200);
     expect(readPoolStats()).toMatchObject({ workers: 1, dropped: before });
   });
@@ -368,7 +370,7 @@ describe("failures", () => {
     await startReadPool(1, { STUB_MODE: "stuck" }, config, STUB_URL);
     await expect(read()).rejects.toThrow("timed out");
     await stopReadPool();
-    await Bun.sleep(400);
+    await Bun.sleep(400); // settle: negative assert, no replacement may start
     expect(readPoolStats().workers).toBe(0);
   });
 });

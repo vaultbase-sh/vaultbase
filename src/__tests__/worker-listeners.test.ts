@@ -261,7 +261,7 @@ describe("the main thread's internal listener", () => {
         ws.onerror = () => reject(new Error("socket error"));
       });
       expect(reason).toBe("origin_not_allowed");
-      await Bun.sleep(50);
+      await Bun.sleep(50); // settle: negative assert, no late error may show up
       expect(errors).toEqual([]);
       expect((await internalFetch("/api/health", { [INTERNAL_HEADER]: internal.secret })).status).toBe(200);
     } finally {

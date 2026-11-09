@@ -17,6 +17,7 @@ import { dispatchCustomRoute, invalidateRoutesCache, registerRoute } from "../co
 import { _jobsTickOnce, registerJob } from "../core/jobs.ts";
 import { compileCode, registerCodeLoader } from "../core/code-loader.ts";
 import { ValidationError } from "../core/validate.ts";
+import { until } from "./_wait.ts";
 
 let tmpDir: string;
 const offs: Array<() => void> = [];
@@ -78,7 +79,7 @@ describe("registered hooks", () => {
     offs.push(registerHook({ name: "all", event: "afterCreate", run: (ctx) => { seen.push(String(ctx.record["t"])); } }));
     await createRecord("a", { t: "1" }, null);
     await createRecord("b", { t: "2" }, null);
-    await Bun.sleep(20);
+    await until(() => seen.length >= 2, { message: "both afterCreate runs" });
     expect(seen).toEqual(["1", "2"]);
   });
 });

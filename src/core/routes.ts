@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { accessFor, clientIp, dataPrincipal, headerBearer, verifyAuthToken } from "./sec.ts";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { routes } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { guardHelpers, ScriptTimeoutError, withTimeLimit } from "./script-limits.ts";
@@ -152,6 +152,9 @@ export function invalidateRoutesCache(): void {
   announceInvalidation("routes");
 }
 onPeerInvalidation("routes", invalidateRoutesCache);
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(() => { cache.clear(); cacheLoaded = false; });
 
 async function loadRoutes(): Promise<CompiledRoute[]> {
   if (cacheLoaded) return [...cache.values()];

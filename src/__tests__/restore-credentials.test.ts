@@ -96,7 +96,7 @@ describe.skipIf(!onSqlite)("restore keeps credentials changed since the backup",
   it("keeps an admin's new password", async () => {
     await runBackup();
     raw().prepare(`UPDATE vaultbase_admin SET password_hash = 'a1-new', password_reset_at = ? WHERE id = 'a1'`).run(Date.now());
-    await Bun.sleep(2); // the admin signs in again after the reset
+    await Bun.sleep(2); // settle: the clock moves past the reset stamp (the admin signs in again after it)
     expect((await restoreLatest()).status).toBe(200);
     const row = raw().prepare(`SELECT password_hash FROM vaultbase_admin WHERE id = 'a1'`).get() as { password_hash: string };
     expect(row.password_hash).toBe("a1-new");

@@ -57,7 +57,8 @@ describe("email check", () => {
     expect(isEmail(evil)).toBe(false);
     // Also the shape alone, past the length cap: still linear.
     expect(/^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(evil)).toBe(false);
-    expect(performance.now() - t0).toBeLessThan(100);
+    // Backtracking would take seconds; 1 s catches it without timing the runner.
+    expect(performance.now() - t0).toBeLessThan(1000);
   });
 });
 
@@ -198,10 +199,11 @@ describe("thumbnail of a file that isn't an image", () => {
     const dir = mkdtempSync(join(tmpdir(), "vb-audit-thumb-"));
     const store = new Map<string, Uint8Array>();
     let fullReads = 0;
+    let offDriver: (() => void) | undefined;
     try {
       mkdirSync(join(dir, "uploads"), { recursive: true });
       setUploadDir(join(dir, "uploads"));
-      registerStorageDriver({ name: "audit-counting", create: () => ({
+      offDriver = registerStorageDriver({ name: "audit-counting", create: () => ({
         async write(k, d) { store.set(k, new Uint8Array(d as ArrayBuffer)); },
         async read(k) { const b = store.get(k); if (!b) return null; fullReads++; return b.slice().buffer; },
         async exists(k) { return store.has(k); },
@@ -228,6 +230,9 @@ describe("thumbnail of a file that isn't an image", () => {
       expect(fullReads).toBe(0);
     } finally {
       setSetting("storage.driver", "local");
+      // The driver registry is process-wide: leaving this one behind showed
+      // up in storage-drivers.test.ts's listing.
+      offDriver?.();
       invalidateStorageCache();
       rmSync(dir, { recursive: true, force: true });
     }

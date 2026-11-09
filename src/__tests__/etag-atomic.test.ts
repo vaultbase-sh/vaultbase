@@ -10,6 +10,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { createRecord } from "../core/records.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { createPublicCollection } from "./_helpers.ts";
+import { freshGate, dropGate } from "./_wait.ts";
 
 const SECRET = "test-secret-etag-atomic";
 
@@ -147,18 +148,24 @@ describe("record write locks (review 10)", () => {
   it("a write already in flight can't slip between an If-Match check and its write", async () => {
     const r = await createRecord("posts", { title: "v0" }, null);
     const etag = await etagOf(r.id);
-    await hook("h-slow", "posts", "if (ctx.record.title === 'slow') await new Promise((res) => setTimeout(res, 150));");
+    const g = freshGate("etag-slow");
+    await hook("h-slow", "posts", "if (ctx.record.title === 'slow') await globalThis.__gate('etag-slow').arrive();");
     try {
       const slow = app().handle(new Request(`http://localhost/posts/${r.id}`, {
         method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "slow" }),
       }));
-      await Bun.sleep(30); // the unconditional write is now inside its hook
-      const guarded = await app().handle(new Request(`http://localhost/posts/${r.id}`, {
+      await g.waitReached(); // the unconditional write is now inside its hook, holding the lock
+      const guardedP = app().handle(new Request(`http://localhost/posts/${r.id}`, {
         method: "PATCH", headers: { "content-type": "application/json", "if-match": etag }, body: JSON.stringify({ title: "guarded" }),
       }));
+      // Give the guarded PATCH time to pass its early If-Match check and queue
+      // on the lock; it must answer 412 however far it got.
+      setTimeout(() => g.open(), 100);
+      const guarded = await guardedP;
       expect((await slow).status).toBe(200);
       expect(guarded.status).toBe(412);
     } finally {
+      dropGate("etag-slow");
       (await import("../core/hooks.ts")).invalidateHookCache();
     }
   });
@@ -175,20 +182,23 @@ describe("record write locks (review 10)", () => {
     const col = await getCollection("posts");
     await updateCollection(col!.id, { history_enabled: 1 } as Parameters<typeof updateCollection>[1]);
     const r = await createRecord("posts", { title: "v0" }, null);
-    await hook("h-hold", "posts", "if (ctx.record.title === 'hold') await new Promise((res) => setTimeout(res, 600));");
+    const g = freshGate("etag-hold");
+    await hook("h-hold", "posts", "if (ctx.record.title === 'hold') await globalThis.__gate('etag-hold').arrive();");
     _setRecordLockWaitForTests(100);
     try {
       const slow = app().handle(new Request(`http://localhost/posts/${r.id}`, {
         method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "hold" }),
       }));
-      await Bun.sleep(30);
+      await g.waitReached(); // the PATCH holds the record lock until the gate opens
       const at = Math.floor(Date.now() / 1000) + 5;
       const res = await app().handle(new Request(`http://localhost/posts/${r.id}/restore?at=${at}`, {
         method: "POST", headers: { authorization: `Bearer ${token}` },
       }));
+      g.open();
       expect(res.status).toBe(409);
       expect((await slow).status).toBe(200);
     } finally {
+      dropGate("etag-hold");
       _setRecordLockWaitForTests(10_000);
       (await import("../core/hooks.ts")).invalidateHookCache();
     }
@@ -232,20 +242,23 @@ describe("record write locks for internal writers (review 13)", () => {
     const { hooks } = await import("../db/schema.ts");
     const { invalidateHookCache } = await import("../core/hooks.ts");
     const r = await createRecord("posts", { title: "v0" }, null);
+    const g = freshGate("etag-int");
     await getDb().insert(hooks).values({
       id: "h-slow-int", name: "slow", collection_name: "posts", event: "beforeUpdate", enabled: 1,
-      code: "if (ctx.record.title === 'first') await new Promise((res) => setTimeout(res, 150));",
+      code: "if (ctx.record.title === 'first') await globalThis.__gate('etag-int').arrive();",
     });
     invalidateHookCache();
     try {
       const existing = (await (await import("../core/records.ts")).getRecord("posts", r.id))!;
       const first = updateRecord("posts", r.id, { title: "first" }, null, { ifUnchanged: existing as unknown as Record<string, unknown> });
-      await Bun.sleep(30);
+      await g.waitReached(); // the first write is inside its hook, holding the lock
       const second = updateRecord("posts", r.id, { title: "second" }, null);
+      setTimeout(() => g.open(), 50); // let the second write queue on the lock first
       await Promise.all([first, second]);
       // The second write waited for the first instead of landing inside it.
       expect((await (await import("../core/records.ts")).getRecord("posts", r.id))!["title"]).toBe("second");
     } finally {
+      dropGate("etag-int");
       invalidateHookCache();
     }
   });

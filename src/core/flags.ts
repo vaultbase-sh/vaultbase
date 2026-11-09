@@ -17,7 +17,7 @@
  *   - invalidateFlagCache                           — called from PATCH
  */
 import { eq } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { featureFlags, flagSegments } from "../db/schema.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 
@@ -96,6 +96,9 @@ export function invalidateFlagCache(): void {
   announceInvalidation("flags");
 }
 onPeerInvalidation("flags", invalidateFlagCache);
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(() => { cache = null; });
 
 async function load(): Promise<CacheEntry> {
   const now = Date.now();

@@ -20,6 +20,7 @@ import { signAuthToken } from "../core/sec.ts";
 import { getDb } from "../db/client.ts";
 import { admin } from "../db/schema.ts";
 import { _reset as resetRealtime, subscribe as subscribeWs, type WSLike } from "../realtime/manager.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-singleton";
 const fields = JSON.stringify([{ name: "site_name", type: "text" }, { name: "maintenance", type: "bool" }, { name: "limits", type: "json" }]);
@@ -125,7 +126,7 @@ describe("singleton collections", () => {
     const off = onEvent("record.updated", (e) => { seen.push(`${e.collection.name}:${String((e.record as { site_name?: string }).site_name)}`); });
     try {
       await call("PATCH", "/settings_page", { site_name: "Live" });
-      await Bun.sleep(10);
+      await until(() => seen.length > 0, { message: "the record.updated event" });
       expect(seen).toEqual(["settings_page:Live"]);
     } finally { off(); }
   });
@@ -138,7 +139,7 @@ describe("singleton collections", () => {
     const ws = { data: { connId: "anon-1" }, send: (m: string) => { got.push(m); } } as unknown as WSLike;
     subscribeWs(ws, ["settings_page"]);
     await call("PATCH", "/settings_page", { site_name: "Live" });
-    await Bun.sleep(20);
+    await until(() => got.length > 0, { message: "the realtime message" });
     expect(got.map((m) => JSON.parse(m).record?.site_name)).toEqual(["Live"]);
     resetRealtime();
   });
@@ -150,7 +151,7 @@ describe("singleton collections", () => {
     const ws = { data: { connId: "anon-2" }, send: (m: string) => { got.push(m); } } as unknown as WSLike;
     subscribeWs(ws, ["private_page"]);
     await call("PATCH", "/private_page", { site_name: "Hidden" });
-    await Bun.sleep(20);
+    await Bun.sleep(20); // settle: negative assert, nothing may be delivered
     expect(got).toEqual([]);
     resetRealtime();
   });

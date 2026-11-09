@@ -1,5 +1,6 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import { getAllSettings } from "../api/settings.ts";
+import { onCloseDb } from "../db/client.ts";
 
 /**
  * Outgoing email. A transport delivers a message; SMTP (nodemailer) is the
@@ -70,6 +71,9 @@ export const SMTP_TIMEOUT_MS = 15_000;
 export function invalidateEmailCache(): void {
   cached = null;
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(invalidateEmailCache);
 
 function readSmtpConfig(s: Record<string, string>): SmtpConfig {
   const port = parseInt(s["smtp.port"] ?? "587");

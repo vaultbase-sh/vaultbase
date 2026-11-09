@@ -4,6 +4,7 @@ import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { jobs } from "../db/schema.ts";
 import { _jobsTickOnce } from "../core/jobs.ts";
+import { freshGate } from "./_wait.ts";
 
 // The scheduler started any job whose next_run_at had passed, but only moved
 // next_run_at forward after the job finished. A job slower than the 30 s tick
@@ -19,7 +20,7 @@ beforeEach(async () => {
   const now = Math.floor(Date.now() / 1000);
   await getDb().insert(jobs).values({
     id: "job1", name: "slow", cron: "* * * * *", enabled: 1, mode: "inline",
-    code: "globalThis.__cronHits = (globalThis.__cronHits ?? 0) + 1; await new Promise((r) => setTimeout(r, 300));",
+    code: "globalThis.__cronHits = (globalThis.__cronHits ?? 0) + 1; globalThis.__gate('cron-run').signal(); await new Promise((r) => setTimeout(r, 300));",
     next_run_at: now - 1, created_at: now, updated_at: now,
   });
 });
@@ -46,8 +47,9 @@ describe("cron scheduler claims each slot once", () => {
 
 describe("a scheduled run leaves the schedule alone", () => {
   it("a run moved on by someone else (another server, an edit) isn't moved back when it ends", async () => {
+    const running = freshGate("cron-run");
     const tick = _jobsTickOnce();
-    await Bun.sleep(50);
+    await running.waitReached(); // the job is running
     // While it runs: another server claimed the next slot, or an admin edited it.
     const far = Math.floor(Date.now() / 1000) + 86_400;
     await getDb().update(jobs).set({ next_run_at: far }).where(eq(jobs.id, "job1"));

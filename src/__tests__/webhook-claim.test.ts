@@ -13,14 +13,18 @@ import { dispatchEvent, _webhookTickOnce } from "../core/webhooks.ts";
 
 let receiver: ReturnType<typeof Bun.serve>;
 let hits = 0;
+let delivering: Promise<void>;
+let markDelivering: () => void;
 
 beforeEach(async () => {
   hits = 0;
+  delivering = new Promise<void>((r) => { markDelivering = r; });
   receiver = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch() {
       hits++;
+      markDelivering();
       await Bun.sleep(400);
       return new Response("ok");
     },
@@ -49,7 +53,7 @@ describe("webhook dispatcher claims deliveries", () => {
     await dispatchEvent({ event: "posts.create", data: { id: "p1" } });
     // Second tick starts while the first delivery is still in flight.
     const first = _webhookTickOnce();
-    await Bun.sleep(50);
+    await delivering; // the first delivery is at the receiver
     const second = _webhookTickOnce();
     await Promise.all([first, second]);
     expect(hits).toBe(1);

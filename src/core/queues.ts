@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { db } from "../db/index.ts";
 import { jobsLog, workers } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
@@ -145,6 +145,9 @@ export function invalidateWorkerCache(): void {
   announceInvalidation("workers");
 }
 onPeerInvalidation("workers", invalidateWorkerCache);
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(() => { compiledCache.clear(); cacheLoaded = false; });
 
 interface WorkerRow {
   id: string;

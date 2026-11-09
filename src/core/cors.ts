@@ -18,6 +18,7 @@
  * paying a settings round-trip per request.
  */
 import { getAllSettings } from "../api/settings.ts";
+import { onCloseDb } from "../db/client.ts";
 
 interface CorsConfig {
   origins: string[];          // empty = block
@@ -65,6 +66,9 @@ function load(): CorsConfig {
 export function invalidateCorsCache(): void {
   cache = null;
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(invalidateCorsCache);
 
 function originAllowed(cfg: CorsConfig, origin: string): boolean {
   if (cfg.wildcard) return true;

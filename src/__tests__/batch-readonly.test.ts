@@ -12,6 +12,7 @@ import { makeBatchPlugin } from "../api/batch.ts";
 import { hooks } from "../db/schema.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
 import { createPublicCollection } from "./_helpers.ts";
+import { freshGate, dropGate } from "./_wait.ts";
 
 const SECRET = "test-secret-batch-readonly";
 
@@ -30,23 +31,32 @@ const batch = (requests: unknown[]) => makeBatchPlugin(SECRET).handle(new Reques
 describe("read-only batches", () => {
   it("don't wait behind a write in flight", async () => {
     const r = await createRecord("posts", { title: "a" }, null);
+    const g = freshGate("batch-readonly");
     await getDb().insert(hooks).values({
       id: "h-slow", name: "slow", collection_name: "posts", event: "beforeUpdate", enabled: 1,
-      code: "await new Promise((res) => setTimeout(res, 700));",
+      code: "await globalThis.__gate('batch-readonly').arrive();",
     });
     invalidateHookCache();
-    const slow = makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/posts/${r.id}`, {
-      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "b" }),
-    }));
-    await Bun.sleep(50);
-    const t0 = Date.now();
-    const res = await batch([{ method: "GET", url: "/api/v1/posts" }, { method: "GET", url: `/api/v1/posts/${r.id}` }]);
-    const took = Date.now() - t0;
-    expect(res.status).toBe(200);
-    const body = await res.json() as { data: unknown[] };
-    expect(body.data).toHaveLength(2);
-    expect(took).toBeLessThan(400);
-    expect((await slow).status).toBe(200);
+    // Safety net: a batch stuck behind the write would otherwise hang here.
+    const release = setTimeout(() => g.open(), 3000);
+    try {
+      const slow = makeRecordsPlugin(SECRET).handle(new Request(`http://localhost/posts/${r.id}`, {
+        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "b" }),
+      }));
+      await g.waitReached(); // the PATCH is inside its hook, write in flight
+      const res = await batch([{ method: "GET", url: "/api/v1/posts" }, { method: "GET", url: `/api/v1/posts/${r.id}` }]);
+      // The batch finished while the write was still held.
+      const finishedWhileHeld = !g.isOpen;
+      g.open();
+      expect(res.status).toBe(200);
+      const body = await res.json() as { data: unknown[] };
+      expect(body.data).toHaveLength(2);
+      expect(finishedWhileHeld).toBe(true);
+      expect((await slow).status).toBe(200);
+    } finally {
+      clearTimeout(release);
+      dropGate("batch-readonly");
+    }
   });
 
   it("still report errors per request (legitimate path)", async () => {

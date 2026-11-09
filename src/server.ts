@@ -218,8 +218,8 @@ function startFileTokenUsesPrune(): void {
   // A failed prune (e.g. the DB is closed, as between tests) must not surface
   // as an unhandled rejection; the next run catches up.
   const prune = () => { void pruneFileTokenUses().catch(() => { /* next run */ }); };
-  setTimeout(prune, 60 * 1000).unref?.();
-  setInterval(prune, HOUR_MS).unref?.();
+  after(prune, 60 * 1000);
+  every(prune, HOUR_MS);
 }
 
 /**
@@ -441,6 +441,27 @@ async function serveForwardedRead(request: Request, server: PeerServer, jwtSecre
   }
 }
 
+// Timers createServer started for the current server. A second call (tests
+// build many servers in one process) clears the previous server's first:
+// left running, they fired with that server's secret and settings into
+// whatever ran next (a token re-check signed admins out, a backup tick
+// landed in another test).
+const serverTimers: Array<ReturnType<typeof setTimeout>> = [];
+function every(fn: () => void, ms: number): void {
+  const t = setInterval(fn, ms);
+  t.unref?.();
+  serverTimers.push(t);
+}
+function after(fn: () => void, ms: number): void {
+  const t = setTimeout(fn, ms);
+  t.unref?.();
+  serverTimers.push(t);
+}
+/** Stop the timers the last `createServer` started (schedulers have their own stops). */
+export function stopServerTimers(): void {
+  for (const t of serverTimers.splice(0)) clearInterval(t);
+}
+
 export function createServer(config: Config, opts: ServerOptions = {}) {
   const reader = opts.role === "reader";
   setLogsDir(config.logsDir);
@@ -448,6 +469,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   setBackupsDir(`${config.dataDir}/backups`);
   configureSetupKey(config.dataDir);
   if (!reader) {
+  stopServerTimers();
   // Built-in `_notify` queue worker — must register BEFORE startQueueScheduler
   // so the first scheduler tick finds it. Idempotent on re-call (cluster
   // workers each call createServer).
@@ -460,34 +482,34 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
   if (singleton) startUpdateCheckScheduler();
   startWebhookDispatcher();
   startFileTokenUsesPrune();
-  setInterval(() => {
+  every(() => {
     void reverifyRealtimeAuth((token) => verifyTokenForWS(token, config.jwtSecret)).catch(() => { /* next tick */ });
-  }, REALTIME_REVERIFY_MS).unref?.();
+  }, REALTIME_REVERIFY_MS);
   // Full maintenance mode closes realtime connections that aren't an
   // admin's. Checked on a timer, so every cluster process follows the
   // setting once its store has reloaded it.
-  setInterval(() => {
+  every(() => {
     try {
       if (!realtimeClosed()) return;
       closeConnections((auth) => auth?.type === "admin", { type: "error", reason: "maintenance", message: maintenanceState().message });
     } catch { /* next tick */ }
-  }, MAINTENANCE_SWEEP_MS).unref?.();
+  }, MAINTENANCE_SWEEP_MS);
   startBackupScheduler();
   if (singleton) startOrphanFileSweeper();
   startApiTokenUsageFlusher();
   if (singleton) {
     // Prune expired/long-revoked API token rows once a day.
-    setTimeout(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 5 * 60 * 1000).unref?.();
-    setInterval(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 24 * 60 * 60 * 1000).unref?.();
+    after(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 5 * 60 * 1000);
+    every(() => { void pruneExpiredApiTokens().catch(() => { /* next run */ }); }, 24 * 60 * 60 * 1000);
     // Finished jobs / webhook deliveries past retention, expired revocations
     // and one-time auth tokens (see core/maintenance.ts).
-    setTimeout(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000).unref?.();
-    setInterval(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000).unref?.();
+    after(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 10 * 60 * 1000);
+    every(() => { void pruneHistory().catch(() => { /* retried tomorrow */ }); }, 24 * 60 * 60 * 1000);
   }
   // Sweep idle SQL sandboxes hourly. They're per-admin, so a forgotten
   // tab snapshots the DB and never resets — the prune keeps disk usage
   // bounded.
-  setInterval(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000).unref?.();
+  every(() => { try { pruneStaleSandboxes(); } catch { /* swallow */ } }, 60 * 60 * 1000);
   }
   // Client realtime messages are small JSON commands; Bun closes a socket
   // sending anything larger (1009). This is server-wide websocket config —

@@ -16,6 +16,7 @@ import { runMigrations } from "../db/migrate.ts";
 import { admin as adminTable, auditLog } from "../db/schema.ts";
 import { listAuditEntries, recordAuditEntry } from "../core/audit-log.ts";
 import { makeAuditLogPlugin } from "../api/audit-log.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-audit-log";
 
@@ -129,9 +130,11 @@ describe("via makeAuditLogPlugin (Elysia onAfterHandle)", () => {
       headers: { Authorization: `Bearer ${token}` },
     }));
     expect(res.status).toBe(200);
-    // give the void-promised audit insert a tick to land
-    await new Promise((r) => setTimeout(r, 20));
-    const list = await listAuditEntries();
+    // The audit insert is fire-and-forget: wait for it to land.
+    const list = await until(async () => {
+      const l = await listAuditEntries();
+      return l.data.some((e) => e.path === "/api/v1/admin/things") ? l : null;
+    }, { message: "the audit entry for /api/v1/admin/things" });
     expect(list.totalItems).toBeGreaterThanOrEqual(1);
     const entry = list.data.find((e) => e.path === "/api/v1/admin/things");
     expect(entry).toBeTruthy();

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { guardedFetch } from "./hook-egress.ts";
 import { and, asc, eq } from "drizzle-orm";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { hooks, type Collection } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { guardHelpers, withTimeLimit } from "./script-limits.ts";
@@ -228,6 +228,9 @@ export function invalidateHookCache(): void {
   announceInvalidation("hooks");
 }
 onPeerInvalidation("hooks", invalidateHookCache);
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(() => { compiledCache.clear(); });
 
 async function lookupEnabledHooks(
   collectionName: string,

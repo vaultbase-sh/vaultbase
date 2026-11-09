@@ -16,6 +16,7 @@ import { registerHook } from "../core/hooks.ts";
 import { on as onEvent } from "../core/events.ts";
 import { makeRecordsPlugin } from "../api/records.ts";
 import { createPublicCollection, onSqlite } from "./_helpers.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-etag-cross-server";
 const cleanup: Array<() => void> = [];
@@ -81,7 +82,7 @@ describe.skipIf(onSqlite)("If-Match across servers (Postgres)", () => {
     expect(seen).toEqual([]);
     p.release();
     expect((await a).status).toBe(200);
-    await Bun.sleep(20);
+    await until(() => seen.length > 0, { message: "the record.updated event" });
     expect(seen).toEqual(["v1"]);
   });
 });

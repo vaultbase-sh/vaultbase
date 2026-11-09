@@ -324,10 +324,13 @@ describe.skipIf(onSqlite)("read-only SQL on Postgres", () => {
     });
 
     it("an advisory lock the query takes goes with it", async () => {
-      expect((await _runReadOnlyOnDriverForTests(`SELECT pg_advisory_lock(123123)`)).ok).toBe(true);
+      // Per process, like the role names: two suites on one cluster must not
+      // see each other's lock.
+      const lockId = 1_230_000_000 + process.pid;
+      expect((await _runReadOnlyOnDriverForTests(`SELECT pg_advisory_lock(${lockId})`)).ok).toBe(true);
       let held = 1;
       for (let i = 0; i < 50 && held > 0; i++) {
-        held = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND objid = 123123`))!.n);
+        held = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND objid = ${lockId}`))!.n);
         if (held > 0) await Bun.sleep(20);
       }
       expect(held).toBe(0);
@@ -373,7 +376,9 @@ describe.skipIf(onSqlite)("read-only SQL on Postgres", () => {
         await expect(driver.isolated(async () => { await db.get(`SELECT pg_sleep(4)`); }, {
           tx: "rollback", deadlineMs: 300, url: withCredentials(driver.url, other, "deadline-pw-1"),
         })).rejects.toBeInstanceOf(DeadlineExceeded);
-        expect(Date.now() - started).toBeLessThan(1500);
+        // Only "the deadline cut pg_sleep(4) short": a fresh login on a busy
+        // runner can take a while, so don't time the connection setup.
+        expect(Date.now() - started).toBeLessThan(4000 - 250);
         let left = 1;
         for (let i = 0; i < 100 && left > 0; i++) {
           left = Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM pg_stat_activity WHERE usename = ?`, [other]))!.n);
@@ -395,7 +400,8 @@ describe.skipIf(onSqlite)("read-only SQL on Postgres", () => {
       const driver = getDriver() as PostgresDriver;
       const started = Date.now();
       await expect(driver.isolated(async () => { await db.get(`SELECT pg_sleep(3)`); }, { tx: "rollback", deadlineMs: 300 })).rejects.toBeInstanceOf(DeadlineExceeded);
-      expect(Date.now() - started).toBeLessThan(2500);
+      // Only "the deadline cut pg_sleep(3) short", not connection latency.
+      expect(Date.now() - started).toBeLessThan(3000 - 250);
     });
 
 

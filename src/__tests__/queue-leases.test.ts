@@ -126,12 +126,14 @@ describe("job leases", () => {
     await waitFor(async () => (await job(jobId)).status === "running");
     // The process stalls past its lease; another server recovers the job.
     await Bun.sleep(2100);
-    expect(await recoverInterruptedJobs(0)).toBe(1);
+    // This server's scheduler has no part in the recovery, and a tick landing
+    // during the recover call could claim attempt 2 before the assert below.
     stopQueueScheduler();
+    expect(await recoverInterruptedJobs(0)).toBe(1);
     expect((await job(jobId))).toMatchObject({ status: "queued", attempt: 2 });
     // The stalled first attempt finishes now: its result isn't recorded.
     (globalThis as { __leaseGate?: () => void }).__leaseGate?.();
-    await Bun.sleep(200);
+    await Bun.sleep(200); // settle: negative assert, the late finish must not write
     expect((await job(jobId))).toMatchObject({ status: "queued", attempt: 2 });
   });
 });

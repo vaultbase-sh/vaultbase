@@ -8,7 +8,7 @@
  * same count, and a code that had just been used could be replayed within its
  * 90-second window. These tests drive the real routes.
  */
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { eq } from "drizzle-orm";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { authTokens, loginFailures } from "../db/schema.ts";
@@ -25,7 +25,15 @@ const PASSWORD = "correct-horse-battery-1";
 let totpSecret: string;
 let userId: string;
 
+// Codes are generated and verified in separate calls: freeze the clock in the
+// middle of a 30 s step (moving it forward, never back) so a step boundary
+// can't fall between them.
+function freezeMidTotpStep(): void {
+  setSystemTime(new Date((Math.floor(Date.now() / 30_000) + 1) * 30_000 + 15_000));
+}
+
 beforeEach(async () => {
+  freezeMidTotpStep();
   await initDb(":memory:");
   await runMigrations();
   const col = await ensureAuthCollection("users");
@@ -38,7 +46,10 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => closeDb());
+afterEach(async () => {
+  setSystemTime();
+  await closeDb();
+});
 
 const post = (path: string, body: unknown, token?: string) =>
   makeAuthPlugin(SECRET).handle(new Request(`http://localhost${path}`, {

@@ -9,17 +9,20 @@ import { shutdownGracefully } from "../core/shutdown.ts";
 describe("graceful shutdown", () => {
   it("lets an in-flight request finish before cleanup runs", async () => {
     const order: string[] = [];
+    let arrived!: () => void;
+    const reached = new Promise<void>((r) => { arrived = r; });
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
       async fetch() {
+        arrived();
         await Bun.sleep(300);
         order.push("request done");
         return new Response("ok");
       },
     });
     const inFlight = fetch(`http://127.0.0.1:${server.port}/`);
-    await Bun.sleep(50);
+    await reached; // the request is inside the handler, so it is in flight
     const outcome = await shutdownGracefully({
       stopServer: () => server.stop(false),
       cleanup: [() => { order.push("cleanup"); }],

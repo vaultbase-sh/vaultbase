@@ -13,6 +13,7 @@
  * `verifyAuthToken`. Signing still goes through jose.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { onCloseDb } from "../db/client.ts";
 
 export interface VerifyHs256Options {
   issuer?: string;
@@ -91,3 +92,6 @@ export function verifyHs256(token: string, secret: string, opts: VerifyHs256Opti
 export function _resetJwtCache(): void {
   cache.clear();
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(_resetJwtCache);

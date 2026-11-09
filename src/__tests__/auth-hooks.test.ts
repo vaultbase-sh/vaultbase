@@ -22,6 +22,7 @@ import { invalidateHookCache } from "../core/hooks.ts";
 import { createCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { invalidateSetting } from "../api/settings.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-auth-hooks";
 let tmpDir: string;
@@ -54,9 +55,13 @@ async function installHook(collection: string, event: string, code: string): Pro
   invalidateHookCache();
 }
 
-/** Wait for the after-hook fire-and-forget microtask to settle. */
-async function flushAfterHook(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 50));
+/**
+ * After-hooks run detached: wait until the counter reaches `n`, then a short
+ * settle so a duplicate run would still show up in the exact-count assert.
+ */
+async function flushAfterHook(counter: string, n = 1): Promise<void> {
+  await until(() => ((globalThis as Record<string, unknown>)[counter] as number) >= n, { message: `${counter} >= ${n}` });
+  await Bun.sleep(20); // settle: negative side of toBe(n), no extra run
 }
 
 describe("auth signup hook lifecycle", () => {
@@ -80,7 +85,7 @@ describe("auth signup hook lifecycle", () => {
       body: JSON.stringify({ email: "alice@x.com", password: "hunter2!!hunter2!!" }),
     }));
     expect(res.status).toBe(200);
-    await flushAfterHook();
+    await flushAfterHook("_afterHits");
     expect((globalThis as Record<string, unknown>)["_beforeHits"]).toBe(1);
     expect((globalThis as Record<string, unknown>)["_afterHits"]).toBe(1);
   });
@@ -101,7 +106,7 @@ describe("auth signup hook lifecycle", () => {
     const app = makeAuthPlugin(SECRET);
     const res = await app.handle(new Request("http://localhost/auth/users/anonymous", { method: "POST" }));
     expect(res.status).toBe(200);
-    await flushAfterHook();
+    await flushAfterHook("_anonHits");
     expect((globalThis as Record<string, unknown>)["_anonHits"]).toBe(1);
   });
 
@@ -119,7 +124,7 @@ describe("auth signup hook lifecycle", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "bob@x.com", password: "hunter2!!hunter2!!" }),
     }));
-    await flushAfterHook();
+    await flushAfterHook("_globalHits");
     expect((globalThis as Record<string, unknown>)["_globalHits"]).toBe(1);
   });
 });

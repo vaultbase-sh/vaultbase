@@ -91,7 +91,9 @@ describe("password reset cutoff in milliseconds", () => {
     const t0 = performance.now();
     await waitPastReset(stamp);
     expect(Date.now()).toBeGreaterThan(stamp);
-    expect(performance.now() - t0).toBeLessThan(50);
+    // The invariant is "doesn't wait a whole second"; 250 ms leaves room for
+    // a GC pause or a starved runner.
+    expect(performance.now() - t0).toBeLessThan(250);
   });
 
   it("reads a stamp written in seconds as the end of that second", async () => {

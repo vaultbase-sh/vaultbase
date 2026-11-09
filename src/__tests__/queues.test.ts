@@ -17,6 +17,7 @@ import {
   listJobsLog,
   queueStats,
 } from "../core/queues.ts";
+import { until } from "./_wait.ts";
 
 let tmpDir: string;
 
@@ -224,8 +225,10 @@ describe("queues", () => {
     startQueueScheduler();
     await waitForStatus(r.jobId, "succeeded");
     // Wait for the chain-b job to appear and succeed.
-    await sleep(800);
-    const bJobs = await listJobsLog({ queue: "chain-b" });
+    const bJobs = await until(async () => {
+      const l = await listJobsLog({ queue: "chain-b" });
+      return l.data.some((j) => j.status === "succeeded") ? l : null;
+    }, { timeout: 5000, message: "a succeeded chain-b job" });
     expect(bJobs.data.length).toBeGreaterThanOrEqual(1);
     const bSucceeded = bJobs.data.some((j) => j.status === "succeeded");
     expect(bSucceeded).toBe(true);

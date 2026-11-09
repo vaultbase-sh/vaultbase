@@ -156,7 +156,8 @@ describe.skipIf(!canBackUp)("backups with files", () => {
 describe("review fixes", () => {
   const root = process.getuid?.() === 0;
 
-  it("skip a file that can't be read, and say so, without failing the backup", async () => {
+  // runBackup() needs pg_dump on Postgres, like "backups with files" above.
+  it.skipIf(!canBackUp)("skip a file that can't be read, and say so, without failing the backup", async () => {
     if (root || process.platform === "win32") return;
     writeFileSync(join(uploads, "ok.png"), "ok");
     writeFileSync(join(uploads, "locked.png"), "locked");

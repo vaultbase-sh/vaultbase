@@ -9,6 +9,7 @@ import { makeBatchPlugin } from "../api/batch.ts";
 import { _reset as resetRealtime, setSSESubscriptions } from "../realtime/manager.ts";
 import { openSSEStream } from "../realtime/sse.ts";
 import { createPublicCollection } from "./_helpers.ts";
+import { freshGate, until } from "./_wait.ts";
 
 // /batch ran BEGIN ... COMMIT on the single shared connection and awaited
 // hooks in between, so writes from other requests landed inside the batch's
@@ -30,7 +31,7 @@ beforeEach(async () => {
   // A slow beforeCreate hook gives other requests a window to interleave.
   await getDb().insert(hooks).values({
     id: "h1", name: "slow", collection_name: "slow", event: "beforeCreate", enabled: 1,
-    code: "await new Promise((r) => setTimeout(r, 200));",
+    code: "globalThis.__gate('batch-isolation-slow').signal(); await new Promise((r) => setTimeout(r, 200));",
   });
   invalidateHookCache();
   resetRealtime();
@@ -56,8 +57,9 @@ const FAILING_BATCH = [
 
 describe("batch transaction isolation", () => {
   it("a write from another request survives a failing batch", async () => {
+    const g = freshGate("batch-isolation-slow");
     const batchDone = batch(FAILING_BATCH);
-    await Bun.sleep(50); // batch is now inside its slow hook, transaction open
+    await g.waitReached(); // batch is now inside its slow hook, transaction open
     await createRecord("posts", { title: "independent" });
     const res = await batchDone;
     expect(res.status).toBe(422);
@@ -89,11 +91,11 @@ describe("batch transaction isolation", () => {
     })();
 
     expect((await batch(FAILING_BATCH)).status).toBe(422);
-    await Bun.sleep(100);
+    await Bun.sleep(100); // settle: negative assert, no create event may arrive
     expect(received).not.toContain('"type":"create"');
 
     expect((await batch([{ method: "POST", url: "/api/v1/slow", body: { v: "ok" } }])).status).toBe(200);
-    await Bun.sleep(100);
+    await until(() => received.includes('"type":"create"'), { message: "the create event" });
     expect(received).toContain('"type":"create"');
     void reader.cancel();
   });

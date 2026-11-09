@@ -46,6 +46,7 @@
 import { lookup } from "node:dns/promises";
 import { currentScriptSignal } from "./script-signal.ts";
 import { isIP, isIPv4, isIPv6 } from "node:net";
+import { onCloseDb } from "../db/client.ts";
 
 export class EgressBlockedError extends Error {
   readonly url: string;
@@ -318,6 +319,9 @@ async function loadDenyConfig(): Promise<DenyConfig> {
 export function invalidateEgressCache(): void {
   cachedConfig = null;
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(invalidateEgressCache);
 
 // ── Public API ──────────────────────────────────────────────────────────────
 

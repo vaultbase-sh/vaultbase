@@ -255,8 +255,12 @@ export async function flushApiTokenUsage(): Promise<void> {
 
 /** Called from server.ts boot. Flushes pending usage once a minute as a
  *  safety net beyond the natural per-request triggers. */
+let usageFlusher: ReturnType<typeof setInterval> | null = null;
 export function startApiTokenUsageFlusher(): void {
-  setInterval(() => { void flushApiTokenUsage().catch(() => { /* next flush */ }); }, 60_000).unref?.();
+  // Once per process: every createServer call used to add another interval.
+  if (usageFlusher) return;
+  usageFlusher = setInterval(() => { void flushApiTokenUsage().catch(() => { /* next flush */ }); }, 60_000);
+  usageFlusher.unref?.();
 }
 
 // ── Token format helpers ─────────────────────────────────────────────────────

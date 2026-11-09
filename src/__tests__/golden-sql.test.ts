@@ -338,7 +338,11 @@ describe.skipIf(!onSqlite)("golden SQL: operations", () => {
   it("statement stream", async () => {
     await sequence();
     const seen: string[] = [];
-    db.trace((sql) => seen.push(sql));
+    // The settings reload timer can fire inside the trace window and add a
+    // `SELECT … FROM vaultbase_settings`; the sequence itself reads settings
+    // from the warm cache, so drop those reads rather than race the timer.
+    const settingsRead = /^\s*SELECT\b[\s\S]*\bFROM\s+"?vaultbase_settings"?/i;
+    db.trace((sql) => { if (!settingsRead.test(sql)) seen.push(sql); });
     try {
       await sequence();
     } finally {

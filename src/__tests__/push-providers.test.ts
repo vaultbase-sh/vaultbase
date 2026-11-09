@@ -19,6 +19,7 @@ import {
   dispatchNotification, getEnabledProviders, listPushProviders, registerNotificationsWorker,
   registerPushProvider, type PushSendContext,
 } from "../core/notifications.ts";
+import { until } from "./_wait.ts";
 
 let tmpDir: string;
 const sends: PushSendContext[] = [];
@@ -131,7 +132,7 @@ describe("the notification inbox", () => {
     try {
       const out = await dispatchNotification(uid, { title: "Welcome", body: "hi" }, { push: false });
       expect(out.inboxRowId).not.toBeNull();
-      await Bun.sleep(10);
+      await until(() => seen.length > 0, { message: "the record.created event" });
       expect(seen).toEqual(["Welcome"]);
     } finally { stop(); }
   });

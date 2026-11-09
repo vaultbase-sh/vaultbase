@@ -24,6 +24,7 @@
     "start:cluster": "bun src/cluster.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "check:test-sleeps": "bun scripts/check-test-sleeps.ts",
     "db:reset": "bun src/scripts/reset.ts",
     "prepare": "husky"
   },

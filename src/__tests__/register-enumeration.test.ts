@@ -16,6 +16,7 @@ import { createCollection } from "../core/collections.ts";
 import { makeAuthPlugin } from "../api/auth.ts";
 import { seedAuthUser, signUserJwt } from "./_helpers.ts";
 import { startSmtpSink, type SmtpSink } from "./_smtp.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-register-enum";
 let tmpDir: string;
@@ -75,7 +76,7 @@ describe("request-email-change to a taken address", () => {
     const taken = await post("/auth/users/request-email-change", { newEmail: "taken@test.local" }, jwt);
     expect(taken.status).toBe(200);
     expect(await taken.json()).toEqual({ data: { sent: true } });
-    await Bun.sleep(100);
+    await Bun.sleep(100); // settle: negative assert, no mail should arrive
     expect(smtp.messages).toHaveLength(0);
   });
 
@@ -83,7 +84,8 @@ describe("request-email-change to a taken address", () => {
     const id = await seedAuthUser({ collection: "users", email: "me@test.local" });
     const jwt = await signUserJwt(id, "me@test.local", "users", SECRET);
     expect((await post("/auth/users/request-email-change", { newEmail: "free@test.local" }, jwt)).status).toBe(200);
-    await Bun.sleep(100);
+    await until(() => smtp.messages.length > 0, { message: "the confirmation email" });
+    await Bun.sleep(50); // settle: negative assert, no second mail should follow
     expect(smtp.messages).toHaveLength(1);
   });
 });

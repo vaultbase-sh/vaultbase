@@ -43,6 +43,7 @@ import { makeFilesPlugin } from "../api/files.ts";
 import { _thumbJobStats, MAX_THUMB_JOBS, MAX_THUMB_JOBS_WAITING, MAX_THUMB_SOURCE_BYTES } from "../core/image.ts";
 import { clearThumbCache, invalidateStorageCache, registerStorageDriver, setUploadDir } from "../core/storage.ts";
 import { createPublicCollection, onSqlite, seedAuthUser, signUserJwt } from "./_helpers.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-run4-derived-limits";
 
@@ -267,7 +268,14 @@ describe("thumbnail source reads", () => {
     // Every request must reach the queue before the gate opens: one still in
     // its auth and file lookups (slow on a busy Postgres) would otherwise find
     // a slot freed by the opened gate, and be served instead of refused.
-    for (let i = 0; i < 400 && (_thumbJobStats().waiting < MAX_THUMB_JOBS_WAITING || refused < overflow); i++) await Bun.sleep(5);
+    // Up to 10 s: free when the queue fills fast, enough for a slow runner.
+    try {
+      await until(() => _thumbJobStats().waiting >= MAX_THUMB_JOBS_WAITING && refused >= overflow,
+        { timeout: 10_000, step: 5, message: "the thumbnail queue to fill" });
+    } catch (e) {
+      open();
+      throw e;
+    }
     expect(_thumbJobStats()).toEqual({ running: MAX_THUMB_JOBS, waiting: MAX_THUMB_JOBS_WAITING });
     expect(refused).toBe(overflow);
     // Only the jobs holding a slot have started reading.
@@ -276,7 +284,7 @@ describe("thumbnail source reads", () => {
     const statuses = (await Promise.all(pending)).map((r) => r.status);
     expect(statuses.filter((s) => s === 503).length).toBe(overflow);
     expect(statuses.filter((s) => s === 200).length).toBe(MAX_THUMB_JOBS + MAX_THUMB_JOBS_WAITING);
-  });
+  }, 20_000);
 
   it("a file with no files row is read only up to the source cap", async () => {
     await upload();

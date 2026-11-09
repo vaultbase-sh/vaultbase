@@ -12,6 +12,7 @@ import {
   _reset, _setFanoutMaxBacklog, broadcast, broadcastSystem, realtimeStats, setWSAuth, subscribe,
   FANOUT_INLINE_MAX, type WSLike,
 } from "../realtime/manager.ts";
+import { until } from "./_wait.ts";
 
 beforeEach(() => _reset());
 afterEach(() => { _setFanoutMaxBacklog(null); _reset(); });
@@ -98,7 +99,7 @@ describe("large fan-outs", () => {
     broadcast("notes", rec("r1"));
     setTimeout(() => { ranAfter = realtimeStats().queuedDeliveries; }, 0);
     await drained();
-    await Bun.sleep(5);
+    await until(() => ranAfter !== -1, { message: "the timer to run" });
     // The timer ran while deliveries were still queued, not after the whole loop.
     expect(ranAfter).toBeGreaterThan(0);
   });

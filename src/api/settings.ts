@@ -241,9 +241,18 @@ export async function invalidateSetting(key: string): Promise<void> {
   for (const written of reloadsInFlight) written.add(key);
 }
 
-/** Drop the store so the next read loads it again (tests). */
+/**
+ * Drop the store so the next read loads it again (tests), and stop the
+ * reload timer: left running past a closed database, it fired into whatever
+ * ran next (an extra settings read showed up in a statement trace). The next
+ * load starts a fresh one.
+ */
 export function _resetSettingsCache(): void {
   store = null;
+  if (reloadTimer !== null) {
+    clearInterval(reloadTimer);
+    reloadTimer = null;
+  }
 }
 onCloseDb(_resetSettingsCache);
 

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { setLogsDir } from "../core/file-logger.ts";
 import { insertLog, listLogs, makeLogsPlugin } from "../api/logs.ts";
+import { until } from "./_wait.ts";
 
 let tmpDir: string;
 
@@ -94,7 +95,7 @@ describe("JSONPath search", () => {
     await insertLog("GET", "/api/a", 200, 1, null, null);
     await insertLog("GET", "/api/b", 404, 1, null, null);
     await insertLog("POST", "/api/c", 500, 1, null, null);
-    await Bun.sleep(20);
+    await until(async () => (await searchLogs("$.status")).matched >= 3, { message: "3 log entries flushed" });
     const r = await searchLogs("$[?(@.status >= 400)]");
     expect(r.matched).toBe(2);
     // A plain path still reads the entry (legitimate path).
@@ -105,7 +106,7 @@ describe("JSONPath search", () => {
     const { searchLogs } = await import("../core/file-logger.ts");
     await insertLog("GET", "/api/old", 500, 1, null, null);
     for (let i = 0; i < 5; i++) await insertLog("GET", `/api/new${i}`, 200, 1, null, null);
-    await Bun.sleep(20);
+    await until(async () => (await searchLogs("$.status")).matched >= 6, { message: "6 log entries flushed" });
     // The match is older than the newest 3 entries.
     const r = await searchLogs("$[?(@.status >= 500)]", { limit: 3 });
     expect(r.matched).toBe(1);

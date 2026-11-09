@@ -2,6 +2,7 @@ import { existsSync, renameSync, unlinkSync, rmSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
 import { getAllSettings } from "../api/settings.ts";
 import { forgetThumbVariants } from "./image.ts";
+import { onCloseDb } from "../db/client.ts";
 
 /**
  * Path-traversal guard for local-mode keys. Rejects anything that resolves
@@ -81,6 +82,9 @@ export function setUploadDir(dir: string): void {
 export function invalidateStorageCache(): void {
   cached = null;
 }
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(invalidateStorageCache);
 
 interface S3LikeClient {
   write(key: string, data: ArrayBuffer | Uint8Array | Blob | string, opts?: { type?: string }): Promise<unknown>;

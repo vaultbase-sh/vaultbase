@@ -18,6 +18,7 @@ import { stopQueueScheduler } from "../core/queues.ts";
 import { stopWebhookDispatcher } from "../core/webhooks.ts";
 import { stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { _reset as resetRealtime } from "../realtime/manager.ts";
+import { until } from "./_wait.ts";
 
 const SECRET = "test-secret-audit-coverage";
 let dir: string;
@@ -50,8 +51,21 @@ async function send(method: string, path: string, body: unknown): Promise<number
 }
 
 async function actions(): Promise<string[]> {
-  await Bun.sleep(30); // rows are written after the response
   return (await getDb().select().from(auditLog)).map((r) => r.action);
+}
+
+/** Rows are written after the response: wait until all of `want` are there. */
+async function actionsIncluding(want: string[]): Promise<string[]> {
+  return until(async () => {
+    const seen = await actions();
+    return want.every((a) => seen.includes(a)) ? seen : null;
+  }, { message: `audit actions ${want.join(", ")}` });
+}
+
+/** For "nothing was written": give fire-and-forget writes time to land. */
+async function settledActions(): Promise<string[]> {
+  await Bun.sleep(50); // settle: negative assert, nothing should be written
+  return actions();
 }
 
 describe("audit log coverage", () => {
@@ -60,7 +74,7 @@ describe("audit log coverage", () => {
     expect(await send("POST", "/api/v1/admin/hooks", { name: "h", collection_name: "", event: "beforeCreate", code: "return;", enabled: false })).toBeLessThan(300);
     expect(await send("POST", "/api/v1/admin/admins", { email: "b@test.local", password: "a-long-enough-password-1" })).toBeLessThan(300);
     expect(await send("POST", "/api/v1/collections", { name: "audited", fields: [{ name: "t", type: "text" }] })).toBeLessThan(300);
-    const seen = await actions();
+    const seen = await actionsIncluding(["settings.update", "hooks.create", "admins.create", "collections.create"]);
     expect(seen).toContain("settings.update");
     expect(seen).toContain("hooks.create");
     expect(seen).toContain("admins.create");
@@ -68,9 +82,9 @@ describe("audit log coverage", () => {
   });
 
   it("reads stay out of the audit log (legitimate path)", async () => {
-    const before = (await actions()).length;
+    const before = (await settledActions()).length;
     const res = await app.handle(new Request("http://localhost/api/v1/admin/settings", { headers: { authorization: `Bearer ${token}` } }));
     expect(res.status).toBe(200);
-    expect((await actions()).length).toBe(before);
+    expect((await settledActions()).length).toBe(before);
   });
 });

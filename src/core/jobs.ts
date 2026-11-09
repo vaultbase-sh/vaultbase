@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { CronExpressionParser } from "cron-parser";
-import { getDb } from "../db/client.ts";
+import { getDb, onCloseDb } from "../db/client.ts";
 import { jobs } from "../db/schema.ts";
 import { ValidationError } from "./validate.ts";
 import { guardHelpers, slotReleased, withTimeLimit } from "./script-limits.ts";
@@ -50,6 +50,9 @@ export function invalidateJobsCache(): void {
   announceInvalidation("jobs");
 }
 onPeerInvalidation("jobs", invalidateJobsCache);
+// Built from this database's settings or rows: a closed database leaves none
+// behind for the next one (tests open many in one process).
+onCloseDb(() => { compiledCache.clear(); });
 
 function compile(row: JobRow): ((ctx: JobContext) => Promise<unknown>) | null {
   const cached = compiledCache.get(row.id);
