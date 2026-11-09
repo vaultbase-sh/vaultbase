@@ -39,6 +39,10 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+      # A short sleep followed by an assert flakes on slow runners: wait for
+      # the condition instead (src/__tests__/_wait.ts), or mark a settle.
+      - name: No fixed sleeps before asserts
+        run: bun run check:test-sleeps
 
       - name: Test
         run: bun test

@@ -78,6 +78,7 @@ import {
   type WSAuth,
 } from "./realtime/manager.ts";
 import { hiddenFrom } from "./core/records.ts";
+import { resolve as resolvePath } from "node:path";
 import { getCollection } from "./core/collections.ts";
 import { openSSEStream } from "./realtime/sse.ts";
 import { maintenanceRefusal, maintenanceState, realtimeClosed } from "./core/maintenance-mode.ts";
@@ -648,9 +649,12 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       .use(makeIndexesPlugin(config.jwtSecret))
       .use(makeSettingsPlugin(config.jwtSecret, {
         port: config.port,
-        dataDir: config.dataDir,
+        // Absolute: the admin pastes it into an MCP client's config.
+        dataDir: resolvePath(config.dataDir),
         jwtSecretSource: config.secretsFromDataDir?.includes("VAULTBASE_JWT_SECRET") ? "data_dir" : "env",
         cluster: !!process.env["VAULTBASE_WORKER_ID"],
+        // A compiled binary runs its entry from Bun's embedded file system.
+        binaryPath: (process.argv[1] ?? "").startsWith("/$bunfs") || (process.argv[1] ?? "").startsWith("B:\\~BUN") ? process.execPath : null,
       }))
       .use(makeHooksPlugin(config.jwtSecret))
       .use(makeRoutesPlugin(config.jwtSecret))

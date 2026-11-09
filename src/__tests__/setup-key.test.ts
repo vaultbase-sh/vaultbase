@@ -146,10 +146,12 @@ describe("other commands run by hand read it too", () => {
     delete env["VAULTBASE_TEST_DB"];
     delete env["VAULTBASE_DATABASE_URL"];
     const entry = fileURLToPath(new URL("../index.ts", import.meta.url));
-    // A token that doesn't verify: the command opens the database first, then refuses it.
+    // The folder holds no install yet: since 0.42 the command names the
+    // folder the env file points at and stops, creating nothing anywhere.
     const r = Bun.spawnSync(["bun", entry, "mcp", "--token", "vbat_not-a-token"], { cwd: clientCwd, env });
     expect(r.stderr.toString()).toContain(`using settings from ${file}`);
-    expect(existsSync(join(dataDir, "data.db"))).toBe(true);
+    expect(r.stderr.toString()).toContain(`no Vaultbase install at ${dataDir}`);
+    expect(existsSync(join(dataDir, "data.db"))).toBe(false);
     expect(existsSync(join(clientCwd, "vaultbase_data"))).toBe(false);
   });
 });

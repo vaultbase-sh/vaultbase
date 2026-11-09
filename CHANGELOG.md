@@ -34,6 +34,9 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - `vaultbase mcp` and `vaultbase token` name the data folder they opened when the token or admin isn't found, and say to set `VAULTBASE_DATA_DIR`. `vaultbase mcp --help` shows a config with absolute paths and `VAULTBASE_DATA_DIR`.
 - The realtime `origin_not_allowed` error has a `hint` naming the origin and the CORS setting to add it to.
 - `vaultbase doctor` says "no problems found" on a healthy install.
+- `vaultbase mcp` and `vaultbase token` stop with "no Vaultbase install at <folder>" when the data folder has no database, instead of creating an empty `./vaultbase_data` with new keys. Their `--help` no longer creates anything either.
+- Postgres: the start-up warning about secrets generated in the data folder is one line and says it only matters when more than one server shares the database.
+- Admin → MCP → local binary config fills in this server's binary path and data folder (`GET /api/v1/admin/runtime` returns `binaryPath`, and `dataDir` as an absolute path).
 - Admin: the records page's "API rules" and "Indexes" tabs open those tabs in the collection editor instead of Fields.
 - The installer (`get.vaultbase.dev` and `install.sh`) no longer fails when GitHub's "latest release" page answers with a server error; it asks GitHub's API for the latest tag instead. The installer service also stopped caching GitHub errors, which had kept it unavailable for up to five minutes after a single failed request.
 

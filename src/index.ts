@@ -21,6 +21,7 @@ import { createServer } from "./server.ts";
 import { applySnapshot, SnapshotShapeError, type ApplyMode } from "./core/migrations.ts";
 import { drainLogBuffer, drainLogBufferSync } from "./core/file-logger.ts";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 
 // Top-level safety net — log + keep the process up rather than crash on a
 // stray rejection from a `void asyncFn()` site. Default Node behaviour is
@@ -311,6 +312,23 @@ async function openForCommand(command: string, dataDir: string, argv: readonly s
   }
 }
 
+/**
+ * `mcp` and `token` act on an existing install. Run from the wrong folder
+ * they used to create an empty `./vaultbase_data` (with fresh keys) and then
+ * report that the token or admin wasn't found. Stop before anything is
+ * created instead. Postgres installs keep their data in the database.
+ */
+function requireExistingInstall(command: string): void {
+  if (process.env["VAULTBASE_DATABASE_URL"]) return;
+  const dataDir = resolve(process.env["VAULTBASE_DATA_DIR"] ?? "./vaultbase_data");
+  if (existsSync(resolve(dataDir, "data.db"))) return;
+  process.stderr.write(
+    `vaultbase ${command}: no Vaultbase install at ${dataDir} (no data.db there).\n` +
+    `Set VAULTBASE_DATA_DIR to the data folder your server uses (for a service install: /var/lib/vaultbase).\n`,
+  );
+  process.exit(2);
+}
+
 /** True when nothing holds `port` on `hostname` (a plain bind, no SO_REUSEPORT). */
 function portIsFree(port: number, hostname: string): boolean {
   try {
@@ -351,8 +369,14 @@ async function main() {
     // an empty install the token doesn't verify against.
     const refused = prepareServiceCommand("mcp", process.argv.slice(2));
     if (refused) { process.stderr.write(refused); process.exit(1); }
-    const config = await loadConfig();
     const { runMcpCli } = await import("./scripts/mcp.ts");
+    // Help needs no install: print it before loadConfig() creates anything.
+    if (process.argv.slice(3).some((a) => a === "--help" || a === "-h")) {
+      await runMcpCli(process.argv.slice(3), "", "", "", "");
+      process.exit(0);
+    }
+    requireExistingInstall("mcp");
+    const config = await loadConfig();
     try {
       await runMcpCli(process.argv.slice(3), config.dbPath, config.jwtSecret, config.logsDir, config.uploadDir);
       process.exit(0);
@@ -418,8 +442,15 @@ async function main() {
   // `vaultbase token <subcmd>` — local API-token management. Reads + writes
   // the DB directly, bypassing HTTP. Skips server boot.
   if (process.argv[2] === "token") {
-    const config = await loadConfig();
+    const sub = process.argv[3] ?? "";
     const { runTokenCli } = await import("./scripts/token.ts");
+    // Help needs no install: print it before loadConfig() creates anything.
+    if (!sub || sub === "help" || sub === "-h" || sub === "--help") {
+      await runTokenCli(process.argv.slice(3), "", "");
+      process.exit(0);
+    }
+    if (!process.argv.includes("--help") && !process.argv.includes("-h")) requireExistingInstall("token");
+    const config = await loadConfig();
     try {
       await runTokenCli(process.argv.slice(3), config.dbPath, config.jwtSecret);
       process.exit(0);
@@ -506,8 +537,14 @@ async function main() {
     // Without them each server generates its own into its data directory:
     // tokens signed by one fail on the others, and secret settings written
     // by one can't be read by them.
-    for (const name of config.secretsFromDataDir ?? []) {
-      console.warn(`[vaultbase] ${name} is not set: every server on this database needs the same value`);
+    // One line, and only a problem with more than one server: a single
+    // server on Postgres is fine with the generated values.
+    const fromDataDir = config.secretsFromDataDir ?? [];
+    if (fromDataDir.length > 0) {
+      console.warn(
+        `[vaultbase] ${fromDataDir.join(" and ")} ${fromDataDir.length > 1 ? "are" : "is"} generated in the data folder. ` +
+        `Fine for one server; if more than one server shares this database, set the same value${fromDataDir.length > 1 ? "s" : ""} on all of them.`,
+      );
     }
     // Data replaced by a restore, kept 7 days for an undo (core/pg-restore.ts).
     const restore = await import("./core/pg-restore.ts");

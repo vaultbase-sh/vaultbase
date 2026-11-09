@@ -456,6 +456,8 @@ export interface RuntimeInfo {
   jwtSecretSource: "env" | "data_dir";
   /** Running under `vaultbase cluster` (deprecated): the admin shows a banner. */
   cluster?: boolean;
+  /** Absolute path of the running binary, for the admin's MCP config; null when run from source. */
+  binaryPath?: string | null;
 }
 
 export function makeSettingsPlugin(jwtSecret: string, runtime?: RuntimeInfo) {

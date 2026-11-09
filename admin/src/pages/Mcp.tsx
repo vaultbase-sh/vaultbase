@@ -128,7 +128,16 @@ function ConnectTab({ tokens }: { tokens: TokenRow[] }) {
   const tokenForSnippet = tokenValue.trim() || "PASTE_TOKEN_HERE";
   const url = originUrl();
 
-  const snippet = useMemo(() => buildSnippet(client, url, tokenForSnippet), [client, url, tokenForSnippet]);
+  // This server's own data folder and binary, for the local-binary config:
+  // placeholders there were the most common way to get it wrong.
+  const [runtime, setRuntime] = useState<{ dataDir?: string; binaryPath?: string | null } | null>(null);
+  useEffect(() => {
+    api.get<ApiResponse<{ dataDir?: string; binaryPath?: string | null } | null>>("/api/v1/admin/runtime")
+      .then((res) => setRuntime(res.data ?? null))
+      .catch(() => { /* placeholders stay */ });
+  }, []);
+
+  const snippet = useMemo(() => buildSnippet(client, url, tokenForSnippet, runtime), [client, url, tokenForSnippet, runtime]);
 
   if (mcpTokens.length === 0) {
     return (
@@ -240,6 +249,7 @@ function buildSnippet(
   client: "claude" | "cursor" | "raw" | "http",
   url: string,
   token: string,
+  runtime: { dataDir?: string; binaryPath?: string | null } | null = null,
 ): Snippet {
   if (client === "claude") {
     return {
@@ -292,16 +302,16 @@ function buildSnippet(
         {
           mcpServers: {
             vaultbase: {
-              command: "vaultbase",
+              command: runtime?.binaryPath || "/path/to/vaultbase",
               args: ["mcp"],
-              env: { VAULTBASE_MCP_TOKEN: token, VAULTBASE_DATA_DIR: "/path/to/vaultbase_data" },
+              env: { VAULTBASE_MCP_TOKEN: token, VAULTBASE_DATA_DIR: runtime?.dataDir || "/path/to/vaultbase_data" },
             },
           },
         },
         null,
         2,
       ),
-      footer: "Use this when the vaultbase binary is on the same machine as the LLM client. No npm bridge needed. Set VAULTBASE_DATA_DIR to this server's data folder: the client starts the command from its own folder. For a server installed as a service, use the npm bridge instead.",
+      footer: "Use this when the vaultbase binary is on the same machine as the LLM client. No npm bridge needed. The paths are this server's binary and data folder; keep them absolute, since the client starts the command from its own folder and without your shell's PATH. For a server installed as a service, use the npm bridge instead.",
     };
   }
   return {
