@@ -52,6 +52,13 @@ if (!Number.isFinite(N) || N < 1) {
   process.exit(1);
 }
 
+// Deprecated since 0.22.0: say so where it's started, not only in worker 0's log.
+process.stderr.write(
+  "vaultbase cluster: DEPRECATED. Cluster mode will be removed in a coming release. " +
+  "One `vaultbase` process already serves record reads on worker threads (VAULTBASE_READ_WORKERS); " +
+  "change the service to run `vaultbase` instead of `vaultbase cluster`.\n",
+);
+
 if (N === 1) {
   process.stderr.write(`vaultbase-cluster: only 1 worker requested; one worker is started and kept running\n`);
 }

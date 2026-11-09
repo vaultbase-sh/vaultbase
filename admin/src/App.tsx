@@ -162,6 +162,35 @@ function MaintenanceBanner() {
   );
 }
 
+/**
+ * Shown on every page while the server runs under `vaultbase cluster`, which
+ * is deprecated and will be removed: the operator should move off it.
+ */
+function ClusterBanner() {
+  const [cluster, setCluster] = useState(false);
+  useEffect(() => {
+    api.get<ApiResponse<{ cluster?: boolean } | null>>("/api/v1/admin/runtime")
+      .then((res) => setCluster(!!res.data?.cluster))
+      .catch(() => { /* not critical */ });
+  }, []);
+  if (!cluster) return null;
+  return (
+    <div role="status" style={{
+      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      padding: "8px 28px", fontSize: 12.5,
+      background: "color-mix(in srgb, var(--vb-status-warning) 14%, transparent)",
+      borderBottom: "1px solid color-mix(in srgb, var(--vb-status-warning) 40%, transparent)",
+      color: "var(--vb-fg)",
+    }}>
+      <strong>Cluster mode is deprecated.</strong>
+      <span style={{ color: "var(--vb-fg-2)" }}>
+        It will be removed in a coming release. Run <code>vaultbase</code> instead of <code>vaultbase cluster</code>: one process already serves reads on worker threads.
+      </span>
+      <a href="https://docs.vaultbase.dev/guides/deployment/" target="_blank" rel="noopener" style={{ marginLeft: "auto", color: "var(--vb-fg)" }}>Deployment guide</a>
+    </div>
+  );
+}
+
 function AppShell() {
   const palette = useCommandPalette();
   return (
@@ -169,6 +198,7 @@ function AppShell() {
       <Sidebar />
       <main className="app-main">
         <MaintenanceBanner />
+        <ClusterBanner />
         <Suspense fallback={<PageFallback />}>
           <Outlet />
         </Suspense>

@@ -13,6 +13,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - `vaultbase setup-admin` and the password reset and set-password pages use the password policy (`password.min_length`, 12 by default) instead of a fixed 8 characters, so they match the setup wizard and sign-up.
 - `vaultbase` rejects commands and options it doesn't know (`vaultbase serve`, `vaultbase --port 9000`, a typo in `setup-admin`'s flags) with "unknown command" or "unknown option" and exit code 2. They used to be ignored, and a server started on the default port. `vaultbase cluster` is marked deprecated in `--help`.
+- `vaultbase cluster` prints a deprecation warning when it starts, and the admin shows a banner on every page while the server runs under it (`GET /api/v1/admin/runtime` has a new `cluster` field). Cluster mode still works; a later release removes it.
 - `vaultbase token mint` rejects unknown `--scope` values and lists the known ones; a typo used to mint a token that could do nothing.
 
 ### Fixed

@@ -445,6 +445,8 @@ export interface RuntimeInfo {
   dataDir: string;
   /** Whether the JWT secret came from the environment or the data directory. */
   jwtSecretSource: "env" | "data_dir";
+  /** Running under `vaultbase cluster` (deprecated): the admin shows a banner. */
+  cluster?: boolean;
 }
 
 export function makeSettingsPlugin(jwtSecret: string, runtime?: RuntimeInfo) {

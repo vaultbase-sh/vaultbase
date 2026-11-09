@@ -325,7 +325,7 @@ export default function Settings() {
 }
 
 // ── Application config ───────────────────────────────────────────────────────
-interface RuntimeInfo { port: number; dataDir: string; jwtSecretSource: "env" | "data_dir" }
+interface RuntimeInfo { port: number; dataDir: string; jwtSecretSource: "env" | "data_dir"; cluster?: boolean }
 
 function ApplicationSection() {
   const [rt, setRt] = useState<RuntimeInfo | null>(null);

@@ -609,6 +609,7 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
         port: config.port,
         dataDir: config.dataDir,
         jwtSecretSource: config.secretsFromDataDir?.includes("VAULTBASE_JWT_SECRET") ? "data_dir" : "env",
+        cluster: !!process.env["VAULTBASE_WORKER_ID"],
       }))
       .use(makeHooksPlugin(config.jwtSecret))
       .use(makeRoutesPlugin(config.jwtSecret))
