@@ -22,9 +22,42 @@ on:
 permissions:
   contents: write   # publish releases + upload assets
   id-token: write   # cosign keyless signing via Sigstore OIDC
+  actions: read     # ci-gate reads the CI run for the tagged commit
 
 jobs:
+  # Nothing is built, signed or published until CI passed on the commit the
+  # tag points at: the local pre-push hook only runs SQLite, and 0.41.1 went
+  # out while CI was still failing on Postgres 18.
+  ci-gate:
+    name: CI passed on the tagged commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq .sha)"
+          echo "Tag ${TAG} is ${sha}"
+          # CI runs on the branch push of this commit. Wait for it to show up
+          # (10 min) and finish (60 min), then require success.
+          for i in $(seq 1 140); do
+            run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&per_page=1" \
+              --jq '.workflow_runs[0] | if . == null then "none" else "\(.status) \(.conclusion) \(.html_url)" end')"
+            echo "CI: ${run}"
+            case "$run" in
+              "completed success "*) exit 0 ;;
+              completed*) echo "::error::CI didn't pass on ${sha}: ${run}"; exit 1 ;;
+              none) if [ "$i" -gt 20 ]; then echo "::error::no CI run for ${sha}; push the commit to a branch first"; exit 1; fi ;;
+            esac
+            sleep 30
+          done
+          echo "::error::CI on ${sha} didn't finish in time"; exit 1
+
   build:
+    needs: ci-gate
     name: Build cross-compile targets
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -39,9 +72,9 @@ jobs:
     #     Whoever can push a v* tag gets a release that installers, `vaultbase
     #     update` and docker.yml accept, and this `environment:` key lives in
     #     the tagged commit, so the ruleset is what stops a writer dropping it.
-    #   - Settings > Environments > release: optional required reviewers and a
-    #     deployment rule limited to v* tags. With no reviewers the job runs
-    #     unattended once the tag exists.
+    #   - Settings > Environments > release: the maintainer is a required
+    #     reviewer (since 0.42), so a release waits for an approval click after
+    #     ci-gate passes.
     #   - Settings > General > Releases: immutable releases, so assets can't be
     #     replaced after publication (the .sha256 and SHA256SUMS sit next to
     #     the binaries they vouch for; only the signature is out of reach).
@@ -338,3 +371,43 @@ jobs:
             releases/SHA256SUMS.pem
             releases/SHA256SUMS.sigstore.json
             releases/vaultbase-source.cdx.json
+
+  # Install what was just published, the way a user would, and check it runs:
+  # the checksum and the Sigstore bundle verify, the binary reports the tag's
+  # version, starts on a fresh data folder and answers its health check.
+  smoke-test:
+    name: Smoke-test the published Linux binary
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Download, verify, start
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -eu
+          mkdir smoke && cd smoke
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" \
+            -p vaultbase-linux-x64 -p vaultbase-linux-x64.sha256 -p vaultbase-linux-x64.sigstore.json
+          echo "$(cut -d' ' -f1 vaultbase-linux-x64.sha256)  vaultbase-linux-x64" | sha256sum -c -
+          cosign verify-blob --bundle vaultbase-linux-x64.sigstore.json \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@refs/tags/${TAG}\$" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            vaultbase-linux-x64
+          chmod +x vaultbase-linux-x64
+          v="$(./vaultbase-linux-x64 --version)"
+          echo "$v"
+          [ "$v" = "vaultbase ${TAG#v}" ] || { echo "::error::binary says '$v', expected 'vaultbase ${TAG#v}'"; exit 1; }
+          VAULTBASE_DATA_DIR="$PWD/data" VAULTBASE_PORT=8091 ./vaultbase-linux-x64 > server.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8091/api/health; then echo; ok=1; break; fi
+            sleep 1
+          done
+          kill "$pid" || true
+          if [ "${ok:-}" != 1 ]; then cat server.log; echo "::error::the published binary didn't answer /api/health"; exit 1; fi
+          grep -q "No admin exists yet" server.log || { cat server.log; echo "::error::no setup link printed"; exit 1; }
