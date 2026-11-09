@@ -64,6 +64,7 @@ export function parseCliArgs(argv: string[]): CliFlags {
       else if (arg.startsWith("--password=")) password = arg.slice("--password=".length);
       else if (arg === "--password") { const v = argv[++i]; if (v) password = v; }
       else if (arg === "--force") force = true;
+      else if (arg !== "--help" && arg !== "-h") unknownArgument(arg, "vaultbase setup-admin --help");
       else if (arg === "--help" || arg === "-h") {
         process.stdout.write(
           `Usage: vaultbase setup-admin --email <e> --password <p> [--force]\n` +
@@ -105,9 +106,22 @@ export function parseCliArgs(argv: string[]): CliFlags {
         process.stderr.write(`vaultbase: --snapshot-mode must be 'additive' or 'sync' (got '${String(next)}')\n`);
         process.exit(1);
       }
+    } else {
+      unknownArgument(arg, "vaultbase --help");
     }
   }
   return flags;
+}
+
+/**
+ * Anything the CLI doesn't know is an error. It used to be skipped, so
+ * `vaultbase serve`, `vaultbase --versoin` or `vaultbase --port 9000`
+ * quietly started a server, on the default port.
+ */
+function unknownArgument(arg: string, help: string): never {
+  const what = arg.startsWith("-") ? "option" : "command";
+  process.stderr.write(`vaultbase: unknown ${what} '${arg}'. Run '${help}' for the list.\n`);
+  process.exit(2);
 }
 
 async function setupAdminFromCli(opts: { email: string; password: string; force: boolean }): Promise<void> {
@@ -223,8 +237,8 @@ Subcommands:
   setup-admin                     Create or reset an admin account
                                   --email <e> --password <p> [--force]
 
-  cluster                         Spawn N worker processes (multi-core deployments)
-                                  Set VAULTBASE_WORKERS=N (default: CPU count).
+  cluster                         (deprecated, removed in a coming release)
+                                  Spawn N worker processes. VAULTBASE_WORKERS=N.
 
   mcp                             Run the MCP server over stdio.
                                   Connect Claude Desktop / Cursor / Continue / Cline.
