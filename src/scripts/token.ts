@@ -10,7 +10,7 @@
  * cron jobs that rotate tokens without a web round-trip.
  */
 import { eq } from "drizzle-orm";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { getDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { admin } from "../db/schema.ts";
@@ -105,19 +105,35 @@ Examples:
 `);
 }
 
+// The data folder this run opened, named in errors: running in the wrong
+// folder used to look like "no admin exists" for an install that has one.
+let openedDataDir = "";
+function dataDirLabel(): string {
+  return process.env["VAULTBASE_DATABASE_URL"] ? "the database in VAULTBASE_DATABASE_URL" : `the data folder ${openedDataDir}`;
+}
+
 async function resolveAdmin(asEmail?: string): Promise<{ id: string; email: string }> {
   const db = getDb();
   const rows = asEmail
     ? await db.select().from(admin).where(eq(admin.email, asEmail)).limit(1)
     : await db.select().from(admin).limit(1);
   const row = rows[0];
-  if (!row) throw new Error(asEmail ? `admin '${asEmail}' not found` : "no admin exists yet — create one via /_/setup or `vaultbase setup-admin` first");
+  if (!row) {
+    throw new Error(asEmail
+      ? `admin '${asEmail}' not found in ${dataDirLabel()}`
+      : `no admin in ${dataDirLabel()}. If your server uses another data folder, set VAULTBASE_DATA_DIR to it; otherwise create an admin via /_/setup or \`vaultbase setup-admin\` first`);
+  }
   return { id: row.id, email: row.email };
 }
 
 async function cmdMint(args: ParsedArgs, jwtSecret: string): Promise<void> {
   if (!args.name) throw new Error("--name is required for mint");
   if (args.scopes.length === 0) throw new Error("at least one --scope is required");
+  // A typo used to mint a token that could do nothing.
+  const unknown = args.scopes.filter((sc) => !(KNOWN_SCOPES as readonly string[]).includes(sc));
+  if (unknown.length > 0) {
+    throw new Error(`unknown scope${unknown.length > 1 ? "s" : ""} '${unknown.join("', '")}'. Known: ${KNOWN_SCOPES.join(", ")}`);
+  }
   const minter = await resolveAdmin(args.asEmail);
   const result = await mintApiToken({
     name: args.name,
@@ -181,6 +197,7 @@ export async function runTokenCli(argv: string[], dbPath: string, jwtSecret: str
     return;
   }
 
+  openedDataDir = resolve(dirname(dbPath));
   // This data directory's install, as the server checks (core/install-marker.ts).
   const installMarker = await import("../core/install-marker.ts");
   try {

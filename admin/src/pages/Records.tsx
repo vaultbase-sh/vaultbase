@@ -1492,9 +1492,8 @@ export default function Records() {
     return String(val);
   }
 
-  // Sub-tab navigation: clicking Schema/Rules/Indexes jumps into CollectionEdit.
-  // (CollectionEdit's internal tab state defaults to Fields; param-syncing the
-  // exact tab is a small follow-up — for now the navigation is intent-correct.)
+  // Sub-tab navigation: Schema/Rules/Indexes open CollectionEdit on that tab
+  // (?tab=, read there).
   const subTabs: VbTab<"records" | "schema" | "rules" | "indexes">[] = [
     { id: "records",  label: "Records",   icon: "stack", count: total > 0 ? total : 0 },
     { id: "schema",   label: "Schema",    icon: "settings" },
@@ -1503,9 +1502,8 @@ export default function Records() {
   ];
   const onSubTab = (id: typeof subTabs[number]["id"]) => {
     if (id === "records") return;
-    if (id === "rules" || id === "indexes" || id === "schema") {
-      navigate(`/_/collections/${collId}/edit`);
-    }
+    if (id === "rules" || id === "indexes") navigate(`/_/collections/${collId}/edit?tab=${id}`);
+    else if (id === "schema") navigate(`/_/collections/${collId}/edit`);
   };
 
   const isSingleton = collection?.type === "singleton";

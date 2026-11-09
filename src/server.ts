@@ -239,7 +239,12 @@ function realtimeSocket(jwtSecret: string) {
         // Same policy as SSE: present Origin must be allow-listed, missing
         // Origin (non-browser client) is allowed and authenticates by token.
         if (!isOriginAllowed(origin, req)) {
-          ws.send(JSON.stringify({ type: "error", reason: "origin_not_allowed" }));
+          // The hint names the setting: the bare reason left people guessing.
+          ws.send(JSON.stringify({
+            type: "error",
+            reason: "origin_not_allowed",
+            hint: `Add ${origin} to the allowed origins (admin: Settings → CORS, or the cors.origins setting)`,
+          }));
           ws.close();
           return;
         }

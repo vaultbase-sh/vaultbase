@@ -20,6 +20,7 @@ import { admin } from "./db/schema.ts";
 import { createServer } from "./server.ts";
 import { applySnapshot, SnapshotShapeError, type ApplyMode } from "./core/migrations.ts";
 import { drainLogBuffer, drainLogBufferSync } from "./core/file-logger.ts";
+import { resolve } from "node:path";
 
 // Top-level safety net — log + keep the process up rather than crash on a
 // stray rejection from a `void asyncFn()` site. Default Node behaviour is
@@ -118,11 +119,14 @@ async function setupAdminFromCli(opts: { email: string; password: string; force:
     process.stderr.write(`vaultbase: --email is not a valid email address\n`);
     process.exit(1);
   }
-  if (opts.password.length < 8) {
-    process.stderr.write(`vaultbase: --password must be at least 8 characters\n`);
+  const db = getDb();
+  // The same policy the setup wizard and sign-up enforce (12+ by default).
+  const { validatePassword } = await import("./core/password-policy.ts");
+  const weak = await validatePassword(opts.password);
+  if (weak) {
+    process.stderr.write(`vaultbase: --password: ${weak}\n`);
     process.exit(1);
   }
-  const db = getDb();
   const { eq } = await import("drizzle-orm");
 
   // Check globally (any admin) for the no-force guard, AND check whether
@@ -290,6 +294,16 @@ async function openForCommand(command: string, dataDir: string, argv: readonly s
     const refused = installMarker.refusal(e, `vaultbase ${command}`);
     process.stderr.write(refused ?? `vaultbase ${command}: can't open the database: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(2);
+  }
+}
+
+/** True when nothing holds `port` on `hostname` (a plain bind, no SO_REUSEPORT). */
+function portIsFree(port: number, hostname: string): boolean {
+  try {
+    Bun.listen({ hostname, port, socket: { data() {} } }).stop(true);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -579,6 +593,18 @@ async function main() {
   // listened on every interface. Unset keeps Bun's default (all interfaces,
   // IPv4 and IPv6).
   const hostname = process.env["VAULTBASE_HOST"]?.trim();
+  // The listener below uses SO_REUSEPORT (Elysia's default, and read workers
+  // join the same port with it), so a second Vaultbase started on a busy port
+  // used to bind as well: it printed a setup link for its own empty install
+  // while requests went to the first one (macOS) or were split between the
+  // two (Linux). A plain bind fails on a port anyone holds; try one first.
+  if (!isWorker && !portIsFree(config.port, hostname || "0.0.0.0")) {
+    process.stderr.write(
+      `vaultbase: port ${config.port} is already in use (another Vaultbase or another program).\n` +
+      `Stop it, or start this one on another port with VAULTBASE_PORT.\n`,
+    );
+    process.exit(1);
+  }
   server.listen({
     port: config.port,
     ...(hostname ? { hostname } : {}),
@@ -657,6 +683,12 @@ async function main() {
   if (isClusterWorker() && runsSingletonDuties()) process.stderr.write(CLUSTER_LIMITS_WARNING);
 
 
+  // Which install this is: a server started in the wrong folder runs an
+  // empty install, and nothing on screen said so.
+  const where = `Data: ${resolve(config.dataDir)} · Database: ${
+    getDriver().name === "postgres" ? "Postgres (VAULTBASE_DATABASE_URL)" : "SQLite (data.db)"
+  }`;
+
   if (!adminExists) {
     // Setup needs a key; print where to use it. A key from
     // VAULTBASE_SETUP_KEY is the operator's own and isn't echoed.
@@ -666,6 +698,7 @@ async function main() {
       : `${base}/_/setup#key=${encodeURIComponent(key)}`;
     console.log(
       `\nVaultbase is running at ${base}\n` +
+      `${where}\n` +
       `No admin exists yet. Create one at:\n  ${link}\n` +
       (setupKeyFromEnv() ? "" : `Setup key: ${key}\n`)
     );
@@ -674,6 +707,7 @@ async function main() {
       ? ` [worker ${process.env["VAULTBASE_WORKER_ID"]} pid ${process.pid}]`
       : "";
     console.log(`Vaultbase running at ${base}${tag}`);
+    if (!tag) console.log(where);
   }
 }
 

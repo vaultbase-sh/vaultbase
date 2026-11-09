@@ -19,7 +19,7 @@
  *   3 — token has no mcp:* scope
  */
 
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { runMigrations } from "../db/migrate.ts";
 import { stripApiTokenPrefix, hasScope } from "../core/api-tokens.ts";
 import { verifyAuthToken } from "../core/sec.ts";
@@ -73,12 +73,19 @@ or %APPDATA%\\Claude\\claude_desktop_config.json):
   {
     "mcpServers": {
       "vaultbase": {
-        "command": "vaultbase",
+        "command": "/usr/local/bin/vaultbase",
         "args": ["mcp"],
-        "env": { "VAULTBASE_MCP_TOKEN": "vbat_…" }
+        "env": {
+          "VAULTBASE_MCP_TOKEN": "vbat_…",
+          "VAULTBASE_DATA_DIR": "/var/lib/vaultbase"
+        }
       }
     }
   }
+
+Use absolute paths: desktop apps don't see your shell's PATH (\`which vaultbase\`
+prints the binary's), and VAULTBASE_DATA_DIR must be the folder your server
+uses, or the token won't be found.
 `);
 }
 
@@ -116,7 +123,16 @@ export async function runMcpCli(argv: string[], dbPath: string, jwtSecret: strin
 
   const ctx = await verifyAuthToken(stripApiTokenPrefix(tokenRaw), jwtSecret, { audience: "api" });
   if (!ctx || !ctx.viaApiToken) {
-    process.stderr.write(`vaultbase mcp: token verification failed. Mint a fresh token with \`vaultbase token mint --scope mcp:read\`.\n`);
+    // Name the folder: the usual cause is a client that started this in
+    // another folder, where an empty install has no such token.
+    const where = process.env["VAULTBASE_DATABASE_URL"]
+      ? "the database in VAULTBASE_DATABASE_URL"
+      : `the data folder ${resolve(dirname(dbPath))}`;
+    process.stderr.write(
+      `vaultbase mcp: token verification failed against ${where}.\n` +
+      `If your server uses another data folder, set VAULTBASE_DATA_DIR to it in the MCP client's config.\n` +
+      `Otherwise mint a fresh token there with \`vaultbase token mint --name mcp --scope mcp:read\`.\n`,
+    );
     process.exit(2);
   }
 

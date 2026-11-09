@@ -5,7 +5,7 @@ import {
   api, AUTH_RESERVED_FIELD_NAMES, type ApiResponse, type Collection, type FieldDef, parseFields,
 } from "../api.ts";
 import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   CollectionAvatar,
   FieldTypePill,
@@ -128,7 +128,10 @@ export default function CollectionEdit() {
   const [historyEnabled, setHistoryEnabled] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  const [tab, setTab] = useState<Tab>("fields");
+  // ?tab=rules|indexes opens that tab (the records page links here).
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const [tab, setTab] = useState<Tab>(initialTab === "rules" || initialTab === "indexes" ? initialTab : "fields");
   const [expandedRule, setExpandedRule] = useState<RuleOpId | null>(null);
   const isView = collection?.type === "view";
   const isSingleton = collection?.type === "singleton";

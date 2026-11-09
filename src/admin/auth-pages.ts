@@ -1,4 +1,5 @@
 import Elysia from "elysia";
+import { getPasswordPolicy } from "../core/password-policy.ts";
 
 /**
  * Built-in HTML pages for the email-link auth flows: password reset, email
@@ -113,6 +114,11 @@ const REVEAL_SVG_EYE =
 const REVEAL_SVG_EYE_OFF =
   `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-10-7-10-7a19.77 19.77 0 0 1 4.22-5.94"/><path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 10 7 10 7a19.86 19.86 0 0 1-3.17 4.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
+/** The configured minimum (password.min_length), so the form checks what the server enforces. */
+function minLen(): number {
+  return getPasswordPolicy().min_length;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -161,12 +167,12 @@ function resetPage(token: string, collection: string): string {
 <form id="form" autocomplete="off">
   <div class="field">
     <label for="pw">New password</label>
-    <input id="pw" type="password" autocomplete="new-password" required minlength="8" />
+    <input id="pw" type="password" autocomplete="new-password" required minlength="${minLen()}" />
     <button type="button" class="reveal" data-target="pw" aria-label="Show password">${REVEAL_SVG_EYE}</button>
   </div>
   <div class="field">
     <label for="pw2">Confirm password</label>
-    <input id="pw2" type="password" autocomplete="new-password" required minlength="8" />
+    <input id="pw2" type="password" autocomplete="new-password" required minlength="${minLen()}" />
     <button type="button" class="reveal" data-target="pw2" aria-label="Show password">${REVEAL_SVG_EYE}</button>
   </div>
   <button type="submit" id="submit" class="primary">Reset password</button>
@@ -205,7 +211,7 @@ function resetPage(token: string, collection: string): string {
     var pw  = document.getElementById('pw').value;
     var pw2 = document.getElementById('pw2').value;
     if (pw !== pw2) { show('error', 'Passwords do not match.'); return; }
-    if (pw.length < 8) { show('error', 'Password must be at least 8 characters.'); return; }
+    if (pw.length < ${minLen()}) { show('error', 'Password must be at least ${minLen()} characters.'); return; }
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Resetting...';
     try {
@@ -254,7 +260,7 @@ function passwordPage(token: string, collection: string, o: PasswordPageOpts): s
   const second = o.confirm ? /* html */ `
   <div class="field">
     <label for="pw2">Confirm password</label>
-    <input id="pw2" type="password" autocomplete="new-password" required minlength="8" />
+    <input id="pw2" type="password" autocomplete="new-password" required minlength="${minLen()}" />
     <button type="button" class="reveal" data-target="pw2" aria-label="Show password">${REVEAL_SVG_EYE}</button>
   </div>` : "";
   const body = /* html */ `
@@ -264,7 +270,7 @@ function passwordPage(token: string, collection: string, o: PasswordPageOpts): s
 <form id="form" autocomplete="off">
   <div class="field">
     <label for="pw">${o.confirm ? "New password" : "Current password"}</label>
-    <input id="pw" type="password" autocomplete="${o.confirm ? "new-password" : "current-password"}" required ${o.confirm ? 'minlength="8"' : ""} />
+    <input id="pw" type="password" autocomplete="${o.confirm ? "new-password" : "current-password"}" required ${o.confirm ? `minlength="${minLen()}"` : ""} />
     <button type="button" class="reveal" data-target="pw" aria-label="Show password">${REVEAL_SVG_EYE}</button>
   </div>${second}
   <button type="submit" id="submit" class="primary">${escapeHtml(o.button)}</button>
@@ -304,7 +310,7 @@ function passwordPage(token: string, collection: string, o: PasswordPageOpts): s
     var pw = document.getElementById('pw').value;
     if (opts.confirm) {
       if (pw !== document.getElementById('pw2').value) { show('error', 'Passwords do not match.'); return; }
-      if (pw.length < 8) { show('error', 'Password must be at least 8 characters.'); return; }
+      if (pw.length < ${minLen()}) { show('error', 'Password must be at least ${minLen()} characters.'); return; }
     }
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> ' + opts.busy;

@@ -9,8 +9,19 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Changed
+
+- `vaultbase setup-admin` and the password reset and set-password pages use the password policy (`password.min_length`, 12 by default) instead of a fixed 8 characters, so they match the setup wizard and sign-up.
+- `vaultbase token mint` rejects unknown `--scope` values and lists the known ones; a typo used to mint a token that could do nothing.
+
 ### Fixed
 
+- A second Vaultbase started on a port already in use now stops with "port … is already in use". It used to start as well, print a setup link for its own empty install, and leave requests going to the first server (macOS) or split between the two (Linux).
+- The startup banner shows the data folder and the database, so a server started in the wrong folder is visible at once.
+- `vaultbase mcp` and `vaultbase token` name the data folder they opened when the token or admin isn't found, and say to set `VAULTBASE_DATA_DIR`. `vaultbase mcp --help` shows a config with absolute paths and `VAULTBASE_DATA_DIR`.
+- The realtime `origin_not_allowed` error has a `hint` naming the origin and the CORS setting to add it to.
+- `vaultbase doctor` says "no problems found" on a healthy install.
+- Admin: the records page's "API rules" and "Indexes" tabs open those tabs in the collection editor instead of Fields.
 - The installer (`get.vaultbase.dev` and `install.sh`) no longer fails when GitHub's "latest release" page answers with a server error; it asks GitHub's API for the latest tag instead. The installer service also stopped caching GitHub errors, which had kept it unavailable for up to five minutes after a single failed request.
 
 ## [0.41.1] — 2026-11-08

@@ -205,7 +205,7 @@ export function runDoctorCli(_argv: readonly string[], dbPath: string): number {
     return 2;
   }
   if (report.ok && report.warnings.length === 0) {
-    process.stdout.write("✓ vaultbase doctor — clean. v0.11 migration is safe.\n");
+    process.stdout.write("✓ vaultbase doctor: no problems found.\n");
     return 0;
   }
   if (report.blockers.length > 0) {
