@@ -82,7 +82,14 @@ describe("If-Match is atomic with the write", () => {
         ]);
         expect(patch.status).not.toBe(500);
         if (del.status === 204 || del.status === 200) {
-          expect(patch.status === 200 || patch.status === (withEtag ? 412 : 404)).toBe(true);
+          // The PATCH either ran first (200), found the record and then lost
+          // the ETag check under the lock (412, with If-Match), or started
+          // after the DELETE had finished and found nothing (404, with or
+          // without If-Match). The last one is rare on a fast machine and
+          // common on a slow CI runner, so the test allowed only the first
+          // two with an ETag and failed now and then.
+          const allowed = withEtag ? [200, 404, 412] : [200, 404];
+          expect(allowed).toContain(patch.status);
         }
       }
     }
