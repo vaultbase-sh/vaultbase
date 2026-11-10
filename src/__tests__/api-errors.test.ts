@@ -131,7 +131,7 @@ describe("a token the server doesn't accept answers 401", () => {
     expect((await records("/notes", bearer(readOnly))).status).toBe(200);
     const write = await records("/notes", json("POST", { title: "x" }, readOnly));
     expect(write.status).toBe(401);
-    expect(await write.json()).toEqual({ error: "This API token doesn't have the scope for this request", code: 401, reason: "token_invalid" });
+    expect(await write.json()).toEqual({ error: "This API token doesn't have the scope for this request", code: 401, reason: "insufficient_scope" });
 
     const writeOnly = await apiToken(["write"]);
     expect((await records("/notes", json("POST", { title: "x" }, writeOnly))).status).toBe(200);

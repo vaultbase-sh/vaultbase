@@ -40,16 +40,16 @@ export async function tokenRejection(request: Request, jwtSecret: string, access
   return dataPrincipal(verified, access) ? null : "scope";
 }
 
-export interface InvalidTokenBody { error: string; code: 401; reason: "token_invalid" }
+export interface InvalidTokenBody { error: string; code: 401; reason: "token_invalid" | "insufficient_scope" }
 
 /** The 401 for a token that wasn't accepted. Checked before anything is looked up, so it says nothing about what exists. */
 export function invalidToken(set: { status?: number | string }, why: "invalid" | "scope"): InvalidTokenBody {
   set.status = 401;
-  return {
-    error: why === "scope" ? "This API token doesn't have the scope for this request" : "Token expired or invalid",
-    code: 401,
-    reason: "token_invalid",
-  };
+  // Two reasons, so a client needn't read the message: signing in again
+  // fixes `token_invalid`; only a token with more scopes fixes the other.
+  return why === "scope"
+    ? { error: "This API token doesn't have the scope for this request", code: 401, reason: "insufficient_scope" }
+    : { error: "Token expired or invalid", code: 401, reason: "token_invalid" };
 }
 
 export type RefusedOperation = "list" | "view" | "create" | "update" | "delete";
