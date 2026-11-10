@@ -9,6 +9,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Added
+
+- Admin: the sidebar lists your collections under "Collections", by name, each opening its records; the open one is highlighted. A chevron hides or shows the list (remembered per browser). Past 15 collections the list ends with "All collections".
+
 ### Fixed
 
 - After-hooks: when looking up a collection's hooks failed (for example while the database was closing), the error went unhandled instead of being logged.

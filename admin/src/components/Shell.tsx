@@ -7,6 +7,8 @@ import { useVersion } from "../stores/version.ts";
 import { useSidebar } from "../stores/sidebar.ts";
 import { NAV_SECTIONS, favoriteItems, isNavActive, isNavShown, type NavItem } from "../lib/nav.ts";
 import { toast } from "../stores/toast.ts";
+import { useCollections } from "../stores/collections.ts";
+import { collectionIdFromPath, sidebarCollections } from "../lib/sidebar-collections.ts";
 import "../styles/sidebar-next.css";
 
 /* ── SIDEBAR EXPERIMENT ──────────────────────────────────────────────────────
@@ -40,6 +42,48 @@ function sidebarNextClass(): string {
   return on ? " sidebar--next" : "";
 }
 
+// The collections, listed under "Collections". Open by default; the choice
+// is kept per browser.
+const COLLECTIONS_OPEN_KEY = "vb_sidebar_collections_open";
+
+function readCollectionsOpen(): boolean {
+  try { return localStorage.getItem(COLLECTIONS_OPEN_KEY) !== "0"; } catch { return true; }
+}
+
+const CollectionsSubnav: React.FC<{ open: boolean }> = ({ open }) => {
+  const list = useCollections((s) => s.list);
+  const load = useCollections((s) => s.load);
+  const { pathname } = useLocation();
+  React.useEffect(() => { void load(); }, [load]);
+  if (!open || list.length === 0) return null;
+  const activeId = collectionIdFromPath(pathname);
+  const { shown, hidden } = sidebarCollections(list, activeId);
+  return (
+    <ul className="sb-subnav" aria-label="Collections">
+      {shown.map((c) => (
+        <li key={c.id}>
+          <NavLink
+            to={`/_/collections/${encodeURIComponent(c.id)}/records`}
+            className={() => `sb-sub-item${c.id === activeId ? " active" : ""}`}
+            aria-current={c.id === activeId ? "page" : undefined}
+            title={c.name}
+          >
+            <span className="sb-sub-name">{c.name}</span>
+            {c.type !== "base" && <span className="sb-sub-type">{c.type}</span>}
+          </NavLink>
+        </li>
+      ))}
+      {hidden > 0 && (
+        <li>
+          <NavLink to="/_/collections" end className="sb-sub-item sb-sub-more">
+            All collections ({list.length})
+          </NavLink>
+        </li>
+      )}
+    </ul>
+  );
+};
+
 export const Sidebar: React.FC = () => {
   const adminEmail = useAuth((s) => s.email);
   const version = useVersion();
@@ -54,6 +98,11 @@ export const Sidebar: React.FC = () => {
   const { pathname } = useLocation();
   const { pinned, inUse, favorites, loaded, load, refreshUsage, toggleFavorite } = useSidebar();
   const [moreOpen, setMoreOpen] = React.useState(false);
+  const [collectionsOpen, setCollectionsOpen] = React.useState(readCollectionsOpen);
+  const toggleCollections = () => setCollectionsOpen((o) => {
+    try { localStorage.setItem(COLLECTIONS_OPEN_KEY, o ? "0" : "1"); } catch { /* per-browser nicety only */ }
+    return !o;
+  });
   React.useEffect(() => { if (!loaded) void load(); }, [loaded, load]);
   // Leaving an optional page: it may have gained (or lost) its first entry.
   const prevPath = React.useRef(pathname);
@@ -71,7 +120,8 @@ export const Sidebar: React.FC = () => {
     if (err) toast(err, "info");
   };
   const link = (item: NavItem) => (
-    <li key={item.to} className="sb-nav-row">
+    <React.Fragment key={item.to}>
+    <li className="sb-nav-row">
       <NavLink
         to={item.to}
         end={item.end}
@@ -82,6 +132,18 @@ export const Sidebar: React.FC = () => {
         <Icon name={item.icon} size={13} />
         <span>{item.label}</span>
       </NavLink>
+      {item.id === "collections" && (
+        <button
+          type="button"
+          className="sb-sub-toggle"
+          aria-expanded={collectionsOpen}
+          aria-label={collectionsOpen ? "Hide collections in the sidebar" : "Show collections in the sidebar"}
+          title={collectionsOpen ? "Hide collections" : "Show collections"}
+          onClick={toggleCollections}
+        >
+          <Icon name={collectionsOpen ? "chevronDown" : "chevronRight"} size={12} />
+        </button>
+      )}
       {loaded && (
         <button
           type="button"
@@ -95,6 +157,9 @@ export const Sidebar: React.FC = () => {
         </button>
       )}
     </li>
+    {/* Its own item, so the row's star and chevron stay centred on the row. */}
+    {item.id === "collections" && <li className="sb-subnav-row"><CollectionsSubnav open={collectionsOpen} /></li>}
+    </React.Fragment>
   );
 
   return (

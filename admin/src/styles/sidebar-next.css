@@ -180,3 +180,15 @@
   color: var(--vb-fg-4);
   text-transform: uppercase; /* Shell renders it lowercase */
 }
+
+/* Collections sub-menu: same rhythm as the rows above, indented past the icon. */
+.sidebar--next .sb-sub-item {
+  padding: 5px 20px 5px 48px;
+  border-radius: 0;
+  border-left: 2px solid transparent;
+}
+.sidebar--next .sb-sub-item:hover { background: var(--vb-surface-hover); }
+.sidebar--next .sb-sub-item.active {
+  background: var(--vb-surface-highlight);
+  border-left-color: var(--vb-accent);
+}
