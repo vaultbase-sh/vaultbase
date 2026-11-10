@@ -13,6 +13,7 @@ import { makeExtraHelpers, type ExtraHookHelpers } from "./hook-helpers-extra.ts
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
+import { makeRecordsHelper, type RecordsHelper } from "./records-helper.ts";
 
 /**
  * Per-async-context store carrying the active HTTP Request through
@@ -78,6 +79,8 @@ export interface HookHelpers extends ExtraHookHelpers {
   /** Alias of `uuid()` — common name LLMs reach for when generating ids. */
   id(): string;
   find(collection: string, id: string): Promise<Record<string, unknown> | null>;
+  /** Record writes through the records path: hooks, history, realtime, webhooks (core/records-helper.ts). */
+  records: RecordsHelper;
   query(
     collection: string,
     opts?: { filter?: string; sort?: string; perPage?: number }
@@ -365,6 +368,7 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
     id(): string {
       return crypto.randomUUID();
     },
+    records: makeRecordsHelper(),
     async find(collection: string, id: string) {
       const { getRecord } = await import("./records.ts");
       const r = await getRecord(collection, id);

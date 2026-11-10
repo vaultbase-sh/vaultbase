@@ -143,6 +143,16 @@ interface HookHelpers {
     collection: string,
     opts?: { filter?: string; sort?: string; perPage?: number }
   ): Promise<{ data: T[]; totalItems: number }>;
+  /**
+   * Write records the way the API does: validation, hooks, record history,
+   * realtime and webhooks (helpers.sql skips all of these). No API rules
+   * apply. Nesting past 5 levels throws, so a hook can't loop forever.
+   */
+  records: {
+    create<T = Record<string, any>>(collection: string, data: Record<string, any>): Promise<T>;
+    update<T = Record<string, any>>(collection: string, id: string, data: Record<string, any>): Promise<T>;
+    delete(collection: string, id: string): Promise<void>;
+  };
   /** Outbound HTTP fetch (Web Fetch API) */
   fetch(input: string | URL, init?: RequestInit): Promise<Response>;
   /** Server-side log */

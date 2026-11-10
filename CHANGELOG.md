@@ -11,6 +11,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Added
 
+- `helpers.records.create(collection, data)`, `.update(collection, id, data)` and `.delete(collection, id)` for hooks, custom routes, cron jobs and queue workers. They write through the same path as the records API, so the write is validated, runs the target collection's hooks, and gets record history, realtime events and webhooks; `helpers.sql` writes rows directly and gets none of these. No API rules apply (trusted server code, like `helpers.sql`), and the write has no user (record history shows it as system). A hook that writes to its own collection triggers itself, so writes nested more than 5 deep throw instead of looping.
 - Admin → Settings → Rate limiting: rules can be reordered, by dragging a rule's handle or with its up and down arrows. Rules are checked top to bottom and the first match applies, so order decides which limit a request gets; new rules used to land at the bottom with no way to move them. The page now says so.
 
 ### Changed
