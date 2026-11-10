@@ -18,6 +18,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - Rate limit counters are kept per rule (its label and audience) instead of per position in the list, so a rule keeps its own count when the list is reordered.
 
+### Release process
+
+- A new "Install test" workflow installs every release the way users do and checks that it runs: the `get.vaultbase.dev` one-liner with a systemd service and a required signature check on Ubuntu, `install.sh` in Ubuntu (with and without `xz`) and Alpine containers, and `install.ps1` on Windows. It also runs weekly.
+
 ### Fixed
 
 - Realtime: subscribing to a system topic such as `__flags` (the SDKs use it for live feature flags) no longer gets an `unknown_collection` warning.

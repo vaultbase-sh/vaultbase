@@ -1,0 +1,167 @@
+name: Install test
+
+# Installs a published release the way users do and checks it runs:
+# install.sh on Ubuntu (with systemd, the documented one-liner and a
+# signature check), in Ubuntu and Alpine containers (with and without xz:
+# both download paths), and install.ps1 on Windows. Each checks the version,
+# starts the server on an empty data folder, and waits for /api/health and
+# the setup link. Runs after every release, weekly (GitHub, the installer
+# service and the base images change under it), and by hand for any tag.
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to install (e.g. v0.43.0). Empty: the latest."
+        required: false
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Resolve the release
+    runs-on: ubuntu-latest
+    # Same guard as docker.yml: only this repository's release.yml, run by a push.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.repository.full_name == github.repository &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        (github.event.workflow_run.path == '.github/workflows/release.yml' ||
+         startsWith(github.event.workflow_run.path, '.github/workflows/release.yml@')))
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -eu
+          case "$EVENT" in
+            workflow_run) tag="$RUN_TAG" ;;
+            *) tag="${INPUT_TAG:-}"; [ -n "$tag" ] || tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" ;;
+          esac
+          printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::not a release tag: '$tag'"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Testing installs of $tag"
+
+  # The documented one-liner on a real machine: get.vaultbase.dev, systemd
+  # service, cosign signature check required.
+  ubuntu-service:
+    name: Ubuntu, service install (get.vaultbase.dev, --verify-sig)
+    needs: tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - name: Install
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -eu
+          curl -fsSL https://get.vaultbase.dev | sudo sh -s -- --version "$TAG" --verify-sig
+      - name: Check the service
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -eu
+          v="$(vaultbase --version)"; echo "$v"
+          [ "$v" = "vaultbase ${TAG#v}" ] || { echo "::error::installed '$v', expected ${TAG#v}"; exit 1; }
+          systemctl is-active --quiet vaultbase || { sudo journalctl -u vaultbase --no-pager | tail -50; echo "::error::service not active"; exit 1; }
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8091/api/health && { echo; ok=1; break; }; sleep 1; done
+          [ "${ok:-}" = 1 ] || { sudo journalctl -u vaultbase --no-pager | tail -50; echo "::error::no answer on :8091/api/health"; exit 1; }
+          sudo journalctl -u vaultbase --no-pager | grep -q "_/setup" || { echo "::error::no setup link in the service log"; exit 1; }
+
+  # Containers: no systemd, so the binary only; both download paths.
+  linux:
+    name: ${{ matrix.name }}
+    needs: tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu, xz download
+            image: ubuntu:24.04
+            prep: apt-get update -qq && apt-get install -y -qq curl ca-certificates xz-utils >/dev/null
+          - name: Ubuntu, no xz (raw download)
+            image: ubuntu:24.04
+            prep: apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null && rm -f /usr/bin/xz /bin/xz
+          - name: Alpine (musl; the installer adds libstdc++ and xz)
+            image: alpine:3.20
+            prep: apk add --no-cache -q curl
+    container: ${{ matrix.image }}
+    steps:
+      - name: Prepare
+        run: ${{ matrix.prep }}
+      - name: Install
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          # This release's own installer, not whatever the service serves.
+          curl -fsSL "https://raw.githubusercontent.com/${REPO}/refs/tags/${TAG}/deploy/install.sh" | sh -s -- --version "$TAG" --no-systemd
+      - name: Run it
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -eu
+          v="$(vaultbase --version)"; echo "$v"
+          [ "$v" = "vaultbase ${TAG#v}" ] || { echo "::error::installed '$v', expected ${TAG#v}"; exit 1; }
+          mkdir -p /tmp/vb
+          VAULTBASE_DATA_DIR=/tmp/vb/data VAULTBASE_PORT=8091 vaultbase > /tmp/vb/server.log 2>&1 &
+          pid=$!
+          ok=""
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8091/api/health && { echo; ok=1; break; }; sleep 1; done
+          kill "$pid" || true
+          [ "$ok" = 1 ] || { cat /tmp/vb/server.log; echo "::error::no answer on /api/health"; exit 1; }
+          grep -q "_/setup" /tmp/vb/server.log || { cat /tmp/vb/server.log; echo "::error::no setup link printed"; exit 1; }
+
+  windows:
+    name: Windows (install.ps1)
+    needs: tag
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install
+        shell: pwsh
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & ([scriptblock]::Create((Invoke-RestMethod "https://raw.githubusercontent.com/$env:REPO/refs/tags/$env:TAG/deploy/install.ps1"))) -Version $env:TAG
+      - name: Run it
+        shell: pwsh
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\Vaultbase\vaultbase.exe"
+          $v = (& $exe --version).Trim()
+          Write-Host $v
+          if ($v -ne "vaultbase $($env:TAG.TrimStart('v'))") { throw "installed '$v', expected $env:TAG" }
+          $data = Join-Path $env:RUNNER_TEMP "vb-data"
+          $log = Join-Path $env:RUNNER_TEMP "vb.log"
+          $env:VAULTBASE_DATA_DIR = $data
+          $env:VAULTBASE_PORT = "8091"
+          $p = Start-Process -FilePath $exe -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try { Invoke-RestMethod http://127.0.0.1:8091/api/health | ConvertTo-Json -Compress | Write-Host; $ok = $true; break } catch { Start-Sleep -Seconds 1 }
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Get-Content $log, "$log.err" -ErrorAction SilentlyContinue; throw "no answer on /api/health" }
+          if (-not (Select-String -Path $log, "$log.err" -Pattern "_/setup" -Quiet)) { Get-Content $log; throw "no setup link printed" }
