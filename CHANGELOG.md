@@ -24,6 +24,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Fixed
 
+- `install.sh --verify-sig` run with `sudo` says why `cosign` may not be found (sudo resets `PATH`) and how to fix it.
 - Realtime: subscribing to a system topic such as `__flags` (the SDKs use it for live feature flags) no longer gets an `unknown_collection` warning.
 
 ## [0.42.0] — 2026-11-10

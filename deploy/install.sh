@@ -432,7 +432,7 @@ fi
 # runs: dropping them must not be a way around it.
 if [ "${VERIFY_SIG}" != "off" ] && ! command -v cosign >/dev/null 2>&1; then
     if [ "${VERIFY_SIG}" = "require" ]; then
-        die "--verify-sig requested but \`cosign\` is not on PATH. Install: https://docs.sigstore.dev/cosign/installation/"
+        die "--verify-sig requested but \`cosign\` is not on PATH. Install: https://docs.sigstore.dev/cosign/installation/ (sudo resets PATH: put cosign in /usr/local/bin, or run sudo env \"PATH=\$PATH\" sh)"
     fi
     warn "cosign is not on PATH, so the release signature was NOT verified."
     warn "Only the .sha256 from the same release was checked; it cannot detect release assets replaced after publication."

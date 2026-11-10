@@ -64,6 +64,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: sigstore/cosign-installer@v3
+      # sudo resets PATH, so put cosign where root finds it, as a system
+      # package would.
+      - name: Put cosign on root's PATH
+        run: sudo install "$(command -v cosign)" /usr/local/bin/cosign
       - name: Install
         env:
           TAG: ${{ needs.tag.outputs.tag }}
