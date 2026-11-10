@@ -15,8 +15,10 @@ import type { Collection } from "../db/schema.ts";
 
 /** Keys the server itself puts on a record: sending them back (a fetched record, edited and saved) is fine. */
 const SYSTEM_KEYS = new Set(["id", "created", "updated", "created_at", "updated_at", "collectionId", "collectionName"]);
-/** As SYSTEM_KEYS, in a body only: an expanded record carries `expand`. */
-const RESPONSE_ONLY_KEYS = new Set(["expand"]);
+/** Other keys a returned record can carry: `expand` when expanded, `_score` from a vector search. */
+const RESPONSE_ONLY_KEYS = new Set(["expand", "_score"]);
+/** Columns a user record carries that aren't fields of its auth collection. */
+const AUTH_RECORD_KEYS = ["email_verified", "totp_enabled", "is_anonymous"];
 /**
  * Auth collections: the sign-up and password keys, and the columns a user
  * record carries that aren't fields (`email_verified`, `totp_enabled`,
@@ -25,7 +27,7 @@ const RESPONSE_ONLY_KEYS = new Set(["expand"]);
  */
 const AUTH_BODY_KEYS = new Set([
   "email", "password", "passwordConfirm", "oldPassword", "emailVisibility", "verified",
-  "email_verified", "totp_enabled", "is_anonymous",
+  ...AUTH_RECORD_KEYS,
 ]);
 
 /** One refused key: `key` is the query parameter or the body key it is about. */
@@ -42,7 +44,8 @@ export function unknownQueryKeys(col: Collection, q: { sort?: string; expand?: s
   const hidden = privateFieldNames(col);
   const visible = new Set(schema.filter((f) => !hidden.has(f.name)).map((f) => f.name));
   const out: UnknownKey[] = [];
-  for (const s of names(q.sort)) {
+  // `sort=@rank` (the whole value) orders a search by relevance; it names no field.
+  for (const s of q.sort === "@rank" ? [] : names(q.sort)) {
     const f = s.startsWith("-") || s.startsWith("+") ? s.slice(1) : s;
     if (!visible.has(f) && !SYSTEM_KEYS.has(f)) out.push({ key: "sort", message: `unknown sort field '${f}'` });
   }
@@ -51,8 +54,10 @@ export function unknownQueryKeys(col: Collection, q: { sort?: string; expand?: s
     const head = p.split(".")[0]!;
     if (!relations.has(head)) out.push({ key: "expand", message: `unknown expand '${head}' (not a relation field)` });
   }
+  // `fields` keeps any key a returned record has, so it takes those too.
+  const returned = new Set([...RESPONSE_ONLY_KEYS, ...(col.type === "auth" ? AUTH_RECORD_KEYS : [])]);
   for (const f of names(q.fields)) {
-    if (f === "*" || f === "expand") continue;
+    if (f === "*" || returned.has(f)) continue;
     if (!visible.has(f) && !SYSTEM_KEYS.has(f)) out.push({ key: "fields", message: `unknown field '${f}' in fields` });
   }
   return out;

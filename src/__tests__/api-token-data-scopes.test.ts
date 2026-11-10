@@ -125,8 +125,11 @@ describe("batch API", () => {
     const tok = await apiToken(["read"]);
     const read = await app.handle(req("POST", "/batch", tok, { requests: [{ method: "GET", url: `/api/v1/notes/${id}` }] }));
     expect(read.status).toBe(200);
+    // No write scope for that op: the batch is refused (401 since 0.44; the
+    // op used to run as anonymous), and the record is still there.
     const write = await app.handle(req("POST", "/batch", tok, { requests: [{ method: "DELETE", url: `/api/v1/notes/${id}` }] }));
-    expect(write.status).toBe(404);
+    expect(write.status).toBe(401);
+    expect((await app.handle(req("POST", "/batch", tok, { requests: [{ method: "GET", url: `/api/v1/notes/${id}` }] }))).status).toBe(200);
   });
 });
 

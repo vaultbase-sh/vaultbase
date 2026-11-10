@@ -255,8 +255,8 @@ export function makeBatchPlugin(jwtSecret: string, opts: { rateLimit?: boolean }
     async ({ request, body, set }) => {
       const auth = await extractAuth(request, jwtSecret);
       // A token that doesn't verify answers 401 for the whole batch (0.44;
-      // every op used to run as anonymous). An API token's scopes are still
-      // judged per op.
+      // every op used to run as anonymous). An API token's scopes are judged
+      // per op, below, once the ops are parsed.
       if (!auth && headerBearer(request)) return invalidToken(set, "invalid");
       const requests = body.requests;
       if (!Array.isArray(requests) || requests.length === 0) {
@@ -282,6 +282,10 @@ export function makeBatchPlugin(jwtSecret: string, opts: { rateLimit?: boolean }
         }
         parsed.push(p);
       }
+      // An API token without the scope for one of the ops: 401 for the whole
+      // batch, before any op runs (0.44; that op used to run as anonymous,
+      // so a read-only token could still write wherever anyone could).
+      if (auth && parsed.some((op) => !principalFor(auth, op))) return invalidToken(set, "scope");
 
       // A batch of reads changes nothing, so it runs without the exclusive
       // write gate: holding it stalled every write in the process for as

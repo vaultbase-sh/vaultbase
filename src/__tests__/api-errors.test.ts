@@ -166,6 +166,28 @@ describe("a token the server doesn't accept answers 401", () => {
     expect((await batch(userToken)).status).toBe(200);
   });
 
+  it("the batch API: an API token without the scope for one op, and nothing runs", async () => {
+    const run = (token: string, requests: unknown[]) =>
+      makeBatchPlugin(SECRET).handle(new Request("http://localhost/batch", json("POST", { requests }, token)));
+    const create = { method: "POST", url: "/api/v1/notes", body: { title: "from a batch" } };
+    const list = { method: "GET", url: "/api/v1/notes" };
+    const SCOPE = { error: "This API token doesn't have the scope for this request", code: 401, reason: "insufficient_scope" };
+
+    // Anyone may create notes, so until 0.44 this write ran as anonymous.
+    const readOnly = await run(await apiToken(["read"]), [create]);
+    expect(readOnly.status).toBe(401);
+    expect(await readOnly.json()).toEqual(SCOPE);
+    const writeOnly = await run(await apiToken(["write"]), [list]);
+    expect(writeOnly.status).toBe(401);
+    const after = (await (await records("/notes")).json()) as { totalItems: number };
+    expect(after.totalItems).toBe(0);
+
+    // With the scope for every op, the batch runs (legitimate path).
+    expect((await run(await apiToken(["write"]), [create])).status).toBe(200);
+    expect((await run(await apiToken(["read"]), [list])).status).toBe(200);
+    expect((await run(await apiToken(["admin"]), [create])).status).toBe(200);
+  });
+
   it("the files API, before the file is looked up", async () => {
     const files = (path: string, init: RequestInit = {}) =>
       makeFilesPlugin(join(tmpDir, "uploads"), SECRET).handle(new Request(`http://localhost${path}`, init));
@@ -243,6 +265,47 @@ describe("unknown keys answer 400", () => {
     const savedMe = await records(`/users/${userId}`, json("PATCH", { ...me, nick: "kay" }, userToken));
     expect(savedMe.status).toBe(200);
     expect(((await savedMe.json()) as { data: { nick: string } }).data.nick).toBe("kay");
+  });
+
+  it("whatever a read returns can be named in `fields` and saved back (search, vector search, users)", async () => {
+    await createCollection({
+      name: "docs",
+      fields: JSON.stringify([
+        { name: "title", type: "text", options: { searchable: true } },
+        { name: "emb", type: "vector", options: { dimensions: 2 } },
+        { name: "author", type: "relation", collection: "users" },
+      ]),
+      list_rule: null, view_rule: null, create_rule: null, update_rule: null, delete_rule: null,
+    });
+    await createRecord("docs", { title: "apple pie", emb: [1, 0], author: userId }, null);
+    type Row = Record<string, unknown> & { id: string };
+    const rows = async (path: string, token?: string): Promise<Row[]> => {
+      const res = await records(path, token ? bearer(token) : {});
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { data: Row[] }).data;
+    };
+    const reads: Array<[string, string, string?]> = [
+      ["docs", "/docs?expand=author"],
+      // The documented relevance sort for a search.
+      ["docs", "/docs?search=apple&sort=@rank"],
+      // A vector search adds `_score` to each record.
+      ["docs", `/docs?nearVectorField=emb&nearVector=${encodeURIComponent("[1,0]")}`],
+      ["users", "/users", userToken],
+    ];
+    for (const [name, path, token] of reads) {
+      const [row] = await rows(path, token);
+      expect(row).toBeDefined();
+      const keys = Object.keys(row!);
+      // Every key of the record is a valid `fields` name on the same read...
+      const again = await records(`${path}${path.includes("?") ? "&" : "?"}fields=${encodeURIComponent(keys.join(","))}`, token ? bearer(token) : {});
+      expect({ path, status: again.status }).toEqual({ path, status: 200 });
+      // ...and the record saves back as it came.
+      const saved = await records(`/${name}/${row!.id}`, json("PATCH", row, token));
+      expect({ path, status: saved.status }).toEqual({ path, status: 200 });
+    }
+    expect((await rows(`/docs?nearVectorField=emb&nearVector=${encodeURIComponent("[1,0]")}`))[0]).toHaveProperty("_score");
+    // `@rank` is the whole sort value, not a field among others.
+    expect((await records("/docs?search=apple&sort=@rank,title")).status).toBe(400);
   });
 
   it("views aren't checked: their columns come from their query", async () => {
