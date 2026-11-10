@@ -319,7 +319,9 @@ function realtimeSocket(jwtSecret: string) {
         // non-admin, as over HTTP). 0.44 may refuse it instead.
         const admin = isAdminConnection(ws);
         for (const topic of accepted) {
-          if (topic === "*") continue;
+          // `*` and system topics (a leading `__`, e.g. the SDKs' `__flags`)
+          // aren't collections.
+          if (topic === "*" || topic.startsWith("__")) continue;
           const name = topic.split(/[/.]/)[0]!;
           const col = await getCollection(name).catch(() => null);
           if (col && (admin || !hiddenFrom(col, null, col.list_rule))) continue;

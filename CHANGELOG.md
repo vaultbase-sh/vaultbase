@@ -7,6 +7,12 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- Realtime: subscribing to a system topic such as `__flags` (the SDKs use it for live feature flags) no longer gets an `unknown_collection` warning.
+
 ## [0.42.0] — 2026-11-10
 
 ### Breaking
