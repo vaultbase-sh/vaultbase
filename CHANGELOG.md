@@ -12,6 +12,7 @@ Binaries, checksums, signatures and SBOMs for every version are on
 ### Added
 
 - Admin: the sidebar lists your collections under "Collections", by name, each opening its records; the open one is highlighted. A chevron hides or shows the list (remembered per browser). Past 15 collections the list ends with "All collections".
+- Admin: each collection type has its own icon (base, auth, view, singleton), shown in the sidebar list, in the type column on the Collections page, and on the type picker when creating a collection.
 
 ### Fixed
 

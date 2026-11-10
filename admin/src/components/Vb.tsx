@@ -9,6 +9,7 @@
 import React from "react";
 import { Dropdown, type DropdownProps } from "primereact/dropdown";
 import Icon from "./Icon.tsx";
+import { collectionTypeIcon } from "../lib/collection-type-icon.ts";
 
 // ── Tone palette (status pills, status dots) ────────────────────────────────
 
@@ -362,7 +363,7 @@ export const TypePill: React.FC<{ type: string }> = ({ type }) => {
       color: p.fg,
       fontFamily: "var(--font-mono)",
     }}>
-      <span style={{ width: 4, height: 4, borderRadius: "50%", background: p.fg }} />
+      <Icon name={collectionTypeIcon(type)} size={12} />
       {type}
     </span>
   );

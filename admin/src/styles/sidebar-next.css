@@ -183,7 +183,8 @@
 
 /* Collections sub-menu: same rhythm as the rows above, indented past the icon. */
 .sidebar--next .sb-sub-item {
-  padding: 5px 20px 5px 48px;
+  padding: 5px 20px 5px 46px;
+  gap: 9px;
   border-radius: 0;
   border-left: 2px solid transparent;
 }

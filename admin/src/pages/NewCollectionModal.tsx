@@ -5,6 +5,7 @@ import { api, AUTH_IMPLICIT_FIELDS, AUTH_RESERVED_FIELD_NAMES, type ApiResponse,
 import { Modal, Toggle } from "../components/UI.tsx";
 import { VbBtn, VbField, VbInput, VbPill, FieldTypePill } from "../components/Vb.tsx";
 import Icon from "../components/Icon.tsx";
+import { collectionTypeIcon } from "../lib/collection-type-icon.ts";
 import { CodeEditor, type SqlSchema } from "../components/LazyCodeEditor.tsx";
 import { ViewParamsEditor, draftsToPayload, type ViewParamDraft } from "../components/ViewParams.tsx";
 
@@ -279,8 +280,13 @@ export default function NewCollectionModal({
                   cursor: "pointer",
                   textTransform: "capitalize",
                   transition: "background 100ms",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
                 }}
               >
+                <Icon name={collectionTypeIcon(t)} size={14} />
                 {t}
               </button>
             ))}

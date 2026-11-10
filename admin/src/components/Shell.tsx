@@ -9,6 +9,7 @@ import { NAV_SECTIONS, favoriteItems, isNavActive, isNavShown, type NavItem } fr
 import { toast } from "../stores/toast.ts";
 import { useCollections } from "../stores/collections.ts";
 import { collectionIdFromPath, sidebarCollections } from "../lib/sidebar-collections.ts";
+import { collectionTypeIcon } from "../lib/collection-type-icon.ts";
 import "../styles/sidebar-next.css";
 
 /* ── SIDEBAR EXPERIMENT ──────────────────────────────────────────────────────
@@ -66,10 +67,10 @@ const CollectionsSubnav: React.FC<{ open: boolean }> = ({ open }) => {
             to={`/_/collections/${encodeURIComponent(c.id)}/records`}
             className={() => `sb-sub-item${c.id === activeId ? " active" : ""}`}
             aria-current={c.id === activeId ? "page" : undefined}
-            title={c.name}
+            title={c.type === "base" ? c.name : `${c.name} (${c.type})`}
           >
+            <Icon name={collectionTypeIcon(c.type)} size={13} />
             <span className="sb-sub-name">{c.name}</span>
-            {c.type !== "base" && <span className="sb-sub-type">{c.type}</span>}
           </NavLink>
         </li>
       ))}
