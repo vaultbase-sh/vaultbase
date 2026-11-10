@@ -18,6 +18,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - Rate limit counters are kept per rule (its label and audience) instead of per position in the list, so a rule keeps its own count when the list is reordered.
 
+### Tests
+
+- Upgrade fixtures for the last release of every minor from 0.24.1 to 0.42.0, on SQLite and on Postgres (28 new). Each is a database made by that real release through its own API; the upgrade tests open it with the current code and check the data, sign-ins, rules, settings and hooks. In-place upgrades are supported from 0.24.0, and this is now tested for every minor in between.
+
 ### Release process
 
 - A new "Install test" workflow installs every release the way users do and checks that it runs: the `get.vaultbase.dev` one-liner with a systemd service and a required signature check on Ubuntu, `install.sh` in Ubuntu (with and without `xz`) and Alpine containers, and `install.ps1` on Windows. It also runs weekly.
