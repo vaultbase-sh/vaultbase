@@ -7,14 +7,14 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
-## [Unreleased]
+## [0.44.0] — 2026-11-10
 
 ### Breaking
 
 Both changes were announced in 0.42.0, which answered these requests as before and warned.
 
 - A request with a Bearer token the server doesn't accept answers `401 {"error":"Token expired or invalid","code":401,"reason":"token_invalid"}` on the records, files and batch APIs. That covers an expired, revoked or malformed token. An API token without the scope for the request answers 401 too, with `reason: "insufficient_scope"`; in a batch, one such operation refuses the whole batch before anything runs. Until now the request ran as anonymous: a public read answered 200, and a refused one answered 403 with `reason: "token_invalid"`. The check comes before anything is looked up, so the answer is the same whether or not the collection or file exists. **Upgrade:** treat 401 as "sign in again"; the JS and Dart SDKs already refresh the session or report it as expired. A client that sends a stale token with requests for public data must drop the token.
-- A list with an unknown `sort`, `expand` or `fields` name, and a create or update with a body key that isn't a field, answer `400` with the problems in `details` (keyed by the query parameter or body key). They used to be ignored, with a `Vaultbase-Warning` header since 0.42.0. A fetched record can still be saved back as it came: `id`, `created`, `updated`, `collectionId`, `collectionName`, `expand`, and on auth collections `email_verified`, `totp_enabled` and `is_anonymous`, are accepted and ignored as before. View collections aren't checked. **Upgrade:** fix or remove the keys the 0.42 and 0.43 warnings named.
+- A list with an unknown `sort`, `expand` or `fields` name, and a create or update with a body key that isn't a field, answer `400` with the problems in `details` (keyed by the query parameter or body key). They used to be ignored, with a `Vaultbase-Warning` header since 0.42.0. Whatever a read returns is still accepted, in `fields` and in a body, so a fetched record can be saved back as it came: `id`, `created`, `updated`, `collectionId`, `collectionName`, `expand`, `_score` from a vector search, and on auth collections `email_verified`, `totp_enabled` and `is_anonymous`. `sort=@rank` for a search is accepted too. View collections aren't checked, and neither are the operations inside a batch. **Upgrade:** fix or remove the keys the 0.42 and 0.43 warnings named.
 
 ### Added
 
