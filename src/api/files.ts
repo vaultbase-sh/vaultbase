@@ -48,7 +48,7 @@ import {
   verifyAuthToken,
   type VerifiedAuth,
 } from "../core/sec.ts";
-import { forbidden } from "./forbidden.ts";
+import { forbidden, invalidToken, tokenRejection, verifiedFor } from "./forbidden.ts";
 
 /** Files at most this size are read whole for a thumbnail without sniffing their format first. */
 const THUMB_SNIFF_ABOVE_BYTES = 1024 * 1024;
@@ -90,9 +90,9 @@ async function getVerifiedAuth(
   jwtSecret: string,
   access: "read" | "write",
 ): Promise<{ auth: AuthContext | null; verified: VerifiedAuth | null }> {
-  const token = extractBearer(request);
-  if (!token) return { auth: null, verified: null };
-  const verified = await verifyAuthToken(token, jwtSecret);
+  if (!extractBearer(request)) return { auth: null, verified: null };
+  // Verified once per request (the 401 check reads it first).
+  const verified = await verifiedFor(request, jwtSecret);
   return { auth: dataPrincipal(verified, access), verified };
 }
 
@@ -516,6 +516,8 @@ async function unlinkFromRecord(
 export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
   return new Elysia({ name: "files" })
     .post("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
+      const bad = await tokenRejection(request, jwtSecret, "write");
+      if (bad) return invalidToken(set, bad);
       const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
 
@@ -643,6 +645,10 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
     .post(
       "/files/:collection/:recordId/:field/:filename/token",
       async ({ params, request, server, set }) => {
+        // A token that isn't accepted answers 401 before anything is looked
+        // up (0.44; the request used to run as anonymous).
+        const bad = await tokenRejection(request, jwtSecret, "read");
+        if (bad) return invalidToken(set, bad);
         if (!isValidStorageFilename(params.filename)) {
           set.status = 400; return { error: "Invalid filename", code: 400 };
         }
@@ -704,6 +710,9 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       // Never kept by a shared cache (a CDN in front): its key is the URL,
       // and whether a file is served depends on who asks. Errors too.
       set.headers["Cache-Control"] = "no-store";
+      // A token that isn't accepted answers 401 before the file is looked up.
+      const bad = await tokenRejection(request, jwtSecret, "read");
+      if (bad) return invalidToken(set, bad);
       if (!isValidStorageFilename(params.filename)) {
         set.status = 400;
         return { error: "Invalid filename", code: 400 };
@@ -939,6 +948,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       }),
     })
     .delete("/files/:collection/:recordId/:field", async ({ params, request, set }) => {
+      const bad = await tokenRejection(request, jwtSecret, "write");
+      if (bad) return invalidToken(set, bad);
       const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       const col = await getCollection(params.collection);
@@ -974,6 +985,8 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       return { data: { deleted: rows.length } };
     })
     .delete("/files/:collection/:recordId/:field/:filename", async ({ params, request, set }) => {
+      const bad = await tokenRejection(request, jwtSecret, "write");
+      if (bad) return invalidToken(set, bad);
       const auth = await getAuthContext(request, jwtSecret, "write");
       if (!auth) { set.status = 401; return { error: "Unauthorized", code: 401 }; }
       if (!isValidStorageFilename(params.filename)) {

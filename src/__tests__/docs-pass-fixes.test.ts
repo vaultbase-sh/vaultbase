@@ -83,9 +83,9 @@ describe("API tokens as the docs show them (Bearer vbat_…)", () => {
     expect((await verifyAuthToken(token, SECRET))?.viaApiToken).toBe(true);
   });
 
-  it("an unknown token is still nobody (legitimate path)", async () => {
+  it("an unknown token is refused (401 since 0.44; it used to be treated as nobody)", async () => {
     await createPublicCollection({ name: "secrets", fields: JSON.stringify([{ name: "v", type: "text" }]), list_rule: "", view_rule: "" });
-    expect((await call("GET", "/secrets", "vbat_not.a.token")).status).toBe(403);
+    expect((await call("GET", "/secrets", "vbat_not.a.token")).status).toBe(401);
   });
 });
 

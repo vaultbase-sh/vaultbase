@@ -1,9 +1,9 @@
 import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
-import { forbidden } from "./forbidden.ts";
-import { bodyWarnings, queryWarnings, warn } from "./warnings.ts";
+import { forbidden, invalidToken, tokenRejection, verifiedFor } from "./forbidden.ts";
+import { unknownBodyKeys, unknownKeys, unknownQueryKeys } from "./unknown-keys.ts";
 import type { RequestContextLike } from "../core/filter.ts";
-import { accessFor, dataPrincipal, headerBearer, verifyAuthToken } from "../core/sec.ts";
+import { accessFor, dataPrincipal } from "../core/sec.ts";
 import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
 import {
   createRecord,
@@ -204,14 +204,12 @@ async function getAuthContext(
   jwtSecret: string
 ): Promise<AuthContext | null> {
   return await timeFor(request, "auth_verify", async () => {
-    const token = headerBearer(request);
-    if (!token) return null;
     // Centralized verifier — fixes N-1 admin-token-bypass. Accepts user or
     // admin (records API serves both); checks signature, audience, expiry,
-    // issuer, jti revocation, and password_reset_at.
+    // issuer, jti revocation, and password_reset_at. Verified once per
+    // request (the 401 check below reads it first).
     // API tokens act within their scopes (see `dataPrincipal`).
-    const ctx = await verifyAuthToken(token, jwtSecret);
-    return dataPrincipal(ctx, accessFor(request));
+    return dataPrincipal(await verifiedFor(request, jwtSecret), accessFor(request));
   });
 }
 
@@ -283,7 +281,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
       return forbidden(set, request, "update", auth, col.update_rule);
     }
     // Only once the write is allowed: field names are no secret to a writer.
-    warn(set, col, bodyWarnings(col, body));
+    const unknownBody = unknownBodyKeys(col, body);
+    if (unknownBody.length > 0) return unknownKeys(set, unknownBody);
     const ifMatch = ifMatchFails(request, existing as unknown as Record<string, unknown>);
     if (ifMatch) return ifMatchResponse(set, request, col, auth, existing, ifMatch.currentEtag);
     try {
@@ -311,6 +310,13 @@ export function makeRecordsPlugin(jwtSecret: string) {
   }
 
   return new Elysia({ name: "records" })
+    // A token that isn't accepted answers 401 on every route here, before
+    // any lookup (so it can't tell a hidden collection from a missing one).
+    // Until 0.44 the request ran as anonymous.
+    .onBeforeHandle(async ({ request, set }) => {
+      const bad = await timeFor(request, "auth_verify", () => tokenRejection(request, jwtSecret, accessFor(request)));
+      if (bad) return invalidToken(set, bad);
+    })
     .get(
       "/:collection",
       async ({ params, query, request, set }) => {
@@ -335,7 +341,9 @@ export function makeRecordsPlugin(jwtSecret: string) {
         if (query.sort) opts.sort = query.sort;
         if (query.expand) opts.expand = query.expand;
         if (query.fields) opts.fields = query.fields;
-        warn(set, col, queryWarnings(col, query));
+        // 400 since 0.44 (a Vaultbase-Warning header in 0.42 and 0.43).
+        const unknownQuery = unknownQueryKeys(col, query);
+        if (unknownQuery.length > 0) return unknownKeys(set, unknownQuery);
         if (query.exclude) opts.exclude = query.exclude;
         if (query.search) opts.search = query.search;
         if (query.skipTotal === "1" || query.skipTotal === "true") opts.skipTotal = true;
@@ -530,7 +538,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
         ))) {
           return forbidden(set, request, "create", auth, col.create_rule);
         }
-        warn(set, col, bodyWarnings(col, body));
+        const unknownBody = unknownBodyKeys(col, body);
+        if (unknownBody.length > 0) return unknownKeys(set, unknownBody);
         try {
           const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
             createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))

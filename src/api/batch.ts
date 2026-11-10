@@ -12,6 +12,7 @@ import { dataPrincipal, headerBearer, peerAddress, verifyAuthToken, type Verifie
 import { batchOpsRateLimit, MAX_BATCH_OPS } from "./ratelimit.ts";
 import { normalizeApiPath } from "../core/api-paths.ts";
 import { parseViewParams, viewParamsFromUrl } from "../core/view-params.ts";
+import { invalidToken } from "./forbidden.ts";
 
 interface BatchRequest {
   method: string;
@@ -253,6 +254,10 @@ export function makeBatchPlugin(jwtSecret: string, opts: { rateLimit?: boolean }
     "/batch",
     async ({ request, body, set }) => {
       const auth = await extractAuth(request, jwtSecret);
+      // A token that doesn't verify answers 401 for the whole batch (0.44;
+      // every op used to run as anonymous). An API token's scopes are still
+      // judged per op.
+      if (!auth && headerBearer(request)) return invalidToken(set, "invalid");
       const requests = body.requests;
       if (!Array.isArray(requests) || requests.length === 0) {
         set.status = 422; return { error: "requests array required", code: 422 };

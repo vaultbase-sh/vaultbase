@@ -89,8 +89,10 @@ describe("records API", () => {
   it("an MCP-only token cannot read admin-only records", async () => {
     await adminOnlyNotes();
     const res = await makeRecordsPlugin(SECRET).handle(req("GET", "/notes", await apiToken(["mcp:read"])));
-    // Not a data principal: the admin-only collection answers as missing.
-    expect(res.status).toBe(404);
+    // Not a data principal. Until 0.44 the request ran as anonymous (the
+    // admin-only collection answered as missing); now the token is refused.
+    expect(res.status).toBe(401);
+    expect(await res.text()).not.toContain("secret");
   });
 
   it("a read token reads but cannot write", async () => {
@@ -98,7 +100,9 @@ describe("records API", () => {
     const app = makeRecordsPlugin(SECRET);
     const tok = await apiToken(["read"]);
     expect((await app.handle(req("GET", `/notes/${id}`, tok))).status).toBe(200);
-    expect((await app.handle(req("DELETE", `/notes/${id}`, tok))).status).toBe(404);
+    // No write scope: refused as a token (401 since 0.44), and nothing is deleted.
+    expect((await app.handle(req("DELETE", `/notes/${id}`, tok))).status).toBe(401);
+    expect((await app.handle(req("GET", `/notes/${id}`, tok))).status).toBe(200);
   });
 
   it("a write token mutates under collection rules, not as admin", async () => {
