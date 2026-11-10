@@ -7,6 +7,12 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- After-hooks: when looking up a collection's hooks failed (for example while the database was closing), the error went unhandled instead of being logged.
+
 ## [0.43.0] — 2026-11-10
 
 ### Added

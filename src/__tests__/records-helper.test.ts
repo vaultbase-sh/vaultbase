@@ -4,7 +4,7 @@
  * history, realtime and webhooks (helpers.sql gets none of that). Nesting is
  * capped so a hook that triggers itself fails instead of looping.
  */
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -92,9 +92,23 @@ describe("helpers.records", () => {
   it("an after-hook that triggers itself stops too", async () => {
     await hook("posts", "afterUpdate", "await ctx.helpers.records.update('posts', ctx.record.id, { n: (ctx.record.n ?? 0) + 1 });");
     const rec = await createRecord("posts", { title: "loop2", n: 0 }, null);
-    await makeHookHelpers().records.update("posts", rec.id, { n: 1 });
-    // settle: give a runaway loop time to show itself
-    await Bun.sleep(300);
+    // After-hooks run detached: wait until the chain has hit the limit and
+    // stopped, so nothing from it is still running when the test ends.
+    const logged: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
+    try {
+      await makeHookHelpers().records.update("posts", rec.id, { n: 1 });
+      await until(() => logged.some((l) => l.includes("nested inside one another")), { timeout: 10_000 });
+      let last = -1;
+      await until(async () => {
+        const now = Number((await getRecord("posts", rec.id))?.["n"] ?? 0);
+        const stable = now === last;
+        last = now;
+        return stable;
+      }, { timeout: 10_000, step: 100 });
+    } finally {
+      spy.mockRestore();
+    }
     const n = Number((await getRecord("posts", rec.id))?.["n"] ?? 0);
     expect(n).toBeGreaterThan(1);
     expect(n).toBeLessThanOrEqual(MAX_RECORDS_HELPER_DEPTH + 1);

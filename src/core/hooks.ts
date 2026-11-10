@@ -312,7 +312,15 @@ export function runAfterHook(
   // Fire-and-forget; errors are logged but don't fail the request
   const effectiveReq = request ?? hookRequestStorage.getStore();
   void (async () => {
-    const list = await lookupEnabledHooks(collection.name, event);
+    // The lookup too: it is outside the per-hook catch, and when it failed
+    // (the database closing) the rejection went unhandled.
+    let list: Awaited<ReturnType<typeof lookupEnabledHooks>>;
+    try {
+      list = await lookupEnabledHooks(collection.name, event);
+    } catch (e) {
+      console.error(`[hooks] ${event} hooks for ${collection.name} not run:`, e instanceof Error ? e.message : e);
+      return;
+    }
     for (const h of list) {
       const helperCtx: HookHelperContext = {
         collection: collection.name, event, auth: ctx.auth, name: h.name,
