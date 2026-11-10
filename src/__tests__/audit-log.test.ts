@@ -130,10 +130,12 @@ describe("via makeAuditLogPlugin (Elysia onAfterHandle)", () => {
       headers: { Authorization: `Bearer ${token}` },
     }));
     expect(res.status).toBe(200);
-    // The audit insert is fire-and-forget: wait for it to land.
+    // The audit insert is fire-and-forget: wait for it to land. A list is a
+    // count and then a page, two statements, so an insert landing between
+    // them shows in the page and not yet in the count: wait until both do.
     const list = await until(async () => {
       const l = await listAuditEntries();
-      return l.data.some((e) => e.path === "/api/v1/admin/things") ? l : null;
+      return l.totalItems >= 1 && l.data.some((e) => e.path === "/api/v1/admin/things") ? l : null;
     }, { message: "the audit entry for /api/v1/admin/things" });
     expect(list.totalItems).toBeGreaterThanOrEqual(1);
     const entry = list.data.find((e) => e.path === "/api/v1/admin/things");
