@@ -316,7 +316,9 @@ function chargeForPath(ctx: RateLimitContext, rawPath: string, method: string): 
   if (shouldSkip(path)) return null;
   const match = findRule(ctx.rules, path, method, ctx.hasAuth);
   if (!match) return null;
-  return { key: `${ctx.ip}|${match.index}`, max: match.rule.max, windowMs: match.rule.windowMs, label: match.rule.label };
+  // Keyed by the rule (label and audience), not its place in the list: the
+  // admin can reorder rules, and a moved rule kept another rule's counter.
+  return { key: `${ctx.ip}|${match.rule.audience}|${match.rule.label}`, max: match.rule.max, windowMs: match.rule.windowMs, label: match.rule.label };
 }
 
 /** Take one token from the charge's bucket; false when it is empty. */

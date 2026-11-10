@@ -26,6 +26,7 @@ import {
   VbStat,
   VbStatusDot,
 } from "../components/Vb.tsx";
+import { moveItem } from "../lib/move-item.ts";
 
 type RuleAudience = "all" | "guest" | "auth";
 interface RateLimitRule {
@@ -401,6 +402,12 @@ function RateLimitSection() {
   function addRule() {
     setRules((prev) => [...prev, { label: "/api/v1/", max: 60, windowMs: 5000, audience: "all" }]);
   }
+  // Order matters: the server applies the first rule that matches.
+  function moveRule(from: number, to: number) {
+    setRules((prev) => moveItem(prev, from, to));
+  }
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
 
   async function handleSave() {
     for (const r of rules) {
@@ -438,7 +445,7 @@ function RateLimitSection() {
       }}>
         <div style={{
           display: "grid",
-          gridTemplateColumns: "1.4fr 110px 110px 110px 28px",
+          gridTemplateColumns: "18px 1.4fr 110px 110px 110px 64px 28px",
           gap: 10, padding: "9px 14px", alignItems: "center",
           background: "var(--vb-bg-1)",
           borderBottom: "1px solid var(--vb-border)",
@@ -446,19 +453,36 @@ function RateLimitSection() {
           textTransform: "uppercase", color: "var(--vb-fg-3)",
           fontFamily: "var(--font-mono)",
         }}>
+          <span />
           <span>Rule label</span>
           <span>Max / IP</span>
           <span>Interval (s)</span>
           <span>Audience</span>
+          <span>Order</span>
           <span />
         </div>
         {rules.map((r, i) => (
-          <div key={i} style={{
+          <div key={i}
+            onDragOver={(e) => { if (dragFrom === null) return; e.preventDefault(); setDragOver(i); }}
+            onDrop={(e) => { e.preventDefault(); if (dragFrom !== null) moveRule(dragFrom, i); setDragFrom(null); setDragOver(null); }}
+            style={{
             display: "grid",
-            gridTemplateColumns: "1.4fr 110px 110px 110px 28px",
+            background: dragOver === i && dragFrom !== null && dragFrom !== i ? "var(--vb-bg-3, rgba(255,255,255,0.04))" : undefined,
+            opacity: dragFrom === i ? 0.5 : 1,
+            gridTemplateColumns: "18px 1.4fr 110px 110px 110px 64px 28px",
             gap: 10, padding: "9px 14px", alignItems: "center",
             borderBottom: i === rules.length - 1 ? "none" : "1px solid var(--vb-border)",
           }}>
+            <span
+              draggable={enabled && !loading}
+              onDragStart={(e) => { setDragFrom(i); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(i)); }}
+              onDragEnd={() => { setDragFrom(null); setDragOver(null); }}
+              title="Drag to reorder"
+              aria-hidden="true"
+              style={{ cursor: enabled && !loading ? "grab" : "default", color: "var(--vb-fg-3)", display: "inline-flex" }}
+            >
+              <Icon name="grip" size={14} />
+            </span>
             <VbInput mono value={r.label} placeholder="*:auth"
               onChange={(e) => updateRule(i, { label: e.target.value })}
               disabled={!enabled || loading} />
@@ -475,6 +499,12 @@ function RateLimitSection() {
               disabled={!enabled || loading}
               style={{ height: 32, fontSize: 12 }}
             />
+            <span style={{ display: "inline-flex", gap: 2 }}>
+              <VbBtn kind="ghost" size="sm" icon="arrowUp" title={`Move "${r.label}" up`} aria-label={`Move rule ${i + 1} up`}
+                disabled={!enabled || loading || i === 0} onClick={() => moveRule(i, i - 1)} />
+              <VbBtn kind="ghost" size="sm" icon="arrowDown" title={`Move "${r.label}" down`} aria-label={`Move rule ${i + 1} down`}
+                disabled={!enabled || loading || i === rules.length - 1} onClick={() => moveRule(i, i + 1)} />
+            </span>
             <button
               onClick={() => removeRule(i)}
               disabled={!enabled || loading}
@@ -498,6 +528,10 @@ function RateLimitSection() {
         <span style={{ fontSize: 11, color: "var(--vb-fg-3)", fontStyle: "italic" }}>
           Label = <VbCode>{`<path>[:<action>]`}</VbCode> · path: exact, prefix*, or *
         </span>
+      </div>
+
+      <div style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>
+        Rules are checked top to bottom and the first one that matches applies, so put specific rules above broad ones like <VbCode>*</VbCode>. Drag a rule by its handle or use the arrows to reorder.
       </div>
 
       <div style={{ fontSize: 11, color: "var(--vb-fg-3)" }}>

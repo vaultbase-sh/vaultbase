@@ -9,6 +9,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+### Added
+
+- Admin → Settings → Rate limiting: rules can be reordered, by dragging a rule's handle or with its up and down arrows. Rules are checked top to bottom and the first match applies, so order decides which limit a request gets; new rules used to land at the bottom with no way to move them. The page now says so.
+
+### Changed
+
+- Rate limit counters are kept per rule (its label and audience) instead of per position in the list, so a rule keeps its own count when the list is reordered.
+
 ### Fixed
 
 - Realtime: subscribing to a system topic such as `__flags` (the SDKs use it for live feature flags) no longer gets an `unknown_collection` warning.
