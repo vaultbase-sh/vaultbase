@@ -25,12 +25,17 @@
 </p>
 
 <p align="center">
+  <a href="https://demo.vaultbase.sh">Live demo</a> ·
   <a href="https://vaultbase.dev">Website</a> ·
   <a href="https://docs.vaultbase.dev">Docs</a> ·
   <a href="https://github.com/vaultbase-sh/vaultbase/releases">Releases</a> ·
   <a href="https://github.com/vaultbase-sh/sdk">TypeScript SDK</a> ·
   <a href="https://github.com/vaultbase-sh/mcp">MCP bridge</a>
 </p>
+
+## Try it
+
+The [live demo](https://demo.vaultbase.sh) is the admin UI on a sample blog. The login is filled in for you, and the data resets every hour.
 
 ## Install
 
