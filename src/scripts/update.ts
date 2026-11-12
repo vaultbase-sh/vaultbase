@@ -21,9 +21,9 @@
  *   - running on Windows → can't replace a running .exe; instructs operator
  */
 
-import { existsSync, mkdtempSync, renameSync, chmodSync, statSync, copyFileSync, unlinkSync } from "fs";
+import { accessSync, constants, existsSync, mkdtempSync, renameSync, chmodSync, statSync, copyFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { spawnSync } from "child_process";
 import { VAULTBASE_VERSION } from "../core/version.ts";
 
@@ -139,6 +139,25 @@ function compareVersion(current: string, target: string): -1 | 0 | 1 {
   return 0;
 }
 
+/** Downloads smaller than this print no progress lines. */
+const PROGRESS_MIN_BYTES = 1024 * 1024;
+
+/**
+ * Why this user can't replace the binary at `path`, or null. Replacing it is
+ * a rename into its folder, so the folder has to be writable. Checked before
+ * anything is downloaded: an install under /usr/local/bin fetched 100 MiB
+ * and then failed on the rename.
+ */
+export function replaceProblem(path: string, access: (p: string, mode: number) => void = accessSync): string | null {
+  const dir = dirname(path);
+  try {
+    access(dir, constants.W_OK);
+    return null;
+  } catch {
+    return `no permission to replace ${path}: ${dir} isn't writable by this user. Run it again with sudo: sudo vaultbase update`;
+  }
+}
+
 async function downloadTo(url: string, dest: string, log: (s: string) => void): Promise<void> {
   const res = await fetch(url, { headers: { "user-agent": `vaultbase-update/${VAULTBASE_VERSION}` }, redirect: "follow" });
   if (!res.ok) throw new Error(`download failed: ${res.status} ${url}`);
@@ -151,7 +170,9 @@ async function downloadTo(url: string, dest: string, log: (s: string) => void): 
   for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
     writer.write(chunk);
     received += chunk.length;
-    if (total > 0) {
+    // Progress for the binary only: the checksum and signature files are a
+    // few bytes and printed a second "100% (0.0 / 0.0 MiB)" after it.
+    if (total >= PROGRESS_MIN_BYTES) {
       const pct = Math.floor((received / total) * 100);
       if (pct !== lastPct && pct % 5 === 0) {
         log(`  download: ${pct}% (${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MiB)`);
@@ -329,6 +350,13 @@ export async function runUpdate(argv: string[]): Promise<void> {
   if (!binAsset) throw new Error(`release ${target} has no asset '${platform.artifact}'`);
   if (!sumsAsset) throw new Error(`release ${target} has no '${platform.artifact}.sha256'`);
 
+  // Before the question and the download, not after them.
+  const denied = platform.windows ? null : replaceProblem(process.execPath);
+  if (denied) {
+    process.stderr.write(`vaultbase update: ${denied}\n`);
+    process.exit(2);
+  }
+
   if (!flags.yes) {
     log("");
     log(`This will replace the running binary at ${process.execPath}`);
@@ -410,9 +438,12 @@ export async function runUpdate(argv: string[]): Promise<void> {
     renameSync(binPath, target_path);
   } catch (e) {
     // Cross-device move (binary in /usr/local/bin, tmp in /tmp on a different mount).
-    if ((e as NodeJS.ErrnoException).code === "EXDEV") {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EXDEV") {
       copyFileSync(binPath, target_path);
       try { unlinkSync(binPath); } catch { /* ignore */ }
+    } else if (code === "EACCES" || code === "EPERM") {
+      throw new Error(`no permission to replace ${target_path}. Run it again with sudo: sudo vaultbase update`);
     } else {
       throw e;
     }

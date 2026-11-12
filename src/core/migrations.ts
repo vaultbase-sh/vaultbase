@@ -87,6 +87,19 @@ function fieldsEqual(a: FieldDef[], b: FieldDef[]): boolean {
 type ExistingCollection = NonNullable<Awaited<ReturnType<typeof getCollection>>>;
 
 /**
+ * A snapshot's fields as saving them would store them. An auth collection
+ * keeps its implicit fields (email, verified) when the snapshot leaves them
+ * out, as a hand-written one does; compared as written, a diff reported them
+ * as "2 removed" on every run and sync rewrote the collection each time.
+ */
+function snapshotFields(existing: FieldDef[], snap: CollectionSnapshot): FieldDef[] {
+  const fields = snap.fields ?? [];
+  if (snap.type !== "auth") return fields;
+  const named = new Set(fields.map((f) => f.name));
+  return [...existing.filter((f) => f.implicit && !named.has(f.name)), ...fields];
+}
+
+/**
  * A parameter list as stored: JSON in one key order with defaults converted,
  * or null for none, so a hand-written snapshot compares equal to what saving
  * it stores.
@@ -115,7 +128,8 @@ export function isCollectionInSync(
   if (viewParamsJson(parseViewParams(existing.view_params)) !== viewParamsJson(snap.view_params)) return false;
   if (RULES.some((r) => ruleDiffers(existing[r], snap[r]))) return false;
   if (snap.history_enabled !== undefined && !!existing.history_enabled !== snap.history_enabled) return false;
-  return fieldsEqual(parseFields(existing.fields), snap.fields);
+  const existingFields = parseFields(existing.fields);
+  return fieldsEqual(existingFields, snapshotFields(existingFields, snap));
 }
 
 /**
@@ -131,9 +145,10 @@ export function describeCollectionChanges(existing: ExistingCollection, snap: Co
 
   // Field-level diff: compare by name to count adds / removes / modifications.
   const existingFields = parseFields(existing.fields);
-  if (!fieldsEqual(existingFields, snap.fields)) {
+  const snapFields = snapshotFields(existingFields, snap);
+  if (!fieldsEqual(existingFields, snapFields)) {
     const existingByName = new Map(existingFields.map((f) => [f.name, f]));
-    const snapByName     = new Map(snap.fields.map((f) => [f.name, f]));
+    const snapByName     = new Map(snapFields.map((f) => [f.name, f]));
     let added = 0, removed = 0, modified = 0;
     for (const [name, sf] of snapByName) {
       const ef = existingByName.get(name);

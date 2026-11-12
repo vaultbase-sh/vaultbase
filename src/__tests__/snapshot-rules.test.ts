@@ -126,4 +126,51 @@ describe("snapshots carry history and admin indexes", () => {
     expect((await getCollection("notes"))!.history_enabled).toBe(1);
     expect((await listIndexes("vb_notes")).some((i) => i.fields.join(",") === "title,rank")).toBe(true);
   });
+
+  it("re-applies a snapshot whose index ends with id (Postgres appends id as a tie-break itself)", async () => {
+    const { createCollectionIndex, listIndexes } = await import("../api/indexes.ts");
+    const snap: Snapshot = {
+      generated_at: new Date().toISOString(), version: 1,
+      collections: [{
+        name: "zz_probe", type: "base", fields: [{ name: "a", type: "text" }, { name: "b", type: "text" }],
+        indexes: [{ fields: ["a", "id"], unique: false }, { fields: ["a", "b"], unique: false }, { fields: ["b", "id"], unique: true }, { fields: ["b"], unique: false }],
+      }],
+    };
+    for (let i = 0; i < 3; i++) expect((await applySnapshot(snap, { mode: "additive" })).errors).toEqual([]);
+    // Listed as they were asked for, so an export applies again unchanged.
+    // (Without the indexes every collection gets on created_at and updated_at.)
+    const mine = async () => (await listIndexes("vb_zz_probe")).filter((i) => !i.name.startsWith("idx_vb_"));
+    const listed = (await mine()).map((i) => `${i.name}:${i.fields.join(",")}:${i.unique}`).sort();
+    expect(listed).toEqual([
+      "idx_zz_probe_a_b:a,b:false", "idx_zz_probe_a_id:a,id:false", "idx_zz_probe_b:b:false", "uniq_zz_probe_b_id:b,id:true",
+    ]);
+    const exported = (await exportSnapshot()).collections.find((c) => c.name === "zz_probe")!;
+    expect((await applySnapshot({ ...snap, collections: [exported] }, { mode: "additive" })).errors).toEqual([]);
+    expect((await mine()).length).toBe(4);
+    // The same index asked for again through the admin API is the one there.
+    expect((await createCollectionIndex((await getCollection("zz_probe"))!, ["a", "id"])).name).toBe("idx_zz_probe_a_id");
+  });
+
+  it("an auth collection's built-in fields aren't a difference when the snapshot leaves them out", async () => {
+    const snap: Snapshot = {
+      generated_at: new Date().toISOString(), version: 1,
+      collections: [{ name: "owners", type: "auth", fields: [{ name: "name", type: "text" }] }],
+    };
+    const first = await applySnapshot(snap, { mode: "additive" });
+    expect([first.created, first.errors]).toEqual([["owners"], []]);
+    const stored = JSON.parse((await getCollection("owners"))!.fields) as Array<{ name: string }>;
+    expect(stored.map((f) => f.name)).toEqual(["email", "verified", "name"]);
+
+    const diff = await computeSnapshotDiff(snap);
+    expect(diff.modified).toEqual([]);
+    expect(diff.unchanged).toEqual([{ name: "owners" }]);
+    const again = await applySnapshot(snap, { mode: "additive" });
+    expect([again.unchanged, again.skipped]).toEqual([["owners"], []]);
+    const sync = await applySnapshot(snap, { mode: "sync" });
+    expect([sync.unchanged, sync.updated]).toEqual([["owners"], []]);
+
+    // A real change is still one.
+    const more = { ...snap, collections: [{ ...snap.collections[0]!, fields: [{ name: "name", type: "text" }, { name: "phone", type: "text" }] }] };
+    expect((await computeSnapshotDiff(more)).modified[0]?.changes).toEqual(["fields: 1 added"]);
+  });
 });

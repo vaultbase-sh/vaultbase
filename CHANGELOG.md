@@ -7,6 +7,14 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Fixed
+
+- Postgres: an index whose last field is `id` couldn't be made twice. Applying a snapshot a second time answered `An index named '…' already exists on other fields`, and so did creating the index again in the admin. Postgres indexes end with `id` as a tie-break, and the index list cut that `id` off even when the index had been asked for with it, so the index looked like a different one. Indexes are now listed with the fields they were asked for. Since 0.36.0.
+- Snapshots: the built-in `email` and `verified` fields of an auth collection counted as a difference when the snapshot left them out, as a hand-written one does. `migrations/diff` reported `fields: 2 removed` on every run, additive apply listed the collection as skipped, and sync rewrote it each time.
+- `vaultbase update` checks that it is allowed to replace the binary before it asks and downloads. Without permission (an install under `/usr/local/bin`, run without `sudo`) it stops at once and says to run it again with `sudo`; it used to download the release and then fail on the last step. The progress output no longer ends with a second `100% (0.0 / 0.0 MiB)` line.
+
 ## [0.45.0] — 2026-11-12
 
 ### Added

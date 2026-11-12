@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "fs
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { fetchReleaseBinary } from "../scripts/update.ts";
+import { fetchReleaseBinary, replaceProblem } from "../scripts/update.ts";
 
 const haveXz = spawnSync("xz", ["--version"]).status === 0;
 const ARTIFACT = "vaultbase-linux-x64";
@@ -99,5 +99,14 @@ describe("vaultbase update: which asset it downloads", () => {
     expect(r.used).toBe("raw");
     expect(r.bytes).toEqual(binary);
     expect(existsSync(join(r.dir, `${ARTIFACT}.xz`))).toBe(false);
+  });
+});
+
+describe("vaultbase update: permission to replace the binary", () => {
+  it("is checked on the binary's folder, and says to use sudo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vb-update-perm-"));
+    expect(replaceProblem(join(dir, "vaultbase"))).toBeNull();
+    const denied = replaceProblem("/usr/local/bin/vaultbase", () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); });
+    expect(denied).toBe("no permission to replace /usr/local/bin/vaultbase: /usr/local/bin isn't writable by this user. Run it again with sudo: sudo vaultbase update");
   });
 });

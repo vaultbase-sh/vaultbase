@@ -33,19 +33,26 @@ export async function listIndexes(tableName: string): Promise<IndexInfo[]> {
   // (primary keys, inline UNIQUEs) have no definition text or another name.
   const rows = await db.all<{ name: string; sql: string | null }>(db.dialect.listIndexesSql(), [tableName]);
   const result: IndexInfo[] = [];
+  const collection = tableName.startsWith("vb_") ? tableName.slice(3) : tableName;
   for (const r of rows) {
     if (!r.sql) continue;
     if (!r.name.startsWith("idx_") && !r.name.startsWith("uniq_")) continue;
-    // The tie-break tail is the database's business, not one of the fields.
+    const unique = /^\s*CREATE\s+UNIQUE/i.test(r.sql);
+    // The tie-break tail is the database's business, not one of the fields,
+    // unless the index was asked for with it: its name then says so. Cutting
+    // it there too listed an index made on (a, id) as (a), and making it
+    // again (a snapshot applied twice) was refused as "on other fields".
     const tail = new Set(db.dialect.indexTail.map((c) => c.replace(/"/g, "")));
     let names = indexColumnsFromSql(r.sql);
-    while (names.length > 1 && tail.has(names[names.length - 1]!)) names = names.slice(0, -1);
+    if (r.name !== indexName(collection, names, unique)) {
+      while (names.length > 1 && tail.has(names[names.length - 1]!)) names = names.slice(0, -1);
+    }
     if (names.length === 0) continue;
     result.push({
       name: r.name,
       field: names.join(","),
       fields: names,
-      unique: /^\s*CREATE\s+UNIQUE/i.test(r.sql),
+      unique,
     });
   }
   return result;
