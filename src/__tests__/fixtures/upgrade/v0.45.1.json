@@ -1,0 +1,71 @@
+{
+  "version": "v0.45.1",
+  "made": "2026-11-12T14:13:14.347Z",
+  "jwtSecret": "upgrade-fixture-jwt-secret-0123456789abcdef0123456789",
+  "admin": {
+    "email": "admin@fixture.test",
+    "password": "fixture-admin-password-1"
+  },
+  "steps": {
+    "admin": "ok",
+    "auth_collection": "ok",
+    "register_ada": "ok",
+    "register_linus": "ok",
+    "posts_collection": "ok",
+    "post_0": "ok",
+    "post_1": "ok",
+    "post_2": "ok",
+    "hook": "ok",
+    "setting": "ok"
+  },
+  "reportedVersion": "0.45.1",
+  "users": [
+    {
+      "email": "ada@fixture.test",
+      "password": "fixture-user-password-1",
+      "name": "Ada",
+      "id": "98b1fcd4-79ac-4b35-9768-a9b9384ad889"
+    },
+    {
+      "email": "linus@fixture.test",
+      "password": "fixture-user-password-2",
+      "name": "Linus",
+      "id": "e6018f66-af7e-452d-a12f-a5773090de52"
+    }
+  ],
+  "posts": [
+    {
+      "id": "79edba3f-b7b8-4857-a593-4f89b77958c6",
+      "title": "Hello, world",
+      "views": 10,
+      "published": true,
+      "status": "live",
+      "author": "98b1fcd4-79ac-4b35-9768-a9b9384ad889"
+    },
+    {
+      "id": "fb369d1f-835b-4445-8283-287c4ef396d4",
+      "title": "Draft post",
+      "views": 0,
+      "published": false,
+      "status": "draft",
+      "author": "e6018f66-af7e-452d-a12f-a5773090de52"
+    },
+    {
+      "id": "057e4cea-3626-499e-9da2-02036ec348ee",
+      "title": "Unicode — 数据 ✓",
+      "views": 3,
+      "published": true,
+      "status": "live",
+      "author": "98b1fcd4-79ac-4b35-9768-a9b9384ad889"
+    }
+  ],
+  "hook": {
+    "name": "stamp",
+    "collection": "posts",
+    "event": "beforeCreate"
+  },
+  "setting": {
+    "key": "app.name",
+    "value": "Fixture v0.45.1"
+  }
+}
