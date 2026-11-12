@@ -75,6 +75,11 @@ function originAllowed(cfg: CorsConfig, origin: string): boolean {
   return cfg.origins.includes(origin);
 }
 
+/** Whether `origin` may call the API from a browser (the `cors.origins` setting). */
+export function corsAllowsOrigin(origin: string): boolean {
+  return originAllowed(load(), origin);
+}
+
 /** Apply Access-Control-* response headers when the request is cross-origin. */
 export function applyCorsHeaders(
   request: Request,
@@ -96,8 +101,9 @@ export function applyCorsHeaders(
     set.headers["Access-Control-Allow-Credentials"] = "true";
   }
   // Readable from browser code on another origin: the SDK reports the
-  // warnings and sends the ETag back as If-Match.
-  set.headers["Access-Control-Expose-Headers"] = "ETag, Vaultbase-Warning";
+  // warnings, sends the ETag back as If-Match, and waits for Retry-After on
+  // a 429 or during maintenance (without it a browser could only guess).
+  set.headers["Access-Control-Expose-Headers"] = "ETag, Retry-After, Vaultbase-Warning";
 }
 
 /**

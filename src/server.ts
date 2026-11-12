@@ -9,7 +9,7 @@ import { forwardRead, readPoolSize, readTarget } from "./core/read-pool.ts";
 import { dataPrincipal, extractBearer, peerAddress, rememberPeer, perClientLimitIp, securityHeaders, trustedClientIp, verifyAuthToken } from "./core/sec.ts";
 import { getAllSettings } from "./api/settings.ts";
 import { setLogsDir } from "./core/file-logger.ts";
-import { applyCorsHeaders, handleCorsPreflight } from "./core/cors.ts";
+import { applyCorsHeaders, corsAllowsOrigin, handleCorsPreflight } from "./core/cors.ts";
 import { customInnerPath } from "./core/api-paths.ts";
 import { setUploadDir } from "./core/storage.ts";
 import { pruneStaleSandboxes } from "./core/sql-sandbox.ts";
@@ -187,7 +187,8 @@ async function mayManageSSEClient(clientId: string, request: Request, bodyToken:
 /**
  * True if `origin` is in the configured allowlist. Empty/missing settings →
  * deny cross-origin (WS upgrades from any non-same-origin caller fail).
- * Comma-separated list under `security.allowed_origins`.
+ * The list is the CORS origins (`cors.origins`) plus, for realtime only, the
+ * comma-separated `security.allowed_origins`.
  *
  * Null Origin → allowed. Browsers always send Origin on WS/EventSource, so
  * the allowlist is what stops cross-site use. A missing header means a
@@ -206,9 +207,12 @@ function isOriginAllowed(origin: string | null, request?: Request): boolean {
   }
   const settings = getAllSettings();
   const raw = settings["security.allowed_origins"] ?? "";
-  if (!raw) return false;
   const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-  return list.includes(origin) || list.includes("*");
+  if (list.includes(origin) || list.includes("*")) return true;
+  // An origin allowed to call the API (Settings → CORS) may open realtime
+  // too. Only `security.allowed_origins` was read, which no admin screen
+  // sets, while the refusal's hint and the docs pointed at the CORS setting.
+  return corsAllowsOrigin(origin);
 }
 
 /**

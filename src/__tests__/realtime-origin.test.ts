@@ -11,6 +11,7 @@ import { stopQueueScheduler } from "../core/queues.ts";
 import { stopWebhookDispatcher } from "../core/webhooks.ts";
 import { stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { _reset as resetRealtime } from "../realtime/manager.ts";
+import { invalidateCorsCache } from "../core/cors.ts";
 
 // Origin policy for the realtime endpoints (WS /realtime, SSE GET /api/v1/realtime):
 //  - a browser on an allow-listed origin connects
@@ -21,6 +22,8 @@ import { _reset as resetRealtime } from "../realtime/manager.ts";
 //    server-side SDK.
 
 const ALLOWED = "https://app.example.com";
+// Allowed to call the API (Settings → CORS), so allowed to open realtime too.
+const CORS_ONLY = "https://www.example.org";
 const FOREIGN = "https://evil.example.net";
 
 let dir: string;
@@ -32,6 +35,8 @@ beforeAll(async () => {
   await initDb(":memory:");
   await runMigrations();
   setSetting("security.allowed_origins", ALLOWED);
+  setSetting("cors.origins", CORS_ONLY);
+  invalidateCorsCache();
   const app = createServer({
     port: 0,
     dataDir: dir,
@@ -88,6 +93,10 @@ describe("realtime Origin policy — WebSocket", () => {
     expect(await firstWsMessage(FOREIGN)).toContain("origin_not_allowed");
   });
 
+  it("accepts an origin from the CORS setting, as the refusal's hint says", async () => {
+    expect(await firstWsMessage(CORS_ONLY)).toContain('"connected"');
+  });
+
   it("accepts a client that sends no Origin (server-side SDK)", async () => {
     expect(await firstWsMessage(null)).toContain('"connected"');
   });
@@ -100,6 +109,16 @@ describe("realtime Origin policy — SSE", () => {
 
   it("refuses a foreign Origin", async () => {
     expect(await sseStatus(FOREIGN)).toBe(403);
+  });
+
+  it("accepts an origin from the CORS setting", async () => {
+    expect(await sseStatus(CORS_ONLY)).toBe(200);
+  });
+
+  it("lets that origin's page read Retry-After, ETag and Vaultbase-Warning", async () => {
+    const res = await fetch(`http://${base}/api/v1/health`, { headers: { Origin: CORS_ONLY } });
+    expect(res.headers.get("access-control-allow-origin")).toBe(CORS_ONLY);
+    expect(res.headers.get("access-control-expose-headers")).toBe("ETag, Retry-After, Vaultbase-Warning");
   });
 
   it("accepts a client that sends no Origin (server-side SDK)", async () => {
