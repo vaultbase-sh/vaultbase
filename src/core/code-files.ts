@@ -25,6 +25,7 @@ import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.ts";
 import { hooks, jobs, routes, workers } from "../db/schema.ts";
 import { databaseCodeError, registerCodeLoader, type CompiledCode } from "./code-loader.ts";
+import { HELPER_TYPES } from "./helper-types.ts";
 import { HOOK_EVENTS, invalidateHookCache } from "./hooks.ts";
 import { ROUTE_METHODS, invalidateRoutesCache, validatePath } from "./routes.ts";
 import { invalidateJobsCache, nextRunFromCron, validateCron, validateMode } from "./jobs.ts";
@@ -155,12 +156,40 @@ function formatBuildLog(log: unknown, root: string): string {
   return `${l.message ?? String(log)}${where}`;
 }
 
+/**
+ * Imports that failed although their package is installed. The runtime
+ * remembers a package it didn't find for as long as the process lives, so
+ * one installed after an import of it failed (or after the server started
+ * without a node_modules folder) stays "Could not resolve" until a restart.
+ * Say so, instead of leaving "Maybe you need to bun install?" on a package
+ * that is right there.
+ */
+function installedButNotFound(logs: unknown[], abs: string): string[] {
+  const names = new Set<string>();
+  for (const log of logs) {
+    const l = log as { message?: string; position?: { file?: string } | null };
+    const spec = /Could not resolve: "([^"]+)"/.exec(l.message ?? "")?.[1];
+    if (!spec || spec.startsWith(".") || spec.startsWith("/") || spec.includes(":")) continue;
+    const name = spec.split("/").slice(0, spec.startsWith("@") ? 2 : 1).join("/");
+    for (let d = dirname(l.position?.file || abs); ; d = dirname(d)) {
+      if (existsSync(join(d, "node_modules", name, "package.json"))) { names.add(name); break; }
+      if (dirname(d) === d) break;
+    }
+  }
+  return [...names];
+}
+
 async function loadFile(abs: string, root: string, prev?: Loaded): Promise<Loaded> {
   const out = await Bun.build({
     entrypoints: [abs], target: "bun", format: "esm", plugins: [vaultbasePlugin as never], throw: false,
   } as Parameters<typeof Bun.build>[0]);
   if (!out.success || !out.outputs[0]) {
-    throw new CodeFileError(out.logs.map((l) => formatBuildLog(l, root)).join("\n") || "build failed");
+    const lines = out.logs.map((l) => formatBuildLog(l, root));
+    const stale = installedButNotFound(out.logs, abs);
+    if (stale.length > 0) {
+      lines.push(`${stale.map((n) => `"${n}"`).join(", ")} ${stale.length > 1 ? "are" : "is"} installed, but Vaultbase looked for ${stale.length > 1 ? "them" : "it"} before that. Restart Vaultbase to load ${stale.length > 1 ? "them" : "it"}.`);
+    }
+    throw new CodeFileError(lines.join("\n") || "build failed");
   }
   const code = await out.outputs[0].text();
   const hash = new Bun.CryptoHasher("sha256").update(code).digest("hex");
@@ -573,16 +602,22 @@ export function deleteCodeFile(row: Row): Promise<void> {
 // ── Start ───────────────────────────────────────────────────────────────────
 
 const TYPES_FILE = "vaultbase.d.ts";
-const TYPES = `// Types for hook files. Written by Vaultbase; safe to commit, regenerated if deleted.
+const TYPES_HEADER = "// Types for hook files. Written by Vaultbase";
+/** What `vaultbase.d.ts` in a hooks folder holds. */
+export const CODE_FILE_TYPES = `${TYPES_HEADER}, and rewritten when a new version changes them. Safe to commit.
 declare module "vaultbase" {
   type Rec = Record<string, any>;
-  export interface Auth { id: string; type: "user" | "admin"; email?: string; collection?: string; anonymous?: boolean }
-  /** helpers.find, query, enqueue, notify, email, http, db, ... (see the docs). */
-  export type Helpers = Rec;
+${HELPER_TYPES.trim().replace(/^interface /gm, "export interface ").replace(/^(?=.)/gm, "  ")}
+  export type Auth = AuthContext;
+  /** helpers.find, query, records, sql, enqueue, notify, http, ... */
+  export type Helpers = HookHelpers;
   export interface HookContext { record: Rec; existing: Rec | null; auth: Auth | null; helpers: Helpers }
   export interface RouteContext {
     req: Request; method: string; path: string; params: Record<string, string>; query: Record<string, string>;
-    body: unknown; auth: Auth | null; helpers: Helpers; set: { status: number; headers: Record<string, string> };
+    body: unknown; auth: Auth | null;
+    /** The caller's address, as the request log records it. Null when it isn't known. */
+    ip: string | null;
+    helpers: Helpers; set: { status: number; headers: Record<string, string> };
   }
   export interface JobContext { helpers: Helpers; scheduledAt: number }
   export interface WorkerContext { payload: any; attempt: number; queue: string; jobId: string; helpers: Helpers }
@@ -593,6 +628,20 @@ declare module "vaultbase" {
   export function defineWorker(def: { name?: string; queue: string; concurrency?: number; retries?: number; backoff?: "exponential" | "fixed"; retryDelayMs?: number; enabled?: boolean; run(ctx: WorkerContext): unknown }): unknown;
 }
 `;
+
+/**
+ * Write the types file, or bring one Vaultbase wrote up to date: the copy an
+ * older version left typed `helpers` as `any` and would otherwise stay that
+ * way for good. A file without the header is someone's own and is left alone.
+ */
+function writeTypesFile(dir: string): void {
+  const path = join(dir, TYPES_FILE);
+  let current: string | null = null;
+  try { current = readFileSync(path, "utf8"); } catch { /* not there */ }
+  if (current === CODE_FILE_TYPES) return;
+  if (current !== null && !current.startsWith(TYPES_HEADER)) return;
+  writeFileSync(path, CODE_FILE_TYPES);
+}
 
 /** Write inline (admin UI) rows out as files and point the rows at them. */
 async function exportInlineRows(): Promise<number> {
@@ -635,7 +684,7 @@ export async function startCodeFiles(dir: string | null, opts: { isWriter?: bool
   if (!root) return;
   mkdirSync(root, { recursive: true });
   if (writer) {
-    if (!existsSync(join(root, TYPES_FILE))) writeFileSync(join(root, TYPES_FILE), TYPES);
+    writeTypesFile(root);
     const n = await serial(exportInlineRows);
     if (n > 0) console.log(`[hooks] wrote ${n} hook(s), route(s), job(s) or worker(s) from the admin UI to ${root}`);
   }

@@ -7,6 +7,7 @@ import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 import type { FieldDef } from "../api.ts";
+import { HELPER_TYPES } from "../../../src/core/helper-types.ts";
 
 // ── Bundle Monaco locally + workers ─────────────────────────────────────────
 // Without this, Monaco loads from CDN, the TS service may never start, and
@@ -121,203 +122,8 @@ bootstrapMonaco();
 
 // ── Hook ctx type generation ────────────────────────────────────────────────
 
-const HOOK_BASE_DECL = `
-interface AuthContext {
-  /** Authenticated user/admin id */
-  id: string;
-  /** "user" or "admin" */
-  type: "user" | "admin";
-  /** email if present in token */
-  email?: string;
-}
-
-interface HookHelpers {
-  /** Slugify a string: 'Hello World' -> 'hello-world' */
-  slug(s: string): string;
-  /** Throw a 422 error and abort the operation */
-  abort(message: string): never;
-  /** Look up a single record by id */
-  find<T = Record<string, any>>(collection: string, id: string): Promise<T | null>;
-  /** Query records in a collection */
-  query<T = Record<string, any>>(
-    collection: string,
-    opts?: { filter?: string; sort?: string; perPage?: number }
-  ): Promise<{ data: T[]; totalItems: number }>;
-  /**
-   * Write records the way the API does: validation, hooks, record history,
-   * realtime and webhooks (helpers.sql skips all of these). No API rules
-   * apply. Nesting past 5 levels throws, so a hook can't loop forever.
-   */
-  records: {
-    create<T = Record<string, any>>(collection: string, data: Record<string, any>): Promise<T>;
-    update<T = Record<string, any>>(collection: string, id: string, data: Record<string, any>): Promise<T>;
-    delete(collection: string, id: string): Promise<void>;
-  };
-  /** Outbound HTTP fetch (Web Fetch API) */
-  fetch(input: string | URL, init?: RequestInit): Promise<Response>;
-  /** Server-side log */
-  log(...args: unknown[]): void;
-  /** Send email (pending SMTP) */
-  email(opts: { to: string; subject: string; body: string }): Promise<void>;
-  /**
-   * Enqueue a job onto a named queue. Returns the new job id, or the existing
-   * one when \`uniqueKey\` matched a non-finished job (\`deduped: true\`).
-   */
-  enqueue(
-    queue: string,
-    payload: unknown,
-    opts?: {
-      delay?: number;
-      uniqueKey?: string;
-      retries?: number;
-      backoff?: "exponential" | "fixed";
-      retryDelayMs?: number;
-    }
-  ): Promise<{ jobId: string; deduped: boolean }>;
-  /**
-   * Record a custom policy decision on the active request log (records API).
-   * No-op outside an HTTP request context (cron jobs, post-cascade hooks, etc.).
-   * Multiple calls accumulate.
-   */
-  recordRule(opts: {
-    /** Logical name of the rule (e.g. "custom-quota") */
-    rule: string;
-    /** Defaults to the active hook's collection */
-    collection?: string;
-    /** Optional human-readable expression text */
-    expression?: string | null;
-    outcome: "allow" | "deny" | "filter";
-    reason: string;
-  }): void;
-
-  // ── Extra namespaces (phase 2: PocketBase JSVM parity) ────────────────────
-  security: {
-    /** Hex digest of \`data\`. */
-    hash(alg: "sha256" | "sha384" | "sha512", data: string | Uint8Array): Promise<string>;
-    /** Hex HMAC of \`data\` with \`key\`. */
-    hmac(alg: "sha256" | "sha384" | "sha512", key: string | Uint8Array, data: string | Uint8Array): Promise<string>;
-    /** Random hex (default) or base64url string. \`byteLen\` is the entropy in bytes. */
-    randomString(byteLen: number, alphabet?: "hex" | "base64url"): string;
-    randomBytes(len: number): Uint8Array;
-    /** Sign a JWT (HS256). \`expiresIn\` accepts seconds or "1h", "7d", etc. */
-    jwtSign(
-      payload: Record<string, unknown>,
-      secret: string,
-      opts?: { expiresIn?: number | string; issuer?: string; audience?: string }
-    ): Promise<string>;
-    /** Verify a JWT (HS256). Throws on failure. */
-    jwtVerify(
-      token: string,
-      secret: string,
-      opts?: { issuer?: string; audience?: string }
-    ): Promise<Record<string, unknown>>;
-    /** AES-GCM encrypt with the server-configured key. */
-    aesEncrypt(plaintext: string): Promise<string>;
-    aesDecrypt(ciphertext: string): Promise<string>;
-    constantTimeEqual(a: string, b: string): boolean;
-  };
-  path: {
-    join(...parts: string[]): string;
-    basename(p: string, ext?: string): string;
-    dirname(p: string): string;
-    /** Extension including the leading dot ("" if none). */
-    ext(p: string): string;
-    normalize(p: string): string;
-  };
-  template: {
-    /** Render \`{{var}}\` and \`{{#if path}}...{{/if}}\` against \`vars\`. NOT html-escaped. */
-    render(template: string, vars: Record<string, unknown>): string;
-    escapeHtml(s: string): string;
-  };
-  http: {
-    request(opts: {
-      url: string;
-      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
-      headers?: Record<string, string>;
-      body?: string | Uint8Array | Record<string, unknown> | null;
-      json?: boolean;
-      retries?: number;
-      retryDelayMs?: number;
-      timeoutMs?: number;
-    }): Promise<{
-      status: number;
-      ok: boolean;
-      headers: Record<string, string>;
-      text: string;
-      json?: unknown;
-    }>;
-    getJson<T = unknown>(url: string, headers?: Record<string, string>): Promise<T>;
-    postJson<T = unknown>(url: string, body: unknown, headers?: Record<string, string>): Promise<T>;
-  };
-  util: {
-    sleep(ms: number): Promise<void>;
-    /** Safe JSON.parse — returns null on invalid input. */
-    unmarshal<T = unknown>(s: string): T | null;
-    readerToString(input: ReadableStream<Uint8Array> | Response): Promise<string>;
-  };
-  db: {
-    /** Run a SELECT and return rows. Bind params positionally (\`?\`) or named (\`:name\`). */
-    query<T = Record<string, any>>(sql: string, ...params: any[]): T[];
-    queryOne<T = Record<string, any>>(sql: string, ...params: any[]): T | null;
-    /** Run INSERT / UPDATE / DELETE. */
-    exec(sql: string, ...params: any[]): { changes: number; lastInsertRowid: number | bigint };
-    /** Run multiple statements at once (no parameters). For migrations only. */
-    execMulti(sql: string): void;
-  };
-  fs: {
-    /** Read file as UTF-8 text. */
-    read(path: string): Promise<string>;
-    readBytes(path: string): Promise<Uint8Array>;
-    /** Write file (overwrites). Creates parent dir if missing. */
-    write(path: string, data: string | Uint8Array): Promise<void>;
-    append(path: string, data: string | Uint8Array): Promise<void>;
-    exists(path: string): Promise<boolean>;
-    stat(path: string): Promise<{ size: number; isFile: boolean; isDirectory: boolean; mtime: number }>;
-    list(dir: string): Promise<string[]>;
-    mkdir(dir: string, opts?: { recursive?: boolean }): Promise<void>;
-    remove(path: string, opts?: { recursive?: boolean }): Promise<void>;
-    copy(src: string, dst: string): Promise<void>;
-    /** Best-effort MIME type guess from extension. */
-    mimeOf(path: string): string;
-  };
-  os: {
-    env(name: string): string;
-    cwd(): string;
-    platform(): string;
-    arch(): string;
-    hostname(): string;
-  };
-  mails: {
-    send(opts: {
-      to: string;
-      cc?: string;
-      bcc?: string;
-      replyTo?: string;
-      from?: string;
-      subject: string;
-      text?: string;
-      html?: string;
-      attachments?: Array<{
-        filename: string;
-        content: string | Uint8Array;
-        contentType?: string;
-      }>;
-    }): Promise<{ messageId: string }>;
-  };
-  cron: {
-    /** Add or replace a cron job by name. Schedule is standard 5-field UTC cron. */
-    add(opts: {
-      name: string;
-      schedule: string;
-      code: string;
-      enabled?: boolean;
-    }): Promise<{ id: string }>;
-    /** Remove a cron job by name. */
-    remove(name: string): Promise<boolean>;
-    list(): Promise<{ id: string; name: string; schedule: string; enabled: boolean }[]>;
-  };
-}
-`;
+// One copy with the hooks folder's vaultbase.d.ts (the server writes that one).
+const HOOK_BASE_DECL = HELPER_TYPES;
 
 function tsTypeForField(f: FieldDef): string {
   switch (f.type) {
@@ -448,6 +254,8 @@ interface RouteContext {
   body: any;
   /** Authenticated user/admin or null */
   auth: AuthContext | null;
+  /** The caller's address, as the request log records it. Null when it isn't known. */
+  ip: string | null;
   /** Helper utilities (same as hook helpers) */
   helpers: HookHelpers;
   /** Mutate to set response status / headers */

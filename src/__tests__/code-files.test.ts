@@ -142,6 +142,33 @@ describe("loading files", () => {
     expect(codeFileErrors()).toEqual([]);
   });
 
+  it("says to restart when a package was installed after an import of it failed", async () => {
+    const pkg = `vb-fake-${crypto.randomUUID().slice(0, 8)}`;
+    const source = (n: number) => `import { defineRoute } from "vaultbase";
+import v from "${pkg}";
+export default defineRoute({ path: "/pkg", handle: () => ({ v, n: ${n} }) });
+`;
+    put("routes/pkg.ts", source(1));
+    await startCodeFiles(dir, { pollMs: 0 });
+    const before = codeFileErrors().find((e) => e.path === "routes/pkg.ts")?.error ?? "";
+    expect(before).toContain(`Could not resolve: "${pkg}"`);
+    expect(before).not.toContain("Restart Vaultbase");
+
+    put(`node_modules/${pkg}/package.json`, JSON.stringify({ name: pkg, version: "1.0.0", main: "index.js" }));
+    put(`node_modules/${pkg}/index.js`, `module.exports = "installed";`);
+    put("routes/pkg.ts", source(2));
+    await syncCodeFiles();
+    // The runtime keeps "not found" for the life of the process. If a later
+    // Bun finds the package here, the route simply loads.
+    const after = codeFileErrors().find((e) => e.path === "routes/pkg.ts")?.error;
+    if (after === undefined) {
+      const res = await dispatchCustomRoute(new Request("http://localhost/api/v1/custom/pkg"), "/pkg", "s");
+      expect(res?.body).toEqual({ v: "installed", n: 2 });
+    } else {
+      expect(after).toContain(`"${pkg}" is installed, but Vaultbase looked for it before that. Restart Vaultbase to load it.`);
+    }
+  });
+
   it("drops the row when the file is deleted", async () => {
     put("lib/suffix.ts", `export const suffix = () => "";`);
     put("hooks/stamp.ts", STAMP);

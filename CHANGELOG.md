@@ -7,6 +7,20 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Added
+
+- Custom routes: `ctx.ip` is the caller's address, the same value the request log records: the connection's address, or the one a trusted proxy forwarded (Settings → Security → trusted proxies). It is `null` when the address isn't known.
+- Hook files: `vaultbase.d.ts` in the hooks folder types `ctx.helpers` in full (it was `any`), with `ctx.auth` and a route's `ctx.ip`. A copy written by an earlier version is rewritten on the next start, so a committed copy shows a diff once; a file without Vaultbase's header line is left alone.
+- Admin: the code editor's autocomplete knows `helpers.sql`, `helpers.flags`, `helpers.webhooks`, `helpers.notify` and `helpers.uuid`, which it had no types for.
+
+### Fixed
+
+- Custom routes: a route that returns a `Response` was logged as `200` whatever status it sent (a 503 showed as 200). The request log and the route's log line record the status sent.
+- Hook files: an import of a package that was installed after the import first failed, or after the server started without a `node_modules` folder, kept failing with "Could not resolve … Maybe you need to bun install?" until a restart. The error now says the package is installed and that Vaultbase needs a restart to load it.
+- The release binary printed `[Sucrose] warning: unexpected isContextPassToFunction error` on the first admin request. Nothing but the message was wrong, and it is gone.
+
 ## [0.44.0] — 2026-11-10
 
 ### Breaking
