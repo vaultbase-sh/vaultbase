@@ -115,10 +115,10 @@ describe("realtime Origin policy — SSE", () => {
     expect(await sseStatus(CORS_ONLY)).toBe(200);
   });
 
-  it("lets that origin's page read Retry-After, ETag and Vaultbase-Warning", async () => {
+  it("lets that origin's page read Retry-After, ETag and the Vaultbase headers", async () => {
     const res = await fetch(`http://${base}/api/v1/health`, { headers: { Origin: CORS_ONLY } });
     expect(res.headers.get("access-control-allow-origin")).toBe(CORS_ONLY);
-    expect(res.headers.get("access-control-expose-headers")).toBe("ETag, Retry-After, Vaultbase-Warning");
+    expect(res.headers.get("access-control-expose-headers")).toBe("ETag, Retry-After, Vaultbase-Idempotent-Replay, Vaultbase-Warning");
   });
 
   it("accepts a client that sends no Origin (server-side SDK)", async () => {

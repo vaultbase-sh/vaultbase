@@ -107,6 +107,21 @@ export const fileTokenUses = sqliteTable("vaultbase_file_token_uses", {
 });
 
 /**
+ * Creates sent with an `X-VB-Idempotency-Key` (api/idempotency.ts): one row
+ * per key, for a day. `key_hash` covers the collection, the caller and the
+ * key; `record_id` is the id the create was given before it ran, so a retry
+ * after a crash can't make a second record; `done` is 1 once it succeeded.
+ */
+export const idempotencyKeys = sqliteTable("vaultbase_idempotency_keys", {
+  key_hash: text("key_hash").primaryKey(),
+  collection_id: text("collection_id").notNull(),
+  body_hash: text("body_hash").notNull(),
+  record_id: text("record_id").notNull(),
+  done: integer("done").notNull().default(0),
+  created_at: integer("created_at").notNull(),
+});
+
+/**
  * Long-lived API tokens (Sanctum-style personal-access tokens).
  *
  * One row per minted token. The token's JWT carries `audience: "api"` and

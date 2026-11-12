@@ -279,7 +279,7 @@ import "./event-listeners.ts";
 import { afterCommit, gateMode, withExclusiveWrite, withHeldEffects, withSharedWrite } from "./write-gate.ts";
 import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { invalidateRecordVectors } from "./vector-cache.ts";
-import { dateToUnixSeconds, validateRecord, type CanSeeRecord } from "./validate.ts";
+import { ValidationError, dateToUnixSeconds, validateRecord, type CanSeeRecord } from "./validate.ts";
 import { ViewParamError, boundViewSource, databaseViewParamValues, parseViewParams, requestWithViewParams, resolveViewParams } from "./view-params.ts";
 import { getActiveHookRequest, runBeforeHook } from "./hooks.ts";
 import { encryptValue, decryptValue, isEncrypted, ENCRYPTABLE_TYPES } from "./encryption.ts";
@@ -1018,6 +1018,49 @@ export async function getRecord(
 
 // ── Create ──────────────────────────────────────────────────────────────────
 
+/** A create asked for an id that isn't free. The API answers 409. */
+export class RecordIdTakenError extends Error {
+  readonly status = 409;
+}
+
+const RECORD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** `value` as a record id (lower case), or null when it isn't a UUID. */
+export function asRecordId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.toLowerCase();
+  return RECORD_ID_RE.test(id) ? id : null;
+}
+
+/**
+ * The id a create asked for, checked, or null when it asked for none (the
+ * server then makes one). It has to be a UUID, like every record id, and
+ * free: not a record's, and not one a deleted record's history still holds
+ * (a new record under it would inherit that history and any leftover files).
+ * An offline client makes its ids before it can reach the server; until
+ * 0.46 the id it sent was dropped in silence and replaced.
+ */
+async function chosenRecordId(col: Collection, value: unknown): Promise<string | null> {
+  if (value === undefined || value === null || value === "") return null;
+  const id = asRecordId(value);
+  if (!id) throw new ValidationError({ id: "id must be a UUID, for example 0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" });
+  const tableRef = quoteIdent(userTableName(col.name));
+  if (await db.get(`SELECT 1 FROM ${tableRef} WHERE "id" = ? LIMIT 1`, [id])) {
+    throw new RecordIdTakenError("A record with this id already exists");
+  }
+  if (await db.get(`SELECT 1 FROM vaultbase_record_history WHERE collection = ? AND record_id = ? LIMIT 1`, [col.name, id])) {
+    throw new RecordIdTakenError("This id belonged to a record that was deleted; use a new id");
+  }
+  return id;
+}
+
+/** A unique violation on the table's primary key (not on a unique field). */
+function isIdConflict(e: unknown, table: string): boolean {
+  if (!db.dialect.isUniqueViolation(e)) return false;
+  const message = String((e as { message?: unknown } | null)?.message ?? "");
+  return new RegExp(`${table}\\.id(?![A-Za-z0-9_])`).test(message) || message.includes(`${table}_pkey`);
+}
+
 async function createRecordImpl(
   collectionName: string,
   data: Record<string, unknown> | null | undefined,
@@ -1040,6 +1083,10 @@ async function createRecordImpl(
   }
   data = data ?? {};
 
+  // The caller's own id, checked before any hook runs. A hook sees it as
+  // `record.id` and can't change it (an `id` it sets was always ignored).
+  const chosenId = guard.restore ? null : await chosenRecordId(col, guard.id ?? data["id"]);
+
   // beforeCreate hook (can mutate data, throw to abort)
   await runBeforeHook(col, "beforeCreate", { record: data, existing: null, auth });
 
@@ -1059,7 +1106,7 @@ async function createRecordImpl(
   }
 
   type Binding = string | number | bigint | boolean | null | Uint8Array;
-  const id = guard.restore?.id ?? crypto.randomUUID();
+  const id = guard.restore?.id ?? chosenId ?? crypto.randomUUID();
   const insertCols: string[] = ["id"];
   const insertVals: Binding[] = [id];
 
@@ -1081,7 +1128,13 @@ async function createRecordImpl(
   // Cached statements: compiling these two on every write was ~a fifth of
   // a create's CPU. (Not INSERT … RETURNING: it misses changes made by
   // AFTER triggers an admin may have added through the SQL page.)
-  await db.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
+  try {
+    await db.run(`INSERT INTO ${tableRef} (${colsSql}) VALUES (${placeholders})`, insertVals, { table: userTableName(col.name) });
+  } catch (e) {
+    // Two creates with the same id at once: the check above passed for both.
+    if (chosenId && isIdConflict(e, userTableName(col.name))) throw new RecordIdTakenError("A record with this id already exists");
+    throw e;
+  }
 
   const row = (await db.get<Record<string, unknown>>(`SELECT * FROM ${tableRef} WHERE "id" = ?`, [id]))!;
   const result = await rowToMetaAsync(row, col, fields);
@@ -1263,6 +1316,13 @@ export interface WriteGuard {
    * time) from its history. Set by the admin restore route alone.
    */
   restore?: { id: string; created?: number };
+  /**
+   * Create only: the id the record gets, in place of one in the data or a
+   * new one. Set by the API for a create sent with an idempotency key, so a
+   * retry of that create can't make a second record. Checked like a
+   * client's id.
+   */
+  id?: string;
 }
 
 /** Relation check for `auth`: the target record must pass its collection's view rule. */

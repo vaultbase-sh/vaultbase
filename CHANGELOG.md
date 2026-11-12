@@ -13,8 +13,13 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - `POST /api/v1/admin/migrations/apply` answers `422` when a collection failed to apply. It used to answer `200` with the failure only in `data.errors`, so a deploy script that checked the status went on with a half-applied schema. The report is unchanged and still under `data` (`created`, `updated`, `skipped`, `errors`), next to `error` and `code`; the collections that didn't fail are still applied. **Upgrade:** treat a non-2xx answer from `apply` as a failed deploy, and read `data.errors` from it for the reasons. `vaultbase --apply-snapshot` already exited with 1 in this case.
 
+### Changed
+
+- Records: an `id` sent on a create is used, where it was replaced in silence by one the server made. It has to be a UUID (`422` with `details.id` otherwise) and free: `409` when a record has it, and `409` when a deleted record's history still holds it. Without an `id` the server makes one, as before. This holds for `POST /api/v1/<collection>`, creates in a batch, `helpers.records.create` and the MCP create tools; auth collections still create users through `/register`. **Upgrade:** a client that builds a new record from a fetched one must leave `id` out; sent along, it now answers `409` instead of making a copy under a new id.
+
 ### Added
 
+- Records: `X-VB-Idempotency-Key` on a create makes it safe to repeat. The same key again, from the same caller on the same collection, answers `200` with the record the first request made (as it is now, under the caller's view rule) and a `Vaultbase-Idempotent-Replay: true` header; no second record is made and no hook runs again. The same key with a different body answers `422`; while the first request is still running, `409`; once that record is deleted, `404`. A create that fails frees its key. Keys are kept for 24 hours, in the database, so several servers on one Postgres share them. The header was in the default `cors.headers` before and did nothing. Creates in a batch, custom routes and the auth endpoints don't read it.
 - Logs: when a custom route throws, the reason is in the admin's Logs page as a line next to the request's `500` (`route GET /path → 500: …`). It was only on the server's standard output. The caller still gets `Internal error` and nothing else.
 
 ### Fixed

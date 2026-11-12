@@ -103,7 +103,7 @@ export function applyCorsHeaders(
   // Readable from browser code on another origin: the SDK reports the
   // warnings, sends the ETag back as If-Match, and waits for Retry-After on
   // a 429 or during maintenance (without it a browser could only guess).
-  set.headers["Access-Control-Expose-Headers"] = "ETag, Retry-After, Vaultbase-Warning";
+  set.headers["Access-Control-Expose-Headers"] = "ETag, Retry-After, Vaultbase-Idempotent-Replay, Vaultbase-Warning";
 }
 
 /**

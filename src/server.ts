@@ -17,6 +17,7 @@ import { makeAuthPlugin } from "./api/auth.ts";
 import { makeCollectionsPlugin } from "./api/collections.ts";
 import { makeRecordsPlugin } from "./api/records.ts";
 import { makeFilesPlugin, pruneFileTokenUses } from "./api/files.ts";
+import { pruneIdempotencyKeys } from "./api/idempotency.ts";
 import { makeAdminPlugin } from "./admin/index.ts";
 import { makeAuthPagesPlugin } from "./admin/auth-pages.ts";
 import { makeLogsPlugin } from "./api/logs.ts";
@@ -225,7 +226,11 @@ function startFileTokenUsesPrune(): void {
   const HOUR_MS = 60 * 60 * 1000;
   // A failed prune (e.g. the DB is closed, as between tests) must not surface
   // as an unhandled rejection; the next run catches up.
-  const prune = () => { void pruneFileTokenUses().catch(() => { /* next run */ }); };
+  const prune = () => {
+    void pruneFileTokenUses().catch(() => { /* next run */ });
+    // Idempotency keys (api/idempotency.ts) are kept for a day too.
+    void pruneIdempotencyKeys().catch(() => { /* next run */ });
+  };
   after(prune, 60 * 1000);
   every(prune, HOUR_MS);
 }

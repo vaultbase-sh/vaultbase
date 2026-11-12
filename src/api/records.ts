@@ -2,6 +2,7 @@ import Elysia, { t } from "elysia";
 import type { AuthContext } from "../core/rules.ts";
 import { forbidden, invalidToken, tokenRejection, verifiedFor } from "./forbidden.ts";
 import { unknownBodyKeys, unknownKeys, unknownQueryKeys } from "./unknown-keys.ts";
+import { REPLAY_HEADER, claimIdempotencyKey, completeIdempotencyKey, idempotencyKeyOf, settleFailedCreate } from "./idempotency.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal } from "../core/sec.ts";
 import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
@@ -20,6 +21,7 @@ import {
   clientPaging,
   CascadeForbiddenError,
   PreconditionFailedError,
+  RecordIdTakenError,
   RecordNotFoundError,
   RecordBusyError,
   RestrictError,
@@ -540,13 +542,42 @@ export function makeRecordsPlugin(jwtSecret: string) {
         }
         const unknownBody = unknownBodyKeys(col, body);
         if (unknownBody.length > 0) return unknownKeys(set, unknownBody);
+        // X-VB-Idempotency-Key: a repeat of a create that already ran answers
+        // with its record instead of making another (api/idempotency.ts).
+        const key = idempotencyKeyOf(request);
+        if (key !== null && typeof key === "object") { set.status = 400; return { error: key.error, code: 400 }; }
+        let claim: { hash: string; recordId: string } | null = null;
+        if (key !== null) {
+          const outcome = await claimIdempotencyKey(col, auth, key, body);
+          if (outcome.kind === "mismatch") {
+            set.status = 422;
+            return { error: "This idempotency key was already used with a different request body", code: 422 };
+          }
+          if (outcome.kind === "busy") {
+            set.status = 409;
+            return { error: "A request with this idempotency key is still running", code: 409 };
+          }
+          if (outcome.kind === "gone" || outcome.kind === "replay") {
+            set.headers[REPLAY_HEADER] = "true";
+            // The record as it is now, under the caller's view rule: the
+            // first response isn't kept anywhere.
+            const again = outcome.kind === "replay" ? await getRecord(params.collection, outcome.recordId, { auth }) : null;
+            if (!again) { set.status = 404; return { error: "Record not found", code: 404 }; }
+            return { data: canView(request, col, auth, again) ? again : null };
+          }
+          claim = outcome;
+        }
         try {
+          const guard = relationsAs(auth, request);
           const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
-            createRecord(params.collection, body as Record<string, unknown>, auth, relationsAs(auth, request))
+            createRecord(params.collection, body as Record<string, unknown>, auth, claim ? { ...guard, id: claim.recordId } : guard)
           ));
+          if (claim) await completeIdempotencyKey(claim.hash);
           // Created, but not readable by its creator: no record back.
           return { data: canView(request, col, auth, record) ? record : null };
         } catch (e) {
+          if (claim) await settleFailedCreate(col, claim.hash, claim.recordId).catch(() => { /* the key expires on its own */ });
+          if (e instanceof RecordIdTakenError) { set.status = 409; return { error: e.message, code: 409 }; }
           if (e instanceof ValidationError) return validationResponse(set, e);
           if (e instanceof ReadOnlyCollectionError || e instanceof SingletonRecordError) return readOnlyResponse(set, e);
           throw e;

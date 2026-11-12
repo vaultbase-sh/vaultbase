@@ -3,7 +3,7 @@ import Elysia, { t } from "elysia";
 import { db } from "../db/index.ts";
 import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
-import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, hiddenFrom, listRecords, ReadOnlyCollectionError, RecordBusyError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
+import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, hiddenFrom, listRecords, ReadOnlyCollectionError, RecordBusyError, RecordIdTakenError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { cascadeRuleCheck, checkRule, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
@@ -221,7 +221,7 @@ function batchError(e: unknown, at: number, auth: VerifiedAuth | null, set: { st
       ? { error: `Batch failed at request ${at}: ${e.message}`, code: 409, details: e.details }
       : { error: `Batch failed at request ${at}: the record is referenced by other records`, code: 409 };
   }
-  if (e instanceof RecordBusyError) {
+  if (e instanceof RecordBusyError || e instanceof RecordIdTakenError) {
     set.status = 409;
     return { error: `Batch failed at request ${at}: ${e.message}`, code: 409 };
   }
