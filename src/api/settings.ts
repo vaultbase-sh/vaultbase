@@ -8,6 +8,7 @@ import { invalidateStorageCache, testStorage, getStorageStatus, clearThumbCache,
 import { invalidateEgressCache, parseCidr } from "../core/hook-egress.ts";
 import { isIP } from "node:net";
 import { invalidateCorsCache } from "../core/cors.ts";
+import { isKnownSettingKey } from "../core/setting-keys.ts";
 import { getUpdateStatus, runUpdateCheck, startUpdateCheckScheduler, stopUpdateCheckScheduler } from "../core/update-check.ts";
 import { isAuthWindowKey, SESSION_MAX_KEY, validateSessionMaxSeconds, validateWindowSeconds } from "../core/auth-tokens.ts";
 import { validateBackupKeep } from "../core/backups.ts";
@@ -422,6 +423,35 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
 }
 
 /** Write a validated settings change and refresh what depends on settings. */
+const warnedKeys = new Set<string>();
+
+/**
+ * Keys in a settings update that nothing reads (core/setting-keys.ts). They
+ * are still stored, with a warning: a later release refuses them. A key
+ * that is already stored with this value isn't reported, so settings read
+ * and sent back whole don't warn about what an earlier update left behind.
+ */
+export function unknownSettingKeys(body: Record<string, unknown>): string[] {
+  const stored = values();
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(body)) {
+    if (isKnownSettingKey(k)) continue;
+    const raw = stored.get(k);
+    if (raw !== undefined && (maybeDecrypt(k, raw) === String(v) || (shouldEncryptSettingKey(k) && v === SECRET_SETTING_MASK))) continue;
+    out.push(k);
+    if (!warnedKeys.has(k) && warnedKeys.size < 1000) {
+      warnedKeys.add(k);
+      process.stderr.write(`vaultbase: settings: unknown key '${k}' was stored, but nothing reads it\n`);
+    }
+  }
+  return out;
+}
+
+/** The `Vaultbase-Warning` text for those keys. */
+export function unknownSettingWarning(keys: string[]): string {
+  return keys.map((k) => `unknown settings key '${k}': stored, but nothing reads it`).join(" | ");
+}
+
 export async function applySettingsPatch(body: Record<string, unknown>): Promise<void> {
   // Switches last: each write is visible on its own (on Postgres a round
   // trip apart), and turning maintenance mode on before its message was
@@ -476,7 +506,10 @@ export function makeSettingsPlugin(jwtSecret: string, runtime?: RuntimeInfo) {
       async ({ body, set }) => {
         const err = validateSettingsPatch(body);
         if (err) { set.status = 422; return { error: err, code: 422 }; }
+        // Before the write: afterwards every key in the body is stored.
+        const unknown = unknownSettingKeys(body);
         await applySettingsPatch(body);
+        if (unknown.length > 0) set.headers["Vaultbase-Warning"] = unknownSettingWarning(unknown);
         return { data: getAllSettingsMasked() };
       },
       { requireAdmin: true, body: t.Record(t.String(), t.Any()) }

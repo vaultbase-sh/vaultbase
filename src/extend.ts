@@ -22,6 +22,9 @@ export { registerStorageDriver, listStorageDrivers, type StorageDriverDef, type 
 export { registerEmailTransport, listEmailTransports, type EmailTransportDef, type EmailMessage } from "./core/email.ts";
 export { registerPushProvider, listPushProviders, type PushProviderDef, type PushSendContext } from "./core/notifications.ts";
 
+// Settings an extension reads, so setting them isn't reported as unknown.
+export { registerSettingKeys } from "./core/setting-keys.ts";
+
 // Code
 export { registerHook, type HookRegistration, type HookContext, type HookEvent } from "./core/hooks.ts";
 export { registerRoute, type RouteRegistration, type RouteContext } from "./core/routes.ts";

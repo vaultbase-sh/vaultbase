@@ -35,7 +35,7 @@ import { dispatchEvent } from "../core/webhooks.ts";
 import { runJob, validateCron, invalidateJobsCache } from "../core/jobs.ts";
 import { invalidateRoutesCache, ROUTE_METHODS } from "../core/routes.ts";
 import { invalidateHookCache } from "../core/hooks.ts";
-import { applySettingsPatch, getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK, validateSettingsPatch } from "../api/settings.ts";
+import { applySettingsPatch, getSetting, setSetting, getAllSettingsMasked, shouldEncryptSettingKey, SECRET_SETTING_MASK, unknownSettingKeys, unknownSettingWarning, validateSettingsPatch } from "../api/settings.ts";
 import { createRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { groupItemBounds, isGroupList, subfieldsOf } from "../core/group-fields.ts";
@@ -653,8 +653,9 @@ export function registerAdminWriteTools(reg: ToolRegistry): void {
       const change = { [key]: String(args.value) };
       const err = validateSettingsPatch(change);
       if (err) throw new Error(err);
+      const unknown = unknownSettingKeys(change);
       await applySettingsPatch(change);
-      return asJsonText({ updated: true, key: args.key });
+      return asJsonText({ updated: true, key: args.key, ...(unknown.length > 0 ? { warning: unknownSettingWarning(unknown) } : {}) });
     },
   });
 

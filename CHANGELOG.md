@@ -15,6 +15,14 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - Hook files: `vaultbase.d.ts` in the hooks folder types `ctx.helpers` in full (it was `any`), with `ctx.auth` and a route's `ctx.ip`. A copy written by an earlier version is rewritten on the next start, so a committed copy shows a diff once; a file without Vaultbase's header line is left alone.
 - Admin: the code editor's autocomplete knows `helpers.sql`, `helpers.flags`, `helpers.webhooks`, `helpers.notify` and `helpers.uuid`, which it had no types for.
 
+### Changed
+
+- Custom routes: a form post (`application/x-www-form-urlencoded`) is parsed. `ctx.body` is an object of the form's fields, with the last value for a name sent more than once; it used to be `null`. `ctx.req` can still be read, for every value or the raw text. **Upgrade:** a route that parses the form itself only when `ctx.body` is empty (`ctx.body ?? …`) now gets the object; read `ctx.req` without that check, or use `ctx.body`.
+
+### Deprecated
+
+- A settings key that nothing reads, in `PATCH /api/v1/admin/settings` or the MCP `update_setting` tool. The key is still stored, as before, so a typo such as `auth.password.min_length` (for `password.min_length`) answers `200` and changes nothing; the response now carries a `Vaultbase-Warning` header naming each such key (a `warning` in the MCP tool's result), and the server log names it once. A key that is already stored and is sent back unchanged isn't reported. **Deprecation:** these requests will answer `400`, no sooner than two minor releases after this one. An extension that reads settings of its own declares them with `registerSettingKeys` from `src/extend.ts`.
+
 ### Fixed
 
 - Custom routes: a route that returns a `Response` was logged as `200` whatever status it sent (a 503 showed as 200). The request log and the route's log line record the status sent.
