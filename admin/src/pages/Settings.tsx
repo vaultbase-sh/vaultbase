@@ -3595,7 +3595,8 @@ function MigrationsSection() {
       { snapshot: pendingSnapshot, mode }
     );
     setApplying(false);
-    if (res.error) { toast(res.error, "info"); return; }
+    // A failed apply (422) still carries the report of what was applied.
+    if (res.error && !res.data) { toast(res.error, "info"); return; }
     setResult(res.data ?? null);
     const d = res.data!;
     toast(

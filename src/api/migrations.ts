@@ -122,14 +122,25 @@ export function makeMigrationsPlugin(jwtSecret: string) {
         // Preserve the existing HTTP response shape: callers expect
         // `{ created, updated, skipped, errors }` where `skipped` is the union
         // of "skipped because additive" + "unchanged because already in sync".
-        return {
-          data: {
-            created: result.created,
-            updated: result.updated,
-            skipped: [...result.skipped, ...result.unchanged],
-            errors:  result.errors,
-          },
+        const data = {
+          created: result.created,
+          updated: result.updated,
+          skipped: [...result.skipped, ...result.unchanged],
+          errors:  result.errors,
         };
+        // A failure used to answer 200 with the reason in `errors`: a deploy
+        // script that checked only the status went on with a half-applied
+        // schema. The report is the same; the status now says it failed.
+        if (result.errors.length > 0) {
+          const names = [...new Set(result.errors.map((e) => e.collection))];
+          set.status = 422;
+          return {
+            error: `${names.length} collection${names.length === 1 ? "" : "s"} failed to apply: ${names.join(", ")}`,
+            code: 422,
+            data,
+          };
+        }
+        return { data };
       },
       {
         requireAdmin: true,

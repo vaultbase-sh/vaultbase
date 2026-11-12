@@ -173,4 +173,31 @@ describe("snapshots carry history and admin indexes", () => {
     const more = { ...snap, collections: [{ ...snap.collections[0]!, fields: [{ name: "name", type: "text" }, { name: "phone", type: "text" }] }] };
     expect((await computeSnapshotDiff(more)).modified[0]?.changes).toEqual(["fields: 1 added"]);
   });
+
+  it("the apply endpoint answers 422 when a collection failed, with the report of what was applied", async () => {
+    await getDb().insert(admin).values({ id: "a1", email: "a@test.local", password_hash: "x", password_reset_at: 0, created_at: 0 }).onConflictDoNothing();
+    const { token } = await signAuthToken({ payload: { id: "a1" }, audience: "admin", expiresInSeconds: 60, jwtSecret: SECRET });
+    const apply = (snapshot: Snapshot) => makeMigrationsPlugin(SECRET).handle(new Request("http://localhost/admin/migrations/apply", {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ snapshot, mode: "additive" }),
+    }));
+    const snap: Snapshot = {
+      generated_at: new Date().toISOString(), version: 1,
+      collections: [
+        { name: "good", type: "base", fields: [{ name: "title", type: "text" }] },
+        { name: "bad", type: "base", fields: [{ name: "a", type: "text" }], indexes: [{ fields: ["nope"], unique: false }] },
+      ],
+    };
+    const failed = await apply(snap);
+    expect(failed.status).toBe(422);
+    const body = await failed.json() as { error: string; code: number; data: { created: string[]; errors: Array<{ collection: string; error: string }> } };
+    expect([body.code, body.error]).toEqual([422, "1 collection failed to apply: bad"]);
+    expect(body.data.created.sort()).toEqual(["bad", "good"]);
+    expect(body.data.errors).toEqual([{ collection: "bad", error: "index (nope): Field 'nope' not found on 'bad'" }]);
+    expect(await getCollection("good")).toBeTruthy();
+
+    const clean = await apply({ ...snap, collections: [snap.collections[0]!] });
+    expect(clean.status).toBe(200);
+    expect(((await clean.json()) as { data: { errors: unknown[] } }).data.errors).toEqual([]);
+  });
 });
