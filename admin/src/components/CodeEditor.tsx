@@ -250,7 +250,7 @@ interface RouteContext {
   params: Record<string, string>;
   /** Query string params */
   query: Record<string, string>;
-  /** Parsed JSON body (or text/null) */
+  /** The body: parsed JSON, the fields of a form post, text for text/*, otherwise null */
   body: any;
   /** Authenticated user/admin or null */
   auth: AuthContext | null;

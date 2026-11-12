@@ -236,6 +236,16 @@ export async function dispatchCustomRoute(
       body = await request.clone().json().catch(() => null);
     } else if (ct.includes("text/")) {
       body = await request.clone().text().catch(() => null);
+    } else if (ct.includes("application/x-www-form-urlencoded")) {
+      // An object of the form's fields, like `query`: for a repeated name
+      // the last value wins. `ctx.req` is untouched for a route that wants
+      // every value.
+      const text = await request.clone().text().catch(() => null);
+      if (text !== null) {
+        const form: Record<string, string> = {};
+        new URLSearchParams(text).forEach((v, k) => { form[k] = v; });
+        body = form;
+      }
     }
   }
 

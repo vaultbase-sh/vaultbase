@@ -125,18 +125,18 @@ describe("custom route hardening", () => {
     expect(await (await tryDispatchCustom(unknown, SECRET))!.json()).toEqual({ ip: null });
   });
 
-  it("a form post: ctx.body is null and the route reads the request itself", async () => {
+  it("a form post: ctx.body is the form's fields, and the request is still readable", async () => {
     const now = Math.floor(Date.now() / 1000);
     await getDb().insert(routes).values({
       id: crypto.randomUUID(), name: "", method: "POST", path: "/form", enabled: 1, require_auth: 0, created_at: now, updated_at: now,
-      code: `return { body: ctx.body, form: Object.fromEntries(new URLSearchParams(await ctx.req.text())) };`,
+      code: `return { body: ctx.body, all: new URLSearchParams(await ctx.req.text()).getAll("tag") };`,
     });
     invalidateRoutesCache();
     const r = new Request("http://localhost/api/v1/custom/form", {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "x=1&y=two",
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "x=1&y=two+words&tag=a&tag=b",
     });
     rememberPeer(r, "203.0.113.9");
-    expect(await (await tryDispatchCustom(r, SECRET))!.json()).toEqual({ body: null, form: { x: "1", y: "two" } });
+    expect(await (await tryDispatchCustom(r, SECRET))!.json()).toEqual({ body: { x: "1", y: "two words", tag: "b" }, all: ["a", "b"] });
   });
 
   it("a rate-limit rule written with /api/v1/ matches", async () => {
