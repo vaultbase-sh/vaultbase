@@ -64,14 +64,18 @@ export function adminGuard(jwtSecret: string) {
   return new Elysia({ name: "admin-guard", seed: jwtSecret }).macro({
     requireAdmin(opt: true | RequireAdminOpts) {
       const opts: RequireAdminOpts = opt === true ? {} : opt;
+      // Arrow functions, not `resolve() {}` / `beforeHandle() {}`: Elysia
+      // reads a handler's source to see what it uses, and in the minified
+      // release build it can't tell a method's parameter from its body. It
+      // then printed a "[Sucrose] warning" on the first admin request.
       return {
-        async resolve({ request }) {
+        resolve: async ({ request }) => {
           const admin = await adminFromRequest(request, jwtSecret, opts);
           const allowed = admin && !(opts.session && admin.viaApiToken) ? admin : null;
           // Non-null for every handler that runs: beforeHandle refuses otherwise.
           return { admin: allowed as AdminPrincipal };
         },
-        beforeHandle(ctx) {
+        beforeHandle: (ctx) => {
           if ((ctx as { admin?: AdminPrincipal | null }).admin) return;
           const error = opts.session ? "Unauthorized — interactive admin session required" : "Unauthorized";
           return ctx.status(401, { error, code: 401 });
