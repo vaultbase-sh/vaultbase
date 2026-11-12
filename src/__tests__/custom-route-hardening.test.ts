@@ -73,6 +73,11 @@ describe("custom route hardening", () => {
     const res = (await get("/boom"))!;
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("vb_internal");
+    // The admin's Logs page has the reason, next to the request's 500.
+    await drainLogBuffer();
+    const logs = await readLogs();
+    expect(logs.find((e) => e.path === "/api/v1/custom/boom")?.status).toBe(500);
+    expect(logs.find((e) => e.kind === "hook")?.message).toBe("route GET /boom → 500: SELECT secret FROM vb_internal failed at /srv/app");
   });
 
   it("require_auth refuses anonymous callers and serves signed-in ones", async () => {

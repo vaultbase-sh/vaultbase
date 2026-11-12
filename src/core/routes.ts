@@ -309,6 +309,12 @@ export async function dispatchCustomRoute(
     }
     void insertLog(request.method, fullPath, status, Date.now() - started, ip,
       auth ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) } : null);
+    // In the Logs page too, next to the request: the reason was only on the
+    // server's standard output, so a failing route showed a bare 500 there.
+    appendHookLog({
+      name: match.route.name,
+      message: `route ${match.route.method} ${match.route.path} → ${status}: ${e instanceof Error ? e.message : String(e)}`,
+    });
     return { status, headers: {}, body };
   }
 }

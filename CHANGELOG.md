@@ -7,6 +7,21 @@ existing installs notice; read the **Upgrade notes** before upgrading.
 Binaries, checksums, signatures and SBOMs for every version are on
 [GitHub Releases](https://github.com/vaultbase-sh/vaultbase/releases).
 
+## [Unreleased]
+
+### Breaking
+
+- `POST /api/v1/admin/migrations/apply` answers `422` when a collection failed to apply. It used to answer `200` with the failure only in `data.errors`, so a deploy script that checked the status went on with a half-applied schema. The report is unchanged and still under `data` (`created`, `updated`, `skipped`, `errors`), next to `error` and `code`; the collections that didn't fail are still applied. **Upgrade:** treat a non-2xx answer from `apply` as a failed deploy, and read `data.errors` from it for the reasons. `vaultbase --apply-snapshot` already exited with 1 in this case.
+
+### Added
+
+- Logs: when a custom route throws, the reason is in the admin's Logs page as a line next to the request's `500` (`route GET /path → 500: …`). It was only on the server's standard output. The caller still gets `Internal error` and nothing else.
+
+### Fixed
+
+- Realtime from a browser on another origin: an origin listed under Settings → CORS (`cors.origins`) can open the WebSocket and the SSE stream. Only `security.allowed_origins` was checked, which no admin screen sets, while the refusal's hint and the quick start said to add the origin to the CORS setting. `security.allowed_origins` still works.
+- Browser code on another origin can read the `Retry-After` header of a `429` or a maintenance `503`; it wasn't in `Access-Control-Expose-Headers`, so a browser could only guess how long to wait.
+
 ## [0.45.1] — 2026-11-12
 
 ### Fixed
