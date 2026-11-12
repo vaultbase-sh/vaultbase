@@ -42,6 +42,12 @@ export interface RouteContext {
   query: Record<string, string>;
   body: unknown;
   auth: AuthContext | null;
+  /**
+   * The caller's address, as the request log records it: the connection's
+   * peer, or the address a trusted proxy forwarded (Settings → Security →
+   * trusted proxies). Null when the connection's address isn't known.
+   */
+  ip: string | null;
   helpers: HookHelpers;
   set: { status: number; headers: Record<string, string> };
 }
@@ -244,6 +250,7 @@ export async function dispatchCustomRoute(
     auth,
   });
   const set = { status: 200, headers: {} as Record<string, string> };
+  const ip = clientIp(request);
   const ctx: RouteContext = {
     req: request,
     method: request.method,
@@ -252,12 +259,12 @@ export async function dispatchCustomRoute(
     query,
     body,
     auth,
+    ip,
     helpers,
     set,
   };
 
   const started = Date.now();
-  const ip = clientIp(request);
   const fullPath = "/api/v1/custom" + innerPath;
   try {
     const route = match.route;
@@ -265,11 +272,14 @@ export async function dispatchCustomRoute(
       ? await route.fn(ctx)
       : await withTimeLimit("route", route.name || `${route.method} ${route.path}`, (signal) =>
         route.fn({ ...ctx, helpers: guardHelpers(helpers, signal) }));
-    void insertLog(request.method, fullPath, set.status, Date.now() - started, ip,
+    // A returned Response is answered as is, so its status is the one sent:
+    // `set.status` stays 200 and the log said 200 for a 503.
+    const sent = result instanceof Response ? result.status : set.status;
+    void insertLog(request.method, fullPath, sent, Date.now() - started, ip,
       auth ? { id: auth.id, type: auth.type, ...(auth.email ? { email: auth.email } : {}) } : null);
     appendHookLog({
       name: match.route.name,
-      message: `route ${match.route.method} ${match.route.path} → ${set.status}`,
+      message: `route ${match.route.method} ${match.route.path} → ${sent}`,
     });
     return { status: set.status, headers: set.headers, body: result ?? null };
   } catch (e) {

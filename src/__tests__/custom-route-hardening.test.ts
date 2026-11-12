@@ -10,7 +10,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { initDb, closeDb, getDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
-import { setLogsDir } from "../core/file-logger.ts";
+import { drainLogBuffer, readLogs, setLogsDir } from "../core/file-logger.ts";
 import { invalidateRoutesCache } from "../core/routes.ts";
 import { routes } from "../db/schema.ts";
 import { tryDispatchCustom } from "../api/routes.ts";
@@ -103,6 +103,40 @@ describe("custom route hardening", () => {
     expect(res.headers.get("content-type")).toBe("application/xml");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.text()).toBe("<urlset/>");
+  });
+
+  it("the request log records the status of a returned Response", async () => {
+    await route("/down", `return new Response("down", { status: 503 });`);
+    await route("/set", `ctx.set.status = 202; return { ok: true };`);
+    expect((await get("/down"))!.status).toBe(503);
+    expect((await get("/set"))!.status).toBe(202);
+    await drainLogBuffer();
+    const logged = Object.fromEntries((await readLogs()).map((e) => [e.path, e.status]));
+    expect(logged["/api/v1/custom/down"]).toBe(503);
+    expect(logged["/api/v1/custom/set"]).toBe(202);
+  });
+
+  it("ctx.ip is the caller's address, null when it isn't known", async () => {
+    await route("/ip", `return { ip: ctx.ip };`);
+    expect(await (await get("/ip", {}, "203.0.113.9"))!.json()).toEqual({ ip: "203.0.113.9" });
+    // An address the caller claims isn't taken on trust: no trusted proxies are set.
+    expect(await (await get("/ip", { "x-forwarded-for": "198.51.100.7" }, "203.0.113.9"))!.json()).toEqual({ ip: "203.0.113.9" });
+    const unknown = new Request("http://localhost/api/v1/custom/ip");
+    expect(await (await tryDispatchCustom(unknown, SECRET))!.json()).toEqual({ ip: null });
+  });
+
+  it("a form post: ctx.body is null and the route reads the request itself", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(routes).values({
+      id: crypto.randomUUID(), name: "", method: "POST", path: "/form", enabled: 1, require_auth: 0, created_at: now, updated_at: now,
+      code: `return { body: ctx.body, form: Object.fromEntries(new URLSearchParams(await ctx.req.text())) };`,
+    });
+    invalidateRoutesCache();
+    const r = new Request("http://localhost/api/v1/custom/form", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "x=1&y=two",
+    });
+    rememberPeer(r, "203.0.113.9");
+    expect(await (await tryDispatchCustom(r, SECRET))!.json()).toEqual({ body: null, form: { x: "1", y: "two" } });
   });
 
   it("a rate-limit rule written with /api/v1/ matches", async () => {
