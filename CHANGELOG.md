@@ -9,6 +9,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-11-13
+
 ### Breaking
 
 - `POST /api/v1/admin/migrations/apply` answers `422` when a collection failed to apply. It used to answer `200` with the failure only in `data.errors`, so a deploy script that checked the status went on with a half-applied schema. The report is unchanged and still under `data` (`created`, `updated`, `skipped`, `errors`), next to `error` and `code`; the collections that didn't fail are still applied. **Upgrade:** treat a non-2xx answer from `apply` as a failed deploy, and read `data.errors` from it for the reasons. `vaultbase --apply-snapshot` already exited with 1 in this case.
