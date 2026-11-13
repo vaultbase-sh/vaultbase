@@ -383,8 +383,9 @@ describe.skipIf(!onSqlite)("restore and users deleted since the backup", () => {
   const verifies = async (token: string) => !!(await verifyAuthToken(token, SECRET));
 
   it("a member deleted since the backup stays deleted, and their old session doesn't work", async () => {
-    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    // "gone" first: a deletion is only certain for an account no newer than one both sides still have.
     const gone = await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
     const col = (await getCollection("members"))!;
     raw().prepare(`INSERT INTO vaultbase_oauth_links (id, user_id, collection_id, provider, provider_user_id, created_at) VALUES ('l1', ?, ?, 'github', 'gh-gone', 1)`).run(gone, col.id);
     const token = await signUserJwt(gone, "gone@test.local", "members", SECRET);
@@ -402,8 +403,9 @@ describe.skipIf(!onSqlite)("restore and users deleted since the backup", () => {
   });
 
   it("bring_back_deleted_users=1 brings them back, signed out of every session", async () => {
-    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    // "gone" first: a deletion is only certain for an account no newer than one both sides still have.
     const gone = await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
     const token = await signUserJwt(gone, "gone@test.local", "members", SECRET);
     await runBackup();
     raw().prepare(`DELETE FROM vb_members WHERE id = ?`).run(gone);

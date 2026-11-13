@@ -167,8 +167,9 @@ describe.skipIf(!canRestore)("restore on Postgres", () => {
   it("leaves users deleted since the backup deleted, or brings them back signed out when asked", async () => {
     const { seedAuthUser } = await import("./_helpers.ts");
     await db.run(`INSERT INTO vaultbase_install (key, id) VALUES ('install', 'pg-install') ON CONFLICT (key) DO NOTHING`);
-    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
+    // "gone" first: a deletion is only certain for an account no newer than one both sides still have.
     await seedAuthUser({ collection: "members", id: "gone", email: "gone@test.local" });
+    await seedAuthUser({ collection: "members", id: "keep", email: "keep@test.local" });
     const { name } = await backUp();
     await db.run(`DELETE FROM vb_members WHERE id = 'gone'`);
 
