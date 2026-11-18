@@ -9,6 +9,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-11-18
+
 ### Added
 
 - Admin: a **Schema** page in the sidebar draws the collections as cards on a canvas, with an arrow for each relation field, from the field's row to the collection it points at. Drag to pan, scroll to zoom, drag a card to move it (each browser remembers where), hover a card or an arrow to light up what it connects and read the relation's delete behaviour, click a relation to jump to its target, and click a card's name to open the schema editor. **Relations only** shrinks the cards for a large schema. It reads the collections the admin already loads: no new endpoint, and it changes nothing.
