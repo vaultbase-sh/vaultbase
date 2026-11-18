@@ -4500,8 +4500,8 @@ const OneSignalFields: React.FC<{
         <VbInput mono value={p.appId} onChange={(e) => p.onAppId(e.target.value)} placeholder="4572b496-4fdc-..." disabled={p.loading} />
       </VbField>
       <VbField
-        label="REST API key"
-        hint="Server-side key — never ship to clients"
+        label="App API key"
+        hint="Server-side key — never ship to clients. A legacy REST API key works too"
         right={p.cfg?.onesignal.api_key_set
           ? <VbPill tone="success" dot>set</VbPill>
           : <VbPill tone="warning" dot>not set</VbPill>}
@@ -4512,7 +4512,7 @@ const OneSignalFields: React.FC<{
             type={p.showKey ? "text" : "password"}
             value={p.apiKey}
             onChange={(e) => p.onApiKey(e.target.value)}
-            placeholder={p.cfg?.onesignal.api_key_set ? "•••••••••• (leave blank to keep)" : "paste REST API key"}
+            placeholder={p.cfg?.onesignal.api_key_set ? "•••••••••• (leave blank to keep)" : "paste App API key"}
             disabled={p.loading}
             style={{ paddingRight: 32 }}
           />

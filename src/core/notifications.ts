@@ -162,6 +162,16 @@ export function getEnabledProviders(): string[] {
 
 const ONESIGNAL_URL = "https://api.onesignal.com/notifications";
 
+/**
+ * The Authorization header for a OneSignal key. The App API keys OneSignal
+ * issues now (`os_v2_app_…`) go with the `Key` scheme; the legacy REST API
+ * key, which can no longer be created, with `Basic`. Neither is base64.
+ */
+export function oneSignalAuthHeader(apiKey: string): string {
+  const key = apiKey.trim();
+  return `${key.startsWith("os_v2_") ? "Key" : "Basic"} ${key}`;
+}
+
 export async function sendOneSignal(
   config: OneSignalConfig,
   externalId: string,
@@ -183,9 +193,7 @@ export async function sendOneSignal(
   const res = await fetch(ONESIGNAL_URL, {
     method: "POST",
     headers: {
-      // OneSignal's auth scheme is the literal word "Basic" + the raw REST API
-      // key (NOT RFC 7617 base64-encoded user:pass). Their docs are explicit.
-      Authorization: `Basic ${config.api_key}`,
+      Authorization: oneSignalAuthHeader(config.api_key),
       "Content-Type": "application/json",
       Accept: "application/json",
     },
@@ -702,15 +710,17 @@ export interface ConnectionTestResult {
 
 export async function testOneSignalConnection(config: OneSignalConfig): Promise<ConnectionTestResult> {
   if (!config.app_id || !config.api_key) {
-    return { ok: false, detail: "App ID and REST API Key required" };
+    return { ok: false, detail: "App ID and API key required" };
   }
-  // Cheap read-only probe: GET /apps/<id> returns app metadata if the key is valid.
-  const res = await fetch(`https://api.onesignal.com/apps/${encodeURIComponent(config.app_id)}`, {
+  // Read-only probe that OneSignal documents for App API keys: the app's
+  // message list, one row. `GET /apps/<id>` was reported to answer 401 to a
+  // valid App key (issue #16). Sends nothing.
+  const res = await fetch(`${ONESIGNAL_URL}?app_id=${encodeURIComponent(config.app_id)}&limit=1`, {
     method: "GET",
-    headers: { Authorization: `Basic ${config.api_key}`, Accept: "application/json" },
+    headers: { Authorization: oneSignalAuthHeader(config.api_key), Accept: "application/json" },
   });
   const text = await res.text();
-  if (res.ok) return { ok: true, detail: `OneSignal ✓ ${text.slice(0, 100)}` };
+  if (res.ok) return { ok: true, detail: "OneSignal accepted the key for this app" };
   return { ok: false, detail: `OneSignal ${res.status}: ${text.slice(0, 200)}` };
 }
 

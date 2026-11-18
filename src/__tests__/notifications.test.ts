@@ -12,6 +12,7 @@ import {
   loadProviderConfigs,
   getEnabledProviders,
   sendOneSignal,
+  oneSignalAuthHeader,
   sendFcm,
   dispatchNotification,
   testOneSignalConnection,
@@ -102,6 +103,22 @@ describe("sendOneSignal", () => {
     expect(body.headings.en).toBe("Hi");
     expect(body.contents.en).toBe("There");
     expect(body.data.type).toBe("test");
+  });
+
+  it("sends a current App API key (os_v2_…) with the Key scheme", async () => {
+    let auth = "";
+    globalThis.fetch = (async (_url: unknown, init: RequestInit | undefined) => {
+      auth = (init?.headers as Record<string, string>).Authorization!;
+      return new Response(JSON.stringify({ id: "n-1", recipients: 1 }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const res = await sendOneSignal(
+      { enabled: true, app_id: "app-xyz", api_key: "os_v2_app_abc123" },
+      "user-1",
+      { title: "Hi", body: "There" },
+    );
+    expect(res.delivered).toBe(1);
+    expect(auth).toBe("Key os_v2_app_abc123");
   });
 
   it("flags recipients=0 as a misconfiguration hint (still ok=true to avoid retry)", async () => {
@@ -385,11 +402,47 @@ describe("dispatchNotification", () => {
 
 // ── connection-test helpers ──────────────────────────────────────────────────
 
+describe("oneSignalAuthHeader", () => {
+  it("uses Key for the keys OneSignal issues now, Basic for a legacy REST API key", () => {
+    expect(oneSignalAuthHeader("os_v2_app_abc123")).toBe("Key os_v2_app_abc123");
+    expect(oneSignalAuthHeader("os_v2_org_abc123")).toBe("Key os_v2_org_abc123");
+    expect(oneSignalAuthHeader("NGEwMGZmLWxlZ2FjeQ")).toBe("Basic NGEwMGZmLWxlZ2FjeQ");
+  });
+  it("drops whitespace pasted around the key", () => {
+    expect(oneSignalAuthHeader("  os_v2_app_abc123\n")).toBe("Key os_v2_app_abc123");
+  });
+});
+
 describe("testOneSignalConnection", () => {
   it("ok on 200", async () => {
-    globalThis.fetch = (async () => new Response('{"name":"My App"}', { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    globalThis.fetch = (async () => new Response('{"total_count":0,"notifications":[]}', { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
     const res = await testOneSignalConnection({ enabled: true, app_id: "abc", api_key: "k" });
     expect(res.ok).toBe(true);
+  });
+  it("reads the app's message list, which an App API key may do, and sends nothing", async () => {
+    let captured: { url: string; init: RequestInit | undefined } | null = null;
+    globalThis.fetch = (async (url: unknown, init: RequestInit | undefined) => {
+      captured = { url: String(url), init };
+      return new Response(JSON.stringify({ total_count: 1, notifications: [{ id: "n-1", contents: { en: "a private message" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const res = await testOneSignalConnection({ enabled: true, app_id: "app id/1", api_key: "os_v2_app_abc123" });
+    expect(res.ok).toBe(true);
+    expect(captured!.url).toBe("https://api.onesignal.com/notifications?app_id=app%20id%2F1&limit=1");
+    expect(captured!.init?.method).toBe("GET");
+    expect(captured!.init?.body).toBeUndefined();
+    expect((captured!.init?.headers as Record<string, string>).Authorization).toBe("Key os_v2_app_abc123");
+    // The listed message stays out of what the admin is shown.
+    expect(res.detail).not.toContain("a private message");
+  });
+  it("sends a legacy REST API key with Basic", async () => {
+    let auth = "";
+    globalThis.fetch = (async (_url: unknown, init: RequestInit | undefined) => {
+      auth = (init?.headers as Record<string, string>).Authorization!;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    await testOneSignalConnection({ enabled: true, app_id: "abc", api_key: "legacy-key" });
+    expect(auth).toBe("Basic legacy-key");
   });
   it("not ok on 401", async () => {
     globalThis.fetch = (async () => new Response("invalid key", { status: 401 })) as unknown as typeof fetch;

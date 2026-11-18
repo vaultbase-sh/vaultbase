@@ -13,6 +13,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 - Admin: a **Schema** page in the sidebar draws the collections as cards on a canvas, with an arrow for each relation field, from the field's row to the collection it points at. Drag to pan, scroll to zoom, drag a card to move it (each browser remembers where), hover a card or an arrow to light up what it connects and read the relation's delete behaviour, click a relation to jump to its target, and click a card's name to open the schema editor. **Relations only** shrinks the cards for a large schema. It reads the collections the admin already loads: no new endpoint, and it changes nothing.
 
+### Fixed
+
+- Notifications: OneSignal pushes work with the App API keys OneSignal issues now (`os_v2_app_…`). They were sent with `Authorization: Basic`, which OneSignal accepts only for legacy REST API keys, so every push failed with `401` and new OneSignal apps, which can't create a legacy key, couldn't deliver at all. Current keys are sent with `Authorization: Key`; a legacy key keeps `Basic`. **Test connection** reads the app's message list (`GET /notifications?app_id=…&limit=1`), which an App API key may do, instead of `GET /apps/<id>`; it still sends nothing. ([#16](https://github.com/vaultbase-sh/vaultbase/issues/16))
+
 ## [0.46.0] — 2026-11-13
 
 ### Breaking
