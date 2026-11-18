@@ -21,6 +21,7 @@ const Icon: React.FC<IconProps> = ({ name, size = 14, stroke = 1.5, style, class
     colAuth: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="12" cy="13" r="2"/><path d="M8.5 17.5c.7-1.5 2-2.3 3.5-2.3s2.8.8 3.5 2.3"/></>,
     colView: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><circle cx="11" cy="14" r="2.6"/><path d="M13 16l2.5 2.5"/></>,
     colSingleton: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><rect x="7" y="12.5" width="10" height="4" rx="1"/></>,
+    schema: <><rect x="3" y="3" width="8" height="6" rx="1"/><rect x="13" y="15" width="8" height="6" rx="1"/><path d="M7 9v7a2 2 0 0 0 2 2h4"/></>,
     database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></>,
     table: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></>,
     users: <><circle cx="9" cy="8" r="3.5"/><path d="M2 21c0-3.5 3-6 7-6s7 2.5 7 6"/><circle cx="17" cy="7" r="2.5"/><path d="M22 19c0-2.5-2-4-4.5-4"/></>,

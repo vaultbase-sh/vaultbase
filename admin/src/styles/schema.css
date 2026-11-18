@@ -1,0 +1,210 @@
+/* Schema page: collections as cards on a dotted canvas, relations as arrows. */
+
+.schema-view {
+  --schema-line: color-mix(in srgb, var(--vb-fg-5) 70%, transparent);
+  --schema-line-lit: var(--vb-accent);
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--vb-bg-0);
+  --schema-dot: color-mix(in srgb, var(--border-strong) 20%, transparent);
+  background-image: radial-gradient(circle, var(--schema-dot) 1px, transparent 1.4px);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  outline: none;
+}
+.schema-view[data-drag="pan"] { cursor: grabbing; }
+.schema-view:focus-visible { box-shadow: inset 0 0 0 1px var(--vb-fg-5); }
+
+.schema-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+/* Fit, centre-on and the zoom buttons glide; dragging and the wheel don't. */
+.schema-view[data-glide="1"] { transition: background-position 220ms cubic-bezier(0.2, 0, 0, 1), background-size 220ms cubic-bezier(0.2, 0, 0, 1); }
+.schema-view[data-glide="1"] .schema-world { transition: transform 220ms cubic-bezier(0.2, 0, 0, 1); }
+
+.schema-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+.schema-edges-top { z-index: 3; }
+.schema-edge-line {
+  fill: none;
+  stroke: var(--schema-line);
+  stroke-width: 1.25;
+  transition: opacity 120ms, stroke 120ms;
+}
+.schema-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: default;
+}
+.schema-edge-port { fill: var(--vb-bg-0); stroke: var(--schema-line); stroke-width: 1.25; transition: opacity 120ms, stroke 120ms; }
+.schema-edge[data-lit="1"] .schema-edge-line { stroke: var(--schema-line-lit); stroke-width: 1.5; pointer-events: none; }
+.schema-edge[data-lit="1"] .schema-edge-port { stroke: var(--schema-line-lit); fill: var(--schema-line-lit); }
+.schema-edge[data-dim="1"] .schema-edge-line,
+.schema-edge[data-dim="1"] .schema-edge-port { opacity: 0.18; }
+.schema-arrow { fill: var(--vb-fg-5); }
+.schema-arrow-lit { fill: var(--schema-line-lit); }
+
+.schema-edge-label {
+  position: absolute;
+  transform-origin: 0 0;
+  white-space: nowrap;
+  padding: 3px 8px;
+  background: var(--vb-bg-3);
+  border: 1px solid var(--vb-accent);
+  color: var(--vb-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 5;
+}
+.schema-edge-label span { color: var(--vb-fg-4); }
+
+.schema-card {
+  position: absolute;
+  box-sizing: border-box;
+  background: var(--vb-bg-1);
+  border: 1px solid var(--vb-border-2);
+  cursor: grab;
+  transition: opacity 120ms, border-color 120ms;
+}
+.schema-card:hover { border-color: var(--border-strong); }
+.schema-card[data-dim="1"] { opacity: 0.28; }
+.schema-card[data-lit="1"] { border-color: var(--vb-fg-5); }
+.schema-card[data-selected="1"],
+.schema-card[data-match="1"] { border-color: var(--vb-accent); }
+.schema-card[data-dragging="1"] { cursor: grabbing; z-index: 2; border-color: var(--vb-accent); }
+
+.schema-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  background: var(--vb-bg-3);
+  border-bottom: 1px solid var(--vb-border-2);
+  color: var(--vb-fg-3);
+}
+.schema-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--vb-fg);
+  text-decoration: none;
+}
+.schema-card-name:hover { color: var(--vb-accent-h); text-decoration: underline; text-underline-offset: 3px; }
+.schema-card-name:focus-visible { outline: 1px solid var(--vb-accent); outline-offset: 2px; }
+.schema-card-type {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vb-fg-5);
+}
+
+.schema-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--vb-fg-2);
+  text-align: left;
+  cursor: inherit;
+}
+.schema-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-row-req { color: var(--vb-fg-5); margin-left: 2px; }
+.schema-row-type {
+  margin-left: auto;
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vb-fg-5);
+}
+button.schema-row { cursor: pointer; color: var(--vb-fg); }
+button.schema-row .schema-row-type { color: var(--vb-fg-2); }
+button.schema-row:hover { background: var(--vb-bg-4); }
+button.schema-row:hover .schema-row-type { color: var(--vb-accent-h); }
+button.schema-row:focus-visible { outline: 1px solid var(--vb-accent); outline-offset: -1px; }
+.schema-row[data-broken="1"] .schema-row-type { color: var(--vb-status-warning); }
+.schema-row-note { color: var(--vb-fg-5); font-size: 11px; }
+
+.schema-controls {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 4;
+  display: flex;
+  align-items: stretch;
+  background: var(--vb-bg-1);
+  border: 1px solid var(--vb-border-2);
+  cursor: default;
+}
+.schema-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--vb-border-2);
+  background: transparent;
+  color: var(--vb-fg-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.schema-controls button:last-child { border-right: 0; }
+.schema-controls button:hover:not(:disabled) { background: var(--vb-bg-4); color: var(--vb-fg); }
+.schema-controls button:disabled { color: var(--vb-fg-5); cursor: default; }
+.schema-controls button:focus-visible { outline: 1px solid var(--vb-accent); outline-offset: -1px; }
+.schema-controls .schema-zoom { min-width: 52px; font-variant-numeric: tabular-nums; }
+
+.schema-hint {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 4;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vb-fg-5);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schema-view[data-glide="1"],
+  .schema-view[data-glide="1"] .schema-world,
+  .schema-card,
+  .schema-edge-line,
+  .schema-edge-port { transition: none; }
+}

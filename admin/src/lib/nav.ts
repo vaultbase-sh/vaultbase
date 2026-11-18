@@ -29,6 +29,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: "dashboard",   to: "/_/",            label: "Dashboard",     icon: "grid", end: true },
       { id: "collections", to: "/_/collections", label: "Collections",   icon: "stack" },
+      { id: "schema",      to: "/_/schema",      label: "Schema",        icon: "schema", hay: "schema diagram relations tables map canvas" },
       { id: "logs",        to: "/_/logs",        label: "Logs",          icon: "scroll" },
       { id: "monitoring",  to: "/_/monitoring",  label: "Monitoring",    icon: "activity", optional: true, hay: "monitoring metrics performance rps latency" },
     ],

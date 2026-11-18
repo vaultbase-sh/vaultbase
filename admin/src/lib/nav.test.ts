@@ -6,7 +6,7 @@ const none = { pinned: [], inUse: [], pathname: "/_/" };
 
 describe("admin sidebar pages", () => {
   it("always show the core pages, hooks, MCP included", () => {
-    for (const id of ["dashboard", "collections", "logs", "hooks", "mcp", "users", "settings"]) {
+    for (const id of ["dashboard", "collections", "schema", "logs", "hooks", "mcp", "users", "settings"]) {
       expect(isNavShown(item(id), none)).toBe(true);
     }
   });

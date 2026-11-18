@@ -35,6 +35,7 @@ const ApiTokensPage = lazy(() => import("./pages/ApiTokens.tsx"));
 const McpPage = lazy(() => import("./pages/Mcp.tsx"));
 const SqlPage = lazy(() => import("./pages/Sql.tsx"));
 const MonitoringPage = lazy(() => import("./pages/Monitoring.tsx"));
+const SchemaPage = lazy(() => import("./pages/Schema.tsx"));
 
 /**
  * The boot-time /me probe got no answer (server down or restarting, e.g.
@@ -237,6 +238,7 @@ export default function App() {
             <Route path="collections" element={<Collections />} />
             <Route path="collections/:id/edit" element={<KeyedById>{(id) => <CollectionEdit key={id} />}</KeyedById>} />
             <Route path="collections/:id/records" element={<KeyedById>{(id) => <Records key={id} />}</KeyedById>} />
+            <Route path="schema" element={<SchemaPage />} />
             <Route path="logs" element={<Logs />} />
             <Route path="audit-log" element={<AuditLog />} />
             <Route path="api-preview" element={<ApiPreview />} />
