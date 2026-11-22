@@ -1,4 +1,5 @@
 import Elysia, { t } from "elysia";
+import { validateAllowedTypes } from "../core/upload-types.ts";
 import { db, driverOpen, getDriver, type DbDriver } from "../db/index.ts";
 import { onCloseDb, trackPendingWrite } from "../db/client.ts";
 import { broadcast } from "../core/thread-bus.ts";
@@ -386,6 +387,10 @@ export function validateSettingsPatch(body: Record<string, unknown>): string | n
     }
     if (isAuthWindowKey(k)) {
       const err = validateWindowSeconds(v);
+      if (err) return `${k}: ${err}`;
+    }
+    if (k === "files.allowed_types") {
+      const err = validateAllowedTypes(v);
       if (err) return `${k}: ${err}`;
     }
     if (k === "files.max_upload_size") {

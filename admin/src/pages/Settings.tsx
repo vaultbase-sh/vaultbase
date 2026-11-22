@@ -27,6 +27,7 @@ import {
   VbStatusDot,
 } from "../components/Vb.tsx";
 import { moveItem } from "../lib/move-item.ts";
+import { DEFAULT_UPLOAD_TYPES, UPLOAD_TYPES, parseAllowedTypes } from "../../../src/core/upload-types.ts";
 
 type RuleAudience = "all" | "guest" | "auth";
 interface RateLimitRule {
@@ -3883,6 +3884,7 @@ function StorageSection() {
   const [publicUrl, setPublicUrl] = useState("");
   const [savedConfig, setSavedConfig] = useState<string | null>(null);
   const [maxUploadMb, setMaxUploadMb] = useState(String(DEFAULT_MAX_UPLOAD_MB));
+  const [allowedTypes, setAllowedTypes] = useState<string[]>([...DEFAULT_UPLOAD_TYPES]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -3900,6 +3902,7 @@ function StorageSection() {
         setAccessKeyId(s["s3.access_key_id"] ?? "");
         setSecretAccessKey(s["s3.secret_access_key"] ?? "");
         setPublicUrl(s["s3.public_url"] ?? "");
+        setAllowedTypes(parseAllowedTypes(s["files.allowed_types"]));
         const bytes = parseInt(s["files.max_upload_size"] ?? "", 10);
         if (Number.isFinite(bytes) && bytes > 0) {
           setMaxUploadMb(String(Math.round((bytes / MB) * 100) / 100));
@@ -3940,8 +3943,10 @@ function StorageSection() {
       toast(`Max upload size must be between ${MIN_UPLOAD_MB} and ${MAX_UPLOAD_MB} MB`, "info");
       return;
     }
+    if (allowedTypes.length === 0) { toast("Pick at least one allowed file type", "info"); return; }
     setSaving(true);
     const res = await saveSettings({
+      "files.allowed_types": JSON.stringify(UPLOAD_TYPES.map((t) => t.mime).filter((m) => allowedTypes.includes(m))),
       "files.max_upload_size": String(Math.round(mb * MB)),
       "storage.driver": driver,
       "s3.endpoint": endpoint,
@@ -3993,6 +3998,35 @@ function StorageSection() {
             disabled={loading} style={{ maxWidth: 120 }}
           />
           <span style={{ fontSize: 12, color: "var(--vb-fg-3)" }}>MB</span>
+        </div>
+      </VbField>
+
+      <VbField
+        label="Allowed file types"
+        hint="Uploads of other types are refused with 415, from the API and from helpers.files.save. A file field's own types narrow it further. Only images are shown in the browser; every other file is sent as a download."
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "10px 18px" }}>
+          {(["Images", "Documents", "Data", "Archives", "Audio", "Video", "Other"] as const).map((group) => (
+            <div key={group}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--vb-fg-3)", marginBottom: 4 }}>{group}</div>
+              {UPLOAD_TYPES.filter((t) => t.group === group).map((t) => (
+                <label key={t.mime} title={t.mime} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, lineHeight: 1.9, cursor: loading ? "default" : "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={allowedTypes.includes(t.mime)}
+                    disabled={loading}
+                    onChange={(e) => setAllowedTypes((cur) => e.target.checked ? [...cur, t.mime] : cur.filter((m) => m !== t.mime))}
+                  />
+                  {t.label}
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <VbBtn kind="ghost" size="sm" disabled={loading} onClick={() => setAllowedTypes([...DEFAULT_UPLOAD_TYPES])}>
+            Reset to defaults
+          </VbBtn>
         </div>
       </VbField>
 

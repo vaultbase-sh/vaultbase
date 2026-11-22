@@ -7,6 +7,8 @@ import type { AuthContext } from "./rules.ts";
 import { embeddedIPv4, parseCidr, ipInCidr, type ParsedCidr } from "./hook-egress.ts";
 import { isIPv6 } from "node:net";
 import { getTrustedProxiesRaw } from "./security.ts";
+import { getSetting } from "../api/settings.ts";
+import { mimeInAllowed, parseAllowedTypes } from "./upload-types.ts";
 
 /**
  * Centralized auth-token verification.
@@ -390,23 +392,8 @@ export function isValidStorageFilename(name: string): boolean {
   return STORAGE_FILENAME_RE.test(name);
 }
 
-const ALLOWED_UPLOAD_MIME = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/avif",
-  "image/gif",
-  "application/pdf",
-  "text/plain",
-  "application/json",
-  "application/octet-stream",
-  "text/markdown",
-  "text/csv",
-  "application/zip",
-  // What browsers on Windows send for a .zip.
-  "application/x-zip-compressed",
-]);
+// The allowed upload types are a setting now (files.allowed_types, Settings →
+// File storage), picked from the catalogue in upload-types.ts.
 
 const SAFE_RENDER_MIME = new Set([
   "image/png",
@@ -421,9 +408,13 @@ export function isSafeToRenderInline(mime: string): boolean {
   return SAFE_RENDER_MIME.has(mime.toLowerCase());
 }
 
+let allowedCache: { raw: string; list: string[] } | null = null;
+
+/** An upload of this type is allowed by the `files.allowed_types` setting (its defaults when unset). */
 export function isAllowedUploadMime(mime: string): boolean {
-  if (ALLOWED_UPLOAD_MIME.has(mime.toLowerCase())) return true;
-  return mime.toLowerCase().startsWith("image/");
+  const raw = getSetting("files.allowed_types", "");
+  if (!allowedCache || allowedCache.raw !== raw) allowedCache = { raw, list: parseAllowedTypes(raw) };
+  return mimeInAllowed(mime, allowedCache.list);
 }
 
 /**

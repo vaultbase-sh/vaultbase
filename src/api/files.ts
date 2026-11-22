@@ -34,6 +34,7 @@ import type { RequestContextLike } from "../core/filter.ts";
 import { buildRequestContext, checkRule } from "./_rules.ts";
 import { deleteFile, fileExists, fileResponse, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
+import { extForMime } from "../core/upload-types.ts";
 import { getSetting, MAX_UPLOAD_BYTES, MIN_UPLOAD_BYTES } from "./settings.ts";
 import {
   dataPrincipal,
@@ -392,7 +393,8 @@ const EXT_FOR_MIME: Readonly<Record<string, string>> = {
 };
 
 export function storageExt(mime: string): string {
-  return EXT_FOR_MIME[mime.trim().toLowerCase()] ?? "bin";
+  const m = mime.trim().toLowerCase();
+  return EXT_FOR_MIME[m] ?? extForMime(m) ?? "bin";
 }
 
 // Thumbnails being generated right now, by cache path. Concurrent misses for

@@ -28,7 +28,7 @@ const EXACT = new Set<string>([
   "cors.credentials", "cors.headers", "cors.max_age", "cors.methods", "cors.origins",
   "email.transport",
   ...EMAIL_KINDS.flatMap((k) => [`email.${k}.subject`, `email.${k}.body`]),
-  "files.max_upload_size", "files.orphan_cleanup",
+  "files.allowed_types", "files.max_upload_size", "files.orphan_cleanup",
   "flags.public_evaluate",
   "hooks.timeout_ms", "hooks.after_timeout_ms", "hooks.http.allow", "hooks.http.deny",
   "jobs.timeout_ms", "queues.timeout_ms", "routes.timeout_ms",

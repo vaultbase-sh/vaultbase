@@ -6,7 +6,8 @@ import { initDb, closeDb } from "../db/client.ts";
 import { runMigrations } from "../db/migrate.ts";
 import { createCollection } from "../core/collections.ts";
 import { createRecord } from "../core/records.ts";
-import { setSetting, validateMaxUploadSize } from "../api/settings.ts";
+import { setSetting, validateMaxUploadSize, validateSettingsPatch } from "../api/settings.ts";
+import { isAllowedUploadMime } from "../core/sec.ts";
 import { setUploadDir, invalidateStorageCache } from "../core/storage.ts";
 import { makeFilesPlugin, maxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES } from "../api/files.ts";
 import { seedAuthUser, signUserJwt, createPublicCollection } from "./_helpers.ts";
@@ -170,5 +171,50 @@ describe("markdown, CSV and zip uploads", () => {
       method: "POST", headers: { authorization: `Bearer ${token}` }, body: form,
     }));
     expect(res.status).toBe(415);
+  });
+});
+
+describe("allowed file types setting (files.allowed_types)", () => {
+  async function send(name: string, type: string) {
+    const boundary = "vbtypes";
+    const body = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n` +
+      `Content-Type: ${type}\r\n\r\ndata\r\n--${boundary}--\r\n`;
+    const res = await makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost/files/posts/${recordId}/cover`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": `multipart/form-data; boundary=${boundary}` },
+      body,
+    }));
+    return { status: res.status, body: (await res.json()) as { data?: { filename: string; mimeType: string } } };
+  }
+
+  it("unset: the defaults, which leave out Office files", async () => {
+    expect(isAllowedUploadMime("text/csv")).toBe(true);
+    expect(isAllowedUploadMime("image/svg+xml")).toBe(true);
+    expect((await send("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")).status).toBe(415);
+  });
+
+  it("allows exactly what the admin picked", async () => {
+    setSetting("files.allowed_types", JSON.stringify(["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]));
+    const docx = await send("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(docx.status).toBe(200);
+    expect(docx.body.data!.filename.endsWith(".docx")).toBe(true);
+    expect((await send("a.pdf", "application/pdf")).status).toBe(200);
+    // Not picked any more: refused.
+    expect((await send("a.csv", "text/csv")).status).toBe(415);
+    expect((await send("a.png", "image/png")).status).toBe(415);
+    // helpers.files.save follows the same setting.
+    expect(isAllowedUploadMime("text/csv")).toBe(false);
+  });
+
+  it("only catalogue types can be stored, so HTML or scripts can never be allowed", () => {
+    expect(validateSettingsPatch({ "files.allowed_types": JSON.stringify(["text/csv", "image/*"]) })).toBeNull();
+    expect(validateSettingsPatch({ "files.allowed_types": "" })).toBeNull();
+    expect(validateSettingsPatch({ "files.allowed_types": JSON.stringify(["text/html"]) })).toContain("text/html");
+    expect(validateSettingsPatch({ "files.allowed_types": JSON.stringify(["application/javascript"]) })).not.toBeNull();
+    expect(validateSettingsPatch({ "files.allowed_types": "text/csv" })).toContain("JSON array");
+    // A value written around the validator still can't let them in.
+    setSetting("files.allowed_types", JSON.stringify(["text/html", "text/csv"]));
+    expect(isAllowedUploadMime("text/html")).toBe(false);
+    expect(isAllowedUploadMime("text/csv")).toBe(true);
   });
 });
