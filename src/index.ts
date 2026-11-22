@@ -607,6 +607,15 @@ async function main() {
     } catch (e) {
       process.stderr.write(`vaultbase: could not start the hooks folder ${hooksDir}: ${e instanceof Error ? e.message : String(e)}\n`);
     }
+    // Static files served at the root (vb_public/), when set up.
+    const { resolvePublicDir, setPublicDir } = await import("./core/public-dir.ts");
+    try {
+      const pub = resolvePublicDir(config.dataDir, { hooksDir });
+      setPublicDir(pub);
+      if (pub) process.stderr.write(`vaultbase: public folder ${pub.dir} served at /${pub.spa ? " (single-page app fallback on)" : ""}\n`);
+    } catch (e) {
+      process.stderr.write(`vaultbase: the public folder isn't served: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
   }
 
   // Move WAL checkpoints off the request thread (see src/db/checkpointer.ts).

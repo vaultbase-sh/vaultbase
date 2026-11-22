@@ -1185,10 +1185,12 @@ async function updateRecordImpl(
   const existing = await getRecord(collectionName, id);
   // Deleted since the caller looked (a PATCH racing a DELETE): with
   // If-Match the record changed, without it there's nothing to update.
+  if (!existing && guard.match) throw new NoMatchError();
   if (!existing) throw guard.ifUnchanged ? new PreconditionFailedError() : new RecordNotFoundError();
   if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
     throw new PreconditionFailedError();
   }
+  if (guard.match && !(await recordMatches(col, id, guard.match.filter))) throw new NoMatchError();
 
   // beforeUpdate hook
   await runBeforeHook(col, "beforeUpdate", {
@@ -1273,7 +1275,7 @@ export class PreconditionFailedError extends Error {
  * for COMMIT. On SQLite one process owns the file and recordLocks suffices.
  */
 async function withRowLockForGuard<T>(collectionName: string, id: string, guard: WriteGuard, fn: () => Promise<T>): Promise<T> {
-  if (db.name === "sqlite" || !guard.ifUnchanged) return fn();
+  if (db.name === "sqlite" || (!guard.ifUnchanged && !guard.match)) return fn();
   const col = await getCollection(collectionName);
   if (!col || col.type === "view") return fn();
   const tableRef = quoteIdent(userTableName(col.name));
@@ -1323,6 +1325,25 @@ export interface WriteGuard {
    * client's id.
    */
   id?: string;
+  /**
+   * Update and delete only: write only if the record exists and matches this
+   * filter (the records filter syntax, as in `?filter=`), checked under the
+   * record's lock just before the write, so two writers can't both pass it.
+   * Otherwise NoMatchError. Set by helpers.records for a conditional write.
+   */
+  match?: { filter: string };
+}
+
+/** A conditional write (WriteGuard.match) found no record matching its filter. */
+export class NoMatchError extends Error {
+  constructor() { super("No record matched the filter"); this.name = "NoMatchError"; }
+}
+
+/** The record `id` matches `filter`, read from the database now. */
+async function recordMatches(col: Collection, id: string, filter: string): Promise<boolean> {
+  const { whereSql, whereParams } = await compileListWhere(col, { filter, ids: [id] });
+  const row = await db.get(`SELECT 1 AS ok FROM ${quoteIdent(userTableName(col.name))} ${whereSql} LIMIT 1`, whereParams);
+  return !!row;
 }
 
 /** Relation check for `auth`: the target record must pass its collection's view rule. */
@@ -1622,12 +1643,14 @@ async function deleteRecordInternal(
   try {
   const existing = await getRecord(collectionName, id);
   if (!existing) {
+    if (guard.match) throw new NoMatchError();
     if (guard.ifUnchanged) throw new PreconditionFailedError();
     return;
   }
   if (guard.ifUnchanged && JSON.stringify(existing) !== JSON.stringify(guard.ifUnchanged)) {
     throw new PreconditionFailedError();
   }
+  if (guard.match && !(await recordMatches(col, id, guard.match.filter))) throw new NoMatchError();
 
   // Order matters: restrict refs (no side effects) → beforeDelete hook (may
   // abort) → cascades → delete. Cascading before the hook left children

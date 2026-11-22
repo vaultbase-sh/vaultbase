@@ -401,6 +401,11 @@ const ALLOWED_UPLOAD_MIME = new Set([
   "text/plain",
   "application/json",
   "application/octet-stream",
+  "text/markdown",
+  "text/csv",
+  "application/zip",
+  // What browsers on Windows send for a .zip.
+  "application/x-zip-compressed",
 ]);
 
 const SAFE_RENDER_MIME = new Set([

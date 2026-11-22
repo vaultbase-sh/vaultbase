@@ -129,3 +129,46 @@ describe("text uploads", () => {
     expect(body.data.filename.endsWith(".txt")).toBe(true);
   });
 });
+
+describe("markdown, CSV and zip uploads", () => {
+  for (const [name, type, ext] of [
+    ["notes.md", "text/markdown", "md"],
+    ["rows.csv", "text/csv;charset=utf-8", "csv"],
+    ["bundle.zip", "application/zip", "zip"],
+  ] as const) {
+    it(`${name} sent as ${type} is accepted and stored as .${ext}`, async () => {
+      // A hand-written multipart body, as a browser sends it. (Bun reads a
+      // part's type from the file name's extension when it knows it, so a
+      // .zip sent as application/x-zip-compressed arrives as application/zip.)
+      const boundary = "vbtestboundary";
+      const body = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n` +
+        `Content-Type: ${type}\r\n\r\nPK\u0003\u0004 data\r\n--${boundary}--\r\n`;
+      const res = await makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost/files/posts/${recordId}/cover`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": `multipart/form-data; boundary=${boundary}` },
+        body,
+      }));
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as { data: { mimeType: string; filename: string } };
+      expect(out.data.mimeType).toBe(type.split(";")[0]!);
+      expect(out.data.filename.endsWith(`.${ext}`)).toBe(true);
+
+      // Served as a download, never rendered inline.
+      const served = await makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost/files/${out.data.filename}`, {
+        headers: { authorization: `Bearer ${token}` },
+      }));
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("application/octet-stream");
+      expect(served.headers.get("content-disposition") ?? "").toContain("attachment");
+    });
+  }
+
+  it("text/html is still refused", async () => {
+    const form = new FormData();
+    form.append("file", new File(["<script>1</script>"], "x.html", { type: "text/html" }));
+    const res = await makeFilesPlugin(dir, SECRET).handle(new Request(`http://localhost/files/posts/${recordId}/cover`, {
+      method: "POST", headers: { authorization: `Bearer ${token}` }, body: form,
+    }));
+    expect(res.status).toBe(415);
+  });
+});

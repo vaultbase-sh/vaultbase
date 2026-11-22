@@ -22,6 +22,17 @@ interface AuthContext {
   verified?: boolean;
 }
 
+interface HttpRequestOptions {
+  url: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
+  headers?: Record<string, string>;
+  body?: string | Uint8Array | Record<string, unknown> | null;
+  json?: boolean;
+  retries?: number;
+  retryDelayMs?: number;
+  timeoutMs?: number;
+}
+
 interface HookHelpers {
   /** Slugify a string: 'Hello World' -> 'hello-world'. */
   slug(s: string): string;
@@ -45,10 +56,44 @@ interface HookHelpers {
    */
   records: {
     create<T = Record<string, any>>(collection: string, data: Record<string, any>): Promise<T>;
-    /** Update fields of a record (a partial patch). */
-    update<T = Record<string, any>>(collection: string, id: string, data: Record<string, any>): Promise<T>;
-    /** Delete a record, with the collection's cascade rules. */
-    delete(collection: string, id: string): Promise<void>;
+    /**
+     * Update fields of a record (a partial patch). With filter (the records
+     * filter syntax, e.g. 'status = "queued"'), only when the record matches
+     * it at the moment of the write, so two workers can't both claim a job;
+     * null when it doesn't match or is gone.
+     */
+    update<T = Record<string, any>>(collection: string, id: string, data: Record<string, any>, opts: { filter: string }): Promise<T | null>;
+    update<T = Record<string, any>>(collection: string, id: string, data: Record<string, any>, opts?: { filter?: string }): Promise<T>;
+    /**
+     * Delete a record, with the collection's cascade rules. True when a
+     * record was deleted; false when there was none or it didn't match filter.
+     */
+    delete(collection: string, id: string, opts?: { filter?: string }): Promise<boolean>;
+  };
+  files: {
+    /**
+     * Store a file and attach it to a record's file field: appended on a
+     * multi-file field, replacing the value on a single-file one. Checks
+     * what an upload checks (allowed types, max upload size, the field's
+     * maxSize and mimeTypes; 422 otherwise), uses the configured storage
+     * (local or S3), and sets the field through helpers.records, so hooks,
+     * record history, realtime and webhooks run. No API rules apply.
+     */
+    save(
+      collection: string,
+      recordId: string,
+      field: string,
+      data: Uint8Array | ArrayBuffer | Blob | string,
+      opts?: {
+        /** Kept as the file's original name. Default "file". */
+        name?: string;
+        /** Default: the Blob's type, else from name's extension, else application/octet-stream. */
+        type?: string;
+      }
+    ): Promise<{
+      file: { id: string; filename: string; originalName: string; size: number; mimeType: string };
+      record: Record<string, any>;
+    }>;
   };
   /** Outbound HTTP (Web Fetch API), through the same address checks as helpers.http. */
   fetch(input: string | URL, init?: RequestInit): Promise<Response>;
@@ -143,22 +188,29 @@ interface HookHelpers {
     escapeHtml(s: string): string;
   };
   http: {
-    request(opts: {
-      url: string;
-      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
-      headers?: Record<string, string>;
-      body?: string | Uint8Array | Record<string, unknown> | null;
-      json?: boolean;
-      retries?: number;
-      retryDelayMs?: number;
-      timeoutMs?: number;
-    }): Promise<{
+    /**
+     * With responseType "bytes" the body comes back raw as bytes (images and
+     * other binary files), up to maxBytes (default 50 MB, at most 512 MB).
+     */
+    request(opts: HttpRequestOptions & { responseType: "bytes"; maxBytes?: number }): Promise<{
+      status: number;
+      ok: boolean;
+      headers: Record<string, string>;
+      bytes: Uint8Array;
+    }>;
+    request(opts: HttpRequestOptions & { responseType?: "text" }): Promise<{
       status: number;
       ok: boolean;
       headers: Record<string, string>;
       text: string;
       json?: unknown;
     }>;
+    /** GET the raw body as bytes; throws on a non-2xx status. */
+    getBytes(
+      url: string,
+      headers?: Record<string, string>,
+      opts?: { maxBytes?: number; timeoutMs?: number; retries?: number }
+    ): Promise<Uint8Array>;
     getJson<T = unknown>(url: string, headers?: Record<string, string>): Promise<T>;
     postJson<T = unknown>(url: string, body: unknown, headers?: Record<string, string>): Promise<T>;
   };

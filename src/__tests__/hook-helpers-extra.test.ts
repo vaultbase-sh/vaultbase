@@ -166,6 +166,92 @@ describe("http", () => {
   });
 });
 
+describe("http bytes", () => {
+  // Not valid UTF-8: decoding these as text turns them into U+FFFD.
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80]);
+  async function withFetch<T>(impl: (url: unknown, init: unknown) => Promise<Response>, fn: () => Promise<T>): Promise<T> {
+    const origFetch = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = impl;
+    try { return await fn(); } finally { globalThis.fetch = origFetch; }
+  }
+
+  it("returns the raw body with responseType bytes", async () => {
+    const r = await withFetch(async () => new Response(png, { status: 200, headers: { "content-type": "image/png" } }),
+      () => h.http.request({ url: "http://93.184.216.34/a.png", responseType: "bytes" }));
+    expect(r.status).toBe(200);
+    expect(r.ok).toBe(true);
+    expect(r.headers["content-type"]).toBe("image/png");
+    expect(Array.from(r.bytes)).toEqual(Array.from(png));
+    expect("text" in r).toBe(false);
+    expect("json" in r).toBe(false);
+  });
+
+  it("keeps text responses as they were", async () => {
+    const r = await withFetch(async () => new Response("hello", { status: 200 }),
+      () => h.http.request({ url: "http://93.184.216.34/" }));
+    expect(r.text).toBe("hello");
+    expect("bytes" in r).toBe(false);
+  });
+
+  it("getBytes returns bytes and throws on a non-2xx status", async () => {
+    const bytes = await withFetch(async () => new Response(png, { status: 200 }),
+      () => h.http.getBytes("http://93.184.216.34/a.png"));
+    expect(Array.from(bytes)).toEqual(Array.from(png));
+    await expect(withFetch(async () => new Response("nope", { status: 404 }),
+      () => h.http.getBytes("http://93.184.216.34/missing.png"))).rejects.toThrow("404");
+  });
+
+  it("refuses a body over maxBytes, from Content-Length or while streaming, without retrying", async () => {
+    let calls = 0;
+    await expect(withFetch(async () => { calls++; return new Response(new Uint8Array(100), { status: 200, headers: { "content-length": "100" } }); },
+      () => h.http.request({ url: "http://93.184.216.34/big", responseType: "bytes", maxBytes: 10, retries: 3, retryDelayMs: 1 })))
+      .rejects.toThrow("maxBytes");
+    expect(calls).toBe(1);
+    // A streamed body with no Content-Length is counted as it arrives.
+    const stream = () => new ReadableStream<Uint8Array>({
+      start(c) { for (let i = 0; i < 5; i++) c.enqueue(new Uint8Array(8)); c.close(); },
+    });
+    await expect(withFetch(async () => new Response(stream(), { status: 200 }),
+      () => h.http.getBytes("http://93.184.216.34/stream", undefined, { maxBytes: 20 }))).rejects.toThrow("maxBytes");
+    const ok = await withFetch(async () => new Response(stream(), { status: 200 }),
+      () => h.http.getBytes("http://93.184.216.34/stream", undefined, { maxBytes: 40 }));
+    expect(ok.byteLength).toBe(40);
+  });
+
+  it("retries 5xx before reading bytes", async () => {
+    let calls = 0;
+    const r = await withFetch(async () => { calls++; return calls < 2 ? new Response("busy", { status: 503 }) : new Response(png, { status: 200 }); },
+      () => h.http.request({ url: "http://93.184.216.34/", responseType: "bytes", retries: 3, retryDelayMs: 1 }));
+    expect(calls).toBe(2);
+    expect(r.bytes.byteLength).toBe(png.byteLength);
+  });
+
+  it("times out a body that stalls", async () => {
+    const stalled = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } });
+    await expect(withFetch(async (_u, init) => {
+      const signal = (init as RequestInit).signal!;
+      // A stalled stream errors when the request is aborted, as a real body does.
+      const body = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          const r = stalled.getReader();
+          const { value } = await r.read();
+          if (value) c.enqueue(value);
+          await new Promise((_, rej) => signal.addEventListener("abort", () => rej(new Error("aborted"))));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }, () => h.http.request({ url: "http://93.184.216.34/", responseType: "bytes", timeoutMs: 150 }))).rejects.toThrow();
+  });
+
+  it("checks the egress denylist for bytes too", async () => {
+    await expect(h.http.getBytes("http://127.0.0.1:1/x")).rejects.toThrow();
+  });
+
+  it("rejects a bad maxBytes", async () => {
+    await expect(h.http.request({ url: "http://93.184.216.34/", responseType: "bytes", maxBytes: 0 })).rejects.toThrow("maxBytes");
+  });
+});
+
 describe("os", () => {
   it("env / cwd / platform / arch / hostname return strings", () => {
     expect(typeof h.os.env("PATH")).toBe("string");

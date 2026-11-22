@@ -19,7 +19,8 @@ import { runMigrations } from "../db/migrate.ts";
 function declared(name: string): Record<string, string[] | null> {
   const file = ts.createSourceFile("helpers.d.ts", HELPER_TYPES, ts.ScriptTarget.ES2022, true);
   const out: Record<string, string[] | null> = {};
-  const names = (members: ts.NodeArray<ts.TypeElement>) => members.map((m) => (m.name as ts.Identifier).text);
+  // An overloaded method (http.request) is declared more than once: count it once.
+  const names = (members: ts.NodeArray<ts.TypeElement>) => [...new Set(members.map((m) => (m.name as ts.Identifier).text))];
   for (const node of file.statements) {
     if (!ts.isInterfaceDeclaration(node) || node.name.text !== name) continue;
     for (const m of node.members) {
@@ -88,6 +89,33 @@ export const route = defineRoute({
 export const hook = defineHook({ collection: "posts", event: "beforeCreate", run(ctx) { ctx.record.slug = ctx.helpers.slug(ctx.record.title); } });
 export function later(h: Helpers) { return h.enqueue("mail", { to: "a" }, { delay: 5 }); }
 `)).toEqual([]);
+  });
+
+  it("types bytes downloads, file saves and conditional record writes", () => {
+    expect(check(`
+import type { Helpers } from "vaultbase";
+export async function claim(h: Helpers, id: string) {
+  const job = await h.records.update<{ id: string; status: string }>("jobs", id, { status: "running" }, { filter: 'status = "queued"' });
+  if (job === null) return false;
+  const res = await h.http.request({ url: "https://example.com/a.png", responseType: "bytes", maxBytes: 1_000_000 });
+  const bytes: Uint8Array = res.bytes;
+  const text: string = (await h.http.request({ url: "https://example.com/" })).text;
+  const more: Uint8Array = await h.http.getBytes("https://example.com/b.png", undefined, { maxBytes: 10 });
+  const saved = await h.files.save("posts", job.id, "cover", bytes, { name: "a.png" });
+  const name: string = saved.file.filename;
+  const gone: boolean = await h.records.delete("jobs", id, { filter: 'status = "done"' });
+  h.log(text, more.byteLength, name, gone);
+  return true;
+}
+`)).toEqual([]);
+    // A filtered update can answer null; the type says so.
+    expect(check(`
+import type { Helpers } from "vaultbase";
+export async function f(h: Helpers) {
+  const r = await h.records.update<{ id: string }>("jobs", "x", {}, { filter: "a = 1" });
+  return r.id;
+}
+`).join("\n")).toContain("possibly 'null'");
   });
 
   it("reports a helper that doesn't exist", () => {

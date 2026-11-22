@@ -349,11 +349,11 @@ async function emitDownloadAudit(opts: {
  * charset (`text/plain;charset=utf-8`), which no allow-list entry matched,
  * so .txt and .json uploads were refused.
  */
-function baseMime(type: string): string {
+export function baseMime(type: string): string {
   return (type || "application/octet-stream").split(";")[0]!.trim().toLowerCase() || "application/octet-stream";
 }
 
-function mimeAllowed(mime: string, patterns: string[]): boolean {
+export function mimeAllowed(mime: string, patterns: string[]): boolean {
   if (patterns.length === 0) return true;
   for (const p of patterns) {
     if (p === mime) return true;
@@ -385,9 +385,13 @@ const EXT_FOR_MIME: Readonly<Record<string, string>> = {
   "application/pdf": "pdf",
   "text/plain": "txt",
   "application/json": "json",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/zip": "zip",
+  "application/x-zip-compressed": "zip",
 };
 
-function storageExt(mime: string): string {
+export function storageExt(mime: string): string {
   return EXT_FOR_MIME[mime.trim().toLowerCase()] ?? "bin";
 }
 

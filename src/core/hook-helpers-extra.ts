@@ -292,8 +292,21 @@ export interface HttpRequestOpts {
   retries?: number;
   /** Initial delay between retries in ms. Default 250. Doubles each attempt. */
   retryDelayMs?: number;
-  /** Per-attempt timeout in ms. Default 30000. */
+  /** Per-attempt timeout in ms. Default 30000. With `responseType: "bytes"` it covers reading the body too. */
   timeoutMs?: number;
+  /**
+   * How to read the response body. `"text"` (the default) decodes it as
+   * UTF-8 into `text` (and `json`). `"bytes"` returns the raw body as
+   * `bytes`, for images and other binary downloads, which UTF-8 decoding
+   * corrupts.
+   */
+  responseType?: "text" | "bytes";
+  /**
+   * `responseType: "bytes"` only: the largest body accepted, in bytes.
+   * Default 50 MB, at most 512 MB. A longer body throws
+   * HttpBodyTooLargeError (not retried) instead of being read into memory.
+   */
+  maxBytes?: number;
 }
 
 export interface HttpResponse {
@@ -306,9 +319,32 @@ export interface HttpResponse {
   json?: unknown;
 }
 
+/** A response read with `responseType: "bytes"`. */
+export interface HttpBytesResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  /** The raw body. */
+  bytes: Uint8Array;
+}
+
+/** A body longer than `maxBytes` (responseType "bytes"). Never retried. */
+export class HttpBodyTooLargeError extends Error {
+  constructor(url: string, max: number) {
+    super(`response from ${url} is larger than maxBytes (${max} bytes)`);
+    this.name = "HttpBodyTooLargeError";
+  }
+}
+
+export const DEFAULT_HTTP_MAX_BYTES = 50 * 1024 * 1024;
+export const HTTP_MAX_BYTES_LIMIT = 512 * 1024 * 1024;
+
 export interface HttpHelpers {
   /** Outbound HTTP with retries + timeout + JSON convenience. */
+  request(opts: HttpRequestOpts & { responseType: "bytes" }): Promise<HttpBytesResponse>;
   request(opts: HttpRequestOpts): Promise<HttpResponse>;
+  /** Convenience: GET the raw body as bytes; throws on a non-2xx status. */
+  getBytes(url: string, headers?: Record<string, string>, opts?: { maxBytes?: number; timeoutMs?: number; retries?: number }): Promise<Uint8Array>;
   /** Convenience: GET + JSON parse. */
   getJson<T = unknown>(url: string, headers?: Record<string, string>): Promise<T>;
   /** Convenience: POST JSON + parse JSON response. */
@@ -319,7 +355,43 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Response> {
+function maxBytesOf(opts: HttpRequestOpts): number {
+  const n = opts.maxBytes;
+  if (n === undefined) return DEFAULT_HTTP_MAX_BYTES;
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 1) throw new Error("helpers.http: maxBytes must be a positive number");
+  return Math.min(Math.floor(n), HTTP_MAX_BYTES_LIMIT);
+}
+
+/** The body as bytes, given up past `max` bytes (checked from Content-Length first, then as it streams). */
+async function readBytesCapped(res: Response, url: string, max: number): Promise<Uint8Array> {
+  const declared = Number(res.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => {});
+    throw new HttpBodyTooLargeError(url, max);
+  }
+  if (!res.body) return new Uint8Array(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new HttpBodyTooLargeError(url, max);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.byteLength; }
+  return out;
+}
+
+async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Response>;
+async function httpOnce<T>(opts: HttpRequestOpts, timeoutMs: number, read: (res: Response) => Promise<T>): Promise<T>;
+async function httpOnce<T>(opts: HttpRequestOpts, timeoutMs: number, read?: (res: Response) => Promise<T>): Promise<Response | T> {
   // SSRF guard (N-2): refuse to issue the request when the resolved host
   // falls into a denylisted CIDR (default: RFC1918 + link-local +
   // loopback + IPv6 unique-local). Throws EgressBlockedError on deny so
@@ -353,13 +425,45 @@ async function httpOnce(opts: HttpRequestOpts, timeoutMs: number): Promise<Respo
     };
     if (body !== undefined) init.body = body as unknown as RequestInit["body"];
     // Every hop is checked, redirects included.
-    return await guardedFetch(opts.url, init);
+    const res = await guardedFetch(opts.url, init);
+    // A reader runs before the timer is cleared, so the timeout covers the body.
+    return read ? await read(res) : res;
   } finally {
     clearTimeout(t);
   }
 }
 
 function makeHttp(): HttpHelpers {
+  async function requestBytes(opts: HttpRequestOpts): Promise<HttpBytesResponse> {
+    const max = maxBytesOf(opts);
+    const tries = Math.max(1, Math.min(10, opts.retries ?? 1));
+    const initialDelay = Math.max(0, opts.retryDelayMs ?? 250);
+    const timeoutMs = Math.max(100, opts.timeoutMs ?? 30000);
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      try {
+        const out = await httpOnce(opts, timeoutMs, async (res): Promise<HttpBytesResponse | null> => {
+          if ((res.status >= 500 || res.status === 429) && attempt < tries) {
+            await res.body?.cancel().catch(() => {});
+            return null;
+          }
+          const headers: Record<string, string> = {};
+          res.headers.forEach((v, k) => { headers[k] = v; });
+          const bytes = await readBytesCapped(res, opts.url, max);
+          return { status: res.status, ok: res.ok, headers, bytes };
+        });
+        if (out) return out;
+        await sleepMs(initialDelay * 2 ** (attempt - 1));
+      } catch (e) {
+        // Egress blocks and oversized bodies are permanent: never retry.
+        if (e instanceof Error && (e.name === "EgressBlockedError" || e.name === "HttpBodyTooLargeError")) throw e;
+        lastErr = e;
+        if (attempt < tries) await sleepMs(initialDelay * 2 ** (attempt - 1));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
   async function request(opts: HttpRequestOpts): Promise<HttpResponse> {
     const tries = Math.max(1, Math.min(10, opts.retries ?? 1));
     const initialDelay = Math.max(0, opts.retryDelayMs ?? 250);
@@ -395,7 +499,13 @@ function makeHttp(): HttpHelpers {
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
   return {
-    request,
+    request: ((opts: HttpRequestOpts) =>
+      opts.responseType === "bytes" ? requestBytes(opts) : request(opts)) as HttpHelpers["request"],
+    async getBytes(url, headers, opts = {}) {
+      const r = await requestBytes({ url, ...(headers ? { headers } : {}), ...opts, responseType: "bytes" });
+      if (!r.ok) throw new Error(`GET ${url} failed: ${r.status}`);
+      return r.bytes;
+    },
     async getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
       const r = await request(headers ? { url, headers } : { url });
       if (!r.ok) throw new Error(`GET ${url} failed: ${r.status}`);
@@ -572,7 +682,7 @@ export interface FsHelpers {
   mimeOf(path: string): string;
 }
 
-const MIME_BY_EXT: Record<string, string> = {
+export const MIME_BY_EXT: Record<string, string> = {
   ".html": "text/html",
   ".htm": "text/html",
   ".css": "text/css",

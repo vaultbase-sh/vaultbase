@@ -85,6 +85,7 @@ import { openSSEStream } from "./realtime/sse.ts";
 import { maintenanceRefusal, maintenanceState, realtimeClosed } from "./core/maintenance-mode.ts";
 import { answeredStatus, thrownStatus } from "./core/http-status.ts";
 import { db } from "./db/index.ts";
+import { servePublic } from "./core/public-dir.ts";
 
 /**
  * An error no handler answered, in the API's `{ error, code }` shape and with
@@ -611,9 +612,12 @@ export function createServer(config: Config, opts: ServerOptions = {}) {
       if (t) t.finish(request.method, answeredStatus(responseValue, set.status));
     })
     .onError(({ request, set, code, error }) => {
+      // No route matched: the public folder (vb_public/) may have the file.
+      const file = code === "NOT_FOUND" ? servePublic(request) : null;
       // Make sure we don't leak timers on error paths.
       const t = detachTimer(request);
-      if (t) t.finish(request.method, errorStatus(code, error, set.status));
+      if (t) t.finish(request.method, file ? file.status : errorStatus(code, error, set.status));
+      if (file) return file;
       // `status(…)` thrown on purpose: Elysia answers it as before.
       if (error instanceof ElysiaCustomStatusResponse) return;
       return errorResponse(request, code, error);

@@ -114,3 +114,70 @@ describe("helpers.records", () => {
     expect(n).toBeLessThanOrEqual(MAX_RECORDS_HELPER_DEPTH + 1);
   });
 });
+
+describe("helpers.records conditional writes (filter)", () => {
+  beforeEach(async () => {
+    await createCollection({ name: "jobs", fields: JSON.stringify([
+      { name: "status", type: "text" },
+      { name: "worker", type: "text" },
+      { name: "claimedAt", type: "number" },
+    ]) });
+  });
+
+  it("update writes only when the record matches, and answers null otherwise", async () => {
+    const records = makeHookHelpers().records;
+    const job = await createRecord("jobs", { status: "queued", worker: "" });
+    const claimed = await records.update("jobs", job.id, { status: "running", worker: "a" }, { filter: 'status = "queued" && worker = ""' });
+    expect(claimed?.["status" as never]).toBe("running");
+    const again = await records.update("jobs", job.id, { worker: "b" }, { filter: 'status = "queued"' });
+    expect(again).toBeNull();
+    expect((await getRecord("jobs", job.id))?.["worker" as never]).toBe("a");
+    // A record that isn't there doesn't match either.
+    expect(await records.update("jobs", crypto.randomUUID(), { worker: "b" }, { filter: 'status = "queued"' })).toBeNull();
+  });
+
+  it("only one of several workers claims a job", async () => {
+    const records = makeHookHelpers().records;
+    const job = await createRecord("jobs", { status: "queued", worker: "" });
+    const results = await Promise.all(["w1", "w2", "w3", "w4", "w5", "w6"].map((w) =>
+      records.update("jobs", job.id, { status: "running", worker: w }, { filter: 'status = "queued"' })));
+    const winners = results.filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
+    expect((await getRecord("jobs", job.id))?.["worker" as never]).toBe(winners[0]!["worker" as never]);
+  });
+
+  it("filters can use date macros, as in a stale-claim check", async () => {
+    const records = makeHookHelpers().records;
+    const stale = await createRecord("jobs", { status: "running", worker: "dead", claimedAt: Math.floor(Date.now() / 1000) - 3600 });
+    const fresh = await createRecord("jobs", { status: "running", worker: "alive", claimedAt: Math.floor(Date.now() / 1000) + 3600 });
+    const filter = 'status = "queued" || claimedAt < @now';
+    expect(await records.update("jobs", stale.id, { worker: "me" }, { filter })).not.toBeNull();
+    expect(await records.update("jobs", fresh.id, { worker: "me" }, { filter })).toBeNull();
+  });
+
+  it("delete answers whether a record was deleted", async () => {
+    const records = makeHookHelpers().records;
+    const done = await createRecord("jobs", { status: "done" });
+    const queued = await createRecord("jobs", { status: "queued" });
+    expect(await records.delete("jobs", queued.id, { filter: 'status = "done"' })).toBe(false);
+    expect(await getRecord("jobs", queued.id)).not.toBeNull();
+    expect(await records.delete("jobs", done.id, { filter: 'status = "done"' })).toBe(true);
+    expect(await getRecord("jobs", done.id)).toBeNull();
+    // Without a filter: true, then false once it's gone (no throw, as before).
+    expect(await records.delete("jobs", queued.id)).toBe(true);
+    expect(await records.delete("jobs", queued.id)).toBe(false);
+  });
+
+  it("a bad filter throws instead of counting as no match", async () => {
+    const records = makeHookHelpers().records;
+    const job = await createRecord("jobs", { status: "queued" });
+    await expect(records.update("jobs", job.id, { status: "x" }, { filter: "nosuchfield = 1" })).rejects.toThrow();
+    await expect(records.update("jobs", job.id, { status: "x" }, { filter: "status = = 1" })).rejects.toThrow();
+    await expect(records.delete("jobs", job.id, { filter: "  " })).rejects.toThrow("non-empty");
+    expect((await getRecord("jobs", job.id))?.["status" as never]).toBe("queued");
+  });
+
+  it("without a filter, update still throws for a missing record", async () => {
+    await expect(makeHookHelpers().records.update("jobs", crypto.randomUUID(), { status: "x" })).rejects.toThrow();
+  });
+});

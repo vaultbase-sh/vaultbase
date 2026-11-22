@@ -14,6 +14,7 @@ import { dbScopedTtlCache } from "./ttl-cache.ts";
 import { compileCode } from "./code-loader.ts";
 import { announceInvalidation, onPeerInvalidation } from "./peers.ts";
 import { makeRecordsHelper, type RecordsHelper } from "./records-helper.ts";
+import { makeFilesHelper, type FilesHelper } from "./files-helper.ts";
 
 /**
  * Per-async-context store carrying the active HTTP Request through
@@ -81,6 +82,8 @@ export interface HookHelpers extends ExtraHookHelpers {
   find(collection: string, id: string): Promise<Record<string, unknown> | null>;
   /** Record writes through the records path: hooks, history, realtime, webhooks (core/records-helper.ts). */
   records: RecordsHelper;
+  /** Store a file on a record's file field, through the records path (core/files-helper.ts). */
+  files: FilesHelper;
   query(
     collection: string,
     opts?: { filter?: string; sort?: string; perPage?: number }
@@ -377,6 +380,7 @@ export function makeHookHelpers(ctx: HookHelperContext = {}): HookHelpers {
       return crypto.randomUUID();
     },
     records: makeRecordsHelper(),
+    files: makeFilesHelper(),
     async find(collection: string, id: string) {
       const { getRecord } = await import("./records.ts");
       const r = await getRecord(collection, id);
