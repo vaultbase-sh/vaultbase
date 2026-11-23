@@ -9,6 +9,8 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-11-23
+
 ### Added
 
 - `helpers.http.request({ ..., responseType: "bytes" })` returns the response body as raw bytes (`bytes`, a `Uint8Array`) instead of `text` and `json`, so a hook or worker can download an image or another binary file; read as text, invalid UTF-8 was replaced and the file couldn't be recovered. `helpers.http.getBytes(url, headers?, opts?)` does a GET and throws on a non-2xx status, like `getJson`. A body over `maxBytes` (default 50 MB, at most 512 MB) throws instead of being read into memory, checked from `Content-Length` and while it streams, and isn't retried. The egress checks, retries and timeout work as for text, and the timeout covers reading the body.
