@@ -93,6 +93,33 @@ describe("403 body", () => {
     expect(await res.json()).toEqual({ error: "Forbidden", code: 403, operation: "create", reason: "not_signed_in" });
   });
 
+  it("not signed in, rule that doesn't involve the caller: rule_denied", async () => {
+    await createCollection({
+      name: "items",
+      fields: JSON.stringify([{ name: "title", type: "text" }, { name: "active", type: "bool" }]),
+      list_rule: null, view_rule: "active = true", create_rule: null, update_rule: "active = true", delete_rule: "active = true",
+    });
+    const hidden = await createRecord("items", { title: "x", active: false }, null);
+    const view = await records(`/items/${hidden.id}`);
+    expect(view.status).toBe(403);
+    expect(await view.json()).toEqual({ error: "Forbidden", code: 403, operation: "view", reason: "rule_denied" });
+    const patch = await records(`/items/${hidden.id}`, json("PATCH", { title: "y" }));
+    expect(await patch.json()).toMatchObject({ operation: "update", reason: "rule_denied" });
+    const del = await records(`/items/${hidden.id}`, { method: "DELETE" });
+    expect(await del.json()).toMatchObject({ operation: "delete", reason: "rule_denied" });
+  });
+
+  it("not signed in, rule mixing record and caller: not_signed_in", async () => {
+    await createCollection({
+      name: "drafts",
+      fields: JSON.stringify([{ name: "title", type: "text" }, { name: "public", type: "bool" }, { name: "author", type: "relation", collection: "users" }]),
+      list_rule: null, view_rule: "public = true || author = @request.auth.id", create_rule: null, update_rule: null, delete_rule: null,
+    });
+    const draft = await createRecord("drafts", { title: "x", public: false, author: userId }, null);
+    const res = await records(`/drafts/${draft.id}`);
+    expect(await res.json()).toMatchObject({ operation: "view", reason: "not_signed_in" });
+  });
+
   it("signed in, rule says no", async () => {
     const created = await records("/posts", json("POST", { title: "x" }, userToken));
     const id = ((await created.json()) as { data: { id: string } }).data.id;

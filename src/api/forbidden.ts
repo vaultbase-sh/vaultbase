@@ -5,8 +5,11 @@
  *   token_invalid  only on the 401 below since 0.44 (0.42 and 0.43 sent it
  *                  on a 403 and ran the request as anonymous).
  *   admin_only     the rule is "" (admins only)
- *   not_signed_in  no token, and the rule needs a signed-in caller
- *   rule_denied    signed in, and the rule said no
+ *   not_signed_in  no token, and the rule reads `@request.auth` (signing
+ *                  in might change the answer)
+ *   rule_denied    the rule said no: signed in, or a rule that doesn't
+ *                  involve the caller (`active = true`). Before 0.48 a
+ *                  signed-out caller always got `not_signed_in`.
  */
 import type { AuthContext } from "../core/rules.ts";
 import { dataPrincipal, headerBearer, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
@@ -62,9 +65,21 @@ export interface ForbiddenBody {
   reason: RefusalReason;
 }
 
+/**
+ * Whether a rule reads the caller's session. Text, not the parsed rule: a
+ * rule that doesn't parse denies anyway, and `@request.auth` can't appear
+ * in one any other way (string literals holding it aren't worth parsing for).
+ * `undefined` (no rule known, e.g. a file or cascade refusal) counts as yes,
+ * which keeps the answer those callers had before.
+ */
+function readsAuth(rule: string | null | undefined): boolean {
+  if (rule === undefined || rule === null) return true;
+  return rule.includes("@request.auth.");
+}
+
 export function refusalReason(auth: AuthContext | null | undefined, rule: string | null | undefined): RefusalReason {
   if (rule === "") return "admin_only";
-  if (!auth) return "not_signed_in";
+  if (!auth && readsAuth(rule)) return "not_signed_in";
   return "rule_denied";
 }
 

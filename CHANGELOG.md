@@ -17,6 +17,10 @@ Binaries, checksums, signatures and SBOMs for every version are on
 - Files: the file types uploads may have are a setting. An admin ticks the ones to accept under Settings → File storage → Allowed file types (`files.allowed_types`, a JSON array): images, PDF, text, Markdown, Office and OpenDocument files, JSON, CSV, XML, archives (zip, gzip, tar, 7-Zip), audio and video. Other types get `415`, from the files API and from `helpers.files.save`. Only types from that list can be stored, so HTML and JavaScript can never be allowed. Unset, it's the list as before plus Markdown (`text/markdown`), CSV (`text/csv`) and zip (`application/zip`, `application/x-zip-compressed`). Files keep a matching extension (`.md`, `.csv`, `.zip`, `.docx`, …), and like every file that isn't a raster image, they're served as downloads (`Content-Disposition: attachment`).
 - A public folder: static files served from the server's root, so a web app built on Vaultbase can live at `https://example.com/` instead of under `/api/custom/`. Create `vb_public/` next to the data directory, or point `VAULTBASE_PUBLIC_DIR` at a folder (`off` turns it off). It answers only what no route answered, so `/api/*`, the admin (`/_/*`), `/auth/*` and `/realtime` keep priority, and a miss under them is still the JSON 404. `VAULTBASE_PUBLIC_SPA=1` serves `index.html` for page loads of paths with no file, so a single-page app's client-side routes work. Hashed asset names (`index-BkF3a9x2.js`) are cached for a year, everything else revalidates. Dotfiles (except `/.well-known/`) and links out of the folder aren't served, and a folder that holds or sits inside the data directory or the hooks folder is refused at startup.
 
+### Fixed
+
+- A 403 for a signed-out caller says `reason: "rule_denied"` when the rule doesn't read `@request.auth` (`view_rule: active = true` on a record with `active = false`, say). It said `not_signed_in`, which the docs define as "the rule needs a signed-in caller", so clients sent people to sign in when signing in couldn't help. Rules that read `@request.auth` still answer `not_signed_in` to a signed-out caller.
+
 ## [0.47.0] — 2026-11-18
 
 ### Added
