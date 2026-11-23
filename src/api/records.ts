@@ -6,6 +6,7 @@ import { REPLAY_HEADER, claimIdempotencyKey, completeIdempotencyKey, idempotency
 import type { RequestContextLike } from "../core/filter.ts";
 import { accessFor, dataPrincipal } from "../core/sec.ts";
 import { ensureSingletonRecord, getCollection } from "../core/collections.ts";
+import type { Collection } from "../db/schema.ts";
 import {
   createRecord,
   deleteRecord,
@@ -32,7 +33,7 @@ import {
 import { bodyForRules, ValidationError } from "../core/validate.ts";
 import { runWithHookRequest } from "../core/hooks.ts";
 import { recordAuditEvent } from "../core/audit-log.ts";
-import { cascadeRuleCheck, checkRule, recordListRule, buildRequestContext, checkUpdateRule, ruleFilter } from "./_rules.ts";
+import { cascadeRuleCheck, checkRule, checkRecordRule, checkRecordUpdateRule, recordListRule, buildRequestContext, ruleFilter } from "./_rules.ts";
 import {
   getHistoryAt,
   getHistoryEntry,
@@ -161,38 +162,38 @@ function collectionNotFound(set: { status?: number | string }) {
  * response (and its ETag) is a read of the record: an update rule that
  * lets someone change a record they can't view must not hand it back.
  */
-function canView(request: Request, col: { name: string; view_rule: string | null }, auth: AuthContext | null, record: unknown): boolean {
+async function canView(request: Request, col: Collection, auth: AuthContext | null, record: unknown): Promise<boolean> {
   if (!record) return false;
-  return auth?.type === "admin" || checkRule(request, "view_rule", col.name, col.view_rule, auth, record as Record<string, unknown>);
+  return auth?.type === "admin" || await checkRecordRule(request, "view_rule", col, col.view_rule, auth, record as Record<string, unknown>);
 }
 
 /** 412 for a write whose If-Match stopped holding while it ran. */
 async function preconditionResponse(
   set: { status?: number | string; headers: Record<string, string | number> },
   request: Request,
-  col: { name: string; view_rule: string | null },
+  col: Collection,
   auth: AuthContext | null,
   id: string,
 ) {
   set.status = 412;
   const current = await getRecord(col.name, id);
   // The ETag hashes the record's content: only for callers who could read it.
-  const tag = canView(request, col, auth, current) ? recordEtag(current as unknown as Record<string, unknown>) : null;
+  const tag = await canView(request, col, auth, current) ? recordEtag(current as unknown as Record<string, unknown>) : null;
   if (tag) set.headers["ETag"] = tag;
   return { error: "Precondition Failed: record was modified", code: 412 };
 }
 
 /** 412 for a failed If-Match, with the current ETag when the caller may view the record. */
-function ifMatchResponse(
+async function ifMatchResponse(
   set: { status?: number | string; headers: Record<string, string | number> },
   request: Request,
-  col: { name: string; view_rule: string | null },
+  col: Collection,
   auth: AuthContext | null,
   existing: unknown,
   currentEtag: string,
 ) {
   set.status = 412;
-  if (canView(request, col, auth, existing)) set.headers["ETag"] = currentEtag;
+  if (await canView(request, col, auth, existing)) set.headers["ETag"] = currentEtag;
   return { error: "Precondition Failed: record was modified", code: 412 };
 }
 
@@ -236,7 +237,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       throw e;
     }
     if (!record) { set.status = 404; return { error: "Record not found", code: 404 }; }
-    if (!checkRule(request, "view_rule", col.name, col.view_rule, auth, record as unknown as Record<string, unknown>, ruleRequest)) {
+    if (!await timeFor(request, "rule_compile", () => checkRecordRule(request, "view_rule", col, col.view_rule, auth, record as unknown as Record<string, unknown>, ruleRequest))) {
       return forbidden(set, request, "view", auth, col.view_rule);
     }
     // The ETag is of the full record, whatever expand / fields return, so
@@ -275,8 +276,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
     if (hiddenFrom(col, auth, col.update_rule)) return collectionNotFound(set);
     const existing = await timeFor(request, "db_exec", () => getRecord(collection, id));
     if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-    if (!timeFor(request, "rule_compile", () => checkUpdateRule(
-      request, col.name, col.update_rule, auth,
+    if (!await timeFor(request, "rule_compile", () => checkRecordUpdateRule(
+      request, col, col.update_rule, auth,
       existing as unknown as Record<string, unknown>,
       bodyForRules(col, body),
     ))) {
@@ -297,7 +298,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
       const record = await timeFor(request, "record_write", () => runWithHookRequest(request, () =>
         updateRecord(collection, id, body as Record<string, unknown>, auth, guard)
       ));
-      if (!canView(request, col, auth, record)) return { data: null };
+      if (!await canView(request, col, auth, record)) return { data: null };
       const etag = recordEtag(record as unknown as Record<string, unknown>);
       if (etag) set.headers["ETag"] = etag;
       return { data: record };
@@ -563,7 +564,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
             // first response isn't kept anywhere.
             const again = outcome.kind === "replay" ? await getRecord(params.collection, outcome.recordId, { auth }) : null;
             if (!again) { set.status = 404; return { error: "Record not found", code: 404 }; }
-            return { data: canView(request, col, auth, again) ? again : null };
+            return { data: await canView(request, col, auth, again) ? again : null };
           }
           claim = outcome;
         }
@@ -574,7 +575,7 @@ export function makeRecordsPlugin(jwtSecret: string) {
           ));
           if (claim) await completeIdempotencyKey(claim.hash);
           // Created, but not readable by its creator: no record back.
-          return { data: canView(request, col, auth, record) ? record : null };
+          return { data: await canView(request, col, auth, record) ? record : null };
         } catch (e) {
           if (claim) await settleFailedCreate(col, claim.hash, claim.recordId).catch(() => { /* the key expires on its own */ });
           if (e instanceof RecordIdTakenError) { set.status = 409; return { error: e.message, code: 409 }; }
@@ -613,8 +614,8 @@ export function makeRecordsPlugin(jwtSecret: string) {
       if (col.type === "singleton") return readOnlyResponse(set, new SingletonRecordError(col.name, "delete"));
       const existing = await timeFor(request, "db_exec", () => getRecord(params.collection, params.id));
       if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
-      if (!timeFor(request, "rule_compile", () =>
-        checkRule(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>),
+      if (!await timeFor(request, "rule_compile", () =>
+        checkRecordRule(request, "delete_rule", col, col.delete_rule, auth, existing as unknown as Record<string, unknown>),
       )) {
         return forbidden(set, request, "delete", auth, col.delete_rule);
       }

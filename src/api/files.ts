@@ -4,6 +4,7 @@ import { existsSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import { getDb } from "../db/client.ts";
 import { auditLog, files, fileTokenUses, tokenRevocations } from "../db/schema.ts";
+import type { Collection } from "../db/schema.ts";
 import { getApiToken } from "../core/api-tokens.ts";
 import { getCollection, parseFields, type FieldDef } from "../core/collections.ts";
 import {
@@ -27,11 +28,11 @@ import {
   type ThumbFormat,
   type ThumbSpec,
 } from "../core/image.ts";
-import { getRecord, hiddenFrom, updateRecord } from "../core/records.ts";
+import { getRecord, hiddenFrom, readsOtherCollections, recordPassesRuleSql, updateRecord } from "../core/records.ts";
 import { ValidationError } from "../core/validate.ts";
 import { evaluateRule, type AuthContext } from "../core/rules.ts";
 import type { RequestContextLike } from "../core/filter.ts";
-import { buildRequestContext, checkRule } from "./_rules.ts";
+import { buildRequestContext, checkRecordRule } from "./_rules.ts";
 import { deleteFile, fileExists, fileResponse, writeFile } from "../core/storage.ts";
 import { tokenWindowSeconds } from "../core/auth-tokens.ts";
 import { extForMime } from "../core/upload-types.ts";
@@ -255,6 +256,23 @@ interface AccessOutcome {
 }
 
 /**
+ * One rule over the record a file belongs to. A rule reading other
+ * collections is asked of the database (0.48), as a list asks it; the
+ * in-process check answers false for those.
+ */
+async function ruleAllows(
+  col: Collection,
+  recordId: string,
+  rule: string,
+  auth: AuthContext | null,
+  record: Record<string, unknown>,
+  reqCtx: RequestContextLike | null,
+): Promise<boolean> {
+  if (readsOtherCollections(rule)) return await recordPassesRuleSql(col, recordId, rule, auth, reqCtx);
+  return evaluateRule(rule, auth, record, reqCtx);
+}
+
+/**
  * Centralised access-decision for a file fetch / token mint. Combines the
  * collection view_rule and the field-level viewRule (AND), then applies the
  * field-level requireAuth gate. Admin always passes (handled by evaluateRule).
@@ -288,7 +306,7 @@ async function evaluateFileAccess(
   if (col.view_rule !== null) {
     record = (await getRecord(col.name, recordId)) as Record<string, unknown> | null;
     if (!record) return { allowed: false, reason: "record not found", fieldDef };
-    const ok = evaluateRule(col.view_rule, auth, record, reqCtx);
+    const ok = await ruleAllows(col, recordId, col.view_rule, auth, record, reqCtx);
     if (!ok) return { allowed: false, reason: "collection rule denied", fieldDef };
   }
 
@@ -300,7 +318,7 @@ async function evaluateFileAccess(
       record = (await getRecord(col.name, recordId)) as Record<string, unknown> | null;
       if (!record) return { allowed: false, reason: "record not found", fieldDef };
     }
-    const ok = evaluateRule(fieldRule, auth, record, reqCtx);
+    const ok = await ruleAllows(col, recordId, fieldRule, auth, record, reqCtx);
     if (!ok) return { allowed: false, reason: "field rule denied", fieldDef };
   }
 
@@ -544,7 +562,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
       // Authz — admin always; otherwise uploading is an update of the record.
       // With the request's context and logged, as a PATCH is.
       const record = existing as unknown as Record<string, unknown>;
-      if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+      if (!await checkRecordRule(request, "update_rule", col, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
         return forbidden(set, request, "update", auth, col.update_rule);
       }
 
@@ -964,7 +982,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         const existing = await getRecord(params.collection, params.recordId);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
         const record = existing as unknown as Record<string, unknown>;
-        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+        if (!await checkRecordRule(request, "update_rule", col, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
           return forbidden(set, request, "update", auth, col.update_rule);
         }
       }
@@ -1004,7 +1022,7 @@ export function makeFilesPlugin(uploadDir: string, jwtSecret: string) {
         const existing = await getRecord(params.collection, params.recordId);
         if (!existing) { set.status = 404; return { error: "Record not found", code: 404 }; }
         const record = existing as unknown as Record<string, unknown>;
-        if (!checkRule(request, "update_rule", col.name, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
+        if (!await checkRecordRule(request, "update_rule", col, col.update_rule, auth, record, buildRequestContext(request, null, record))) {
           return forbidden(set, request, "update", auth, col.update_rule);
         }
       }

@@ -5,7 +5,7 @@ import { getCollection } from "../core/collections.ts";
 import { withExclusiveWrite } from "../core/write-gate.ts";
 import { AccessRuleError, CascadeForbiddenError, clientPaging, RecordNotFoundError, createRecord, deleteRecord, FilterError, getRecord, hiddenFrom, listRecords, ReadOnlyCollectionError, RecordBusyError, RecordIdTakenError, RestrictError, shapeRecords, SingletonRecordError, updateRecord } from "../core/records.ts";
 import { bodyForRules, ValidationError } from "../core/validate.ts";
-import { cascadeRuleCheck, checkRule, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext, checkUpdateRule } from "./_rules.ts";
+import { cascadeRuleCheck, checkRecordRule, checkRecordUpdateRule, checkRuleOrThrow, recordListRule, RuleDeniedError, buildRequestContext } from "./_rules.ts";
 import type { AuthContext } from "../core/rules.ts";
 import type { Collection } from "../db/schema.ts";
 import { dataPrincipal, headerBearer, peerAddress, verifyAuthToken, type VerifiedAuth } from "../core/sec.ts";
@@ -97,8 +97,8 @@ function ruleFor(col: Collection, kind: ParsedOp["kind"]): string | null {
  * A written record goes back only to a caller who may view it: the update
  * or create rule letting them write it doesn't let them read it.
  */
-function canView(request: Request, col: Collection, auth: AuthContext | null, rec: unknown): boolean {
-  return auth?.type === "admin" || checkRule(request, "view_rule", col.name, col.view_rule, auth, rec as Record<string, unknown>);
+async function canView(request: Request, col: Collection, auth: AuthContext | null, rec: unknown): Promise<boolean> {
+  return auth?.type === "admin" || await checkRecordRule(request, "view_rule", col, col.view_rule, auth, rec as Record<string, unknown>);
 }
 
 async function dispatchOp(
@@ -133,7 +133,7 @@ async function dispatchOp(
         buildRequestContext(request, ruleBody, null),
       );
       const rec = await createRecord(op.collection, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
-      return { status: 201, body: canView(request, col, auth, rec) ? rec : null };
+      return { status: 201, body: await canView(request, col, auth, rec) ? rec : null };
     }
     case "list": {
       // A singleton's one record is read under its view rule, as on the
@@ -163,7 +163,9 @@ async function dispatchOp(
     case "get": {
       const rec = await getRecord(op.collection, op.id!);
       if (!rec) return { status: 404, body: { error: "Record not found", code: 404 } };
-      checkRuleOrThrow(request, "view_rule", col.name, col.view_rule, auth, rec as unknown as Record<string, unknown>);
+      if (!await checkRecordRule(request, "view_rule", col, col.view_rule, auth, rec as unknown as Record<string, unknown>)) {
+        throw new RuleDeniedError("view_rule");
+      }
       const q = op.query ?? new URLSearchParams();
       const expand = q.get("expand") ?? undefined, fields = q.get("fields") ?? undefined, exclude = q.get("exclude") ?? undefined;
       if (!expand && !fields && !exclude) return { status: 200, body: rec };
@@ -173,20 +175,22 @@ async function dispatchOp(
     case "update": {
       const existing = await getRecord(op.collection, op.id!);
       if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
-      if (!checkUpdateRule(
-        request, col.name, col.update_rule, auth,
+      if (!await checkRecordUpdateRule(
+        request, col, col.update_rule, auth,
         existing as unknown as Record<string, unknown>,
         bodyForRules(col, body),
       )) {
         throw new RuleDeniedError("update_rule");
       }
       const rec = await updateRecord(op.collection, op.id!, body as Record<string, unknown>, auth, auth?.type === "admin" ? {} : { relationsAs: { auth, request: buildRequestContext(request) } });
-      return { status: 200, body: canView(request, col, auth, rec) ? rec : null };
+      return { status: 200, body: await canView(request, col, auth, rec) ? rec : null };
     }
     case "delete": {
       const existing = await getRecord(op.collection, op.id!);
       if (!existing) return { status: 404, body: { error: "Record not found", code: 404 } };
-      checkRuleOrThrow(request, "delete_rule", col.name, col.delete_rule, auth, existing as unknown as Record<string, unknown>);
+      if (!await checkRecordRule(request, "delete_rule", col, col.delete_rule, auth, existing as unknown as Record<string, unknown>)) {
+        throw new RuleDeniedError("delete_rule");
+      }
       const cascadeAllowed = cascadeRuleCheck(request, auth);
       await deleteRecord(op.collection, op.id!, auth, cascadeAllowed ? { cascadeAllowed } : {});
       return { status: 204, body: null };

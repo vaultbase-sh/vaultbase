@@ -4,6 +4,7 @@ import { compileRule, evaluateRule } from "../core/rules.ts";
 import { recordRuleEval, type RuleOutcome } from "../core/request-context.ts";
 import type { RequestContextLike } from "../core/filter.ts";
 import { viewParamsFromUrl } from "../core/view-params.ts";
+import { readsOtherCollections, recordPassesRuleSql } from "../core/records.ts";
 
 /** Sensitive headers that NEVER reach the rule engine. */
 const REDACTED_HEADERS: ReadonlySet<string> = new Set([
@@ -197,6 +198,69 @@ export function checkUpdateRule(
     expression: rule,
     outcome,
     reason,
+  });
+  return allowed;
+}
+
+/**
+ * checkRule for a stored record, which can also answer rules that read
+ * other collections: those (`@collection.*`, `_via_`) are asked of the
+ * database, as a list asks them, instead of the in-process check, where any
+ * comparison using one is false. Every other rule takes checkRule's path
+ * unchanged. Before 0.48 such a rule denied every single-record request.
+ */
+export async function checkRecordRule(
+  request: Request,
+  ruleName: string,
+  col: Collection,
+  rule: string | null,
+  auth: AuthContext | null,
+  record: Record<string, unknown> | null,
+  reqCtx?: RequestContextLike,
+): Promise<boolean> {
+  const id = typeof record?.["id"] === "string" ? record["id"] : null;
+  if (!readsOtherCollections(rule) || auth?.type === "admin" || !id) {
+    return checkRule(request, ruleName, col.name, rule, auth, record, reqCtx);
+  }
+  const ctx = reqCtx ?? buildRequestContext(request, null, record);
+  const allowed = await recordPassesRuleSql(col, id, rule, auth, ctx);
+  recordRuleEval(request, {
+    rule: ruleName,
+    collection: col.name,
+    expression: rule,
+    outcome: allowed ? "allow" : "deny",
+    reason: allowed ? "rule passed (database)" : "rule failed (database)",
+  });
+  return allowed;
+}
+
+/** checkUpdateRule for rules that read other collections; see checkRecordRule. */
+export async function checkRecordUpdateRule(
+  request: Request,
+  col: Collection,
+  rule: string | null,
+  auth: AuthContext | null,
+  existing: Record<string, unknown>,
+  body: Record<string, unknown> | null,
+): Promise<boolean> {
+  const id = typeof existing["id"] === "string" ? existing["id"] : null;
+  if (!readsOtherCollections(rule) || auth?.type === "admin" || !id) {
+    return checkUpdateRule(request, col.name, rule, auth, existing, body);
+  }
+  const ctx = buildRequestContext(request, body, existing);
+  const onExisting = await recordPassesRuleSql(col, id, rule, auth, ctx);
+  const onMerged = onExisting ? await recordPassesRuleSql(col, id, rule, auth, ctx, body ?? {}) : false;
+  const allowed = onExisting && onMerged;
+  recordRuleEval(request, {
+    rule: "update_rule",
+    collection: col.name,
+    expression: rule,
+    outcome: allowed ? "allow" : "deny",
+    reason: allowed
+      ? "rule passed on current and resulting record (database)"
+      : onExisting
+        ? "rule failed on the resulting record (database)"
+        : "rule failed on the current record (database)",
   });
   return allowed;
 }

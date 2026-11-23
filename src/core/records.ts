@@ -1346,6 +1346,82 @@ async function recordMatches(col: Collection, id: string, filter: string): Promi
   return !!row;
 }
 
+/**
+ * A rule that reads other collections (`@collection.*`, `_via_`). The
+ * in-process check (core/rules.ts) can't look into them and answers false
+ * for any comparison using one; single-record checks ask the database
+ * instead (recordPassesRuleSql). Text, not the parsed rule: a field name
+ * that merely contains `_via_` only sends the check to the database, which
+ * answers it the way a list would.
+ */
+export function readsOtherCollections(rule: string | null | undefined): boolean {
+  return typeof rule === "string" && (rule.includes("@collection.") || rule.includes("_via_"));
+}
+
+/**
+ * Whether record `id` passes `rule` for `auth`, asked of the database the
+ * way a list asks it, so `@collection.*` and `_via_` resolve (lists have
+ * always done this; single-record checks since 0.48). With `patch`, the
+ * rule sees the record as the update would leave it: the patch's fields
+ * over the stored row, in their stored form, without writing anything.
+ *
+ * Fails closed: a rule that doesn't compile (over the join cap, say), a
+ * view collection (its rows come from a query, not a table), a missing
+ * record or a patch value that can't be encoded all deny.
+ */
+export async function recordPassesRuleSql(
+  col: Collection,
+  id: string,
+  rule: string | null,
+  auth: AuthContext | null,
+  request: RequestContextLike | null,
+  patch?: Record<string, unknown> | null,
+): Promise<boolean> {
+  if (rule === null || auth?.type === "admin") return true;
+  if (rule.trim() === "" || col.type === "view") return false;
+  const tname = userTableName(col.name);
+  const table = quoteIdent(tname);
+  let where: { whereSql: string; whereParams: Binding[] };
+  try {
+    where = await compileListWhere(col, { accessRule: rule, auth, request, ids: [id] });
+  } catch {
+    return false;
+  }
+  let from = table;
+  const fromParams: Binding[] = [];
+  if (patch) {
+    const row = await db.get<Record<string, unknown>>(`SELECT * FROM ${table} WHERE "id" = ? LIMIT 1`, [id]);
+    if (!row) return false;
+    const byName = new Map(parseFields(col.fields).filter((f) => !f.system && !f.implicit).map((f) => [f.name, f]));
+    const cols: string[] = [];
+    for (const name of Object.keys(row)) {
+      const f = byName.get(name);
+      // Password and encrypted columns keep their stored value: the stored
+      // form of a new one (a hash, a ciphertext) is nothing a rule can match.
+      if (f && Object.prototype.hasOwnProperty.call(patch, name) && f.type !== "password" && !f.options?.encrypted) {
+        let v: unknown;
+        try { v = encodeValue(patch[name], f); } catch { return false; }
+        // CASE gives the parameter the column's type on Postgres, where a
+        // bare `$1 AS col` in a derived table would be text.
+        cols.push(`CASE WHEN 1 = 1 THEN ? ELSE ${quoteIdent(name)} END AS ${quoteIdent(name)}`);
+        fromParams.push((v === undefined ? null : v) as Binding);
+      } else cols.push(quoteIdent(name));
+    }
+    // Aliased as the table, so the compiled rule's `"vb_x"."field"` reads
+    // the patched row. Joins inside the rule name tables, not this alias.
+    from = `(SELECT ${cols.join(", ")} FROM ${table} WHERE "id" = ?) AS ${table}`;
+    fromParams.push(id);
+  }
+  try {
+    const ok = await db.get(`SELECT 1 AS ok FROM ${from} ${where.whereSql} LIMIT 1`, [...fromParams, ...where.whereParams]);
+    return !!ok;
+  } catch {
+    // A value the rule can't compare (a JSON path over plain text) denies,
+    // as an uncompilable rule does.
+    return false;
+  }
+}
+
 /** Relation check for `auth`: the target record must pass its collection's view rule. */
 export function canSeeAs(auth: AuthContext | null, request: RequestContextLike | null = null): CanSeeRecord {
   return async (target, id) => {

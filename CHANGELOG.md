@@ -19,7 +19,12 @@ Binaries, checksums, signatures and SBOMs for every version are on
 
 ### Fixed
 
+- View, update and delete by id (also in a batch) and file access answer rules that read other collections, `@collection.*` and `_via_`, from the database, as a list does. Before, any comparison using one was false there, so a rule such as `@collection.accounts.owner = @request.auth.id && @collection.accounts.active = true` refused every single-record request while the list served the same records. An update rule is checked against the record as it stands and as the patch would leave it, as before. A rule the database can't run (over the join cap) still denies. Realtime delivery still checks in process, where such a comparison stays false.
 - A 403 for a signed-out caller says `reason: "rule_denied"` when the rule doesn't read `@request.auth` (`view_rule: active = true` on a record with `active = false`, say). It said `not_signed_in`, which the docs define as "the rule needs a signed-in caller", so clients sent people to sign in when signing in couldn't help. Rules that read `@request.auth` still answer `not_signed_in` to a signed-out caller.
+
+### Upgrade notes
+
+- **Rules that read other collections now allow single-record requests they used to refuse.** A view, update or delete rule using `@collection.*` or `_via_` gave `403` on every request by id (and in a batch, and for file access), whatever the other collection held; it now gives the answer the list gives. If an app relied on that refusal, for example a rule that was meant to work only in lists, make the rule say so (an update rule that should stay admin-only is `""`). Rules without `@collection.*` or `_via_` are unchanged.
 
 ## [0.47.0] — 2026-11-18
 
